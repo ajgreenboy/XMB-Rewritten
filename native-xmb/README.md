@@ -39,7 +39,7 @@ XInput D-pad and A/B share the same actions.
 
 The test runners are off by default; each has a CMake option (`XMB_STEAM_VDF_BUILD_TESTS`,
 `XMB_SETUP_BUILD_TESTS`, `XMB_AUTOLOGON_BUILD_TESTS`, `XMB_UPDATER_BUILD_TESTS`, `XMB_FIRMWARE_BUILD_TESTS`,
-`XMB_RELEASE_BUILD_TESTS`, `XMB_MANAGER_BUILD_TESTS`, `XMB_DISCORD_BUILD_TESTS`). From a Visual Studio developer prompt, configure with the option on (`cmake -S native-xmb -B out/tests -G Ninja -DCMAKE_PREFIX_PATH=<Qt kit> -DXMB_STEAM_VDF_BUILD_TESTS=ON`), build the matching
+`XMB_RELEASE_BUILD_TESTS`, `XMB_MANAGER_BUILD_TESTS`, `XMB_DISCORD_BUILD_TESTS`, `XMB_FOLDER_BROWSER_BUILD_TESTS`). From a Visual Studio developer prompt, configure with the option on (`cmake -S native-xmb -B out/tests -G Ninja -DCMAKE_PREFIX_PATH=<Qt kit> -DXMB_STEAM_VDF_BUILD_TESTS=ON`), build the matching
 `xmb-*-tests` target and run the executable.
 
 The render gate is a Bun script (Bun 1.x; the project uses `bun`, never Node/npm):
@@ -82,6 +82,7 @@ collector designed there is not a built option yet.
 | `Shell` | Stable menu IDs, navigation state, settings, service actions |
 | `Preferences` / `Profiles` | Validated, versioned atomic native settings and local identity stores |
 | `MediaLibrary` | Background directory enumeration, bounded results and stale-request cancellation |
+| `folderbrowser` | The in-XMB folder browser behind Choose Media Folder and the empty Library rows: drive list, folder-only natural-order listing, parents, unreadable folders, path elision (`src/folder_browser.*`, `src/folder_browse_shell.cpp`; [audit/FOLDER-BROWSER.md](audit/FOLDER-BROWSER.md)) |
 | `InteractionAudio` | Original RCO/VAG interaction cues and native audio output |
 | `View` | OpenGL background, original icons/text, animation, keyboard/controller input |
 | Qt Multimedia | Host audio/video decoding and playback; video frames return to the view |

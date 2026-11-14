@@ -2411,9 +2411,10 @@ void Shell::activate() {
         // action enum (labels, kinds, the information page) keeps its meaning.
         if(entry.id=="continue"){openContinueWatching();break;}
         const auto path=preferences_.value("library/"+categories_[category_].id).toString();
-        if(!path.isEmpty())openDirectory(path);else emit requestLibrary();break;
+        if(!path.isEmpty())openDirectory(path);else openFolderBrowser();break;
     }
-    case Action::ChooseLibrary:emit requestLibrary();break;
+    case Action::ChooseLibrary:openFolderBrowser();break;
+    case Action::BrowseOpen:case Action::BrowseUse:activateBrowse(entry);break;
     case Action::PhotoGallery:emit requestPhotoGallery();break;
     case Action::Folder:openDirectory(entry.value);break;
     case Action::File:openFile(entry);break;
@@ -4543,6 +4544,7 @@ void Shell::back() {
     else if(setupHandleBack());   // D8: Circle on the setup Welcome page asks before leaving
     else if(!pages_.isEmpty() && pages_.last().signIn)cancelJellyfinSignInPage();
     else if(multiSelect_)exitMultiSelect();   // Circle leaves the marking mode before it leaves the page
+    else if(browseUp());   // Circle in the folder browser goes up one folder; at This PC it leaves the page
     else if(!pages_.isEmpty()){library_.cancel();scanRequest_=0;jellyfinRequest_=0;loading_=false;status_.clear();pages_.removeLast();}
     emit changed();
 }

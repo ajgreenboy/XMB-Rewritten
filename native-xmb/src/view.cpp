@@ -166,7 +166,6 @@ View::View(Shell& shell,Assets& assets,QWidget* parent):QOpenGLWidget(parent),sh
         update();
     });
     connect(&shell_,&Shell::requestPhotoGallery,this,[this]{openGallery();});
-    connect(&shell_,&Shell::requestLibrary,this,[this]{const auto path=QFileDialog::getExistingDirectory(this,"Choose media folder");shell_.noteActivity();if(!path.isEmpty())shell_.chooseLibrary(path);});
     connect(&shell_,&Shell::requestWallpaper,this,[this]{const auto file=QFileDialog::getOpenFileName(this,"Choose Wallpaper",{},"Images (*.png *.jpg *.jpeg *.bmp *.webp)");shell_.noteActivity();if(!file.isEmpty())shell_.chooseWallpaper(file);});
     connect(&shell_,&Shell::requestTheme,this,[this]{const auto file=QFileDialog::getOpenFileName(this,"Choose Theme",{},"PS3 Themes (*.p3t)");shell_.noteActivity();if(!file.isEmpty())shell_.chooseTheme(file);});
     connect(&shell_,&Shell::requestImportApps,this,[this]{AppEditor editor(shell_.appRegistryPath(),this);connect(&editor,&AppEditor::registryChanged,&shell_,&Shell::refreshContent);editor.exec();shell_.noteActivity();});
