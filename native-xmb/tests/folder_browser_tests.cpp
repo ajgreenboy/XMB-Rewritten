@@ -110,6 +110,38 @@ int main(int argc,char** argv) {
     check(fb::startPath(root+QStringLiteral("/nope"),root+QStringLiteral("/beta"),QString())==root,"an override that is gone walks up before the current folder is tried");
     check(fb::startPath(QString(),QString(),QString()).isEmpty(),"nothing set starts at This PC");
 
+    // file mode (Choose Wallpaper, Choose Theme)
+    const QStringList images{QStringLiteral("*.png"),QStringLiteral("*.jpg"),QStringLiteral("*.jpeg"),QStringLiteral("*.bmp"),QStringLiteral("*.webp")};
+    const QString pics=root+QStringLiteral("/Pics");
+    QDir().mkpath(pics+QStringLiteral("/Zeta"));QDir().mkpath(pics+QStringLiteral("/alpha"));
+    const char* fileNames[]={"img 10.png","img 2.PNG","Img 1.jpg","c.jpeg","d.bmp","e.webp","notes.txt","theme.p3t","f.png.bak","hidden.png","a.gif"};
+    for(const char* n:fileNames){QFile f(pics+QLatin1Char('/')+QLatin1String(n));if(f.open(QIODevice::WriteOnly)){f.write(QByteArray(2500,'x'));f.close();}}
+#ifdef Q_OS_WIN
+    SetFileAttributesW(reinterpret_cast<const wchar_t*>(QDir::toNativeSeparators(pics+QStringLiteral("/hidden.png")).utf16()),FILE_ATTRIBUTE_HIDDEN);
+#endif
+    check(fb::matchesFilter(QStringLiteral("A.PNG"),images) && fb::matchesFilter(QStringLiteral("a.Jpeg"),images),"a filter ignores case");
+    check(!fb::matchesFilter(QStringLiteral("a.png.bak"),images) && !fb::matchesFilter(QStringLiteral("png"),images) && !fb::matchesFilter(QStringLiteral("a.png"),{}),
+        "a filter matches the whole name, and no pattern matches nothing");
+    const auto fm=fb::list(pics,2000,images);
+    check(fm.problem.isEmpty() && !fm.truncated,"a file-mode listing has no problem");
+    check(names(fm)==QStringList({"alpha","Zeta","c.jpeg","d.bmp","e.webp","Img 1.jpg","img 2.PNG","img 10.png"}),
+        "file mode: folders first, then matching files, each in natural case-blind order; hidden and non-matching left out");
+    check(!fm.items[0].isFile && !fm.items[1].isFile && fm.items[2].isFile,"items say whether they are files");
+    check(fm.items[2].path==pics+QStringLiteral("/c.jpeg") && fm.items[2].note==QStringLiteral("2 KB"),"a file item has its absolute path and a size line");
+    check(names(fb::list(pics,2000,{QStringLiteral("*.p3t")}))==QStringList({"alpha","Zeta","theme.p3t"}),"a theme filter lists only .p3t files");
+    check(names(fb::list(pics))==QStringList({"alpha","Zeta"}),"folder mode still lists no files");
+    const auto fcut=fb::list(pics,3,images);
+    check(fcut.items.size()==3 && fcut.truncated && fcut.items[2].isFile,"file mode: the cap counts folders and files together, folders first");
+    check(!fb::list(pics,8,images).truncated && fb::list(pics,7,images).truncated,"file mode: exactly the cap is not truncated");
+    check(fb::list(root+QStringLiteral("/Alpha/Inner"),2000,images).items.isEmpty() && fb::list(root+QStringLiteral("/Alpha/Inner"),2000,images).problem.isEmpty(),
+        "file mode: a folder with nothing matching is empty, not a problem");
+    check(!fb::list(root+QStringLiteral("/nope"),2000,images).problem.isEmpty(),"file mode: a missing folder reports a reason");
+    check(fb::list(QString(),2000,images).items.size()==drives.size() && !fb::list(QString(),2000,images).items[0].isFile,"file mode: the top level is still the drive list");
+    check(fb::startPath(QString(),pics+QStringLiteral("/c.jpeg"),QString())==pics,"the start folder of a chosen file is its folder");
+    check(fb::startPath(QString(),pics+QStringLiteral("/gone/c.jpeg"),QString())==pics,"the start folder of a vanished file walks up to an existing folder");
+    check(fb::fileSizeText(0)==QStringLiteral("0 B") && fb::fileSizeText(1023)==QStringLiteral("1023 B") && fb::fileSizeText(1024)==QStringLiteral("1 KB")
+        && fb::fileSizeText(3*1024*1024+400000)==QStringLiteral("3.4 MB"),"file sizes read as B, KB or MB");
+
     std::printf("%s (%d failure%s)\n",failures?"FAILED":"ALL PASS",failures,failures==1?"":"s");
     return failures?1:0;
 }

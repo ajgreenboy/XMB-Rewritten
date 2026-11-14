@@ -2278,20 +2278,20 @@ void Shell::activate() {
     case Action::SettingChoices:openChoices(entry.setting,entry.title);break;
     case Action::SetSetting:
         // The two file pickers that live inside the Theme and Background lists (`Install` and `Select
-        // Wallpaper`): their items carry a sentinel value no bounded Preferences key accepts, so Cross asks the
-        // view for the file dialog instead of starting a write. The rows are ordinary SetSetting rows of a
+        // Wallpaper`): their items carry a sentinel value no bounded Preferences key accepts, so Cross opens the
+        // file picker page instead of starting a write. The rows are ordinary SetSetting rows of a
         // choice band, so nothing about the band's own class changes.
         if(entry.option.toString()==QLatin1String(kThemePickerValue)) {
-            qInfo().noquote()<<"settings: theme picker row -> .p3t file dialog (Install, appearance/theme band)";
-            emit requestTheme();break;
+            qInfo().noquote()<<"settings: theme picker row -> in-XMB .p3t file picker (Install, appearance/theme band)";
+            openFilePicker(QStringLiteral("theme"),true);break;
         }
         if(entry.option.toString()==QLatin1String(kWallpaperPickerValue)) {
-            qInfo().noquote()<<"settings: wallpaper picker row -> image file dialog (Select Wallpaper, appearance/background band)";
-            emit requestWallpaper();break;
+            qInfo().noquote()<<"settings: wallpaper picker row -> in-XMB image file picker (Select Wallpaper, appearance/background band)";
+            openFilePicker(QStringLiteral("wallpaper"),true);break;
         }
         // A picker row writes nothing yet, so it has no chain: a Background row that needs a file asks the
-        // view for one (the file dialog's result comes back through chooseWallpaper()).
-        if(entry.setting=="appearance/background" && entry.option.toInt()==2 && wallpaper().isEmpty() && theme_.background.isNull() && theme_.sceneBytes.isEmpty()){emit requestWallpaper();break;}
+        // view for one (the in-XMB file picker's choice comes back through chooseWallpaper()).
+        if(entry.setting=="appearance/background" && entry.option.toInt()==2 && wallpaper().isEmpty() && theme_.background.isNull() && theme_.sceneBytes.isEmpty()){openFilePicker(QStringLiteral("wallpaper"),true);break;}
         // Every other write now runs the console's chain (ask -> [proceed] -> finish) instead of committing
         // and popping in one frame (FIDELITY-BEHAVIOUR I77). beginSettingWrite() decides the stages per row
         // class and names the evidence for each.
@@ -2370,8 +2370,8 @@ void Shell::activate() {
         emit changed();
         break;
     }
-    case Action::Wallpaper:emit requestWallpaper();break;
-    case Action::Theme:emit requestTheme();break;
+    case Action::Wallpaper:openFilePicker(QStringLiteral("wallpaper"));break;
+    case Action::Theme:openFilePicker(QStringLiteral("theme"));break;
     case Action::Information: {
         // System Information, the connection status list and the output pages are D5 information pages:
         // the same titled frame with Key: value rows, no dialog chrome (audit/DIALOGS-FIRMWARE.md 2.5).
@@ -2414,7 +2414,7 @@ void Shell::activate() {
         if(!path.isEmpty())openDirectory(path);else openFolderBrowser();break;
     }
     case Action::ChooseLibrary:openFolderBrowser();break;
-    case Action::BrowseOpen:case Action::BrowseUse:activateBrowse(entry);break;
+    case Action::BrowseOpen:case Action::BrowseUse:case Action::BrowseFile:activateBrowse(entry);break;
     case Action::PhotoGallery:emit requestPhotoGallery();break;
     case Action::Folder:openDirectory(entry.value);break;
     case Action::File:openFile(entry);break;

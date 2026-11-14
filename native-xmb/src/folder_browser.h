@@ -19,7 +19,8 @@ namespace xmb::folderbrowser {
 struct Item {
     QString name;   // the folder's own name (a drive's label for a root)
     QString path;   // absolute, forward slashes, no trailing slash except on a drive root ("C:/")
-    QString note;   // a drive's free-space line; empty for a folder
+    QString note;   // a drive's free-space line, or a file's size; empty for a folder
+    bool isFile=false;   // file mode only: a file that matched the filter
 };
 
 struct Listing {
@@ -35,7 +36,16 @@ QVector<Item> drives();
 
 // Lists one level. An empty `path` is the drive list. Never throws and never blocks on a missing folder:
 // an unreadable or vanished folder fills `problem` with a one-line reason.
-Listing list(const QString& path,int limit=2000);
+// File mode (Choose Wallpaper, Choose Theme): a non-empty `filePatterns` ("*.png", case-blind) also lists the files
+// that match, after the folders; hidden and system files are left out like folders, each group sorts naturally, and
+// `limit` counts folders and files together (folders come first, so a cut drops files).
+Listing list(const QString& path,int limit=2000,const QStringList& filePatterns={});
+
+// True when `fileName` matches one of the wildcard `patterns` ("*.png"), ignoring case. No pattern matches nothing.
+bool matchesFilter(const QString& fileName,const QStringList& patterns);
+
+// "812 KB", "3.4 MB": the size line of a file row.
+QString fileSizeText(qint64 bytes);
 
 // The folder above `path`: "" when `path` is a drive root (or empty), so Circle at a drive root goes to This PC.
 QString parentOf(const QString& path);

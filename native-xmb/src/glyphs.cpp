@@ -216,6 +216,24 @@ const QImage& warning() {
     return image;
 }
 
+const QImage& picture() {
+    static const QImage image=line([](QPainter& p){
+        p.drawRoundedRect(QRectF(36,52,184,152),12,12);
+        p.drawEllipse(QPointF(92,104),14,14);
+        p.drawPolyline(QPolygonF{{36,176},{96,132},{140,168},{176,140},{220,176}});
+    });
+    return image;
+}
+
+const QImage& document() {
+    static const QImage image=line([](QPainter& p){
+        p.drawPolygon(QPolygonF{{68,36},{148,36},{192,80},{192,220},{68,220}});
+        p.drawPolyline(QPolygonF{{148,36},{148,80},{192,80}});
+        p.drawLine(QPointF(96,128),QPointF(164,128));p.drawLine(QPointF(96,160),QPointF(164,160));p.drawLine(QPointF(96,192),QPointF(140,192));
+    });
+    return image;
+}
+
 const QImage& cross() {
     static const QImage image=line([](QPainter& p){p.drawLine(QPointF(64,64),QPointF(192,192));p.drawLine(QPointF(192,64),QPointF(64,192));});
     return image;

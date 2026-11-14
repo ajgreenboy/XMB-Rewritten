@@ -102,7 +102,7 @@ enum class Action { Unavailable, SettingsPage, SettingChoices, SetSetting, EditN
     WeatherApp, WeatherUnits,
     // The in-XMB folder browser (folder_browse_shell.cpp): one folder or drive row (value = its path) and the
     // "Use This Folder" row (value = the folder being shown).
-    BrowseOpen, BrowseUse,
+    BrowseOpen, BrowseUse, BrowseFile,
     // Settings > System Settings > System Check (system_check_shell.cpp).
     SystemCheck,
     // A user's Information page (P4): its Icon row (opens the icon page) and User Name row (the name page); one
@@ -666,8 +666,6 @@ signals:
     // Cross on Photo > Photo Gallery: the view opens the gallery.
     void requestPhotoGallery();
     void mediaFrame(const QImage& frame);
-    void requestWallpaper();
-    void requestTheme();
     void requestSystemName(const QString& value);
     void requestTitleText();   // ZF2: open the OSK for text to type into the running title
     void requestQuit();
@@ -787,6 +785,7 @@ private:
     bool activateHome(const Entry& entry);
     // Folder browser: Choose Media Folder and the empty Video, Music and Photo Library rows (folder_browse_shell.cpp).
     void openFolderBrowser();
+    void openFilePicker(const QString& picker,bool replaceChoices=false);   // "wallpaper" or "theme": the folder browser in file mode
     bool activateBrowse(const Entry& entry);
     bool browseUp();
     QVector<Entry> browseRows(const QString& path) const;
@@ -1035,7 +1034,7 @@ private:
     int columnSink_=0;
     // `grouped` is a page the item menu's Group Content level rebuilt into letter folders: `groupedSource` keeps
     // the ungrouped rows so All can put them back without a rescan, and the folders' rows are the same entries.
-    struct Page { QString title; QVector<Entry> entries; int selection=0; QString directory; bool jellyfin=false,jellyfinViews=false,jellyfinSearch=false; QString jellyfinParent; int jellyfinStart=0; bool downloads=false; bool continuePage=false; bool signIn=false; bool steamAccounts=false; bool grouped=false; QString groupKey; QVector<Entry> groupedSource; bool sysconfPlugin=false; QString playlistsType,playlistId; QString spotify,spotifyContext; QString dlna; int dlnaServer=-1; QString tailscale; QString wol,ha; bool weather=false; bool systemCheck=false; QString userInfo; int userInfoStep=0; bool browse=false; QString browsePath; };
+    struct Page { QString title; QVector<Entry> entries; int selection=0; QString directory; bool jellyfin=false,jellyfinViews=false,jellyfinSearch=false; QString jellyfinParent; int jellyfinStart=0; bool downloads=false; bool continuePage=false; bool signIn=false; bool steamAccounts=false; bool grouped=false; QString groupKey; QVector<Entry> groupedSource; bool sysconfPlugin=false; QString playlistsType,playlistId; QString spotify,spotifyContext; QString dlna; int dlnaServer=-1; QString tailscale; QString wol,ha; bool weather=false; bool systemCheck=false; QString userInfo; int userInfoStep=0; bool browse=false; QString browsePath; QString browseFiles; };
     QVector<Page> pages_;
     bool psMenu_=false;              // the PS-button system menu is showing
     bool desktopMode_=false;         // the XMB window is hidden for Desktop Mode (main.cpp DesktopMode)

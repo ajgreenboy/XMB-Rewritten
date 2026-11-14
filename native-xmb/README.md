@@ -82,7 +82,7 @@ collector designed there is not a built option yet.
 | `Shell` | Stable menu IDs, navigation state, settings, service actions |
 | `Preferences` / `Profiles` | Validated, versioned atomic native settings and local identity stores |
 | `MediaLibrary` | Background directory enumeration, bounded results and stale-request cancellation |
-| `folderbrowser` | The in-XMB folder browser behind Choose Media Folder and the empty Library rows: drive list, folder-only natural-order listing, parents, unreadable folders, path elision (`src/folder_browser.*`, `src/folder_browse_shell.cpp`; [audit/FOLDER-BROWSER.md](audit/FOLDER-BROWSER.md)) |
+| `folderbrowser` | The in-XMB folder browser behind Choose Media Folder, the empty Library rows, Choose Wallpaper and Choose Theme (file mode): drive list, natural-order listing of folders (and, in file mode, filtered files), parents, unreadable folders, path elision (`src/folder_browser.*`, `src/folder_browse_shell.cpp`; [audit/FOLDER-BROWSER.md](audit/FOLDER-BROWSER.md)) |
 | `InteractionAudio` | Original RCO/VAG interaction cues and native audio output |
 | `View` | OpenGL background, original icons/text, animation, keyboard/controller input |
 | Qt Multimedia | Host audio/video decoding and playback; video frames return to the view |

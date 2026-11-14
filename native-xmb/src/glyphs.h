@@ -25,6 +25,8 @@ const QImage& play();       // a play triangle in a ring
 const QImage& check();      // a tick
 const QImage& warning();    // a triangle with an exclamation mark
 const QImage& cross();      // an X
+const QImage& picture();    // a framed picture with a sun and hills (an image file in the file picker)
+const QImage& document();   // a page with a folded corner (a theme file in the file picker)
 // A Jellyfin library by its CollectionType ("movies", "tvshows", "music", ...); null for unknown kinds.
 const QImage& library(const QString& collectionType);
 }

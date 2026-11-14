@@ -2,6 +2,7 @@
 #include <QCollator>
 #include <QDir>
 #include <QFileInfo>
+#include <QRegularExpression>
 #include <QStorageInfo>
 #include <algorithm>
 #include <filesystem>
@@ -76,7 +77,23 @@ QString parentOf(const QString& path) {
     return clean(c.left(slash).size()==2?c.left(slash)+QLatin1Char('/'):c.left(slash));
 }
 
-Listing list(const QString& path,int limit) {
+bool matchesFilter(const QString& fileName,const QStringList& patterns) {
+    for(const QString& pattern:patterns) {
+        const QRegularExpression re(QRegularExpression::wildcardToRegularExpression(pattern.trimmed()),QRegularExpression::CaseInsensitiveOption);
+        if(re.isValid() && re.match(fileName).hasMatch())return true;
+    }
+    return false;
+}
+
+QString fileSizeText(qint64 bytes) {
+    if(bytes<0)bytes=0;
+    if(bytes<1024)return QStringLiteral("%1 B").arg(bytes);
+    if(bytes<1024*1024)return QStringLiteral("%1 KB").arg((bytes+512)/1024);
+    if(bytes<1024LL*1024*1024)return QStringLiteral("%1 MB").arg(double(bytes)/(1024.0*1024.0),0,'f',1);
+    return QStringLiteral("%1 GB").arg(double(bytes)/(1024.0*1024.0*1024.0),0,'f',1);
+}
+
+Listing list(const QString& path,int limit,const QStringList& filePatterns) {
     Listing listing;listing.path=clean(path);
     if(listing.path.isEmpty()){listing.items=drives();return listing;}
     listing.parent=parentOf(listing.path);
@@ -93,6 +110,19 @@ Listing list(const QString& path,int limit) {
     QCollator collator;collator.setNumericMode(true);collator.setCaseSensitivity(Qt::CaseInsensitive);
     std::sort(items.begin(),items.end(),[&collator](const Item& a,const Item& b){
         const int r=collator.compare(a.name,b.name);return r!=0?r<0:a.name<b.name;});
+    if(!filePatterns.isEmpty()) {
+        QVector<Item> files;
+        for(const QFileInfo& f:QDir(listing.path).entryInfoList(QDir::Files|QDir::NoDotAndDotDot|QDir::NoSymLinks)) {
+            if(f.isHidden() || !matchesFilter(f.fileName(),filePatterns))continue;
+            const QString p=clean(f.absoluteFilePath());
+            if(isSystemFolder(p))continue;
+            Item item;item.name=f.fileName();item.path=p;item.isFile=true;item.note=fileSizeText(f.size());
+            files.push_back(std::move(item));
+        }
+        std::sort(files.begin(),files.end(),[&collator](const Item& a,const Item& b){
+            const int r=collator.compare(a.name,b.name);return r!=0?r<0:a.name<b.name;});
+        for(auto& file:files)items.push_back(std::move(file));
+    }
     if(limit>0 && items.size()>limit){items.resize(limit);listing.truncated=true;}
     listing.items=std::move(items);
     return listing;
