@@ -26,7 +26,8 @@ settle it). Local evidence the documents cite (`out/native-reference/`, `fw493/`
 
 | Document | What it is |
 |---|---|
-| [../HANDOFF-2026-11-09.md](../HANDOFF-2026-11-09.md) | The active handoff: state, build/run/verify, gates, what landed, work in flight, open work |
+| [../HANDOFF-2026-11-13.md](../HANDOFF-2026-11-13.md) | The active handoff: state, paths, build/run/verify, gates, what landed, open work, rules |
+| [../HANDOFF-2026-11-09.md](../HANDOFF-2026-11-09.md) | The previous handoff: per-area detail for 2026-11-08/09 |
 | [PHASES-2026-11-07.md](PHASES-2026-11-07.md) | Plan of record: done work, ranked backlog, parallel workstreams |
 | [FEATURE-STATUS-2026-11-04.md](FEATURE-STATUS-2026-11-04.md) | Per-feature status with dated updates |
 | [FEATURE-CATALOG.md](FEATURE-CATALOG.md) | 307 indexed Sony guide topics/actions with native coverage status; machine-readable companion `feature-catalog.json` |
