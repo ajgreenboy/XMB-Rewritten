@@ -431,7 +431,7 @@ int main(int argc,char** argv) {
 #ifdef Q_OS_WIN
     requestPerMonitorDpiAwareness();
 #endif
-    QSurfaceFormat format;format.setVersion(3,3);format.setProfile(QSurfaceFormat::CoreProfile);format.setSwapInterval(1);format.setSamples(4);QSurfaceFormat::setDefaultFormat(format);
+    QSurfaceFormat format;format.setVersion(3,3);format.setProfile(QSurfaceFormat::CoreProfile);format.setSwapInterval(qEnvironmentVariable("XMB_SWAP_INTERVAL")==QStringLiteral("0")?0:1);   /* XMB_SWAP_INTERVAL=0: vsync off, to measure frame throughput (audit/HIGH-DPI.md) */format.setSamples(4);QSurfaceFormat::setDefaultFormat(format);
     QApplication app(argc,argv);app.setApplicationName("re-ps3-native");app.setApplicationVersion(QStringLiteral(XMB_APP_VERSION));QImageReader::setAllocationLimit(128);
     qInfo().noquote()<<QString("boot: QApplication ready after %1 ms").arg(processAgeMs(),0,'f',0);
     xmb::bootprof::mark("start");
