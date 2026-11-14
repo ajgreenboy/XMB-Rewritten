@@ -207,13 +207,20 @@ bool hostReportTable(const Shell& shell) {
 } // namespace
 
 // ---- D4 chrome: icon + left title, the page class's two flat rules, the analog clock -----------------
+// Rows that carry their own picture (Weather, Home Assistant: serviceIcons / glyphs / conditions artwork) keep the
+// generic folder as their texture, so the header must use the artwork the way the list row does.
+void View::drawEntryIcon(QPainter& p,const Entry& entry,const QRectF& rect,qreal opacity) {
+    if(entry.artwork.isNull()){drawImage(p,entry.container,entry.texture,rect,opacity);return;}
+    const auto fitted=QSizeF(entry.artwork.size()).scaled(rect.size(),Qt::KeepAspectRatio);
+    p.save();p.setOpacity(opacity);p.drawImage(QRectF(rect.center()-QPointF(fitted.width()/2,fitted.height()/2),fitted),entry.artwork);p.restore();
+}
 void View::drawPageChrome(QPainter& p,const QString& title,double ruleTop,int ruleTopAlpha,double ruleBottom,int ruleBottomAlpha) {
     // The icon is the focused row's own, the same source the information page has always used: the page
     // the message belongs to shows its item's icon, as D4's "Search for Media Servers" shows the network
     // search icon. A message with no heading draws no header at all.
     if(!title.isEmpty()) {
         if(const Entry* source=pageIconSource(shell_))
-            drawImage(p,source->container,source->texture,{kChromeIconX,kChromeIconY,kChromeIconSize,kChromeIconSize});
+            drawEntryIcon(p,*source,{kChromeIconX,kChromeIconY,kChromeIconSize,kChromeIconSize});
         drawMessageText(p,{kChromeTitleX,kChromeTitleTop,1200,44},title,kTitleSize,Qt::white);
     }
     // The rules are flat alpha rectangles, not tex_msgdialog_bar: the measured references show one
@@ -354,7 +361,7 @@ void View::drawMessageBox(QPainter& p) {
         }
         if(source) {
             const QPointF centre=plate.center();
-            drawImage(p,source->container,source->texture,
+            drawEntryIcon(p,*source,
                 {centre.x()-kBoxIconSize/2.,centre.y()-kBoxIconSize/2.,kBoxIconSize,kBoxIconSize},plateAlpha);
         }
     }
@@ -526,7 +533,7 @@ void View::drawMessageTablePage(QPainter& p) {
     // Header. Same icon source and type as the family; this page's measured anchors and no clock.
     if(!title.isEmpty()) {
         if(const Entry* source=pageIconSource(shell_))
-            drawImage(p,source->container,source->texture,{kTableIconX,kTableIconY,kTableIconSize,kTableIconSize});
+            drawEntryIcon(p,*source,{kTableIconX,kTableIconY,kTableIconSize,kTableIconSize});
         drawMessageText(p,{kTableTitleX,kTableTitleTop,1200,44},title,kTableTitleSize,Qt::white);
     }
     p.save();p.setPen(Qt::NoPen);p.setBrush(QColor(255,255,255,kTableRuleAlpha));
