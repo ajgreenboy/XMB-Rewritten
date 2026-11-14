@@ -3007,7 +3007,12 @@ void View::drawScene(QPainter& p) {
                         // plane is translucent, so a line running on under it collided with the choice labels (Theme's
                         // description under 'Classic'). Wider lines wrap onto a second row instead; the console's own frame
                         // for this is not known (INFERRED).
-                        const qreal helpWidth=panelAmount>.001?std::min<qreal>(1182.,1240.-labelX):1182.;
+                        // The Settings column's own help line wraps narrower than a page row's: on the console (RPCS3 4.93,
+                        // 2026-11-14 sweep 6a) Remote Play Settings' line 1 ends at "...supports remote play" with ink
+                        // x 682..1583 and "(such" does not fit, so the box is between 902 and about 950 wide
+                        // (this build's glyph advances run wider, so 965 reproduces that break; not a traced constant). The same string in this build ran to 1854.
+                        const bool settingsColumn=level==0 && shell_.categories()[shell_.category()].id==QLatin1String("settings");
+                        const qreal helpWidth=settingsColumn?965.:panelAmount>.001?std::min<qreal>(1182.,1240.-labelX):1182.;
                         QFont helpFont(shell_.fontFamily());helpFont.setPixelSize(helpSize);
                         helpFont.setHintingPreference(QFont::PreferNoHinting);
                         QTextLayout wrap(entry.detail,helpFont);QTextOption option;
