@@ -1071,7 +1071,7 @@ QString downloadSize(qint64 bytes) {
 QString downloadProgressText(const SteamDownload& download) {
     qint64 done=download.bytesDownloaded,total=download.bytesToDownload;
     if(download.state==QLatin1String("staging")){done=download.bytesStaged;total=download.bytesToStage;}
-    if(total<=0)return QStringLiteral("no progress published");
+    if(total<=0)return {};
     return QStringLiteral("%1% (%2 of %3)").arg(qRound(download.fraction()*100.0))
         .arg(downloadSize(done),downloadSize(total));
 }
@@ -1084,7 +1084,10 @@ QString downloadRowDetail(const SteamDownload& download) {
     const QString percent=QStringLiteral("%1%").arg(qRound(download.fraction()*100.0));
     if(state.endsWith(percent) && progress.startsWith(percent))
         progress=progress.mid(percent.size()).trimmed();
-    return progress.isEmpty()?state:state+QStringLiteral(" - ")+progress;
+    // "Downloading 43% (410.1 MB of 953.7 MB)": once the percentage is dropped from the progress text what is left is
+    // the parenthesised sizes, which follow the state directly; other progress text is joined with a dash.
+    if(progress.isEmpty())return state;
+    return state+(progress.startsWith(QLatin1Char('('))?QStringLiteral(" "):QStringLiteral(" - "))+progress;
 }
 // Why the row has no pause/resume control: Steam's command surface has none per title
 // (audit/STEAM-CLI.md), so none is offered rather than a button that could not work.

@@ -388,7 +388,7 @@
       "reference": "out/native-reference/layers/steam-download-page.png",
       "dataSeed": "out/native-reference/store/ui3-data",
       "seedPaths": ["preferences.json", "profiles.json", "settings.ini", "family-shared.json", "artwork", "cache/steam"],
-      "env": { "XMB_STEAM_ROOT": "${repo}/out/native-reference/phase5/steam-dl" },
+      "env": { "XMB_STEAM_ROOT": "${repo}/out/native-reference/phase5/steam-dl", "XMB_STEAM_REGISTRY": "0" },
       "waits": 10,
       "settleWaits": 3,
       "path": [{ "categoryId": "network", "catalogueId": "dlctrl" }],
@@ -403,7 +403,7 @@
           "error": "",
           "message": "",
           "rows": [
-            { "idPrefix": "download:", "title": "Zulu Active", "state": "downloading", "text": "Downloading 43%", "detail": "Downloading 43% - (410.1 MB of 953.7 MB)" },
+            { "idPrefix": "download:", "title": "Zulu Active", "state": "downloading", "text": "Downloading 43%", "detail": "Downloading 43% (410.1 MB of 953.7 MB)" },
             { "idPrefix": "download:", "title": "Alpha Paused", "state": "paused", "text": "Paused" },
             { "idPrefix": "download:", "title": "Mike Queued", "state": "queued", "text": "Queued" },
             { "idPrefix": "download:", "title": "Bravo Pending", "state": "update-pending", "text": "Update pending" }

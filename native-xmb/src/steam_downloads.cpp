@@ -317,6 +317,9 @@ void addManifest(const QString& path, QHash<QString, Candidate>* candidates) {
 
 QHash<QString, RegistryApp> readRegistryApps() {
     QHash<QString, RegistryApp> apps;
+    // XMB_STEAM_REGISTRY=0 ignores the live Steam registry, so a scripted run (the gate) sees only the manifests of
+    // the Steam root it was given, not whatever the real Steam on this PC is updating.
+    if (qEnvironmentVariable("XMB_STEAM_REGISTRY") == QLatin1String("0")) return apps;
 #ifdef Q_OS_WIN
     QSettings registry(QStringLiteral("HKEY_CURRENT_USER\\Software\\Valve\\Steam\\Apps"),
                        QSettings::NativeFormat);
