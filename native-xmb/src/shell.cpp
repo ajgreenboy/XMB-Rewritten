@@ -2299,7 +2299,18 @@ void Shell::activate() {
         break;
     case Action::EditName:emit requestSystemName(preferences_.value("system/name").toString());break;
     case Action::CreateUser:emit requestNewUser();break;
-    case Action::TurnOffSystem:psHeld();psConfirmOff_=true;emit changed();break;
+    case Action::TurnOffSystem:
+        // The Users column's own row asks on the wallpaper, not on the PS-hold menu's black screen: the 4.93
+        // firmware (RPCS3 capture, parity sweep 6b) shows "Do you want to turn off the system?" with Yes focused
+        // and No beside it, the Enter/Back legend under the rules. Unlike the other boxes this one starts on Yes.
+        // The confirmed branch is still the one psConfirmOff_ path main.cpp's requestQuit handler reads.
+        showConfirm(QObject::tr("Do you want to turn off the system?"),QString(),[this]{
+            psConfirmOff_=true;
+            emit requestQuit();
+            psConfirmOff_=false;
+        });
+        messageBoxChoice_=BoxChoice::Yes;
+        emit changed();break;
     case Action::RestartSystem:
         showConfirm(QObject::tr("Do you want to restart the system?"),QString(),[this]{
             qInfo().noquote()<<"power: Restart System confirmed";
