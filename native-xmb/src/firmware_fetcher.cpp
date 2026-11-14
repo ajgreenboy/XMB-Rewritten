@@ -88,3 +88,17 @@ bool downloadPup(const QString& url, QString* path, QString* error, const std::f
 }
 QString expectedFirmwareVersion() { return QStringLiteral("4.93"); }
 } // namespace xmb
+
+#include "firmware_extract.h"
+#include "firmware_install.h"
+namespace xmb {
+FirmwareInstallHooks networkFirmwareHooks() {
+    FirmwareInstallHooks hooks;
+    hooks.latest = [](QString* error) { return latestFirmware(QStringLiteral("us"), error); };
+    hooks.download = [](const QString& url, QString* path, QString* error, const std::function<void(qint64, qint64)>& progress) {
+        return downloadPup(url, path, error, progress);
+    };
+    hooks.extract = [](const QString& pup, const QString& dest, QString* error) { return extractPup(pup, dest, error); };
+    return hooks;
+}
+}

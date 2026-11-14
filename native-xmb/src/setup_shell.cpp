@@ -17,6 +17,7 @@
 #include "service_installer.h"
 #include "firmware_fetcher.h"
 #include "firmware_extract.h"
+#include "firmware_install.h"
 #include <QDesktopServices>
 #include <QDir>
 #include <QFileInfo>
@@ -454,12 +455,10 @@ void Shell::setupDownloadFirmware() {
         setupRefresh();emit changed();
     });
     watcher->setFuture(QtConcurrent::run([dest]{
-        QString error;
-        const auto release=xmb::latestFirmware(QStringLiteral("us"),&error);
-        if(!error.isEmpty())return qMakePair(QString(),error);
-        QString pup;
-        if(!xmb::downloadPup(release.url,&pup,&error))return qMakePair(QString(),error);
-        if(!xmb::extractPup(pup,dest,&error))return qMakePair(QString(),error);
+        // The same chain the installer runs headless (--firmware-install): 4.93 only, unpacked beside the target and swapped in.
+        xmb::FirmwareInstallOptions options;options.destDir=dest;options.force=true;options.expectedVersion=xmb::expectedFirmwareVersion();
+        const auto result=xmb::installFirmware(options,xmb::networkFirmwareHooks());
+        if(result.outcome==xmb::FirmwareInstallOutcome::Failed)return qMakePair(QString(),result.message);
         return qMakePair(dest,QString());
     }));
     showMessage(tr("Firmware"),tr("Downloading the latest PS3 system software from Sony and unpacking it. This takes a few minutes."),MessageKind::Page);

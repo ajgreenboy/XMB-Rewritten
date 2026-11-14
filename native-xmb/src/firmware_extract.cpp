@@ -1,5 +1,6 @@
 #include "firmware_extract.h"
 #include "firmware_crypto.h"
+#include <QCoreApplication>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -29,7 +30,12 @@ quint64 be64(const QByteArray& b, qsizetype at) { return qFromBigEndian<quint64>
 quint32 be32(const QByteArray& b, qsizetype at) { return qFromBigEndian<quint32>(b.constData()+at); }
 bool range(quint64 at, quint64 size, quint64 total) { return at<=total && size<=total-at; }
 bool keys(Keys& k, QString* error) {
-    const QString path=qEnvironmentVariable("XMB_FIRMWARE_KEYS");
+    QString path=qEnvironmentVariable("XMB_FIRMWARE_KEYS");
+    // A key file beside the program (firmware_keys.inc, same syntax) is used when the build has no embedded keys.
+    if(path.isEmpty()&&QByteArray(reinterpret_cast<const char*>(PUP_KEY),64)==QByteArray(64,0)&&QCoreApplication::instance()) {
+        const QString beside=QCoreApplication::applicationDirPath()+QStringLiteral("/firmware_keys.inc");
+        if(QFileInfo(beside).isFile())path=beside;
+    }
     if(path.isEmpty()) {
         k={QByteArray(reinterpret_cast<const char*>(PUP_KEY),64),QByteArray(reinterpret_cast<const char*>(SCEPKG_ERK),32),QByteArray(reinterpret_cast<const char*>(SCEPKG_RIV),16)};
     } else {
@@ -210,5 +216,29 @@ bool extractPup(const QString& pupPath,const QString& destDir,QString* error) {
     std::fprintf(stdout,"Firmware extracted: %llu entries verified, %llu dev_flash packages, %llu bytes written\nDestination: %s\n",
                  static_cast<unsigned long long>(count),static_cast<unsigned long long>(packages),static_cast<unsigned long long>(written),root.toUtf8().constData());
     return true;
+}
+}
+namespace xmb {
+bool pupVersion(const QString& pupPath,QString* version,QString* error) {
+    if(error)error->clear();if(version)version->clear();
+    QFile file(pupPath);
+    if(!file.open(QIODevice::ReadOnly))return fail(error,QStringLiteral("Cannot open PUP: %1").arg(file.errorString()));
+    const QByteArray head=file.read(48);
+    if(head.size()<48||head.left(8)!=QByteArray("SCEUF\0\0\0",8))return fail(error,QStringLiteral("Invalid PUP header/magic"));
+    const quint64 count=be64(head,24),total=quint64(file.size());
+    if(!count||count>4096||48+count*64>total)return fail(error,QStringLiteral("Invalid PUP header/table lengths"));
+    const QByteArray table=file.read(qint64(count*32));
+    if(quint64(table.size())!=count*32)return fail(error,QStringLiteral("Truncated PUP file table"));
+    for(quint64 i=0;i<count;++i) {
+        if(be64(table,qsizetype(i*32))!=0x100)continue;
+        const quint64 offset=be64(table,qsizetype(i*32+8)),size=be64(table,qsizetype(i*32+16));
+        if(size==0||size>256||!range(offset,size,total)||!file.seek(qint64(offset)))return fail(error,QStringLiteral("Invalid PUP version entry"));
+        const QString text=QString::fromLatin1(file.read(qint64(size)));
+        const auto m=QRegularExpression(QStringLiteral("^\\s*([0-9]+(?:\\.[0-9]+)*)")).match(text);
+        if(!m.hasMatch())return fail(error,QStringLiteral("PUP version entry is not a version number"));
+        if(version)*version=m.captured(1);
+        return true;
+    }
+    return fail(error,QStringLiteral("PUP has no version entry (0x100)"));
 }
 }

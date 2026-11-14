@@ -42,7 +42,7 @@ qt_add_executable(re-ps3-native
     src/weather_client.cpp src/weather_client.h src/weather_shell.cpp
     src/self_check.cpp src/self_check.h src/system_check_shell.cpp
     src/updater.cpp src/updater.h src/updater_shell.cpp
-    src/firmware_fetcher.cpp src/firmware_fetcher.h
+    src/firmware_fetcher.cpp src/firmware_fetcher.h src/firmware_install.cpp src/firmware_install.h
     src/firmware_extract.cpp src/firmware_extract.h src/firmware_crypto.cpp src/firmware_crypto.h
     src/wifi_client.cpp src/wifi_client.h src/wifi_shell.cpp
     src/bluetooth_client.cpp src/bluetooth_client.h src/bluetooth_shell.cpp
@@ -83,7 +83,7 @@ if(XMB_RELEASE_BUILD_TESTS)
     target_link_libraries(xmb-release-tests PRIVATE Qt6::Core Qt6::Network)
 endif()
 if(XMB_FIRMWARE_BUILD_TESTS)
-    qt_add_executable(xmb-firmware-tests tests/firmware_tests.cpp src/firmware_extract.cpp src/firmware_crypto.cpp)
+    qt_add_executable(xmb-firmware-tests tests/firmware_tests.cpp src/firmware_install.cpp src/firmware_extract.cpp src/firmware_crypto.cpp)
     target_include_directories(xmb-firmware-tests PRIVATE src)
     target_compile_definitions(xmb-firmware-tests PRIVATE XMB_FIRMWARE_NO_EMBEDDED_KEYS)
     target_link_libraries(xmb-firmware-tests PRIVATE Qt6::Core Qt6::ZlibPrivate)

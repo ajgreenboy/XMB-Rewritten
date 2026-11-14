@@ -1,7 +1,9 @@
 #include "firmware_extract.h"
+#include "firmware_install.h"
 #include "firmware_crypto.h"
 #include <QCoreApplication>
 #include <QDir>
+#include <QFileInfo>
 #include <QFile>
 #include <QTemporaryDir>
 #include <QtEndian>
@@ -92,6 +94,72 @@ int main(int argc,char** argv) {
     check(!xmb::extractPup(source,temp.path()+"/unsafe",&error)&&error.contains("bounds"),"overflowing PUP offset rejected");
     write(source,pup(archive("ordinary","hello")));
     check(!xmb::extractPup(source,temp.path()+"/empty",&error)&&error.contains("2 entries"),"no-package PUP parses/verifies but cannot claim extraction success");
+    // ---- firmware_install: policy around the network/extract steps, all offline with fake hooks ----
+    {
+        const auto goodPup=pup(archive("dev_flash_synthetic",package(archive("dev_flash/vsh/resource/explore_plugin_full.rco","fixture"))));
+        const auto withVersion=[&](QByteArray bytes,const QByteArray& version) { // same length so offsets stay valid
+            bytes.replace(176,version.size(),version);return bytes;
+        };
+        QString versionText,versionError;
+        write(source,goodPup);
+        check(xmb::pupVersion(source,&versionText,&versionError)&&versionText==QStringLiteral("4.93"),"pupVersion reads entry 0x100");
+        write(source,withVersion(goodPup,"4.92"));
+        check(xmb::pupVersion(source,&versionText,&versionError)&&versionText==QStringLiteral("4.92"),"pupVersion reads another version");
+        write(source,QByteArray("not a pup, but long enough to have a header....................."));
+        check(!xmb::pupVersion(source,&versionText,&versionError)&&versionText.isEmpty(),"pupVersion rejects a non-PUP");
+        const QString installRoot=temp.path()+"/install";
+        int latestCalls=0,downloadCalls=0;QString offered=QStringLiteral("4.93");QByteArray served=goodPup;bool extractReal=true;
+        xmb::FirmwareInstallHooks hooks;
+        hooks.latest=[&](QString*){++latestCalls;return xmb::FirmwareRelease{offered,QStringLiteral("http://example.invalid/PS3UPDAT.PUP")};};
+        hooks.download=[&](const QString&,QString* path,QString*,const std::function<void(qint64,qint64)>& progress) {
+            ++downloadCalls;const QString file=installRoot+QStringLiteral("-download-%1.PUP").arg(downloadCalls);
+            if(!write(file,served))return false;
+            progress(0,100);progress(50,100);progress(100,100);*path=file;return true;
+        };
+        hooks.extract=[&](const QString& pupPath,const QString& dst,QString* err) {
+            if(!extractReal){if(err)*err=QStringLiteral("boom");QDir().mkpath(dst+"/half");return false;}
+            return xmb::extractPup(pupPath,dst,err);
+        };
+        xmb::FirmwareInstallOptions options;options.destDir=installRoot+"/dev_flash";
+        QList<int> percents;
+        const auto record=[&](const QString&,int percent){if(percent>=0)percents<<percent;};
+        auto result=xmb::installFirmware(options,hooks,record);
+        check(result.outcome==xmb::FirmwareInstallOutcome::Installed&&xmb::firmwareDevFlashPresent(options.destDir),"install: fresh dev_flash is created");
+        check(percents.contains(50)&&percents.last()==100,"install: download percent is reported up to 100");
+        check(!QFile::exists(options.destDir+".partial")&&!QFile::exists(installRoot+"-download-1.PUP"),"install: staging folder and downloaded PUP are cleaned up");
+        result=xmb::installFirmware(options,hooks);
+        check(result.outcome==xmb::FirmwareInstallOutcome::AlreadyInstalled&&latestCalls==1&&downloadCalls==1,"install: idempotent, a complete dev_flash is not downloaded again");
+        QFile marker(options.destDir+"/old-marker");if(marker.open(QIODevice::WriteOnly)){marker.write("old");marker.close();}
+        options.force=true;result=xmb::installFirmware(options,hooks);
+        check(result.outcome==xmb::FirmwareInstallOutcome::Installed&&downloadCalls==2&&!QFile::exists(options.destDir+"/old-marker")&&!QFile::exists(options.destDir+".old"),"install: --force replaces the whole tree and drops the .old copy");
+        // A failed run must leave the existing tree exactly as it was and no half-written folder behind.
+        if(marker.open(QIODevice::WriteOnly)){marker.write("old");marker.close();}
+        extractReal=false;result=xmb::installFirmware(options,hooks);
+        check(result.outcome==xmb::FirmwareInstallOutcome::Failed&&result.message.contains("boom")&&QFile::exists(options.destDir+"/old-marker")&&xmb::firmwareDevFlashPresent(options.destDir)
+              &&!QFile::exists(options.destDir+".partial")&&!QFile::exists(installRoot+"-download-3.PUP"),"install: failed unpack is transactional (old dev_flash intact, no .partial)");
+        extractReal=true;
+        const QString fresh=installRoot+"/other/dev_flash";options.destDir=fresh;options.force=false;extractReal=false;
+        result=xmb::installFirmware(options,hooks);
+        check(result.outcome==xmb::FirmwareInstallOutcome::Failed&&!QFileInfo::exists(fresh)&&!QFileInfo::exists(fresh+".partial"),"install: failed first run leaves no half dev_flash");
+        extractReal=true;
+        const int downloadsBefore=downloadCalls;offered=QStringLiteral("4.94");
+        result=xmb::installFirmware(options,hooks);
+        check(result.outcome==xmb::FirmwareInstallOutcome::Failed&&result.message.contains("4.94")&&downloadCalls==downloadsBefore&&!QFileInfo::exists(fresh),"install: a list that offers another version is rejected before downloading");
+        offered=QStringLiteral("4.93");served=withVersion(goodPup,"4.92");
+        result=xmb::installFirmware(options,hooks);
+        check(result.outcome==xmb::FirmwareInstallOutcome::Failed&&result.message.contains("4.92")&&!QFileInfo::exists(fresh)&&!QFile::exists(installRoot+QStringLiteral("-download-%1.PUP").arg(downloadCalls)),"install: a downloaded PUP of another version is rejected and removed");
+        served=goodPup;served[120]=char(served[120]^1);
+        result=xmb::installFirmware(options,hooks);
+        check(result.outcome==xmb::FirmwareInstallOutcome::Failed&&result.message.contains("HMAC")&&!QFileInfo::exists(fresh)&&!QFileInfo::exists(fresh+".partial"),"install: a tampered PUP fails verification and writes nothing");
+        options.destDir=QString();
+        check(xmb::installFirmware(options,hooks).outcome==xmb::FirmwareInstallOutcome::Failed,"install: empty destination is rejected");
+        // The swap itself: staging replaces dest, and a missing staging folder changes nothing.
+        QDir().mkpath(temp.path()+"/swap/dest");QDir().mkpath(temp.path()+"/swap/stage");
+        write(temp.path()+"/swap/dest/a",QByteArray("old"));write(temp.path()+"/swap/stage/b",QByteArray("new"));
+        check(xmb::commitFirmwareDirectory(temp.path()+"/swap/stage",temp.path()+"/swap/dest",&error)&&QFile::exists(temp.path()+"/swap/dest/b")&&!QFile::exists(temp.path()+"/swap/dest/a")
+              &&!QFile::exists(temp.path()+"/swap/stage")&&!QFile::exists(temp.path()+"/swap/dest.old"),"commit: staging replaces the old tree");
+        check(!xmb::commitFirmwareDirectory(temp.path()+"/swap/missing",temp.path()+"/swap/dest",&error)&&QFile::exists(temp.path()+"/swap/dest/b"),"commit: missing staging leaves dest alone");
+    }
     // Optional persistent synthetic fixture for exercising the real CLI, no firmware/real keys.
     if(argc==2){QDir().mkpath(QString::fromLocal8Bit(argv[1]));write(QString::fromLocal8Bit(argv[1])+"/test.inc",declarations);
         write(QString::fromLocal8Bit(argv[1])+"/synthetic.pup",pup(archive("dev_flash_synthetic",package(archive("dev_flash/vsh/resource/explore_plugin_full.rco","fixture")))));}

@@ -27,7 +27,7 @@ toolchain. It is not a firmware replacement and it ships no Sony assets: it read
 | FreeType | Either an installed FreeType CMake package or the Qt SDK's bundled FreeType targets (`Qt6BundledFreetype` / `Qt6FreetypePrivate`). CMake prefers an installed package. |
 | Microsoft Visual C++ 2015-2022 x64 Redistributable | The build deploys Qt with `--no-compiler-runtime`, so the target machine supplies the CRT. |
 | A GPU and driver with OpenGL 3.3 core | The app requests a 3.3 core profile with 4x MSAA. Software rasterizers, some remote sessions and very old drivers will fail to show a window. |
-| A local PS3 4.93 `dev_flash` directory | Read-only, and the one thing the build never supplies. Take it from your own console, or from an RPCS3 install that already has the firmware installed (`<rpcs3>\bin\dev_flash`); `run-native-xmb.ps1` defaults `-FlashRoot` to `..\rpcs3\bin\dev_flash`, a sibling of this repository. The app reads `data\font`, `vsh\resource\*.rco`, `vsh\resource\qgl\*.qrc` and `vsh\resource\explore\xmb\*.xml` there; the launcher checks for `vsh\resource\explore_plugin_full.rco`. Keep it outside the repository. |
+| A local PS3 4.93 `dev_flash` directory | Read-only, and the one thing the build never supplies. **The Windows installer (`re-ps3-setup.exe`) downloads it from Sony for you** (about 200 MB, into `<install folder>\data\dev_flash`) and writes `xmb-config.json`; the XMB's first-run Firmware page does the same from inside the app, and `--firmware-install <folder>` does it from a shell. Otherwise take it from your own console, or from an RPCS3 install that already has the firmware installed (`<rpcs3>\bin\dev_flash`); `run-native-xmb.ps1` defaults `-FlashRoot` to `..\rpcs3\bin\dev_flash`, a sibling of this repository. The app reads `data\font`, `vsh\resource\*.rco`, `vsh\resource\qgl\*.qrc` and `vsh\resource\explore\xmb\*.xml` there; the launcher checks for `vsh\resource\explore_plugin_full.rco`. Keep it outside the repository. |
 | Optional: `dev_hdd0` | Installed titles and saves. Defaults to the directory next to `dev_flash`; override with `--dev-hdd0`. |
 | Optional: decrypted VSH modules (`*.prx`) | Only needed for tables the plugins carry (ribbon rest tables, OSK layout). `dev_flash` holds them encrypted (`*.sprx`). Without them the cloth starts flat and settles, and the OSK falls back to its committed table. |
 | Optional: Bun 1.x | Only for the verification harness (`work/*.ts`). Not needed to build or run. |
@@ -247,6 +247,9 @@ output outside the repository, exactly like `dev_flash`.
 | `--decode-fp` | spec | Decodes captured RSX fragment programs into named parameter values: `archive:lib/x.fpo@directory`. |
 | `--dump-cg` | directory | Translates the original Cg programs to GLSL in a local folder. |
 | `--import-apps` | json-file | Validates and merges a games/service-app manifest into `<data>\apps.json`, then exits. Reimporting the same `id` updates the row. Needs no `--dev-flash`. |
+| `--firmware-check` | none | Reads Sony's update list and prints the offered version and URL; downloads nothing. Needs no `--dev-flash`. |
+| `--firmware-extract` | spec | `<PS3UPDAT.PUP>@<dest-dir>`: verifies a PUP you already have and unpacks its `dev_flash` into `<dest-dir>`. Needs no `--dev-flash`. |
+| `--firmware-install` | directory | Headless, what the installer runs: downloads Sony's PS3 4.93 system software over HTTP (about 200 MB), checks the PUP version, verifies and unpacks it into a staging folder beside the target and renames it into place, so a failed run leaves no half `dev_flash`. Prints `Stage:` and `Download: N%` lines and a last `Result: ok: ...` or `Result: failed: <reason>` line; exits 0 or 2. Does nothing when the folder already has `vsh\resource\explore_plugin_full.rco` unless `--firmware-force` is also given. `--firmware-log <file>` appends the same lines to a file. Needs the PUP decryption keys (embedded in the build, or `firmware_keys.inc` beside the exe, or `XMB_FIRMWARE_KEYS`; see [audit/FIRMWARE-EXTRACT.md](audit/FIRMWARE-EXTRACT.md)). Needs no `--dev-flash`. |
 
 ### 4.7 What needs `--dev-flash`
 
@@ -254,8 +257,8 @@ Needs it: the window, `--inventory`, `--motion-report`, `--export-image`, `--rco
 `--rco-images`, `--rco-tree`, `--month-sheet`, `--icon-sheet`, `--font-report`, `--decode-fp`,
 `--dump-cg`, `--measure-reference`.
 
-Does not need it: `--help`, `--version`, `--pad-report`, `--pad-check`, `--p3t-dump`, `--import-apps`
-and every report in section 4.5. `--data-dir` is only needed by the ones that write under the data
+Does not need it: `--help`, `--version`, `--pad-report`, `--pad-check`, `--p3t-dump`, `--import-apps`,
+`--firmware-check`, `--firmware-extract`, `--firmware-install` and every report in section 4.5. `--data-dir` is only needed by the ones that write under the data
 directory (`--import-apps`, and the artwork/family reports that read it).
 
 ## 5. `--script` tokens

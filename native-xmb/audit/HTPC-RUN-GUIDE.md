@@ -63,8 +63,13 @@ can run overnight); sitting 12 is about 30 minutes and ends with the PC off.
    - **Path A (recommended, tests the updater):** also download `re-ps3.zip` from v0.2.0, install that first, and let the
      XMB update itself to v0.3.0 in sitting 1 (UP1). If the update fails, record UP1 as FAIL and fall back to path B.
    - **Path B:** unzip the v0.3.0 `re-ps3.zip` straight to the package folder.
-2. **Install.** Unzip to a folder such as `C:\PS3\re-ps3` (the "package folder"). Put `dev_flash` somewhere on the HTPC,
-   such as `C:\PS3\dev_flash`, and write `C:\PS3\re-ps3\xmb-config.json`:
+2. **Install.** Easiest: run `re-ps3-setup.exe` from the release. It installs per user, downloads Sony's PS3 system software
+   itself (about 200 MB, into `<install folder>\data\dev_flash`), and writes `xmb-config.json`; there is no dev_flash
+   question to answer. Use the install folder as the "package folder" below. (Path A's v0.2.0 start still uses the zip.)
+
+   Manual alternative: unzip to a folder such as `C:\PS3\re-ps3` (the "package folder"). Put `dev_flash` somewhere on the
+   HTPC, such as `C:\PS3\dev_flash` (or fetch it with `re-ps3-native.exe --firmware-install C:\PS3\dev_flash`), and write
+   `C:\PS3\re-ps3\xmb-config.json`:
    ```json
    { "devFlash": "C:\\PS3\\dev_flash", "dataDir": "C:\\PS3\\xmb-data" }
    ```

@@ -45,14 +45,17 @@ $config = $null
 if(Test-Path (Join-Path $root 'xmb-config.json')) { $config = Get-Content -LiteralPath (Join-Path $root 'xmb-config.json') -Raw | ConvertFrom-Json }
 if(-not $FlashRoot) { if($config.devFlash){ $FlashRoot = $config.devFlash } }
 if(-not $FlashRoot) { $FlashRoot = Join-Path (Split-Path -Parent $root) 'rpcs3\bin\dev_flash' }
-if(-not (Test-Path (Join-Path $FlashRoot 'vsh\resource\explore_plugin_full.rco'))) {
-    throw "No firmware at '$FlashRoot'. Pass -FlashRoot, or write xmb-config.json next to the watchdog."
+$haveFirmware = Test-Path (Join-Path $FlashRoot 'vsh\resource\explore_plugin_full.rco')
+if(-not $haveFirmware) {
+    # Not fatal: the XMB starts anyway and its first-run Firmware page offers the download (the installer's "skip" path).
+    Log "No firmware at '$FlashRoot'; starting without --dev-flash so the first-run setup can download it."
 }
 if(-not $DataDirectory) { if($config.dataDir){ $DataDirectory = $config.dataDir } }
 if(-not $DataDirectory) { $DataDirectory = Join-Path $root 'data' }
 if(-not $VshModules) { if($config.vshModules){ $VshModules = $config.vshModules } }
 
-$arguments = @('--dev-flash', ('"'+$FlashRoot+'"'), '--data-dir', ('"'+$DataDirectory+'"'), '--kiosk', '--display', $Display)
+$arguments = @('--data-dir', ('"'+$DataDirectory+'"'), '--kiosk', '--display', $Display)
+if($haveFirmware) { $arguments = @('--dev-flash', ('"'+$FlashRoot+'"')) + $arguments }
 if($VshModules -and (Test-Path (Join-Path $VshModules 'custom_render_plugin.prx'))) {
     $arguments += @('--vsh-modules', ('"'+$VshModules+'"'))
 }

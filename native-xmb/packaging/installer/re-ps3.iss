@@ -10,6 +10,10 @@
 ;   folder swap would otherwise lose them and break "Uninstall" in Settings > Apps.
 ; - Autostart and the Start-menu shortcuts are made by install-autostart.ps1, the same script the XMB's
 ;   "Start at Sign-in" row runs, so the installer and the app agree on what they are.
+; - Firmware: by default the installer runs "re-ps3-native.exe --firmware-install" (Sony download, 4.93 check, unpack) into
+;   {app}\data\dev_flash, then writes xmb-config.json (devFlash, dataDir) from the result. Silent installs take
+;   /FIRMWARE=download (default), /FIRMWARE=skip or /DEVFLASH="C:\path". Skip or failure leaves the XMB's own first-run
+;   Firmware page to finish it.
 ; - xmb-config.json is written only when there isn't one yet; an upgrade never touches it or data\.
 ;
 ; Build: ISCC.exe /DAppVersion=0.3.0 /DSourceDir=C:\release\dist\re-ps3 /DOutputDir=C:\release\dist re-ps3.iss
@@ -77,10 +81,10 @@ Filename: "powershell.exe"; \
 Filename: "powershell.exe"; \
   Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\install-autostart.ps1"" -Uninstall"; \
   Flags: runhidden waituntilterminated; Tasks: not autostart and not shortcuts
-; Start it now the way the logon task would, when there is a config to start with.
+; Start it now the way the logon task would (without firmware it opens the XMB's own first-run setup).
 Filename: "powershell.exe"; \
   Parameters: "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""{app}\watchdog.ps1"" -Display {code:DisplayArg}"; \
-  WorkingDir: "{app}"; Description: "Start the XMB now"; Flags: postinstall nowait runhidden skipifsilent; Check: HasConfig
+  WorkingDir: "{app}"; Description: "Start the XMB now"; Flags: postinstall nowait runhidden skipifsilent
 
 [UninstallRun]
 Filename: "powershell.exe"; \
@@ -92,37 +96,67 @@ Filename: "powershell.exe"; \
 Type: filesandordirs; Name: "{app}.old"
 
 [Code]
+const
+  // Longest the installer waits for the download and unpack (the app itself gives up on a stalled download after 10 minutes).
+  FirmwareTimeoutMs = 2400000;
+
 var
-  FirmwarePage: TInputDirWizardPage;
+  FirmwarePage: TInputOptionWizardPage;   // download / I have a folder / skip
+  OwnFlashPage: TInputDirWizardPage;      // the "I already have a dev_flash folder" alternative
   DisplayPage: TInputQueryWizardPage;
+  ProgressPage: TOutputMarqueeProgressWizardPage;
 
 function ConfigPath(): String;
 begin
   Result := ExpandConstant('{app}\xmb-config.json');
 end;
 
-function HasConfig(): Boolean;
+function FlashLooksValid(Dir: String): Boolean;
 begin
-  Result := FileExists(ConfigPath());
+  Result := FileExists(Dir + '\vsh\resource\explore_plugin_full.rco');
 end;
 
 procedure InitializeWizard();
+var
+  Mode, Flash: String;
 begin
-  FirmwarePage := CreateInputDirPage(wpSelectDir,
-    'Firmware folders', 'Where are the PS3 firmware files on this PC?',
-    'The XMB reads the system software from a dev_flash folder that you supply; the installer never copies ' +
-    'or downloads firmware. Leave a box empty to set it later in xmb-config.json in the install folder.' + #13#10#13#10 +
-    'If xmb-config.json already exists (an upgrade), these are ignored and the file is kept as it is.',
-    False, '');
-  FirmwarePage.Add('dev_flash folder (required to run):');
-  FirmwarePage.Add('Decrypted vsh_module folder (optional):');
+  FirmwarePage := CreateInputOptionPage(wpSelectDir,
+    'PS3 system software', 'The XMB needs Sony''s PS3 system software (firmware 4.93)',
+    'The XMB draws its icons, text and fonts from Sony''s own PS3 system software. This installer can fetch it ' +
+    'for you: it downloads the official update file from Sony''s update server (about 200 MB), checks it, and ' +
+    'unpacks it into the XMB''s data folder. Nothing else is needed.' + #13#10#13#10 +
+    'If xmb-config.json already exists (an upgrade), this step is skipped and the file is kept as it is.',
+    True, False);
+  FirmwarePage.Add('Download the PS3 system software from Sony now (about 200 MB; recommended)');
+  FirmwarePage.Add('I already have a dev_flash folder (you choose it on the next page)');
+  FirmwarePage.Add('Skip for now (the XMB offers the download the first time it starts)');
 
-  DisplayPage := CreateInputQueryPage(FirmwarePage.ID,
+  // Silent installs: /FIRMWARE=download (the default), /FIRMWARE=skip, or /DEVFLASH="C:\path\to\dev_flash".
+  Mode := Lowercase(ExpandConstant('{param:FIRMWARE|download}'));
+  Flash := ExpandConstant('{param:DEVFLASH|}');
+  if Flash <> '' then FirmwarePage.SelectedValueIndex := 1
+  else if Mode = 'skip' then FirmwarePage.SelectedValueIndex := 2
+  else FirmwarePage.SelectedValueIndex := 0;
+
+  OwnFlashPage := CreateInputDirPage(FirmwarePage.ID,
+    'Existing dev_flash folder', 'Where is your dev_flash folder?',
+    'Choose the folder that holds vsh\resource\explore_plugin_full.rco (a console dump or the dev_flash of an RPCS3 ' +
+    'install). It is used where it is; nothing is copied. The decrypted vsh_module folder is optional and only ' +
+    'matters for the exact ribbon animation; leave it empty if you do not have one.',
+    False, '');
+  OwnFlashPage.Add('dev_flash folder:');
+  OwnFlashPage.Add('Decrypted vsh_module folder (optional, advanced):');
+  OwnFlashPage.Values[0] := Flash;
+
+  DisplayPage := CreateInputQueryPage(OwnFlashPage.ID,
     'Display', 'Which screen is the TV?',
     'The XMB runs full-screen on one display, numbered from 0 in the order Windows lists them. On a PC with ' +
     'one screen use 0; with a monitor and a TV the TV is usually 1.');
   DisplayPage.Add('Display number:', False);
   DisplayPage.Values[0] := GetPreviousData('Display', '1');
+
+  ProgressPage := CreateOutputMarqueeProgressPage('Downloading the PS3 system software',
+    'About 200 MB from Sony''s update server. This takes a few minutes; please keep this window open.');
 end;
 
 procedure RegisterPreviousData(PreviousDataKey: Integer);
@@ -137,16 +171,31 @@ end;
 
 function ShouldSkipPage(PageID: Integer): Boolean;
 begin
-  // An upgrade keeps its config, so don't ask for firmware paths again.
-  Result := (PageID = FirmwarePage.ID) and FileExists(ConfigPath());
+  Result := False;
+  // An upgrade keeps its config, so don't ask about firmware again.
+  if PageID = FirmwarePage.ID then Result := FileExists(ConfigPath())
+  else if PageID = OwnFlashPage.ID then Result := FileExists(ConfigPath()) or (FirmwarePage.SelectedValueIndex <> 1);
 end;
 
 function NextButtonClick(CurPageID: Integer): Boolean;
+var
+  Dir: String;
 begin
   Result := True;
-  if (CurPageID = DisplayPage.ID) and (StrToIntDef(Trim(DisplayPage.Values[0]), -1) < 0) then begin
-    MsgBox('Enter a display number: 0, 1, 2 ...', mbError, MB_OK);
-    Result := False;
+  if CurPageID = OwnFlashPage.ID then begin
+    Dir := Trim(OwnFlashPage.Values[0]);
+    if Dir = '' then begin
+      MsgBox('Choose your dev_flash folder, or go back and pick the download.', mbError, MB_OK);
+      Result := False;
+    end else if not FlashLooksValid(Dir) then
+      Result := MsgBox('That folder has no vsh\resource\explore_plugin_full.rco, so it does not look like a PS3 ' +
+        'dev_flash. Use it anyway?', mbConfirmation, MB_YESNO) = IDYES;
+  end;
+  if CurPageID = DisplayPage.ID then begin
+    if StrToIntDef(Trim(DisplayPage.Values[0]), -1) < 0 then begin
+      MsgBox('Enter a display number: 0, 1, 2 ...', mbError, MB_OK);
+      Result := False;
+    end;
   end;
 end;
 
@@ -157,16 +206,105 @@ begin
   Result := '"' + S + '"';
 end;
 
+function LastLineOf(FileName: String): String;
+var
+  Lines: TArrayOfString;
+begin
+  Result := '';
+  if LoadStringsFromFile(FileName, Lines) and (GetArrayLength(Lines) > 0) then
+    Result := Trim(Lines[GetArrayLength(Lines) - 1]);
+end;
+
+// One attempt of "re-ps3-native.exe --firmware-install <Dest>". The app appends a line per event to LogFile and ends it with
+// "Result: ok: ..." or "Result: failed: <reason>"; this polls the file so the page can show the percentage.
+function DownloadFirmwareOnce(Dest, LogFile: String; var Reason: String): Boolean;
+var
+  Waited, Rc: Integer;
+  Line: String;
+  Finished: Boolean;
+begin
+  Result := False;
+  Reason := '';
+  Line := '';
+  DeleteFile(LogFile);
+  if not Exec(ExpandConstant('{app}\{#AppExe}'), '--firmware-install "' + Dest + '" --firmware-log "' + LogFile + '"',
+      ExpandConstant('{app}'), SW_HIDE, ewNoWait, Rc) then begin
+    Reason := 'Could not start the downloader: ' + SysErrorMessage(Rc);
+    exit;
+  end;
+  Waited := 0;
+  Finished := False;
+  while (not Finished) and (Waited < FirmwareTimeoutMs) do begin
+    Sleep(300);
+    Waited := Waited + 300;
+    ProgressPage.Animate;
+    Line := LastLineOf(LogFile);
+    if Copy(Line, 1, 7) = 'Result:' then Finished := True
+    else if Copy(Line, 1, 7) = 'Stage: ' then ProgressPage.SetText(Copy(Line, 8, Length(Line)) + '...', '')
+    else if Copy(Line, 1, 9) = 'Download:' then
+      ProgressPage.SetText('Downloading the PS3 system software from Sony: ' + Trim(Copy(Line, 10, Length(Line))), '');
+  end;
+  if not Finished then begin
+    Reason := 'Timed out waiting for the download.';
+    exit;
+  end;
+  if Copy(Line, 1, 11) = 'Result: ok:' then
+    Result := True
+  else begin
+    Reason := Trim(Copy(Line, 8, Length(Line)));
+    if Copy(Reason, 1, 7) = 'failed:' then Reason := Trim(Copy(Reason, 8, Length(Reason)));
+  end;
+end;
+
+// Download and unpack into Dest. On failure the user can Retry or Cancel (skip); a silent install skips. True when dev_flash is in place.
+function DownloadFirmware(Dest: String): Boolean;
+var
+  Reason: String;
+  Answer: Integer;
+begin
+  Result := False;
+  try
+    ProgressPage.Show;
+    repeat
+      ProgressPage.SetText('Contacting Sony''s update server...', '');
+      Result := DownloadFirmwareOnce(Dest, ExpandConstant('{tmp}\firmware-install.log'), Reason);
+      Answer := IDOK;
+      if not Result then begin
+        ProgressPage.Hide;
+        Answer := SuppressibleMsgBox('The PS3 system software could not be set up:' + #13#10#13#10 + Reason + #13#10#13#10 +
+          'Retry to try again, or Cancel to skip this step. If you skip, the XMB offers the download the first time it ' +
+          'starts (Settings > System Settings > Run Setup Again does it too).', mbError, MB_RETRYCANCEL, IDCANCEL);
+        if Answer = IDRETRY then ProgressPage.Show;
+      end;
+    until Answer <> IDRETRY;
+  finally
+    ProgressPage.Hide;
+  end;
+end;
+
+// A fresh install writes xmb-config.json from what the firmware step produced. Skipped or failed: no file is written, so the
+// XMB's first-run setup (and a later reinstall) can still finish the job. An upgrade never reaches here with a config.
 procedure WriteConfigIfMissing();
 var
-  Lines: String;
-  DevFlash, Vsh: String;
+  Lines, DevFlash, Vsh, DataDir: String;
 begin
   if FileExists(ConfigPath()) then exit;
-  DevFlash := Trim(FirmwarePage.Values[0]);
-  Vsh := Trim(FirmwarePage.Values[1]);
-  if (DevFlash = '') and (Vsh = '') then exit;
-  Lines := '{' + #13#10 + '  "devFlash": ' + JsonString(DevFlash);
+  DevFlash := '';
+  Vsh := '';
+  DataDir := ExpandConstant('{app}\data');
+  case FirmwarePage.SelectedValueIndex of
+    0: begin
+      // The folder the XMB's own first-run download uses: <data>\dev_flash. data\ survives updates and uninstall.
+      if DownloadFirmware(DataDir + '\dev_flash') and FlashLooksValid(DataDir + '\dev_flash') then
+        DevFlash := DataDir + '\dev_flash';
+    end;
+    1: begin
+      DevFlash := Trim(OwnFlashPage.Values[0]);
+      Vsh := Trim(OwnFlashPage.Values[1]);
+    end;
+  end;
+  if DevFlash = '' then exit;
+  Lines := '{' + #13#10 + '  "devFlash": ' + JsonString(DevFlash) + ',' + #13#10 + '  "dataDir": ' + JsonString(DataDir);
   if Vsh <> '' then
     Lines := Lines + ',' + #13#10 + '  "vshModules": ' + JsonString(Vsh);
   Lines := Lines + #13#10 + '}' + #13#10;
