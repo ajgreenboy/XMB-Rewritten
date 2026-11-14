@@ -2577,7 +2577,8 @@ void Shell::activate() {
     case Action::Unavailable:
         // A Continue Watching row whose file has gone says why, instead of the generic line, which would be
         // false: the feature exists, the file does not.
-        showMessage(entry.title,(entry.id.startsWith("continue:") || entry.id.startsWith("savedata:") || entry.id==QLatin1String("start_at_signin") || entry.id.startsWith("setup:")) && !entry.detail.isEmpty()
+        showMessage(entry.title,(entry.id.startsWith("continue:") || entry.id.startsWith("savedata:") || entry.id==QLatin1String("start_at_signin") || entry.id.startsWith("setup:")
+            || entry.id==QLatin1String("bddata") || entry.id==QLatin1String("video-editor")) && !entry.detail.isEmpty()
             ?entry.detail
             :unavailableReason(entry.id),MessageKind::Page);
         break;
