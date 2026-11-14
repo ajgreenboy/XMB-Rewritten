@@ -73,6 +73,7 @@ QString unavailableReason(const QString& id) {
     if(id==QLatin1String("services"))return QObject::tr("My Channels listed TV and video services from PlayStation Network, which this application does not connect to. Services you add yourself are listed in this column.");
     if(id==QLatin1String("add"))return QObject::tr("Adding a friend needs PlayStation Network, which this application does not connect to. Discord friends are listed in this column instead.");
     if(id==QLatin1String("chatroom")||id==QLatin1String("chat"))return QObject::tr("Chat needs PlayStation Network, which this application does not connect to.");
+    if(id==QLatin1String("create"))return QObject::tr("Messages need PlayStation Network, which this application does not connect to.");
     if(id==QLatin1String("kensaku"))return QObject::tr("Internet Search ran inside the PS3 Internet Browser, which this application does not have.");
     return QObject::tr("This feature is not available in the native recreation yet.");
 }
