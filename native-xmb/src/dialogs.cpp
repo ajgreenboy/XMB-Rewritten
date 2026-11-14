@@ -490,7 +490,9 @@ void View::drawMessageInfoPage(QPainter& p) {
     for(const auto& line:lines) {
         if(line.isEmpty()){rows.push_back({{},{},false,true});continue;}
         const int split=line.indexOf(": ");
-        if(split<0){for(const auto& part:wrapMessage(line,1560,kInfoRowSize))rows.push_back({{},part,true,false});continue;}
+        // A "sentence: more" line whose first half is wider than the label column is prose with a colon in it (the
+        // Discord setup steps), not a label and a value: the label would be elided mid-word, so it stays a plain line.
+        if(split<0 || wrapMessage(line.left(split),800,kInfoRowSize).size()>1){for(const auto& part:wrapMessage(line,1560,kInfoRowSize))rows.push_back({{},part,true,false});continue;}
         const auto parts=wrapMessage(line.mid(split+2),880,kInfoRowSize);
         if(parts.isEmpty()){rows.push_back({line.left(split),{},false,false});continue;}
         for(int k=0;k<parts.size();++k)rows.push_back({k==0?line.left(split):QString{},parts[k],false,false});
