@@ -577,6 +577,7 @@ private:
     // 177/255 on all three 1080p frames; the D5 page's own frame is information-page-01.png) while the
     // depth-2 table page carries its own 199/879 at 92 - and the analog clock face these pages keep.
     void drawPageChrome(QPainter& painter,const QString& title,double ruleTop,int ruleTopAlpha,double ruleBottom,int ruleBottomAlpha);
+    void drawEntryIcon(QPainter& painter,const Entry& entry,const QRectF& rect,qreal opacity=1.);   // a row's own icon: its artwork when it has one, else its RCO texture
     void drawPageClock(QPainter& painter);
     // One button hint: a page_btnnavi glyph (30x30 texture, alpha-bounds fitted) and a system_plugin
     // label, laid out from the measured anchors: the glyph's ink box is 20 px at x 1155 with its top at
