@@ -6119,9 +6119,10 @@ QString Shell::subtitleText(const Entry& entry) const {
     // focused), col-game-r03 (Saved Data (minis/PSP)) and col-game-r04 (Saved Data (PS3)) all read "*User" at
     // x 682..730, y 528..542, while the two system-wide rows (Game Data Utility, Memory Card Utility) carry
     // nothing in that slot. This build drew the active profile name there instead, so only the marker was
-    // missing. [TRACED: which rows carry it, the string, the rect. FIT: none.]
+    // missing. [TRACED: which rows carry it, the string, the rect. FIT: none.] Trophy Collection is not one of
+    // them: the 4.93 PSN column in RPCS3 draws it with no second line, focused or not (parity sweep 6b).
     static const QSet<QString> userScope{QStringLiteral("vita"),QStringLiteral("psp"),
-                                         QStringLiteral("ps3"),QStringLiteral("trophy")};
+                                         QStringLiteral("ps3")};
     if(userScope.contains(entry.id))return QStringLiteral("*User");
     // A Steam account row shows its login name and when Steam last used it: the row's title is the persona
     // name and the detail is the account's own record, which is what a switch decision needs.
