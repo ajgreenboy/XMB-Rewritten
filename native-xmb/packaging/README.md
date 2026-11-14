@@ -29,6 +29,9 @@ and is pointed at by `xmb-config.json`.
 
 ## Install on the HTPC
 
+The easy way is the installer (`re-ps3-setup.exe`, next section): it also downloads the PS3 system software. The manual steps
+below are for the portable zip.
+
 For the release evidence run on the HTPC, `htpc-run.ps1` (in this folder of the repository, not in the package) checks
 the install and walks the checklist; see [audit/HTPC-RUN-GUIDE.md](../audit/HTPC-RUN-GUIDE.md).
 
@@ -74,14 +77,30 @@ in-app updater keeps using the zip either way.
 
 - Installs per user, with no administrator prompt, into `%LOCALAPPDATA%\Programs\RE-PS3`. The updater swaps the whole folder
   for the new release (`apply-update.ps1`), which needs a folder the user can write; Program Files would not work.
-- Asks for the `dev_flash` folder (and optionally a decrypted `vsh_module` folder) and writes `xmb-config.json` from them. It
-  never copies or downloads firmware. An upgrade keeps the existing `xmb-config.json` and skips that page.
+- **Downloads the PS3 system software itself.** The Firmware page explains this and offers three choices: download from
+  Sony now (about 200 MB, the default), "I already have a dev_flash folder" (then you point at it, with an optional
+  decrypted `vsh_module` folder), or skip. After the files are installed it runs
+  `re-ps3-native.exe --firmware-install <install folder>\data\dev_flash` behind a progress page: Sony's update list, the
+  download, a check that the PUP is firmware 4.93, HMAC verification and unpacking into a staging folder, then a rename into
+  place (a failed run leaves no half `dev_flash`; a folder that already holds a complete one is left alone). It then writes
+  `xmb-config.json` with `devFlash` and `dataDir` pointing there. If the download fails the installer offers Retry or Cancel;
+  Cancel (or `/FIRMWARE=skip`) leaves the XMB's own first-run Firmware page to finish it, and the launcher and watchdog start
+  the XMB without firmware so that page can run. An upgrade keeps the existing `xmb-config.json` and skips the page.
+- Silent installs (`/SILENT`, `/VERYSILENT`) never prompt: they download by default, or take `/FIRMWARE=skip` or
+  `/DEVFLASH="C:\path\to\dev_flash"` (an existing folder, used where it is). A failed download is skipped, not retried.
+- **Keys.** Unpacking needs Sony's public PUP and package keys, which are never in this repository or in the CI-built
+  release. A build made with a local `native-xmb\src\firmware_keys.inc` embeds them, so an installer built from that build
+  (`build-package.ps1`, then `ISCC`) downloads and unpacks on its own, but must not be published. A build without them (the CI
+  release) can still read a `firmware_keys.inc` (same syntax, see [audit/FIRMWARE-EXTRACT.md](../audit/FIRMWARE-EXTRACT.md))
+  placed beside `re-ps3-native.exe`, or the file named by `XMB_FIRMWARE_KEYS`; otherwise the step fails with "decryption keys
+  not provided" and the installer offers Retry/Skip.
 - Asks which display the TV is (saved for the next upgrade).
 - Two ticked options run `install-autostart.ps1` for you: the logon task and the Start-menu shortcuts. Unticking one on an
   upgrade removes it.
 - Stops a running XMB from that folder (and its watchdog) before replacing files, and can start it again at the end.
 - Uninstall (Settings > Apps) removes the logon task, the shortcuts and the program files, including files a later in-app
-  update added, and keeps `xmb-config.json` and `data\` so a reinstall picks up where it left off. The uninstaller's own files
+  update added, and keeps `xmb-config.json` and `data\` (including the downloaded `data\dev_flash`, which a reinstall finds
+  and does not download again) so a reinstall picks up where it left off. Delete `data\` by hand to reclaim that space. The uninstaller's own files
   live in `%LOCALAPPDATA%\RE-PS3\uninstall`, outside the folder the updater swaps.
 
 Build it locally with [Inno Setup 6](https://jrsoftware.org/isinfo.php) after `build-package.ps1`:

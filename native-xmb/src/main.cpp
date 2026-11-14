@@ -21,6 +21,7 @@
 #include "ps_watcher.h"
 #include "firmware_fetcher.h"
 #include "firmware_extract.h"
+#include "firmware_install.h"
 #include <QApplication>
 #include "boot_profile.h"
 #include "boot_prefetch.h"
@@ -438,6 +439,9 @@ int main(int argc,char** argv) {
     parser.addOption({"check-update","Check GitHub for a newer release without downloading or installing"});
     parser.addOption({"firmware-check","Check Sony's current PS3 firmware version without downloading it"});
     parser.addOption({"firmware-extract","Extract local PS3 firmware (PS3UPDAT.PUP@dev_flash-directory)","spec"});
+    parser.addOption({"firmware-install","Headless: download Sony's PS3 4.93 system software and unpack it into this dev_flash folder (skips when it is already complete)","dev-flash-dir"});
+    parser.addOption({"firmware-force","With --firmware-install: replace a dev_flash that is already complete"});
+    parser.addOption({"firmware-log","With --firmware-install: also append every progress line to this file","file"});
     parser.addOption({"desktop-pad-test","Run a pad scenario through the Desktop Mode controller mapper, write the resulting input actions as JSON (second argument), then exit","json-in"});
     parser.addOption({"desktop-pad-sink","Open a small window that logs the mouse and key events it receives (JSON lines) for the given log file; optional second argument: seconds to run (default 30)","log-file"});
     parser.addOption({"desktop-pad-inject","Run a pad scenario through the mapper and deliver it with SendInput, only while the named sink window is foreground and under the pointer; result JSON is the second argument","json-in"});
@@ -500,6 +504,25 @@ int main(int argc,char** argv) {
         if(!error.isEmpty()){std::fprintf(stderr,"Firmware check: %s\n",error.toUtf8().constData());return 2;}
         std::fprintf(stdout,"Version: %s\nURL: %s\nMatches %s: %s\n",release.version.toUtf8().constData(),release.url.toUtf8().constData(),xmb::expectedFirmwareVersion().toUtf8().constData(),release.version==xmb::expectedFirmwareVersion()?"yes":"no");
         return 0;
+    }
+    if(parser.isSet("firmware-install")) {
+        // One line per event on stdout (and --firmware-log): "Download: 42%", "Stage: ...", then a final "Result: ..." line.
+        const QString logPath=parser.value("firmware-log");
+        const auto line=[&](const QString& text,bool err=false) {
+            std::fprintf(err?stderr:stdout,"%s\n",text.toUtf8().constData());std::fflush(err?stderr:stdout);
+            if(!logPath.isEmpty()){QFile log(logPath);if(log.open(QIODevice::Append|QIODevice::Text))log.write((text+QLatin1Char('\n')).toUtf8());}
+        };
+        xmb::FirmwareInstallOptions options;options.destDir=parser.value("firmware-install");options.force=parser.isSet("firmware-force");
+        options.expectedVersion=xmb::expectedFirmwareVersion();
+        int lastStep=-1;QString lastStage;
+        const auto result=xmb::installFirmware(options,xmb::networkFirmwareHooks(),[&](const QString& stage,int percent) {
+            if(percent<0){if(stage!=lastStage)line(QStringLiteral("Stage: ")+stage);lastStage=stage;return;}
+            const int step=percent/5;   // a line per 5%, plus the first and last
+            if(stage!=lastStage||step!=lastStep||percent==100){line(QStringLiteral("Download: %1%").arg(percent));lastStage=stage;lastStep=step;}
+        });
+        const bool ok=result.outcome!=xmb::FirmwareInstallOutcome::Failed;
+        line(QStringLiteral("Result: ")+(ok?QStringLiteral("ok: "):QStringLiteral("failed: "))+result.message,!ok);
+        return ok?0:2;
     }
     if(parser.isSet("firmware-extract")) {
         const QString spec=parser.value("firmware-extract");const auto split=spec.lastIndexOf('@');QString error;
