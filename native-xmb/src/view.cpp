@@ -1590,6 +1590,11 @@ void View::drawUserCreatePage(QPainter& p) {
         p.save();p.setFont(font);p.setPen(Qt::white);p.drawText(r,flags,value);p.restore();
     };
     const auto rco=[&](const char* key,const char* fallback){return assets_.text("user_plugin",key,fallback);};
+    // The page class's two flat rules, y 199 and 879 at 177/255 (the same pair every modal message page draws,
+    // dialogs.cpp kPageRule*): the 4.93 name page in RPCS3 has both (parity sweep 6b).
+    p.save();p.setPen(Qt::NoPen);p.setBrush(QColor(255,255,255,177));
+    p.drawRect(QRectF(0,199,1920,1));p.drawRect(QRectF(0,879,1920,1));
+    p.restore();
     label({0,294,1920,42},rco("msg_username_create","Enter a user name."),23,Qt::AlignHCenter|Qt::AlignVCenter);
     // Each texture is drawn out by its own transparent margin so the visible edge lands on the measured one:
     // tex_default_text_field(_focus) is 27x27 with ink 1..25, user_plugin tex_button 60x60 with ink 7..52.
