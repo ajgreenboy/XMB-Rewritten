@@ -134,7 +134,11 @@ View::View(Shell& shell,Assets& assets,QWidget* parent):QOpenGLWidget(parent),sh
     }
     idleprofile::startSampler();
     xmb::bootprof::mark("View start");
-    setFocusPolicy(Qt::StrongFocus);setMinimumSize(800,450);
+    setFocusPolicy(Qt::StrongFocus);
+    // Logical pixels, so a floor of 800x450 is larger than a whole 4K screen at 500% (768x432) or a 1080p one at 250% (768x432) and
+    // forced the fullscreen window past the screen edge (cropped XMB). The 16:9 design space scales down to any size, so only a
+    // degenerate window needs preventing.
+    setMinimumSize(160,90);
     setMouseTracking(true);qApp->installEventFilter(this);
     // Decode and cache frequently used original assets before animation starts.
     for(const auto& category:shell_.categories()) {

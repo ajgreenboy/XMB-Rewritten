@@ -158,6 +158,38 @@ private:
     QPoint last_{-1,-1};
     bool hidden_=false;
 };
+#ifdef Q_OS_WIN
+// Pin the process to Per-Monitor-V2 DPI awareness before Qt starts. Qt 6 asks for the same thing, but its call is
+// refused (and the process silently stays on whatever it already had, up to DPI-unaware: Windows then renders a 1280x720
+// logical desktop and bitmap-scales it to the 4K panel, which is soft) when an awareness was set earlier, for example by
+// a compatibility entry. Calling first makes the choice ours; a refusal is logged by logDpiState() so it can be seen.
+static int g_dpiAwarenessRequest=-1;   // 1 granted, 0 refused (already set), -1 not tried
+static void requestPerMonitorDpiAwareness() {
+    g_dpiAwarenessRequest=SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)?1:0;
+}
+static const char* dpiAwarenessName() {
+    const auto awareness=GetAwarenessFromDpiAwarenessContext(GetThreadDpiAwarenessContext());
+    return awareness==DPI_AWARENESS_PER_MONITOR_AWARE?"per-monitor":awareness==DPI_AWARENESS_SYSTEM_AWARE?"system":"unaware";
+}
+// The window must cover its monitor's physical rectangle exactly. Qt converts between logical and native pixels with the
+// ratio of the screen it believes the window is on, and Windows enforces size limits of its own, so after showFullScreen the
+// native rectangle is compared with the monitor's and corrected if it differs. Logged either way (device ratio, native and
+// monitor sizes) so a real TV run says what it did.
+static void fitWindowToMonitor(QWidget& window,const char* why) {
+    const HWND hwnd=reinterpret_cast<HWND>(window.winId());
+    const HMONITOR monitor=MonitorFromWindow(hwnd,MONITOR_DEFAULTTONEAREST);
+    MONITORINFO info{};info.cbSize=sizeof(info);
+    RECT now{};
+    if(!monitor || !GetMonitorInfoW(monitor,&info) || !GetWindowRect(hwnd,&now))return;
+    const RECT& want=info.rcMonitor;
+    const bool same=now.left==want.left && now.top==want.top && now.right==want.right && now.bottom==want.bottom;
+    qInfo().noquote()<<QString("dpi: %1: awareness %2 (request %3), device ratio %4, window native %5x%6 at %7,%8, monitor %9x%10 at %11,%12%13")
+        .arg(QLatin1String(why),QLatin1String(dpiAwarenessName())).arg(g_dpiAwarenessRequest).arg(window.devicePixelRatioF())
+        .arg(now.right-now.left).arg(now.bottom-now.top).arg(now.left).arg(now.top)
+        .arg(want.right-want.left).arg(want.bottom-want.top).arg(want.left).arg(want.top).arg(same?QString{}:QStringLiteral(" - corrected"));
+    if(!same)SetWindowPos(hwnd,HWND_TOP,want.left,want.top,want.right-want.left,want.bottom-want.top,SWP_NOACTIVATE|SWP_FRAMECHANGED);
+}
+#endif
 namespace {
 // XMB_INPUT_TRACE=1 logs each input decision (audit/PS-BUTTON.md): source=script|pad|keyboard, the action, and
 // whether the shell accepted it. Script decisions are logged by the token loop below and pad decisions by
@@ -396,6 +428,9 @@ int main(int argc,char** argv) {
     // The Windows build has no console: XMB_LOG=<file> appends every Qt message to that file (local diagnosis), rotated
     // by size (5 MB, 3 old files kept); a qFatal also writes a crash capture (diagnostics.h).
     xmb::diagnostics::installLogHandler();
+#ifdef Q_OS_WIN
+    requestPerMonitorDpiAwareness();
+#endif
     QSurfaceFormat format;format.setVersion(3,3);format.setProfile(QSurfaceFormat::CoreProfile);format.setSwapInterval(1);format.setSamples(4);QSurfaceFormat::setDefaultFormat(format);
     QApplication app(argc,argv);app.setApplicationName("re-ps3-native");app.setApplicationVersion(QStringLiteral(XMB_APP_VERSION));QImageReader::setAllocationLimit(128);
     qInfo().noquote()<<QString("boot: QApplication ready after %1 ms").arg(processAgeMs(),0,'f',0);
@@ -1525,6 +1560,10 @@ int main(int argc,char** argv) {
         window.setScreen(kioskScreen);
         window.setGeometry(kioskScreen->geometry());
         window.showFullScreen();
+#ifdef Q_OS_WIN
+        fitWindowToMonitor(window,"kiosk shown");
+        QTimer::singleShot(1500,&window,[&window]{fitWindowToMonitor(window,"kiosk settled");});
+#endif
         app.installEventFilter(new CursorHider(&app));
         qInfo().noquote()<<QString("kiosk: frameless fullscreen on display %1 (%2), %3x%4")
             .arg(QGuiApplication::screens().indexOf(kioskScreen)).arg(kioskScreen->name())
@@ -1648,7 +1687,11 @@ int main(int argc,char** argv) {
                 const auto dimensions=token.mid(5).split('x');bool widthOk=false,heightOk=false;
                 const int w=dimensions.value(0).toInt(&widthOk),h=dimensions.value(1).toInt(&heightOk);
                 if(dimensions.size()==2 && widthOk && heightOk && w>=800 && h>=450 && w<=7680 && h<=4320) {
-                    shell.setFullscreen(false);window.showNormal();window.resize(w,h);
+                    shell.setFullscreen(false);
+                    // A framed top-level window cannot exceed its monitor (Windows clamps it), so a 3840x2160 or 7680x4320 capture
+                    // on a smaller PC needs a frameless popup, which is not limited. Opt-in: the pinned gate never sets it.
+                    if(qEnvironmentVariable("XMB_SCRIPT_FRAMELESS")==QStringLiteral("1")){window.setWindowFlag(Qt::FramelessWindowHint,true);window.setMinimumSize(1,1);}
+                    window.showNormal();window.resize(w,h);
                 } else qWarning()<<"script: invalid size"<<token;
             }
             else if(token.startsWith("idle=")) {bool ok=false;const auto age=token.mid(5).toLongLong(&ok);if(ok && age>=0)shell.setIdleTimeOverride(age);else qWarning()<<"script: invalid idle age";}
