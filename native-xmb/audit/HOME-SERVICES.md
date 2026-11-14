@@ -38,3 +38,12 @@ Two native pages after Tailscale in the Network column (not firmware surfaces; p
   server's icon. With the client's mock server (`HA_URL`/`HA_TOKEN`): 14 entities in 4 rooms, Cross on a fan sent
   `homeassistant.toggle` and the state was read back.
 - **Not verified**: a real wake; a real HA action (needs the token).
+
+## Home Assistant icon (2026-11-14)
+
+The Home Assistant rows and the Set Up Home Assistant page show Home Assistant's own icon: the user's server icon when it
+has been fetched, otherwise a 256x256 PNG embedded in `src/ha_icon_data.cpp` (no runtime download). Source:
+https://brands.home-assistant.io/_/homeassistant/icon.png (the `home-assistant/brands` repository). Licence finding: the
+brands repository has no LICENSE file and its README only calls the marks property of their owners, used "for
+identification purposes only"; treat it as Home Assistant's trademark with no stated reuse licence (the owner believes
+CC BY-NC-SA 4.0, which I could not confirm). The owner should judge whether to keep it in a public repository.
