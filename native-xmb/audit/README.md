@@ -129,6 +129,7 @@ native diff.
 |---|---|
 | [STEAM-INTEGRATION.md](STEAM-INTEGRATION.md) | Steam and installed-PKG content |
 | [STEAM-ACCOUNTS.md](STEAM-ACCOUNTS.md) | The Steam account switcher |
+| [STEAM-ACCOUNT-SWITCH.md](STEAM-ACCOUNT-SWITCH.md) | The automatic, credential-free account switch: exactly which Steam files and registry values are written, the backup, the flow, the test seams |
 | [STEAM-CLIENT-FRIENDS.md](STEAM-CLIENT-FRIENDS.md) | Friends through the signed-in Steam client |
 | [STEAM-DOWNLOADS.md](STEAM-DOWNLOADS.md) | Steam download state for the XMB download page |
 | [STEAM-CLI.md](STEAM-CLI.md) | What the Steam client accepts headless |

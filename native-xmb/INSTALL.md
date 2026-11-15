@@ -437,7 +437,9 @@ Installed titles and collections are read locally; the owned list needs Valve's 
 - **Headless reports** (no window): section 4.5. All take an output JSON path and exit.
 
 Purchases, downloads and launches stay in Steam: the XMB hands `steam://install/<id>` to the client,
-starts installed titles with `steam.exe -applaunch <id>` and never writes to Steam's files.
+starts installed titles with `steam.exe -applaunch <id>`. The one thing it writes to Steam is the account choice made from
+Users > Steam Account (`configloginusers.vdf` with a backup copy, and the `AutoLoginUser` registry value; see
+[audit/STEAM-ACCOUNT-SWITCH.md](audit/STEAM-ACCOUNT-SWITCH.md)).
 
 ## 9. Point it at Jellyfin
 
