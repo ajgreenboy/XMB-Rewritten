@@ -401,7 +401,7 @@ int main(int argc,char** argv) {
 #ifdef Q_OS_WIN
     xmb::host::requestPerMonitorDpiAwareness();
 #endif
-    QSurfaceFormat format;format.setVersion(3,3);format.setProfile(QSurfaceFormat::CoreProfile);format.setSwapInterval(qEnvironmentVariable("XMB_SWAP_INTERVAL")==QStringLiteral("0")?0:1);   /* XMB_SWAP_INTERVAL=0: vsync off, to measure frame throughput (audit/HIGH-DPI.md) */format.setSamples(4);QSurfaceFormat::setDefaultFormat(format);
+    QSurfaceFormat format;format.setVersion(3,3);format.setProfile(QSurfaceFormat::CoreProfile);format.setSwapInterval([]{bool ok=false;const int n=qEnvironmentVariable("XMB_SWAP_INTERVAL").toInt(&ok);return ok && n>=0 && n<=8?n:1;}());   /* XMB_SWAP_INTERVAL=0: vsync off, to measure frame throughput (audit/HIGH-DPI.md); =4 on a 240 Hz panel stands in for a 60 Hz display (audit/FRAME-PACING.md) */format.setSamples(4);QSurfaceFormat::setDefaultFormat(format);
     QApplication app(argc,argv);app.setApplicationName("re-ps3-native");app.setApplicationVersion(QStringLiteral(XMB_APP_VERSION));QImageReader::setAllocationLimit(128);
     qInfo().noquote()<<QString("boot: QApplication ready after %1 ms").arg(processAgeMs(),0,'f',0);
     xmb::bootprof::mark("start");
@@ -1646,7 +1646,7 @@ int main(int argc,char** argv) {
         // --script "full,wait,LEFT,DOWN,grab=C:/tmp/a.png,quit". One token every 300 ms.
         auto tokens=std::make_shared<QStringList>(parser.value("script").split(','));
         const auto tap=[view](int key){view->replayKeyTap(key);};
-        auto* timer=new QTimer(&app);timer->setInterval(300);
+        auto* timer=new QTimer(&app);timer->setInterval([]{bool ok=false;const int n=qEnvironmentVariable("XMB_SCRIPT_INTERVAL_MS").toInt(&ok);return ok && n>=10 && n<=5000?n:300;}());   // XMB_SCRIPT_INTERVAL_MS: a faster key cadence for pacing runs
         QObject::connect(timer,&QTimer::timeout,&app,[&app,&window,&shell,view,tokens,timer,tap,desktop]{
             if(tokens->isEmpty()){timer->stop();return;}
             const QString token=tokens->takeFirst().trimmed();

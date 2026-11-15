@@ -329,12 +329,21 @@ struct InteractionAudio::Impl {
         history.fill(-1000000);
         return history;
     }();
-    std::unique_ptr<QAudioSink> sink;
-    QBuffer buffer;
+    // The output device lives on its own thread. QAudioSink::stop()/start() are ~5-6 ms of WASAPI work on this PC
+    // (more on an HDMI endpoint), and every cursor move plays a cue: on the GUI thread that was a 6 ms stall inside
+    // the key press that starts each move, right where the motion begins (audit/FRAME-PACING.md). Everything that
+    // touches the sink or its buffer runs on `audioThread`, through `audioContext`.
+    struct Output {
+        std::unique_ptr<QAudioSink> sink;
+        QBuffer buffer;
+        QString device;
+        bool warned = false;
+    };
+    QThread audioThread;
+    std::unique_ptr<QObject> audioContext;
+    std::unique_ptr<Output> out;   // created, used and destroyed on audioThread
     QElapsedTimer clock;
-    QString device;
     bool enabled = true;
-    bool outputWarningLogged = false;
     bool trace = loggingEnabled();
     float volume = 0.6f;
 
@@ -367,9 +376,65 @@ struct InteractionAudio::Impl {
         return system < clips.size() && !clips[system].pcm.isEmpty() ? &clips[system] : nullptr;
     }
 
+    Impl() {
+        audioContext = std::make_unique<QObject>();
+        audioContext->moveToThread(&audioThread);
+        audioThread.setObjectName(QStringLiteral("interaction-audio"));
+        audioThread.start();
+        QMetaObject::invokeMethod(audioContext.get(), [this] { out = std::make_unique<Output>(); }, Qt::BlockingQueuedConnection);
+    }
+    ~Impl() {
+        QMetaObject::invokeMethod(audioContext.get(), [this] { if (out) { if (out->sink) out->sink->stop(); out.reset(); } },
+                                  Qt::BlockingQueuedConnection);
+        audioThread.quit();
+        audioThread.wait();
+    }
+    // Waits for the audio thread: used for the rare changes (disable, new theme), never for a cue.
     void stop() {
-        if (sink) sink->stop();
-        buffer.close();
+        QMetaObject::invokeMethod(audioContext.get(), [this] {
+            if (out->sink) out->sink->stop();
+            out->buffer.close();
+        }, Qt::BlockingQueuedConnection);
+    }
+    void setSinkVolume(float gainValue) {
+        QMetaObject::invokeMethod(audioContext.get(), [this, gainValue] { if (out->sink) out->sink->setVolume(gainValue); }, Qt::QueuedConnection);
+    }
+    // Runs on audioThread: (re)open the sink for this clip's format and play it from the start.
+    Decision startOnAudioThread(const QByteArray& pcm, const QAudioFormat& format, float gainValue, bool logTrace) {
+        auto& o = *out;
+        if (!o.sink || o.sink->format() != format) {
+            if (o.sink) o.sink->stop();
+            o.buffer.close();
+            o.sink.reset();
+            o.device.clear();
+            const auto device = QMediaDevices::defaultAudioOutput();
+            if (device.isNull() || !device.isFormatSupported(format)) {
+                if (!o.warned) qWarning() << "interaction audio: output device cannot play original PCM format" << format;
+                o.warned = true;
+                if (logTrace) qInfo().noquote() << "interaction audio: output unavailable reason="
+                    << (device.isNull() ? "no-device" : "unsupported-format");
+                return Decision::OutputUnavailable;
+            }
+            o.warned = false;
+            o.sink = std::make_unique<QAudioSink>(device, format);
+            o.sink->setVolume(gainValue);
+            o.device = device.description();
+            auto* sink = o.sink.get();
+            QObject::connect(sink, &QAudioSink::stateChanged, sink, [sink](QtAudio::State) {
+                if (sink->error() != QtAudio::NoError)
+                    qWarning() << "interaction audio: output failure" << sink->error();
+            });
+        }
+        o.sink->stop();
+        o.buffer.close();
+        o.buffer.setData(pcm);
+        if (!o.buffer.open(QIODevice::ReadOnly)) {
+            qWarning() << "interaction audio: could not open decoded PCM buffer";
+            return Decision::Rejected;
+        }
+        o.sink->setVolume(gainValue);
+        o.sink->start(&o.buffer);
+        return Decision::Played;
     }
 
     void forgetHistory() {
@@ -425,7 +490,7 @@ void InteractionAudio::setEnabled(bool enabled) {
 void InteractionAudio::setVolume(float volume) {
     Q_ASSERT(QThread::currentThread() == thread());
     impl_->volume = std::isfinite(volume) ? std::clamp(volume, 0.0f, 1.0f) : 0.0f;
-    if (impl_->sink) impl_->sink->setVolume(impl_->gain());
+    impl_->setSinkVolume(impl_->gain());
 }
 
 const char* InteractionAudio::cueName(Cue cue) {
@@ -439,10 +504,14 @@ const char* InteractionAudio::decisionName(Decision decision) {
 }
 
 void InteractionAudio::play(Cue cue) {
-    playAt(cue, impl_->clock.elapsed());
+    decide(cue, impl_->clock.elapsed(), false);
 }
 
 InteractionAudio::Decision InteractionAudio::playAt(Cue cue, qint64 atMs) {
+    return decide(cue, atMs, true);
+}
+
+InteractionAudio::Decision InteractionAudio::decide(Cue cue, qint64 atMs, bool wait) {
     Q_ASSERT(QThread::currentThread() == thread());
     auto& state = *impl_;
     const auto index = size_t(cue);
@@ -483,45 +552,32 @@ InteractionAudio::Decision InteractionAudio::playAt(Cue cue, qint64 atMs) {
               QStringLiteral("age=%1ms guard=%2ms source=%3").arg(age).arg(guard).arg(clip->source));
         return Decision::RetriggerSkipped;
     }
-    if (!state.sink || state.sink->format() != clip->format) {
-        state.stop();
-        state.sink.reset();
-        state.device.clear();
-        const auto device = QMediaDevices::defaultAudioOutput();
-        if (device.isNull() || !device.isFormatSupported(clip->format)) {
-            if (!state.outputWarningLogged)
-                qWarning() << "interaction audio: output device cannot play original PCM format" << clip->format;
-            state.outputWarningLogged = true;
-            trace(Decision::OutputUnavailable,
-                  QStringLiteral("reason=%1").arg(device.isNull() ? QStringLiteral("no-device")
-                                                                  : QStringLiteral("unsupported-format")));
-            return Decision::OutputUnavailable;
-        }
-        state.outputWarningLogged = false;
-        state.sink = std::make_unique<QAudioSink>(device, clip->format);
-        state.sink->setVolume(state.gain());
-        state.device = device.description();
-        auto* sink = state.sink.get();
-        connect(sink, &QAudioSink::stateChanged, sink, [sink](QtAudio::State) {
-            if (sink->error() != QtAudio::NoError)
-                qWarning() << "interaction audio: output failure" << sink->error();
-        });
+    // The cue itself starts on the audio thread. play() (every cursor move) does not wait for it; playAt() does, so
+    // its Decision still says whether an output device really started (the assertable path on a machine with no
+    // audio hardware).
+    const QByteArray pcm = clip->pcm;
+    const QAudioFormat format = clip->format;
+    const float gainNow = state.gain();
+    const bool wantTrace = state.trace;
+    if (!wait) {
+        QMetaObject::invokeMethod(state.audioContext.get(), [&state, pcm, format, gainNow, wantTrace] {
+            state.startOnAudioThread(pcm, format, gainNow, wantTrace);
+        }, Qt::QueuedConnection);
+    } else {
+        Decision started = Decision::Rejected;
+        QMetaObject::invokeMethod(state.audioContext.get(), [&state, &pcm, &format, gainNow, wantTrace] {
+            return state.startOnAudioThread(pcm, format, gainNow, wantTrace);
+        }, Qt::BlockingQueuedConnection, &started);
+        if (started == Decision::OutputUnavailable) { trace(Decision::OutputUnavailable); return started; }
+        if (started != Decision::Played) { trace(Decision::Rejected, QStringLiteral("reason=buffer")); return started; }
     }
-    state.stop();
-    state.buffer.setData(clip->pcm);
-    if (!state.buffer.open(QIODevice::ReadOnly)) {
-        qWarning() << "interaction audio: could not open decoded PCM buffer";
-        trace(Decision::Rejected, QStringLiteral("reason=buffer"));
-        return Decision::Rejected;
-    }
-    state.sink->start(&state.buffer);
     state.lastPlay[index] = atMs;
     trace(Decision::Played,
           QStringLiteral("source=%1 rate=%2 channels=%3 bytes=%4 peak=%5 rms=%6 duration=%7ms guard=%8ms output=%9")
               .arg(clip->source).arg(clip->format.sampleRate()).arg(clip->format.channelCount())
               .arg(clip->pcm.size()).arg(QString::number(clip->peak, 'f', 6))
               .arg(QString::number(clip->rms, 'f', 6)).arg(clip->milliseconds()).arg(guard)
-              .arg(state.device.isEmpty() ? QStringLiteral("none") : state.device));
+              .arg(wait ? QStringLiteral("default (confirmed)") : QStringLiteral("default (audio thread)")));
     return Decision::Played;
 }
 

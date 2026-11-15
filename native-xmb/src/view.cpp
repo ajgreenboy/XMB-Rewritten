@@ -246,7 +246,9 @@ View::View(Shell& shell,Assets& assets,QWidget* parent):QOpenGLWidget(parent),sh
     // Input polling is independent of presentation. A 16 ms repaint timer produced ~62.5 Hz even on a 239 Hz
     // display. Request the next frame after Qt finishes composition/swap; swapInterval=1 remains in effect.
     connect(&timer_,&QTimer::timeout,this,[this]{
+        QElapsedTimer cost;if(xmb::frametrace::on())cost.start();
         pollController();
+        if(cost.isValid() && cost.nsecsElapsed()>500'000)xmb::frametrace::note(QString("pad poll %1 ms").arg(cost.nsecsElapsed()/1e6,0,'f',1));
         // An opacity-zero Qt owner may stop producing frameSwapped callbacks. The live
         // surface needs its own bounded cadence for animations/input even then.
         if(liveOverlay_ && !renderPaused())update();
@@ -269,6 +271,10 @@ View::View(Shell& shell,Assets& assets,QWidget* parent):QOpenGLWidget(parent),sh
     connect(&shell_.phoneRemote(),&PhoneRemote::textRequested,this,[this](const QString& text){if(osk_.open)oskInsert(text);});
     // renderPaused() (ps_watcher.h, H5): while a launched title owns the foreground the loop stops re-arming;
     // TitleSession calls update() to restart it when the XMB is back in front.
+    // Frame pacing (frame_pacer.h): the swap is timestamped here, at emission, not through the queued connection below.
+    pacing_=qEnvironmentVariable("XMB_PACING")!=QLatin1String("0");
+    paceGpu_=qEnvironmentVariable("XMB_PACE_GPU")==QLatin1String("1");
+    connect(this,&QOpenGLWidget::frameSwapped,this,[this]{pacer_.swapped(clock_.nsecsElapsed());},Qt::DirectConnection);
     connect(this,&QOpenGLWidget::frameSwapped,this,[this]{++framesSwapped_;if(isVisible() && !renderPaused() && !liveOverlay_)update();},Qt::QueuedConnection);
     frameTracePath_=qEnvironmentVariable("XMB_FRAME_TRACE");
     // "1" selects the slow-frame log (frame_trace.h); any other value is the older dump path, written at exit.
@@ -371,7 +377,8 @@ void View::saveFrameTrace() {
     QTextStream out(&file);out<<"# Native paint/swap callbacks; CPU dispatch time, not physical presentation or GPU completion. Maximum 20000 samples.\n";
     for(const auto& sample:frameTrace_) {
         if(sample.swap)out<<"frame swap: "<<sample.at<<'\n';
-        else out<<"frame paint: "<<sample.at<<' '<<sample.cpu<<' '<<int(sample.rebuilt)<<' '<<int(sample.moving)<<'\n';
+        else out<<"frame paint: "<<sample.at<<' '<<sample.cpu<<' '<<int(sample.rebuilt)<<' '<<int(sample.moving)<<'\n'
+            <<"frame pace: "<<sample.at<<' '<<qint64(sample.dt*1e9+.5)<<' '<<sample.gpu<<'\n';
     }
 }
 void View::PafEase::retarget(double target,double milliseconds,int mode,double delayMilliseconds) {
@@ -1045,18 +1052,46 @@ void View::paintGL() {
         View* view;qint64 start;bool* rebuilt;
         ~FrameLogGuard() { if(view->frameLog_.enabled())view->frameLog_.paintDone(double(view->clock_.nsecsElapsed()-start)/1e6,*rebuilt); }
     };
+    // XMB_PACE_GPU=1 (with XMB_FRAME_TRACE=<path>): the GPU time of this paint, from a GL timer query read back a
+    // few frames later so the read never stalls the pipeline. The frame's composition into the window is not in it.
+    struct GpuQueryGuard {
+        View* view;
+        explicit GpuQueryGuard(View* v):view(v) {
+            if(!view->paceGpu_)return;
+            auto& q=view->paceQuery_;
+            for(auto& e:q) {   // collect whatever finished
+                if(!e.id || !e.pending)continue;
+                GLuint ready=0;view->glGetQueryObjectuiv(e.id,GL_QUERY_RESULT_AVAILABLE,&ready);
+                if(!ready)continue;
+                GLuint64 ns=0;view->glGetQueryObjectui64v(e.id,GL_QUERY_RESULT,&ns);
+                if(e.sample>=0 && e.sample<view->frameTrace_.size())view->frameTrace_[e.sample].gpu=qint64(ns);
+                e.pending=false;
+            }
+            view->paceQueryHead_=(view->paceQueryHead_+1)%int(q.size());
+            auto& e=q[view->paceQueryHead_];
+            if(!e.id)view->glGenQueries(1,&e.id);
+            if(e.pending)return;   // the oldest has not finished: skip this frame rather than wait
+            view->glBeginQuery(GL_TIME_ELAPSED,e.id);e.pending=true;e.sample=-1;active=true;
+        }
+        ~GpuQueryGuard() { if(active)view->glEndQuery(GL_TIME_ELAPSED); }
+        bool active=false;
+    } gpuQueryGuard{this};
     bool frameLogRebuilt=false;
     const FrameLogGuard frameLogGuard{this,frameStart,&frameLogRebuilt};
     if(frameLog_.enabled())traceSurfaceTransitions();
     const qint64 nowNs=clock_.nsecsElapsed(),now=nowNs/1000000;
-    const double dt=std::clamp(double(nowNs-previousFrameNs_)/1.e9,0.,.1);previousFrameNs_=nowNs;
+    // Animation step. Paced (default): the displayed interval the swap timeline reports, a whole number of refresh
+    // periods (frame_pacer.h). Wall clock (XMB_PACING=0, or a pinned capture clock): the gap since the last paint.
+    const bool pacedClock=pacing_ && secondsOverride_<0.;
+    const auto pace=pacedClock?pacer_.step(nowNs,true):xmb::FramePacer::Step{std::clamp(double(nowNs-previousFrameNs_)/1.e9,0.,.1),double(nowNs)/1.e9,false};
+    const double dt=pace.dt;previousFrameNs_=nowNs;
     const qint64 artworkTime=focusedBackgroundIsPage_ && focusTimeOverride_<0?pageBackdropClock_.elapsed():focusTime();
     const bool showArtwork=!focusedBackground_.isNull() && artworkTime>=artworkDwellMs && !shell_.mediaOpen() && !shell_.psMenuOpen();
     const double fadeStep=dt*1000./artworkFadeMs;
     focusedBackgroundOpacity_=std::clamp(focusedBackgroundOpacity_+(showArtwork?fadeStep:-fadeStep),0.,1.);
     departingBackgroundOpacity_=std::max(0.,departingBackgroundOpacity_-fadeStep);
     if(departingBackgroundOpacity_==0.)departingBackground_={};
-    const double renderSeconds=secondsOverride_>=0.?secondsOverride_:double(nowNs)/1.e9; // fixed for A/B captures
+    const double renderSeconds=secondsOverride_>=0.?secondsOverride_:pace.contentSeconds; // fixed for A/B captures
     // Every move is a firmware paf animation (PafEase): 200 ms in accel mode 5 for the category and item moves and
     // the column cross-fade. The page (depth) move runs on two eases because two evidence sets disagree on it and
     // each drives a different channel (audit/PAGE-MOVE.md 14.1 traced the bar re-layout at 200 ms mode 5; the 4c
@@ -1415,7 +1450,8 @@ void View::paintGL() {
     if(!frameTracePath_.isEmpty() && frameTrace_.size()<20000) {
         bool moving=categoryEase_.running() || depthEase_.running() || fadeEase_.running();
         for(const auto& column:columns_)moving|=column.ease.running();
-        frameTrace_.push_back({frameStart,clock_.nsecsElapsed()-frameStart,false,rebuild,moving});
+        if(paceGpu_ && gpuQueryGuard.active)paceQuery_[paceQueryHead_].sample=int(frameTrace_.size());
+        frameTrace_.push_back({frameStart,clock_.nsecsElapsed()-frameStart,false,rebuild,moving,dt,0});
     }
     // Local diagnosis: XMB_TEXT_COST=1 logs any frame whose CPU time passes 10 ms, with the glyph-cache misses
     // (FreeType raster + halo tile) it paid for, so a first-use stall can be told apart from other work.
@@ -4606,8 +4642,10 @@ quint16 arrowBit(int key) {
 void View::replayKeyTap(int key) {
     QScopedValueRollback<bool> replay(replayingInput_,true);
     // A scripted arrow tap is pressed and released inside one frame: it reaches the particles' d-pad wind as one tick.
+    QElapsedTimer cost;if(xmb::frametrace::on())cost.start();
     QKeyEvent press(QEvent::KeyPress,key,Qt::NoModifier);keyPressEvent(&press);
     QKeyEvent release(QEvent::KeyRelease,key,Qt::NoModifier);keyReleaseEvent(&release);
+    if(cost.isValid() && cost.nsecsElapsed()>500'000)xmb::frametrace::note(QString("key handler %1 ms").arg(cost.nsecsElapsed()/1e6,0,'f',1));
 }
 // Scripted PS tokens feed the global watcher exactly like a HID press: the hold keeps the button down
 // long enough for the watcher's 1 s rule to fire on its own. A tap cannot go through the watcher in a

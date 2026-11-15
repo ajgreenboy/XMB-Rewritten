@@ -18,6 +18,7 @@
 #include "game_capture.h"
 #include "text_entry.h"
 #include "frame_trace.h"
+#include "frame_pacer.h"
 #include <array>
 #include <functional>
 #include <QDateTime>
@@ -157,7 +158,7 @@ private:
     QTimer timer_;
     QElapsedTimer clock_;
     // Opt-in, bounded in-memory frame trace; written only on shutdown to avoid per-frame disk I/O.
-    struct FrameSample { qint64 at,cpu; bool swap,rebuilt,moving; };
+    struct FrameSample { qint64 at,cpu; bool swap,rebuilt,moving; double dt=0;qint64 gpu=0; };
     QString frameTracePath_;
     xmb::frametrace::Recorder frameLog_;   // XMB_FRAME_TRACE=1: the slow-frame log (frame_trace.h)
     bool frameLogPsMenu_=false,frameLogOptions_=false,frameLogMessage_=false,frameLogOsk_=false;
@@ -168,6 +169,11 @@ private:
     QVector<FrameSample> frameTrace_;
     void saveFrameTrace();
     qint64 previousFrameNs_=0,reportAt_=0;
+    xmb::FramePacer pacer_;   // animation time follows displayed frames (frame_pacer.h); XMB_PACING=0 restores the wall-clock step
+    bool pacing_=true;
+    bool paceGpu_=false;      // XMB_FRAME_TRACE=<path> with XMB_PACE_GPU=1: a GL timer query around each paintGL
+    struct PaceQuery { GLuint id=0;int sample=-1;bool pending=false; };
+    std::array<PaceQuery,6> paceQuery_{};int paceQueryHead_=0;
     // PS button: the global watcher (independent of window focus) and the short controller-indicator
     // window a tap opens.
     PsWatcher psWatcher_;

@@ -21,7 +21,9 @@ namespace xmb {
 // keeps that unity gain as a named constant and applies the user's XMB volume on
 // top of it, so the cue mix is the firmware's and only the user scale is ours.
 //
-// Construct and call on the GUI thread; all firmware reads finish in construction.
+// Construct and call on the GUI thread; all firmware reads finish in construction. The output device is owned by a
+// worker thread: play() hands the cue over and returns at once (starting a WASAPI sink is ~6 ms), while playAt()
+// waits for the start so its Decision is the device's own answer.
 class InteractionAudio final : public QObject {
     Q_OBJECT
 public:
@@ -61,6 +63,7 @@ public:
     static const char* decisionName(Decision decision);
 
 private:
+    Decision decide(Cue cue, qint64 atMs, bool wait);
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };
