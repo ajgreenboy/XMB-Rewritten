@@ -17,7 +17,6 @@
 namespace xmb {
 namespace {
 constexpr qsizetype kMaxRequestHeaders = 16 * 1024;
-constexpr qsizetype kMaxPlaylistBytes = 1024 * 1024;
 constexpr qint64 kReplyReadBuffer = 128 * 1024;
 constexpr qint64 kSocketHighWater = 256 * 1024;
 constexpr int kRequestTimeoutMs = 60 * 1000;
@@ -289,13 +288,15 @@ void JellyfinStream::startUpstream(Request* request, const QUrl& url, int redire
     networkRequest.setAttribute(QNetworkRequest::AuthenticationReuseAttribute, QNetworkRequest::Manual);
     networkRequest.setAttribute(QNetworkRequest::CookieLoadControlAttribute, QNetworkRequest::Manual);
     networkRequest.setAttribute(QNetworkRequest::CookieSaveControlAttribute, QNetworkRequest::Manual);
-    networkRequest.setRawHeader("User-Agent", "xmb-native/1.0");
+    networkRequest.setRawHeader("User-Agent", "XMB/1.0");
     networkRequest.setRawHeader("Accept-Encoding", "identity");
     if (!authorization_.isEmpty())
         networkRequest.setRawHeader("Authorization", authorization_);
-    if (!request->range.isEmpty())
+    // A playlist is a small generated document: a byte range on it only invites a 416 or a partial list.
+    const bool playlistPath = url.path().toLower().endsWith(QStringLiteral(".m3u8"));
+    if (!request->range.isEmpty() && !playlistPath)
         networkRequest.setRawHeader("Range", request->range);
-    if (!request->ifRange.isEmpty())
+    if (!request->ifRange.isEmpty() && !playlistPath)
         networkRequest.setRawHeader("If-Range", request->ifRange);
     QNetworkReply* reply = request->head ? network_->head(networkRequest) : network_->get(networkRequest);
     request->reply = reply;
@@ -515,7 +516,7 @@ void JellyfinStream::finish(Request* request) {
                     line.replace(spans.at(i).first, spans.at(i).second, replacements.at(i));
             }
             rewrittenBytes+=line.toUtf8().size()+1;
-            if(rewrittenBytes>4*kMaxPlaylistBytes){fail(request);return;}
+            if(rewrittenBytes>2*kMaxPlaylistBytes){fail(request);return;}
             outputLines.append(line);
         }
         request->playlistOutput = outputLines.join(QLatin1Char('\n')).toUtf8();

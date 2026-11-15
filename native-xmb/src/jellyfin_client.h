@@ -112,7 +112,7 @@ private:
     quint64 send(Operation operation, QNetworkReply* reply, QString context = {}, bool audio = false);
     void finish(QNetworkReply* reply, Operation operation, quint64 request,
                 quint64 generation, QString context = {}, bool audio = false);
-    QNetworkReply* get(const QUrl& url);
+    QNetworkReply* get(const QUrl& url, int transferTimeoutMs = 15000);
     QNetworkReply* post(const QUrl& url, const QByteArray& body);
     QNetworkReply* deleteResource(const QUrl& url);
     QUrl apiUrl(const QString& route) const;

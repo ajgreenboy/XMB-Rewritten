@@ -11,6 +11,10 @@ class QTcpSocket;
 
 namespace xmb {
 
+// The largest playlist the stream accepts from the server. A transcode's main.m3u8 lists every segment with
+// the whole query string on each line (about 0.8 KB), so a three hour film is a megabyte or two.
+constexpr qsizetype kMaxPlaylistBytes = 16 * 1024 * 1024;
+
 class JellyfinStream final : public QObject {
     Q_OBJECT
 public:
