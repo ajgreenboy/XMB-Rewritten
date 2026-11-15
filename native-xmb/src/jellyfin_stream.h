@@ -2,6 +2,7 @@
 
 #include <QByteArray>
 #include <QObject>
+#include <QString>
 #include <QUrl>
 #include <QHash>
 
@@ -10,6 +11,15 @@ class QTcpServer;
 class QTcpSocket;
 
 namespace xmb {
+
+// A diagnostic line fit for a log or a screen: control characters flattened, anything that looks like a
+// credential (api_key=, Token=, Authorization:, a 32-hex token or id, a long opaque run) replaced, and cut
+// to maxChars. Used for the first bytes of a server reply, so the real server message shows without a secret.
+QString scrubDiagnostic(const QByteArray& bytes, int maxChars = 300);
+
+// The largest playlist the stream accepts from the server. A transcode's main.m3u8 lists every segment with
+// the whole query string on each line (about 0.8 KB), so a three hour film is a megabyte or two.
+constexpr qsizetype kMaxPlaylistBytes = 16 * 1024 * 1024;
 
 class JellyfinStream final : public QObject {
     Q_OBJECT
@@ -21,7 +31,12 @@ public:
     void close();
 
 signals:
+    // The player's request failed in a way the stream can name: one plain sentence.
     void failed(QString message);
+    // The server answered a stream request with an error status, or the stream refused to relay it. request is
+    // the method and path (no query), status the HTTP status (the one the stream returned to the player when it
+    // refused itself), detail the scrubbed first bytes of the body or the stream's own reason.
+    void upstreamRejected(int status, QString request, QString detail);
 
 private:
     struct Request;
@@ -33,7 +48,8 @@ private:
     void onMetadata(Request* request);
     void pump(Request* request);
     void finish(Request* request);
-    void fail(Request* request, int status = 502);
+    void fail(Request* request, int status = 502, const QString& reason = {});
+    QString describe(const Request* request) const;
     void removeRequest(QTcpSocket* socket);
     QUrl localUrl(const QUrl& upstream) const;
     bool sameOrigin(const QUrl& url) const;

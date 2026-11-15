@@ -885,6 +885,24 @@ private:
     JellyfinClient jellyfin_;
     JellyfinStream jellyfinStream_;
     JellyfinPlayback jellyfinPlayback_;
+    // Why the last stream open failed (jellyfin_shell.cpp): what the stream saw, and the diagnostic probe.
+    struct JellyfinStreamIssue { int status=0; QString request, detail; bool valid=false; };
+    JellyfinStreamIssue jellyfinStreamIssue_;
+    quint64 jellyfinProbe_=0;
+    QString jellyfinProbePath_, jellyfinPlayerError_;
+    JellyfinStreamIssue jellyfinFailedIssue_;
+    void reportJellyfinFailure(int probeStatus,const QString& probeDetail,bool probed);
+    void beginJellyfinFailureReport(const QString& playerError,const JellyfinStreamIssue& issue,const QUrl& url);
+    // The focused item's backdrop (jellyfin_shell.cpp): which item the picture belongs to, each item's backdrop
+    // tag, a few decoded pictures, and the debounce in front of a request.
+    QString jellyfinBackdropWanted_;
+    QHash<QString,QString> jellyfinBackdropTags_;
+    QHash<QString,QImage> jellyfinBackdropImages_;
+    QStringList jellyfinBackdropOrder_;
+    QTimer jellyfinBackdropDebounce_;
+    void syncJellyfinBackdrop();
+    QString focusedJellyfinBackdropKey(QString& id) const;
+    void applyJellyfinBackdrop(const QString& itemId,const QImage& image);
     // Server text subtitles (jellyfin_shell.cpp): each text stream becomes a subtitle track keyed
     // "jellyfin:<item>#<stream index>", filled when its SRT arrives; a failed fetch keeps its reason.
     QHash<quint64,int> jellyfinSubtitleRequests_;   // request -> stream index

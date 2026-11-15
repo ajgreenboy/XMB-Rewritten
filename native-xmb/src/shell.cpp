@@ -5145,8 +5145,10 @@ void Shell::abandonFailedMedia() {
 }
 void Shell::advanceMedia(bool failed,const QString& error) {
     if(jellyfinQueue_) {
+        // The failing stream's own record and URL are read before finishJellyfinPlayback() clears them.
+        const auto issue=jellyfinStreamIssue_;const QUrl streamUrl=jellyfinPlayback_.url;
         finishJellyfinPlayback(!failed);
-        if(failed){++mediaRequest_;jellyfinRequest_=0;loading_=false;player_->stop();status_="Playback stopped";showMessage("Jellyfin","This media could not be played. Check the server and its transcoding support.",MessageKind::Page);emit changed();return;}
+        if(failed){++mediaRequest_;jellyfinRequest_=0;loading_=false;player_->stop();status_="Playback stopped";beginJellyfinFailureReport(error,issue,streamUrl);emit changed();return;}
     }
     if(mediaQueue_.empty())return;
     if(failed) {

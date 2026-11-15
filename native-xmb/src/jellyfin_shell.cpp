@@ -41,6 +41,47 @@ const QImage& Shell::pageBackdrop() const {
     if(jellyfinBackdrop_.isNull() || pages_.isEmpty() || !pages_.last().jellyfin || mediaOpen_)return none;
     return jellyfinPageKey(pages_.size(),pages_.last())==jellyfinBackdropPage_?jellyfinBackdrop_:none;
 }
+// The focused Jellyfin row's backdrop identity: the page it is on plus the item id (set in id), or empty when the
+// focus is not on an item of an open Jellyfin page (More, Search, Sign Out, a player, another area).
+QString Shell::focusedJellyfinBackdropKey(QString& id) const {
+    id.clear();
+    if(pages_.isEmpty() || !pages_.last().jellyfin || mediaOpen_)return {};
+    const auto& page=pages_.last();
+    if(page.entries.isEmpty() || page.selection<0 || page.selection>=page.entries.size())return {};
+    const auto& row=page.entries.at(page.selection);
+    if(row.action!=Action::JellyfinPlay && row.action!=Action::JellyfinFolder)return {};
+    id=row.value;
+    return jellyfinPageKey(pages_.size(),page)+QLatin1Char('|')+id;
+}
+void Shell::applyJellyfinBackdrop(const QString& itemId,const QImage& image) {
+    QString id;const QString key=focusedJellyfinBackdropKey(id);
+    if(key.isEmpty() || id!=itemId)return;
+    jellyfinBackdrop_=image;jellyfinBackdropId_=itemId;
+    jellyfinBackdropPage_=jellyfinPageKey(pages_.size(),pages_.last());
+    emit changed();
+}
+// Called on every change: when the focused item differs from the one the backdrop was last arranged for, show
+// that item's picture. A cached picture is applied at once; otherwise the request waits out a short debounce so
+// skimming down a list asks only for where the cursor settles. The previous picture stays until the new one is
+// there (the view cross-fades), but an item with no backdrop, or one that fails to load, clears it, so art never
+// stays attributed to the wrong film.
+void Shell::syncJellyfinBackdrop() {
+    QString id;const QString key=focusedJellyfinBackdropKey(id);
+    if(key.isEmpty() || key==jellyfinBackdropWanted_)return;
+    jellyfinBackdropWanted_=key;
+    const QString tag=jellyfinBackdropTags_.value(id);
+    if(tag.isEmpty()) {
+        jellyfinBackdropDebounce_.stop();
+        if(!jellyfinBackdrop_.isNull()){jellyfinBackdrop_={};jellyfinBackdropId_.clear();emit changed();}
+        return;
+    }
+    if(const auto cached=jellyfinBackdropImages_.constFind(id);cached!=jellyfinBackdropImages_.constEnd()) {
+        jellyfinBackdropDebounce_.stop();
+        applyJellyfinBackdrop(id,cached.value());
+        return;
+    }
+    jellyfinBackdropDebounce_.start();
+}
 void Shell::initJellyfin() {
     jellyfin_.setImageCache(QDir(dataDirectory_).filePath("jellyfin/images"));
     jellyfin_.setSessionStore(QDir(dataDirectory_).filePath("jellyfin/session.bin"));
@@ -81,9 +122,12 @@ void Shell::initJellyfin() {
         jellyfinRequest_=0;loading_=false;status_.clear();jellyfinRestoring_=false;auto& page=pages_.last();
         const QString selected=page.entries.isEmpty()?QString{}:page.entries.value(page.selection).id;
         page.entries.clear();page.selection=0;
-        int posters=0;
-        QString backdrop;
+        int posters=0,backdrops=0;
+        if(jellyfinBackdropTags_.size()>4000)jellyfinBackdropTags_.clear();
         for(const auto& media:result.items) {
+            // Every item's backdrop tag is kept so the focused row can ask for its own picture (syncJellyfinBackdrop).
+            if(media.backdropTag.isEmpty())jellyfinBackdropTags_.remove(media.id);
+            else{jellyfinBackdropTags_.insert(media.id,media.backdropTag);++backdrops;}
             const bool folder=page.jellyfinViews || media.folder;
             auto e=jfEntry("jellyfin:"+media.id,media.title,folder?Action::JellyfinFolder:playable(media.type)?Action::JellyfinPlay:Action::Unavailable,media.id,folder);
             e.mediaKind=folder?QString{}:media.type=="Audio"?QString("Music"):media.type=="Movie"?QString("Movie"):media.type=="Episode"?QString("Episode"):QString("Video");e.option=media.type=="Audio";
@@ -100,11 +144,6 @@ void Shell::initJellyfin() {
                 if(!media.primaryTag.isEmpty() && posters<ArtworkRowsPerPage) {
                     ++posters;
                     jellyfin_.artwork(media.id,media.primaryTag,false);
-                }
-                if(backdrop.isEmpty() && !media.backdropTag.isEmpty()) {
-                    backdrop=media.id;
-                    jellyfinBackdropId_=media.id;jellyfinBackdropPage_=jellyfinPageKey(pages_.size(),page);
-                    jellyfin_.artwork(media.id,media.backdropTag,true);
                 }
             }
             if(e.id==selected)page.selection=int(page.entries.size());page.entries.push_back(std::move(e));
@@ -126,25 +165,45 @@ void Shell::initJellyfin() {
         qInfo().noquote()<<QString("jellyfin: %1 page with %2 row(s); %3 poster request(s)%4")
             .arg(page.jellyfinViews?QStringLiteral("library"):page.jellyfinSearch?QStringLiteral("search"):QStringLiteral("folder"))
             .arg(page.entries.size()).arg(posters)
-            .arg(backdrop.isEmpty()?QString{}:QStringLiteral(" and one backdrop"));
+            .arg(backdrops?QStringLiteral(" and %1 backdrop tag(s)").arg(backdrops):QString{});
         emit changed();
     });
     connect(&jellyfin_,&JellyfinClient::artworkReady,this,[this](quint64,const QString& itemId,bool backdrop,const QImage& image){
+        if(backdrop) {
+            // A completion for an item that is no longer focused is kept (a quick return to it is then free)
+            // but never drawn; a failed load for the focused item clears the previous item's picture.
+            QString focusedId;
+            const bool focused=!focusedJellyfinBackdropKey(focusedId).isEmpty() && focusedId==itemId;
+            if(image.isNull()){
+                if(focused && !jellyfinBackdrop_.isNull()){jellyfinBackdrop_={};jellyfinBackdropId_.clear();emit changed();}
+                return;
+            }
+            jellyfinBackdropImages_.insert(itemId,image);
+            jellyfinBackdropOrder_.removeAll(itemId);jellyfinBackdropOrder_.push_back(itemId);
+            while(jellyfinBackdropOrder_.size()>12)jellyfinBackdropImages_.remove(jellyfinBackdropOrder_.takeFirst());
+            if(focused)applyJellyfinBackdrop(itemId,image);
+            return;
+        }
         if(image.isNull())return;
         bool updated=false;
-        if(backdrop) {
-            if(itemId==jellyfinBackdropId_ && jellyfinBackdrop_!=image){jellyfinBackdrop_=image;updated=true;}
-        } else {
-            for(auto& page:pages_)if(page.jellyfin)for(auto& row:page.entries) {
-                if(row.value!=itemId || (row.action!=Action::JellyfinPlay && row.action!=Action::JellyfinFolder))continue;
-                row.artwork=image;row.iconSized=false;updated=true;
-            }
+        for(auto& page:pages_)if(page.jellyfin)for(auto& row:page.entries) {
+            if(row.value!=itemId || (row.action!=Action::JellyfinPlay && row.action!=Action::JellyfinFolder))continue;
+            row.artwork=image;row.iconSized=false;updated=true;
         }
         if(updated)emit changed();
     });
+    // The focused row owns the page backdrop: every change of focus (or of the open page) re-evaluates it.
+    jellyfinBackdropDebounce_.setSingleShot(true);jellyfinBackdropDebounce_.setInterval(120);
+    connect(&jellyfinBackdropDebounce_,&QTimer::timeout,this,[this]{
+        QString id;const QString key=focusedJellyfinBackdropKey(id);
+        if(key.isEmpty() || key!=jellyfinBackdropWanted_)return;   // focus moved on: that move restarted the timer
+        const QString tag=jellyfinBackdropTags_.value(id);
+        if(!tag.isEmpty())jellyfin_.artwork(id,tag,true);
+    });
+    connect(this,&Shell::changed,this,[this]{syncJellyfinBackdrop();});
     connect(&jellyfin_,&JellyfinClient::playbackReady,this,[this](quint64 request,const JellyfinPlayback& playback){
         if(request!=jellyfinRequest_ || !jellyfinQueue_ || !mediaOpen_)return;
-        jellyfinRequest_=0;jellyfinPlayback_=playback;
+        jellyfinRequest_=0;jellyfinPlayback_=playback;jellyfinStreamIssue_={};jellyfinProbe_=0;
         QStringList streams;
         for(const auto& stream:playback.streams)streams<<stream.type+":"+stream.title;
         qInfo().noquote()<<"jellyfin: playback"<<playback.itemId<<playback.playMethod<<playback.streams.size()
@@ -205,9 +264,22 @@ void Shell::initJellyfin() {
         refreshPlayerOptions();
         emit changed();
     });
-    connect(&jellyfinStream_,&JellyfinStream::failed,this,[this](const QString&){
+    // What the stream saw: the server's status and the first bytes of its reply (scrubbed), or the stream's own
+    // reason for refusing to relay. Logged at once, and kept for the message if the player then gives up.
+    connect(&jellyfinStream_,&JellyfinStream::upstreamRejected,this,[this](int status,const QString& request,const QString& detail){
+        qWarning().noquote()<<"jellyfin: stream request rejected:"<<request<<(status?QStringLiteral("-> HTTP %1").arg(status):QStringLiteral("(not relayed)"))
+            <<(detail.isEmpty()?QString{}:QStringLiteral("-- \"%1\"").arg(detail));
+        if(!jellyfinStreamIssue_.valid || (status>=500 && jellyfinStreamIssue_.status<500))
+            jellyfinStreamIssue_={status,request,detail,true};
+    });
+    connect(&jellyfinStream_,&JellyfinStream::failed,this,[this](const QString& reason){
         if(!jellyfinQueue_ || !mediaOpen_)return;const auto request=mediaRequest_;
-        QTimer::singleShot(0,this,[this,request]{if(request==mediaRequest_ && mediaOpen_ && jellyfinQueue_)advanceMedia(true,{});});
+        QTimer::singleShot(0,this,[this,request,reason]{if(request==mediaRequest_ && mediaOpen_ && jellyfinQueue_)advanceMedia(true,reason);});
+    });
+    connect(&jellyfin_,&JellyfinClient::probeFinished,this,[this](quint64 request,int status,const QString& detail){
+        if(request!=jellyfinProbe_)return;
+        jellyfinProbe_=0;
+        reportJellyfinFailure(status,detail,true);
     });
     connect(player_.get(),&QMediaPlayer::playbackStateChanged,this,[this]{
         if(jellyfinResumePending_>0)applyJellyfinResume();else reportJellyfinPlaybackState();
@@ -262,7 +334,7 @@ void Shell::loadJellyfinPage(const QString& parent,const QString& title,int star
     if(!replace){Page page;page.title=title;pages_.push_back(std::move(page));}
     if(pages_.empty())return;
     auto& page=pages_.last();page.jellyfin=true;page.jellyfinViews=views;page.jellyfinParent=parent;page.jellyfinStart=start;
-    jellyfinBackdrop_={};jellyfinBackdropId_.clear();
+    jellyfinBackdrop_={};jellyfinBackdropId_.clear();jellyfinBackdropWanted_.clear();jellyfinBackdropDebounce_.stop();
     loading_=true;status_="Loading Jellyfin...";jellyfinRequestDepth_=int(pages_.size());
     jellyfinRequest_=views?jellyfin_.views():jellyfin_.items(parent,start);emit changed();
 }
@@ -284,7 +356,7 @@ void Shell::loadJellyfinSearchPage(const QString& term,const QString& title,int 
     if(!replace){Page page;page.title=title;page.jellyfinSearch=true;pages_.push_back(std::move(page));}
     if(pages_.empty())return;
     auto& page=pages_.last();page.jellyfin=true;page.jellyfinSearch=true;page.jellyfinParent=term;page.jellyfinStart=start;
-    jellyfinBackdrop_={};jellyfinBackdropId_.clear();
+    jellyfinBackdrop_={};jellyfinBackdropId_.clear();jellyfinBackdropWanted_.clear();jellyfinBackdropDebounce_.stop();
     loading_=true;status_=tr("Searching Jellyfin...");jellyfinRequestDepth_=int(pages_.size());
     qInfo().noquote()<<"jellyfin: search"<<term<<"from"<<start;
     jellyfinRequest_=jellyfin_.search(term,start);emit changed();
@@ -403,6 +475,61 @@ void Shell::finishJellyfinPlayback(bool completed) {
     }
     jellyfinPlayback_={};jellyfinStarted_=false;jellyfinResumePending_=0;jellyfinStream_.close();
     jellyfinSubtitleRequests_.clear();jellyfinSubtitleErrors_.clear();
+}
+// The screen text for a stream that would not open: what the server (or the XMB's own relay) actually said, in one
+// or two sentences, instead of a generic hint. The numbers and the server's own words come from the stream's
+// record of the failing request, else from the diagnostic probe of the same URL.
+static QString jellyfinFailureText(const QString& playerError,int status,const QString& detail,bool relayRefused,bool answered) {
+    QString words=detail.left(120);
+    if(detail.size()>120)words+=QStringLiteral("...");
+    const QString quote=words.isEmpty()?QString{}:QStringLiteral(": \"%1\"").arg(words);
+    if(relayRefused)
+        return Shell::tr("The XMB could not relay the stream: %1.").arg(words.isEmpty()?Shell::tr("unknown reason"):words);
+    if(status>=500)
+        return Shell::tr("Jellyfin failed to start the stream (HTTP %1%2). Check the server's log and its transcoding settings.").arg(status).arg(quote);
+    if(status==401 || status==403)
+        return Shell::tr("Jellyfin refused the stream (HTTP %1%2). Sign out of Jellyfin and sign in again.").arg(status).arg(quote);
+    if(status==404)
+        return Shell::tr("Jellyfin has no such stream (HTTP 404%1). The item may have been moved or removed.").arg(quote);
+    if(status>=400)
+        return Shell::tr("Jellyfin rejected the stream request (HTTP %1%2).").arg(status).arg(quote);
+    if(answered)
+        return Shell::tr("Jellyfin answers (HTTP %1) but the player could not open the stream: %2.").arg(status).arg(playerError.isEmpty()?Shell::tr("unknown error"):playerError.left(100));
+    if(!detail.isEmpty())
+        return Shell::tr("The server did not answer the stream request: %1.").arg(words);
+    return playerError.isEmpty()?Shell::tr("This media could not be played."):Shell::tr("This media could not be played: %1.").arg(playerError.left(100));
+}
+// A Jellyfin playback failed. When the stream already named the failing request (an error status from the server,
+// or its own refusal) that is reported at once; otherwise the XMB asks the server for the same URL itself
+// (JellyfinClient::probeStream: same headers, a few KB, 8 s) so the real answer shows in the log and on screen.
+void Shell::beginJellyfinFailureReport(const QString& playerError,const JellyfinStreamIssue& issue,const QUrl& url) {
+    jellyfinPlayerError_=scrubDiagnostic(playerError.toUtf8(),160);
+    jellyfinFailedIssue_=issue;
+    jellyfinProbePath_=url.isValid()?url.path():QString{};
+    jellyfinProbe_=0;
+    if(issue.valid || !url.isValid() || !jellyfin_.signedIn()){reportJellyfinFailure(0,{},false);return;}
+    status_=QStringLiteral("Playback stopped");
+    jellyfinProbe_=jellyfin_.probeStream(url);
+    // The probe has its own 8 s deadline; this only guards against the page being left open on a stuck state.
+    const auto probe=jellyfinProbe_;
+    QTimer::singleShot(12000,this,[this,probe]{if(jellyfinProbe_==probe && probe!=0){jellyfinProbe_=0;reportJellyfinFailure(0,QStringLiteral("no answer"),true);}});
+}
+void Shell::reportJellyfinFailure(int probeStatus,const QString& probeDetail,bool probed) {
+    const auto issue=jellyfinFailedIssue_;
+    int status=issue.status;QString detail=issue.detail;bool refused=issue.valid && issue.status==0;
+    bool answered=false;
+    if(!issue.valid && probed){
+        status=probeStatus;detail=probeDetail;
+        answered=probeStatus>=200 && probeStatus<400;
+        if(answered)detail.clear();
+    }
+    qWarning().noquote()<<"jellyfin: stream open failed: player=\""+jellyfinPlayerError_+"\""
+        <<(issue.valid?QStringLiteral("stream saw %1 %2%3").arg(issue.request,issue.status?QStringLiteral("HTTP %1").arg(issue.status):QStringLiteral("(not relayed)"),
+                issue.detail.isEmpty()?QString{}:QStringLiteral(" \"%1\"").arg(issue.detail)):QString{})
+        <<(probed?QStringLiteral("probe GET %1 -> %2%3").arg(jellyfinProbePath_,probeStatus?QStringLiteral("HTTP %1").arg(probeStatus):QStringLiteral("no answer"),
+                probeDetail.isEmpty()?QString{}:QStringLiteral(" \"%1\"").arg(probeDetail)):QString{});
+    showMessage("Jellyfin",jellyfinFailureText(jellyfinPlayerError_,status,detail,refused,answered),MessageKind::Page);
+    emit changed();
 }
 // One track per text subtitle stream of the item about to play (at most eight), each fetched as SRT.
 // The tracks start empty, so their rows read "Loading" until the bytes arrive (subtitleReady above).

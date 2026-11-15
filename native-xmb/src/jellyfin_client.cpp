@@ -1,4 +1,5 @@
 #include "jellyfin_client.h"
+#include "jellyfin_stream.h"
 
 #include <QBuffer>
 #include <QCryptographicHash>
@@ -44,7 +45,9 @@ constexpr qsizetype MaxResponseBytes = 4 * 1024 * 1024;
 // server may first have to demux it out of the container, so it gets the decoder's own 64 MB input cap
 // (image_subtitles.h) and a longer deadline.
 constexpr qsizetype MaxImageSubtitleBytes = 64 * 1024 * 1024;
-constexpr int ImageSubtitleTimeoutMs = 120000;
+constexpr int ImageSubtitleTimeoutMs = 180000;   // the server extracts every subtitle stream of the file before it answers (measured: 64 s on a 1080p remux)
+constexpr int ProbeTimeoutMs = 8000;
+constexpr qsizetype ProbeBytes = 2048;
 constexpr qsizetype MaxImageBytes = 4 * 1024 * 1024;
 constexpr int PageLimit = 200;
 // Artwork is bounded on both sides of the network: the server is asked for a small picture, and
@@ -127,17 +130,20 @@ QByteArray authValue(const QByteArray& token, const QString& deviceId) {
     return value;
 }
 
+// The server's own transcode URL with every credential-looking key removed. The query is filtered pair by pair
+// in its ENCODED form and put back untouched: decoding and re-adding values would turn %2B into a literal plus
+// (a space to the server), drop the encoding of an ampersand inside a value, and so change what the server reads.
 QUrl withoutSecrets(QUrl url) {
-    QUrlQuery source(url);
-    const auto entries = source.queryItems(QUrl::FullyDecoded);
-    QUrlQuery clean;
-    for (const auto& entry : entries) {
-        const QString key = entry.first.toLower();
+    const QString raw = url.query(QUrl::FullyEncoded);
+    QStringList kept;
+    for (const QString& pair : raw.split(QLatin1Char('&'), Qt::SkipEmptyParts)) {
+        const QString key = QUrl::fromPercentEncoding(pair.section(QLatin1Char('='), 0, 0).toUtf8().replace('+', ' ')).toLower();
         if (key == QLatin1String("apikey") || key == QLatin1String("api_key") || key == QLatin1String("token") ||
             key == QLatin1String("access_token")) continue;
-        clean.addQueryItem(entry.first, entry.second);
+        kept.push_back(pair);
     }
-    url.setQuery(clean);
+    if (kept.isEmpty()) url.setQuery(QString{});
+    else url.setQuery(kept.join(QLatin1Char('&')), QUrl::StrictMode);
     url.setFragment({});
     return url;
 }
@@ -241,17 +247,19 @@ QUrl JellyfinClient::apiUrl(const QString& route) const {
     return result;
 }
 
-QNetworkReply* JellyfinClient::get(const QUrl& url) {
+QNetworkReply* JellyfinClient::get(const QUrl& url, int transferTimeoutMs) {
     QNetworkRequest request(url);
+    request.setRawHeader("User-Agent", "XMB/1.0");
     request.setRawHeader("Authorization", authorizationHeader());
     request.setRawHeader("Accept", "application/json");
     request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::ManualRedirectPolicy);
-    request.setTransferTimeout(RequestTimeoutMs);
+    request.setTransferTimeout(transferTimeoutMs);
     return network_->get(request);
 }
 
 QNetworkReply* JellyfinClient::post(const QUrl& url, const QByteArray& body) {
     QNetworkRequest request(url);
+    request.setRawHeader("User-Agent", "XMB/1.0");
     request.setRawHeader("Authorization", authorizationHeader());
     request.setRawHeader("Accept", "application/json");
     request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
@@ -262,6 +270,7 @@ QNetworkReply* JellyfinClient::post(const QUrl& url, const QByteArray& body) {
 
 QNetworkReply* JellyfinClient::deleteResource(const QUrl& url) {
     QNetworkRequest request(url);
+    request.setRawHeader("User-Agent", "XMB/1.0");
     request.setRawHeader("Authorization", authorizationHeader());
     request.setRawHeader("Accept", "application/json");
     request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::ManualRedirectPolicy);
@@ -279,7 +288,7 @@ quint64 JellyfinClient::send(Operation operation, QNetworkReply* reply, QString 
     auto* timeout = new QTimer(reply);
     timeout->setSingleShot(true);
     connect(timeout, &QTimer::timeout, reply, &QNetworkReply::abort);
-    timeout->start(operation == Operation::SubtitleImage ? ImageSubtitleTimeoutMs : RequestTimeoutMs);
+    timeout->start(operation == Operation::SubtitleImage || operation == Operation::Subtitle ? ImageSubtitleTimeoutMs : operation == Operation::Probe ? ProbeTimeoutMs : RequestTimeoutMs);
     connect(reply, &QNetworkReply::downloadProgress, this, [reply, limit](qint64 received, qint64) {
         if (received > limit) reply->abort();
     });
@@ -324,6 +333,7 @@ void JellyfinClient::signIn(QUrl server, QString user, QString password) {
     payload.insert(QStringLiteral("Pw"), QString());
     password.fill(QChar(0)); user.fill(QChar(0));
     QNetworkRequest request(apiUrl(QStringLiteral("Users/AuthenticateByName")));
+    request.setRawHeader("User-Agent", "XMB/1.0");
     request.setRawHeader("Authorization", authValue({}, deviceId_));
     request.setRawHeader("Accept", "application/json");
     request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
@@ -516,6 +526,22 @@ void JellyfinClient::reportPlayback(const JellyfinPlayback& playbackInfo, qint64
     }
 }
 
+quint64 JellyfinClient::probeStream(const QUrl& url) {
+    if (!signedIn() || !trustedServerUrl(url)) {
+        const quint64 request = ++nextRequest_;
+        QTimer::singleShot(0, this, [this, request] {
+            emit probeFinished(request, 0, QStringLiteral("not signed in, or the address is not the signed-in server"));
+        });
+        return request;
+    }
+    auto* reply = get(url, ProbeTimeoutMs);
+    const quint64 request = send(Operation::Probe, reply);
+    connect(reply, &QIODevice::readyRead, this, [reply] {
+        if (reply->bytesAvailable() >= ProbeBytes) reply->abort();   // a few KB are all the diagnostic needs
+    });
+    return request;
+}
+
 void JellyfinClient::setImageCache(QString directory) {
     imageCache_ = std::move(directory);
     if (!imageCache_.isEmpty()) QDir().mkpath(imageCache_);
@@ -603,7 +629,7 @@ quint64 JellyfinClient::subtitle(QString itemId, QString mediaSourceId, int stre
     }
     const QUrl url = apiUrl(QStringLiteral("Videos/") + itemId + QLatin1Char('/') + mediaSourceId +
                             QStringLiteral("/Subtitles/") + QString::number(streamIndex) + QStringLiteral("/Stream.srt"));
-    return send(Operation::Subtitle, get(url), QString::number(streamIndex));
+    return send(Operation::Subtitle, get(url, ImageSubtitleTimeoutMs), QString::number(streamIndex));
 }
 
 quint64 JellyfinClient::subtitleImage(QString itemId, QString mediaSourceId, int streamIndex) {
@@ -616,7 +642,7 @@ quint64 JellyfinClient::subtitleImage(QString itemId, QString mediaSourceId, int
     // extracts the stream and returns the .sup, which the client decodes itself (image_subtitles.h).
     const QUrl url = apiUrl(QStringLiteral("Videos/") + itemId + QLatin1Char('/') + mediaSourceId +
                             QStringLiteral("/Subtitles/") + QString::number(streamIndex) + QStringLiteral("/Stream.sup"));
-    return send(Operation::SubtitleImage, get(url), QString::number(streamIndex));
+    return send(Operation::SubtitleImage, get(url, ImageSubtitleTimeoutMs), QString::number(streamIndex));
 }
 
 void JellyfinClient::setSessionStore(QString path) { sessionPath_ = std::move(path); }
@@ -714,6 +740,12 @@ void JellyfinClient::finish(QNetworkReply* reply, Operation operation, quint64 r
                     bytes.size() <= (operation == Operation::SubtitleImage ? MaxImageSubtitleBytes : MaxResponseBytes);
     reply->deleteLater();
     if (operation == Operation::Report) {flushLogouts();return;}
+    if (operation == Operation::Probe) {
+        // The digest is the server's own words (scrubbed), or the network error when nothing answered.
+        const QString detail = status ? scrubDiagnostic(bytes) : scrubDiagnostic(reply->errorString().toUtf8());
+        emit probeFinished(request, status, detail);
+        return;
+    }
     // Artwork missing or broken is not an error the viewer needs: the row keeps its built-in
     // glyph and the report is a null image.
     if (operation == Operation::Artwork) {

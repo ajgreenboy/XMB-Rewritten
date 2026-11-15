@@ -89,6 +89,11 @@ public:
     // Bounded at 64 MB with a 120 s deadline; answers through subtitleReady like subtitle().
     quint64 subtitleImage(QString itemId, QString mediaSourceId, int streamIndex);
     void reportPlayback(const JellyfinPlayback& playback, qint64 positionMs, bool paused, QString event);
+    // Diagnostics for a stream the player could not open: the same URL, asked for with the same headers (the
+    // Authorization header, the XMB user agent), one GET capped at a few KB with a short deadline. The answer
+    // comes through probeFinished with the HTTP status (0: no answer) and a scrubbed digest of the first bytes
+    // of the body or of the network error, so the real server message shows. Never carries the query string.
+    quint64 probeStream(const QUrl& url);
     // ---- Remembered sign-in (DPAPI, opt-in) ----------------------------------------------
     // The store keeps one record: server URL, user id and the access token, protected with
     // CryptProtectData for the current Windows user. The password is never stored. An empty
@@ -107,12 +112,13 @@ signals:
     void playbackReady(quint64 request, xmb::JellyfinPlayback playback);
     void artworkReady(quint64 request, QString itemId, bool backdrop, QImage image);
     void subtitleReady(quint64 request, int streamIndex, QByteArray bytes);
+    void probeFinished(quint64 request, int status, QString detail);
 private:
-    enum class Operation { SignIn, Views, Items, Search, Playback, Artwork, Report, Subtitle, SubtitleImage };
+    enum class Operation { SignIn, Views, Items, Search, Playback, Artwork, Report, Subtitle, SubtitleImage, Probe };
     quint64 send(Operation operation, QNetworkReply* reply, QString context = {}, bool audio = false);
     void finish(QNetworkReply* reply, Operation operation, quint64 request,
                 quint64 generation, QString context = {}, bool audio = false);
-    QNetworkReply* get(const QUrl& url);
+    QNetworkReply* get(const QUrl& url, int transferTimeoutMs = 15000);
     QNetworkReply* post(const QUrl& url, const QByteArray& body);
     QNetworkReply* deleteResource(const QUrl& url);
     QUrl apiUrl(const QString& route) const;
