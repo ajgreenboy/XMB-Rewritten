@@ -88,7 +88,7 @@ You need Windows 10 or 11, Visual Studio 2022 with the C++ workload, Qt 6 (MSVC 
 
 ## Status
 
-Version **0.3.3**. It builds cleanly, and its own checks pass. Real-hardware testing on a living-room PC is still in progress, so treat anything that depends on a physical TV, remote or game as unverified until you try it.
+Version **0.3.4**. It builds cleanly, and its own checks pass. Real-hardware testing on a living-room PC is still in progress, so treat anything that depends on a physical TV, remote or game as unverified until you try it.
 
 | Measure | Result | Where |
 |---|---|---|
