@@ -10,9 +10,10 @@
 // hash plus a short summary, then compared with tests/steam_vdf_golden.txt.
 //
 // The golden file was recorded from the ORIGINAL, unmerged parsers and must not change when the
-// parser implementation changes. Exception: the folders/mutate-* and folders/trunc-* entries embed the
-// temp tree's paths, so they were re-recorded (2026-11-13) once that tree got a fixed path length;
-// before that they only matched on the recording machine. Fixtures are fully synthetic. The real Steam install of the machine
+// parser implementation changes. Exception: the folders/mutate-* and folders/trunc-* entries were
+// re-recorded (2026-11-14) when the fixtures stopped embedding the machine's temp path: they are built
+// around a fixed model path and the real tree's paths are substituted afterwards (see realizePaths), so
+// no outcome depends on the temp directory's name, length or separator positions. Fixtures are fully synthetic. The real Steam install of the machine
 // is covered by `--real <file>`: it records or compares only counts and hashes, in a file the caller
 // keeps OUTSIDE the repository, and prints no account id, path or title.
 //
@@ -246,6 +247,33 @@ struct Fixture {
     QByteArray data;
 };
 
+// The fixtures are built (and truncated, mutated, ...) around a fixed MODEL tree, never around the real
+// temp directory. Edits that land inside a path (replace a character with '/', delete a separator, cut the
+// path short) would otherwise behave differently on every machine, because the temp path's length and
+// separator offsets differ (user name, short 8.3 names, runner layout). realizePaths() then swaps each
+// intact model path for the real tree's path in the three spellings the fixtures use. A damaged model path
+// stays as written, and names a directory that exists on no machine.
+QByteArray realizePaths(QByteArray data, const Paths& model, const Paths& real) {
+    const auto doubled = [](const QString& x) { return QString(x).replace(QLatin1Char('\\'), QStringLiteral("\\\\")); };
+    const auto swap = [&](const QString& m, const QString& r) {
+        const QString mn = QDir::toNativeSeparators(m), rn = QDir::toNativeSeparators(r);
+        data.replace(doubled(mn).toUtf8(), doubled(rn).toUtf8());
+        data.replace(mn.toUtf8(), rn.toUtf8());
+        data.replace(m.toUtf8(), r.toUtf8());
+    };
+    swap(model.root, real.root);
+    swap(model.lib1, real.lib1);
+    swap(model.lib2, real.lib2);
+    return data;
+}
+
+Paths modelPaths() {
+    // Padded to the length the old temp-based tree had, so the truncation sweeps stay as long as before.
+    QString base = QStringLiteral("C:/xmb-vdf-model/");
+    base += QString(120 - base.size(), QLatin1Char('p'));
+    return {base + QStringLiteral("/steam"), base + QStringLiteral("/lib one"), base + QStringLiteral("/lib2")};
+}
+
 QByteArray pad(qsizetype count) { return QByteArray(count, 'x'); }
 
 // Pads `base` with a trailing comment so the whole file is exactly `size` bytes.
@@ -287,11 +315,13 @@ struct Lcg {
     }
 };
 
-QVector<Fixture> makeFixtures(const Paths& p) {
+QVector<Fixture> makeFixtures(const Paths& realPaths) {
     QVector<Fixture> out;
+    const Paths p = modelPaths();
     const Role roles[] = {Role::Login, Role::Folders, Role::Manifest};
+    const auto realize = [&](const QByteArray& data) { return realizePaths(data, p, realPaths); };
     const auto add = [&](const QString& name, Role role, const QByteArray& data) {
-        out.append({QStringLiteral("%1/%2").arg(QString::fromLatin1(roleName(role)), name), role, data});
+        out.append({QStringLiteral("%1/%2").arg(QString::fromLatin1(roleName(role)), name), role, realize(data)});
     };
 
     struct Named { const char* name; Style style; };
@@ -471,7 +501,7 @@ QVector<Fixture> makeFixtures(const Paths& p) {
 
     // File-size limits: account reader 1 MiB, library readers 2 MiB (login/folders) and 1 MiB (manifest).
     for (Role role : roles) {
-        const QByteArray base = build(role, Style{}, p);
+        const QByteArray base = realize(build(role, Style{}, p)); // realized first: these files need exact sizes
         const qsizetype mib = 1024 * 1024;
         for (qsizetype delta : {-1, 0, 1}) {
             add(QStringLiteral("size-1MiB%1").arg(delta), role, padTo(base, mib + delta));
@@ -550,16 +580,9 @@ struct World {
 
     bool init() {
         if (!dir.isValid()) return false;
-        // The folders fixtures embed these paths, so their length decides every truncation and
-        // mutation offset. Pad the tree root to a fixed length so the results (and the golden file)
-        // do not depend on how long the machine's temp path is.
-        constexpr qsizetype BaseLength = 120;
-        QString base = dir.path();
-        if (base.size() + 2 > BaseLength) {
-            std::fprintf(stderr, "temp path longer than %lld characters\n", static_cast<long long>(BaseLength - 2));
-            return false;
-        }
-        base += QLatin1Char('/') + QString(BaseLength - base.size() - 1, QLatin1Char('p'));
+        // The fixtures are edited around a fixed model path and only then pointed at this tree
+        // (see realizePaths), so the temp path's name and length do not matter.
+        const QString base = dir.path();
         paths.root = QDir(base).filePath(QStringLiteral("steam"));
         paths.lib1 = QDir(base).filePath(QStringLiteral("lib one"));
         paths.lib2 = QDir(base).filePath(QStringLiteral("lib2"));
@@ -607,7 +630,6 @@ QString scrub(QString text, const World& w) {
     const QStringList forms = {w.canonicalRoot, QDir::toNativeSeparators(w.canonicalRoot), w.paths.root,
                                QDir::toNativeSeparators(w.paths.root)};
     for (const QString& form : forms) text.replace(form, QStringLiteral("<R>"), Qt::CaseInsensitive);
-    // The padded root first, so its paths scrub to <T> exactly as before the padding existed.
     text.replace(w.paddedBase, QStringLiteral("<T>"), Qt::CaseInsensitive);
     text.replace(QDir::toNativeSeparators(w.paddedBase), QStringLiteral("<T>"), Qt::CaseInsensitive);
     text.replace(w.rawPaddedBase, QStringLiteral("<T>"), Qt::CaseInsensitive);
