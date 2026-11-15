@@ -106,7 +106,7 @@ in-app updater keeps using the zip either way.
 Build it locally with [Inno Setup 6](https://jrsoftware.org/isinfo.php) after `build-package.ps1`:
 
 ```powershell
-& "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /DAppVersion=0.3.0 native-xmb\packaging\installer\re-ps3.iss   # -> dist\re-ps3-setup.exe
+& "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /DAppVersion=0.3.1 native-xmb\packaging\installer\re-ps3.iss   # -> dist\re-ps3-setup.exe
 ```
 
 ## Code signing
