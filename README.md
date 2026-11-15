@@ -31,7 +31,7 @@ The screenshots show the firmware's icons, fonts and artwork, because that is wh
 - **The XMB shell:** category navigation, a page stack with selection restore, the Options menu, message boxes, settings pages, the system menu, themes (`.p3t`), the 4.93 cold-boot intro and the traced interaction sounds.
 - **Local media:** video with sidecar subtitles and resume, a music player with a visualizer, photo viewing and the 3D Photo Gallery, and playlists. Folder and file pickers are drawn inside the XMB, so a controller can drive them.
 - **Streaming and content:**
-  - **Jellyfin:** set up from inside the XMB (server address, a server check and an optional LAN search), libraries and folders, direct play and HLS transcodes, subtitles, and a remembered sign-in.
+  - **Jellyfin:** set up from inside the XMB (server address, a server check and an optional LAN search), libraries and folders, direct play and HLS transcodes, subtitles, a remembered sign-in, and a Music-column entry that reuses it (artists, albums, playlists, songs).
   - **Steam:** installed titles in the Game column, collections, the store, downloads, accounts, and Quit Game that closes the game's own processes.
   - **Spotify**, **DLNA / UPnP** discovery and **RAWG** artwork.
 - **Home and network:** Tailscale, Wake on LAN, Home Assistant and weather, each as a native page.
@@ -93,7 +93,7 @@ Version **0.3.1**. It builds cleanly, and its own checks pass. Real-hardware tes
 | Measure | Result | Where |
 |---|---|---|
 | Render gate | 6 layers and 28 named states pass against their stored baselines | `bun work/ab-layers.ts --all` |
-| Unit tests | 14 runners in CI: Steam, setup, firmware, the Jellyfin setup, playback and others | [tests.yml](.github/workflows/tests.yml) |
+| Unit tests | 17 runners in CI: Steam (including account switch and Quit Game), setup, firmware, Jellyfin setup, playback, music and others | [tests.yml](.github/workflows/tests.yml) |
 | Console parity | Compared against the real 4.93 firmware in RPCS3, with differences recorded | [native-xmb/audit/README.md](native-xmb/audit/README.md) |
 | Release hygiene | Credentials, firmware data and broken links are checked before a release | `work/release-check.ps1` |
 | Real-hardware run | In progress on a living-room PC | [RELEASE-CHECKLIST.md](native-xmb/audit/RELEASE-CHECKLIST.md) |
