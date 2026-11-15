@@ -26,7 +26,8 @@ software and found the bugs listed under "Known findings" below. This run is abo
 
 **Accounts and services** (signed in or reachable from the HTPC)
 
-- Jellyfin: server address and a login. The library should have one title that direct-plays, one with a text subtitle, one
+- Jellyfin: server address and a login. Add the server from the XMB itself (TV/Video Services, the `Jellyfin` setup
+  row, [JELLYFIN-SETUP.md](JELLYFIN-SETUP.md)); no apps.json editing. The library should have one title that direct-plays, one with a text subtitle, one
   with a PGS subtitle, and one with a VobSub subtitle if you have it (JF4 to JF6).
 - Spotify Premium, plus your Spotify developer app's client id for `spotify.json`. A free account too, if you have one (SP5).
 - A DLNA server running on the LAN: Plex DLNA, minidlna or the Jellyfin DLNA plugin (DL1 to DL3).

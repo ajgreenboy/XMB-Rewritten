@@ -137,12 +137,7 @@ bool validateAppForWrite(ContentApp& app, const QString& baseDirectory, QString&
             return fail(error, QStringLiteral("Game executable must have a .exe extension"));
 #endif
     } else {
-        const QUrl parsed(app.url, QUrl::StrictMode);
-        if (app.url.isEmpty() || !parsed.isValid()
-            || (parsed.scheme() != QStringLiteral("http") && parsed.scheme() != QStringLiteral("https"))
-            || parsed.host().isEmpty() || !parsed.userInfo().isEmpty()
-            || parsed.authority().contains(QLatin1Char('@'))
-            || (app.kind == QStringLiteral("jellyfin") && (parsed.hasQuery() || parsed.hasFragment())))
+        if (!ContentRegistry::isValidServerUrl(app.url, app.kind == QStringLiteral("jellyfin")))
             return fail(error, app.kind == QStringLiteral("jellyfin")
                         ? QStringLiteral("Jellyfin Server URL must be http(s), include a host, and contain no credentials, query or fragment")
                         : QStringLiteral("Web URL must be http(s), include a host, and contain no credentials"));
@@ -279,12 +274,7 @@ bool parseApp(const QJsonValue& value, qsizetype index, const QString& baseDirec
             return fail(error, QStringLiteral("%1 game executable must have a .exe extension").arg(where));
 #endif
     } else {
-        const QUrl parsed(app.url, QUrl::StrictMode);
-        if (app.url.isEmpty() || !parsed.isValid()
-            || (parsed.scheme() != QStringLiteral("http") && parsed.scheme() != QStringLiteral("https"))
-            || parsed.host().isEmpty() || !parsed.userInfo().isEmpty()
-            || parsed.authority().contains(QLatin1Char('@'))
-            || (app.kind == QStringLiteral("jellyfin") && (parsed.hasQuery() || parsed.hasFragment())))
+        if (!ContentRegistry::isValidServerUrl(app.url, app.kind == QStringLiteral("jellyfin")))
             return fail(error, app.kind == QStringLiteral("jellyfin")
                         ? QStringLiteral("%1 Jellyfin Server URL must be http(s), include a host, and contain no credentials, query or fragment").arg(where)
                         : QStringLiteral("%1 web URL must be http(s), include a host, and contain no credentials").arg(where));
@@ -408,6 +398,15 @@ bool writeRegistry(const QString& path, const QVector<ContentApp>& apps, QString
 }
 
 } // namespace
+
+bool ContentRegistry::isValidServerUrl(const QString& url, bool jellyfin) {
+    const QUrl parsed(url, QUrl::StrictMode);
+    return !(url.isEmpty() || !parsed.isValid()
+             || (parsed.scheme() != QStringLiteral("http") && parsed.scheme() != QStringLiteral("https"))
+             || parsed.host().isEmpty() || !parsed.userInfo().isEmpty()
+             || parsed.authority().contains(QLatin1Char('@'))
+             || (jellyfin && (parsed.hasQuery() || parsed.hasFragment())));
+}
 
 bool ContentRegistry::load(const QString& path, QVector<ContentApp>& apps, QString& error) {
     error.clear();

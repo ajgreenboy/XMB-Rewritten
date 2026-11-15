@@ -218,8 +218,15 @@ Open **Game → Artwork Settings**, enter a [RAWG API key](https://rawg.io/apido
 & .\out\integration\re-ps3-native.exe --steam-store-report .\out\steam-store.json [--steam-store-query portal]
 ```
 
-Edit `examples/jellyfin.json` (or `examples/media-apps.json` for Jellyfin, Plex, YouTube and Spotify) for your
-setup before importing it. This adds a TV/Video Services app: Jellyfin is a native service with library/folder
+**Jellyfin sets itself up from inside the XMB.** With no Jellyfin registered, TV/Video Services opens on a
+`Jellyfin` row ("Set up your Jellyfin server"). Cross opens a page: type the server address on the on-screen
+keyboard (or choose Look for Servers on This Network), the page checks the server and shows its name and
+version, and Add Jellyfin saves the registration into `<data>\apps.json`. The normal Jellyfin row (library and
+sign-in) replaces the setup row at once, with no restart. A registered Jellyfin row's item menu has Change
+Server Address. See [audit/JELLYFIN-SETUP.md](audit/JELLYFIN-SETUP.md).
+
+The manual route still works: edit `examples/jellyfin.json` (or `examples/media-apps.json` for Jellyfin, Plex,
+YouTube and Spotify) for your setup and import it. This adds a TV/Video Services app: Jellyfin is a native service with library/folder
 pages, direct play and server-negotiated HLS, and it signs in on an XMB page with a masked keyboard
 (audit/JELLYFIN-NATIVE.md); the Plex, YouTube and Spotify entries are URL apps that still open in your browser. Spotify also has a native page in the Music column (see "Spotify" below); the example's Spotify entry is only a browser shortcut.
 See [content schema](audit/CONTENT-REGISTRY.md) and

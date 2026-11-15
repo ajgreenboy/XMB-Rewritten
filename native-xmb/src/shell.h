@@ -20,6 +20,7 @@
 #include "content_registry.h"
 #include "jellyfin_client.h"
 #include "jellyfin_stream.h"
+#include "jellyfin_setup.h"
 #include "steam_owned.h"
 #include "steam_accounts.h"
 #include "steam_collections.h"
@@ -60,6 +61,10 @@ enum class Action { Unavailable, SettingsPage, SettingChoices, SetSetting, EditN
     // JellyfinSignInRemember is the explicit "stay signed in" opt-in: Cross toggles it, and only an
     // accepted sign-in with it on writes the DPAPI-protected session record.
     JellyfinSignInField, JellyfinSignInSubmit, JellyfinSignInCancel, JellyfinSignInRemember,
+    // Setting Jellyfin up from inside the XMB (audit/JELLYFIN-SETUP.md). JellyfinSetup is the TV/Video Services
+    // row shown while no Jellyfin server is registered; it opens the setup page, whose rows are the address field
+    // (the XMB keyboard), Check Server, Add/Save, Look for Servers and one row per server the network answered.
+    JellyfinSetup, JellyfinSetupField, JellyfinSetupCheck, JellyfinSetupSave, JellyfinSetupFind, JellyfinSetupPick,
     // Settings > System Settings > Restore Default Settings: a real, confirm-gated action that puts every
     // preference this build owns back to its default for the active profile. It is app state only - no host
     // setting, library path or profile is touched - and the confirmation box names exactly what is reset.
@@ -218,6 +223,8 @@ enum class OptionCommand { Activate, Information,
     SpotifyPlayAll, SpotifyShuffleAll,
     // Jellyfin's streaming ceiling: the list (from an item row or the player panel) and one choice in it.
     JellyfinQuality, JellyfinQualityTarget,
+    // A registered Jellyfin app's own row: reopen the setup page on its address (Change Server Address).
+    JellyfinChangeAddress,
     // Edit (explore_plugin msg_edit) on a playlist row or an item inside one opens the two-pane editor
     // (View's playlist editor; audit/PLAYLIST-EDITOR.md), where Move lives. Add All (msg_add_all_playlist, a
     // string explore_plugin carries too): every local file of the column's kind on the page into one chosen
@@ -929,6 +936,23 @@ private:
     void reportJellyfinPlaybackState();
     void finishJellyfinPlayback(bool completed=false);
     void signOutJellyfin();
+    // ---- Jellyfin setup page (jellyfin_setup_shell.cpp, audit/JELLYFIN-SETUP.md) ----
+    // A page of the ordinary page model, like the sign-in page: nothing modal, nothing drawn here. The state is
+    // in-memory only until Save writes the registration into apps.json (the --import-apps writer).
+    jellyfinSetup::SetupState jfSetup_;
+    jellyfinSetup::ServerProbe* jfProbe_=nullptr;
+    jellyfinSetup::Discovery* jfDiscovery_=nullptr;
+    bool jellyfinSetupOpen() const;
+    void openJellyfinSetupPage(const QString& editId={});
+    void refreshJellyfinSetupPage();
+    void focusJellyfinSetupRow(const QString& id);
+    void closeJellyfinSetupPage();
+    void setJellyfinSetupAddress(const QString& typed);
+    void checkJellyfinServer();
+    void saveJellyfinSetup();
+    void searchJellyfinServers();
+    void activateJellyfinSetup(const Entry& entry);
+    QVector<Entry> jellyfinSetupRows() const;
     DiscordClient discordFriends_;
     SteamOwned steamOwned_;
     OwnedGameList ownedGames_;      // purchased titles from the Steam Web API (may be empty without a key)
@@ -1034,7 +1058,7 @@ private:
     int columnSink_=0;
     // `grouped` is a page the item menu's Group Content level rebuilt into letter folders: `groupedSource` keeps
     // the ungrouped rows so All can put them back without a rescan, and the folders' rows are the same entries.
-    struct Page { QString title; QVector<Entry> entries; int selection=0; QString directory; bool jellyfin=false,jellyfinViews=false,jellyfinSearch=false; QString jellyfinParent; int jellyfinStart=0; bool downloads=false; bool continuePage=false; bool signIn=false; bool steamAccounts=false; bool grouped=false; QString groupKey; QVector<Entry> groupedSource; bool sysconfPlugin=false; QString playlistsType,playlistId; QString spotify,spotifyContext; QString dlna; int dlnaServer=-1; QString tailscale; QString wol,ha; bool weather=false; bool systemCheck=false; QString userInfo; int userInfoStep=0; bool browse=false; QString browsePath; QString browseFiles; };
+    struct Page { QString title; QVector<Entry> entries; int selection=0; QString directory; bool jellyfin=false,jellyfinViews=false,jellyfinSearch=false; QString jellyfinParent; int jellyfinStart=0; bool downloads=false; bool continuePage=false; bool signIn=false; bool jfSetup=false; bool steamAccounts=false; bool grouped=false; QString groupKey; QVector<Entry> groupedSource; bool sysconfPlugin=false; QString playlistsType,playlistId; QString spotify,spotifyContext; QString dlna; int dlnaServer=-1; QString tailscale; QString wol,ha; bool weather=false; bool systemCheck=false; QString userInfo; int userInfoStep=0; bool browse=false; QString browsePath; QString browseFiles; };
     QVector<Page> pages_;
     bool psMenu_=false;              // the PS-button system menu is showing
     bool desktopMode_=false;         // the XMB window is hidden for Desktop Mode (main.cpp DesktopMode)

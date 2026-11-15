@@ -404,6 +404,7 @@ where the row says only `1` is accepted.
 | `XMB_STEAM_ID` | Select a numeric Steam ID when the local account is ambiguous. |
 | `XMB_STEAM_WEB_ONLY=1` | Skip the signed-in client helper and use the Web API only. |
 | `XMB_STEAM_ARTWORK=0` | Do not fetch Steam header artwork. |
+| `XMB_NO_SETUP_ROWS=1` | Do not list the `Jellyfin` setup row in TV/Video Services while no Jellyfin is registered (test and capture runs). |
 | `XMB_STEAM_ARTWORK_LOG=1`, `XMB_STEAM_DOWNLOADS_LOG=1`, `XMB_SUBTITLE_LOG=1`, `XMB_VOLUME_LOG=1`, `XMB_NOTIFY_LOG=1`, `XMB_AUDIO_LOG=1`, `XMB_AUDIO_TRACE=1`, `XMB_PS_LOG=1`, `XMB_XMBML_LOG=1` | Service-specific diagnostic lines: artwork (including overrides), downloads, sidecar subtitles, volume (including swallowed duplicates), notifications, audio (the `_TRACE` alias accepts only `1`), the PS-button watcher, and XMBML resolution. |
 | `XMB_DEV_FLASH` | Fallback firmware path for the particle layer when it is initialized without the assets service. The `--dev-flash` argument is the normal source; do not set both. |
 
@@ -441,6 +442,16 @@ starts installed titles with `steam.exe -applaunch <id>` and never writes to Ste
 
 Jellyfin is a native service (library pages, direct play, server-negotiated HLS, in-XMB sign-in), not
 a browser shortcut.
+
+**The short way, no file editing.** Start the app, go to TV/Video Services (it opens on a `Jellyfin` row while none is
+registered), press Cross, choose Server Address and type your server's address (for example
+`http://192.168.1.10:8096`; a missing `http://` is added), or choose Look for Servers on This Network. The page
+asks the server for its public information and shows its name and version; Add Jellyfin then writes the
+registration into `<data>\apps.json` and the Jellyfin row appears in place. Later, the Jellyfin row's item menu
+(Triangle) has Change Server Address. Details: [audit/JELLYFIN-SETUP.md](audit/JELLYFIN-SETUP.md). Steps 3 and 4
+below (signing in, Remember) are the same either way.
+
+The manual way, for scripted installs:
 
 1. Copy `examples\jellyfin.json` and set your server's base URL:
 
