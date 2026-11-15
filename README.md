@@ -93,7 +93,7 @@ Version **0.3.1**. It builds cleanly, and its own checks pass. Real-hardware tes
 | Measure | Result | Where |
 |---|---|---|
 | Render gate | 6 layers and 28 named states pass against their stored baselines | `bun work/ab-layers.ts --all` |
-| Unit tests | 17 runners in CI: Steam (including account switch and Quit Game), setup, firmware, Jellyfin setup, playback, music and others | [tests.yml](.github/workflows/tests.yml) |
+| Unit tests | 16 runners in CI: Steam (including account switch and Quit Game), setup, firmware, Jellyfin setup, playback, music and others | [tests.yml](.github/workflows/tests.yml) |
 | Console parity | Compared against the real 4.93 firmware in RPCS3, with differences recorded | [native-xmb/audit/README.md](native-xmb/audit/README.md) |
 | Release hygiene | Credentials, firmware data and broken links are checked before a release | `work/release-check.ps1` |
 | Real-hardware run | In progress on a living-room PC | [RELEASE-CHECKLIST.md](native-xmb/audit/RELEASE-CHECKLIST.md) |
