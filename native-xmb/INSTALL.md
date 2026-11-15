@@ -300,6 +300,7 @@ the shell sees.
 | `grab=<path>` | Save the framebuffer as PNG and write `<path>.json`, the state sidecar (category, depth, selection, entry, media, subtitles, page kind, notification, display-off request, window state, pad-gate counters). |
 | `burst=<prefix>[@KEY]` | Press `KEY` (optional) and save the next 12 frames at 12 ms as `<prefix>_NN_<ms>ms.png`. |
 | `type=<chars>` | Send each character as a key press (OSK text entry). |
+| `clip=<text>`, `clipfill=<n>`, `clipimage`, `PASTE`, `SHIFTINSERT` | Test only, and only with `XMB_TEST_CLIPBOARD=1` (ignored otherwise): set the clipboard to a fixture (percent-encoded text, `clip=` alone empties it; `clipfill` is n copies of `x`; `clipimage` is an image, no text) and send Ctrl+V or Shift+Insert to the keyboard. The real clipboard is read only by a paste action. See [audit/OSK-PASTE.md](audit/OSK-PASTE.md). |
 | `NOTIFY=<title>[\|<detail>[\|<icon>]]` | Raise a notification through the same path a real event uses. The icon is a `tex_notification_<name>` suffix (default `info`) or the full texture name. |
 | `VOLUP`, `VOLDOWN`, `MUTE` | The couch volume path: the same handler a Windows media key reaches. |
 | `VOLSET=<percent>` | Set the master volume directly, whole percent 0-100. Any other value logs "invalid VOLSET token" and is skipped. |

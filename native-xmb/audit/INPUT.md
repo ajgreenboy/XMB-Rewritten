@@ -56,6 +56,7 @@ LB/RB = L1/R1, LT/RT = L2/R2, Guide = PS.
 | Player control panel | S | Start in the player | - | - | - |
 | Music control panel (local audio) | T | Y / Triangle | - | Info / Menu | Ctrl+D |
 | Keyboard (OSK): key, backspace, space, accept, cancel | Enter, Backspace, text, Ctrl+Enter, Escape | A, X, Y, Start, B | Back = cancel | Back = cancel | - |
+| Keyboard (OSK): paste the clipboard | Ctrl+V, Shift+Insert | Right from Enter to the Paste key, then A | - | - | - |
 | Photo: zoom, reset, rotate | + / -, 0, Q / E | LB / RB, X, Y | Info = rotate right | Info = rotate right | - |
 | Volume up / down / mute | volume keys | - (L2/R2 seek; the console binds no volume to them) | `VOLUME_UP/DOWN/MUTE` | `VK_VOLUME_*`, `Key_Volume*` | - |
 | Refresh | F5 | - | - | - | - |

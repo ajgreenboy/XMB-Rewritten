@@ -578,7 +578,8 @@ listed as an open question rather than as a layout rule.
    be drawn; the methods cannot.
 4. **The copy/paste clipboard of the XMB.** The two buttons operate the console's own clipboard
    (`copy_window` page, "Copied" message). A PC build can wire its own clipboard, but that is a
-   host feature, not parity.
+   host feature, not parity. Paste is now wired to the Windows clipboard (OSK-PASTE.md); Copy stays inert
+   (the OSK has no text selection).
 5. **Sound.** `snd_decide`, `snd_cancel`, `snd_cursor` are played by the panel module; the native
    app has its own cue set (`src/interaction_audio.cpp`). Matching the *sample* would need those
    resources decoded; matching the *timing* needs a capture the audio path can be aligned to.

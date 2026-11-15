@@ -23,6 +23,8 @@
 #include "firmware_extract.h"
 #include "firmware_install.h"
 #include <QApplication>
+#include <QClipboard>
+#include <QUrl>
 #include "boot_profile.h"
 #include "boot_prefetch.h"
 #include <QCommandLineParser>
@@ -1819,6 +1821,20 @@ int main(int argc,char** argv) {
                     if(key && ms>=0 && ms<=60000)QTimer::singleShot(ms,view,[tap,key]{tap(key);});
                     else qWarning()<<"script: invalid seq item"<<item;
                 }
+            } else if(token.startsWith("clip=") && qEnvironmentVariable("XMB_TEST_CLIPBOARD")==QLatin1String("1")) {
+                // Test only (XMB_TEST_CLIPBOARD=1): clip=<percent-encoded text> sets the clipboard to a fixture, and
+                // clip= with nothing clears it; clipimage sets an image (no text). The real clipboard is never read here.
+                QGuiApplication::clipboard()->setText(QUrl::fromPercentEncoding(token.mid(5).toUtf8()));
+            } else if(token.startsWith("clipfill=") && qEnvironmentVariable("XMB_TEST_CLIPBOARD")==QLatin1String("1")) {
+                // clipfill=<count>: a clipboard of <count> 'x' characters (the size-refusal case; the script line is too short for it)
+                QGuiApplication::clipboard()->setText(QString(std::clamp(token.mid(9).toInt(),0,5000000),QLatin1Char('x')));
+            } else if(token=="clipimage" && qEnvironmentVariable("XMB_TEST_CLIPBOARD")==QLatin1String("1")) {
+                QImage image(4,4,QImage::Format_ARGB32);image.fill(Qt::red);QGuiApplication::clipboard()->setImage(image);
+            } else if(token=="PASTE" && qEnvironmentVariable("XMB_TEST_CLIPBOARD")==QLatin1String("1")) {
+                // Ctrl+V through the keyboard path (the same event a physical keyboard sends)
+                QKeyEvent press(QEvent::KeyPress,Qt::Key_V,Qt::ControlModifier,QStringLiteral("\x16"));QCoreApplication::sendEvent(view,&press);
+            } else if(token=="SHIFTINSERT" && qEnvironmentVariable("XMB_TEST_CLIPBOARD")==QLatin1String("1")) {
+                QKeyEvent press(QEvent::KeyPress,Qt::Key_Insert,Qt::ShiftModifier);QCoreApplication::sendEvent(view,&press);
             } else if(token.startsWith("type=")) {
                 for(const QChar c:token.mid(5)){QKeyEvent event(QEvent::KeyPress,0,Qt::NoModifier,QString(c));QCoreApplication::sendEvent(view,&event);}
             } else if(keys.contains(token)) {
