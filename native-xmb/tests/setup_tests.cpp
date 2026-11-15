@@ -72,6 +72,18 @@ int main(int argc,char** argv) {
     check(xmb::setup::axisText(0,0,0,0,0,0).isEmpty() && xmb::setup::axisText(.2f,-.3f,0,0,.1f,0).isEmpty(),"below the dead zone is nothing");
     check(xmb::setup::axisText(-.9f,-.9f,0,0,0,0)==QStringLiteral("Left stick up left"),"left stick diagonal");
     check(xmb::setup::axisText(0,0,.8f,0,1,.6f)==QStringLiteral("Right stick right, L2, R2"),"right stick and triggers");
+    {   // cold-boot intro decision
+        using xmb::setup::IntroInputs;using xmb::setup::introEnabled;
+        IntroInputs a;check(introEnabled(a),"plain start plays the intro");
+        a.kiosk=true;check(!introEnabled(a),"kiosk skips the intro by default");
+        a.kioskIntro=true;check(introEnabled(a),"kiosk plays the intro with kioskIntro");
+        a.noIntroFlag=true;check(!introEnabled(a),"--no-intro beats kioskIntro");
+        a.noIntroFlag=false;a.safeMode=true;check(!introEnabled(a),"safe mode beats kioskIntro");
+        a.safeMode=false;a.script=true;check(!introEnabled(a),"--script beats kioskIntro");
+        a.script=false;a.backgroundClock=true;check(!introEnabled(a),"--background-clock beats kioskIntro");
+        a.backgroundClock=false;a.measureReference=true;check(!introEnabled(a),"--measure-reference beats kioskIntro");
+        IntroInputs b;b.kioskIntro=true;check(introEnabled(b),"kioskIntro does not matter without kiosk");
+    }
     std::fprintf(stdout,failures?"setup tests: %d FAILED\n":"setup tests: all passed\n",failures);
     return failures?1:0;
 }

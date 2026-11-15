@@ -181,10 +181,10 @@ file and quits without opening a window.
 
 | Option | Argument | What it does |
 |---|---|---|
-| `--kiosk` | - | Appliance mode: one frameless fullscreen window on the chosen display, straight to the XMB (the cold boot is skipped). It writes no window state, so leaving the flag restores the stored window. |
+| `--kiosk` | - | Appliance mode: one frameless fullscreen window on the chosen display, straight to the XMB (the cold boot is skipped unless `kioskIntro` is true in `xmb-config.json` or `settings.ini` `[boot]`). It writes no window state, so leaving the flag restores the stored window. |
 | `--display` | index | Screen index for `--kiosk`, `0` = first screen. Needs `--kiosk`; an index outside `0..screens-1` exits 2. Mutually exclusive with `--start-windowed`. |
 | `--start-windowed` | - | Start in a window even when the stored preference is fullscreen. Local testing; ignores the stored state for this run only. |
-| `--no-intro` | - | Start at the XMB instead of the 4.93 cold boot. Also implied by `--script`, `--background-clock`, `--measure-reference` and `--kiosk`. |
+| `--no-intro` | - | Start at the XMB instead of the 4.93 cold boot. Also implied by `--script`, `--background-clock`, `--measure-reference` and, unless `kioskIntro` is on (see xmb-config.json), `--kiosk`. An explicit `--no-intro` always wins. |
 
 ### 4.3 Deterministic capture
 

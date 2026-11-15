@@ -27,6 +27,11 @@ bool markCompleted(const QString& dataDirectory,bool skipped,QString* error) {
     if(!file.commit()){if(error)*error=file.errorString();return false;}
     return true;
 }
+bool introEnabled(const IntroInputs& in) {
+    if(in.noIntroFlag || in.script || in.backgroundClock || in.measureReference || in.safeMode)return false;
+    return !in.kiosk || in.kioskIntro;
+}
+
 QString configPath() {
     if(qEnvironmentVariableIsSet("XMB_CONFIG"))return qEnvironmentVariable("XMB_CONFIG");   // tests and scratch runs
     return QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("xmb-config.json"));

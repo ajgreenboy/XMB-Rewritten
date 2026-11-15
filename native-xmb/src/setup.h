@@ -19,6 +19,12 @@ bool markCompleted(const QString& dataDirectory,bool skipped,QString* error=null
 QString configPath();
 QJsonObject loadConfig(const QString& path);
 bool saveConfig(const QString& path,const QJsonObject& config,QString* error=nullptr);
+// ---- cold-boot intro decision ----
+// Whether the 4.93 cold-boot intro plays on this start. Off for --no-intro (which always wins), the scripted and
+// measurement runs, and safe mode. A kiosk start skips it unless "kioskIntro" is true in xmb-config.json or
+// settings.ini [boot] kioskIntro=true (default off).
+struct IntroInputs { bool noIntroFlag=false,script=false,backgroundClock=false,measureReference=false,safeMode=false,kiosk=false,kioskIntro=false; };
+bool introEnabled(const IntroInputs& in);
 // ---- the firmware folder ----
 // dev_flash is the user's own console firmware; the XMB never downloads or ships it. A folder is usable when these
 // files exist (the ones the shell cannot start without); `missing` lists those that do not, relative to the root.

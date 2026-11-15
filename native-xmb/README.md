@@ -370,7 +370,7 @@ what a theme holds, write its element tree and decoded pictures and sounds to a 
 
 The app starts with the firmware's 4.93 cold-boot intro: coldboot.raf (the PS3 logo scene and its script) with
 coldboot_stereo.ac3, then the XMB at 5.5 s, as on the console. Any key or pad button skips it; `--no-intro` starts
-at the XMB (scripted and measurement runs skip it too). `XMB_INTRO_GRAB=<folder>@<seconds>,...` saves frames at
+at the XMB (scripted and measurement runs skip it too). `--kiosk` skips it as well, unless `"kioskIntro": true` is set in `xmb-config.json` (or `kioskIntro=true` under `[boot]` in `settings.ini`); `--no-intro` still wins. The kiosk start logs `boot: intro enabled/disabled (kiosk, kioskIntro=...)`. `XMB_INTRO_GRAB=<folder>@<seconds>,...` saves frames at
 those intro times for comparison with an RPCS3 capture (audit/PIPELINE.md "Cold boot").
 
 ## Animation diagnostics

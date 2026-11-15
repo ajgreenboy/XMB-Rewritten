@@ -39,7 +39,7 @@ Columns: ID, what to do, what correct looks like, evidence, Pass/Fail (left blan
 
 | ID | What to do | Correct looks like | Evidence | Pass/Fail |
 |---|---|---|---|---|
-| B1 | Run the kiosk command from setup step 6 without `--no-intro`. | The cold-boot intro plays, then the XMB fills display 1 with no window frame and no taskbar. | Photo of the TV; first 50 lines of `<log>`. | |
+| B1 | Run the kiosk command from setup step 6 without `--no-intro`, with `kioskIntro` unset (the default). | The kiosk skips the cold-boot intro: the XMB fills display 1 at once with no window frame and no taskbar; the log has `boot: intro disabled (kiosk, kioskIntro=false)`. With `"kioskIntro": true` in `xmb-config.json` the cold-boot intro plays first, then the XMB (log `boot: intro enabled (kiosk, kioskIntro=true)`). Started without `--kiosk` the intro plays. | Photo of the TV; first 50 lines of `<log>`. | |
 | B2 | Read the whole `<log>` after B1. | The file exists and has messages from this start. No crash stack. | Copy of `<log>`. | |
 | B3 | Quit, then start the same command with `--no-intro`. | Starts directly at the XMB. Preferences from the first start are still there. | Photo of the TV; `<data>` file listing. | |
 

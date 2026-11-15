@@ -17,7 +17,7 @@ and is pointed at by `xmb-config.json`.
 | `run-kiosk.ps1` | the launcher: resolves firmware/data paths and runs the app `--kiosk --display N` |
 | `watchdog.ps1` | loops the kiosk app and restarts it after a crash |
 | `install-autostart.ps1` | registers the logon scheduled task that runs the watchdog; optionally creates the Start-menu shortcuts; uninstalls both |
-| `xmb-config.json` | (you write it) `devFlash`, `dataDir`, `vshModules` paths on the HTPC |
+| `xmb-config.json` | (you write it) `devFlash`, `dataDir`, `vshModules` paths on the HTPC; optional `display` (screen index) and `kioskIntro` (`true` plays the cold-boot intro on a kiosk start; default off, `--no-intro` still wins; the exe reads it, the scripts need no change) |
 
 ## Build a package
 

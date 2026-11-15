@@ -1434,8 +1434,15 @@ int main(int argc,char** argv) {
         else qCritical()<<"phone remote: bind failed"<<phoneRemote->errorString();
     }
     // Kiosk starts at the XMB like a console that is already on: the cold-boot intro is a boot animation, not a
-    // launcher screen, and an appliance should be usable the moment the window appears.
-    view->setIntroEnabled(!parser.isSet("no-intro") && !parser.isSet("script") && !parser.isSet("background-clock") && !parser.isSet("measure-reference") && !kiosk && !xmb::diagnostics::safeMode());
+    // launcher screen, so it is skipped unless xmb-config.json "kioskIntro" or settings.ini [boot] kioskIntro is true.
+    // An explicit --no-intro, --script, --background-clock, --measure-reference and safe mode still win.
+    xmb::setup::IntroInputs introInputs;
+    introInputs.noIntroFlag=parser.isSet("no-intro");introInputs.script=parser.isSet("script");introInputs.backgroundClock=parser.isSet("background-clock");
+    introInputs.measureReference=parser.isSet("measure-reference");introInputs.safeMode=xmb::diagnostics::safeMode();introInputs.kiosk=kiosk;
+    introInputs.kioskIntro=launchConfig.value("kioskIntro").toBool(false) || windowSettings.value("boot/kioskIntro",false).toBool();
+    const bool introOn=xmb::setup::introEnabled(introInputs);
+    if(kiosk)qInfo().noquote()<<QString("boot: intro %1 (kiosk, kioskIntro=%2)").arg(introOn?"enabled":"disabled",introInputs.kioskIntro?"true":"false");
+    view->setIntroEnabled(introOn);
     view->setHealthWarningEnabled(!parser.isSet("no-health-warning") && !xmb::diagnostics::safeMode() && windowSettings.value("boot/healthWarning",true).toBool());
     if(parser.isSet("background-clock")) {
         const auto when=QDateTime::fromString(parser.value("background-clock"),Qt::ISODate);
