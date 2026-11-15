@@ -31,6 +31,7 @@
 #include <QAudioDevice>
 #include <QAudioOutput>
 #include <QPointer>
+#include <QWidget>
 #include <QCameraDevice>
 #include <QTcpSocket>
 #include <QDebug>
@@ -2716,4 +2717,40 @@ QJsonObject snapshotJson(const Snapshot& state) {
         {"printers",printers},
         {"displaysProfiles",QJsonObject{{"summary",displayProfileText(state)}}}};
 }
+
+#ifdef Q_OS_WIN
+// Pin the process to Per-Monitor-V2 DPI awareness before Qt starts. Qt 6 asks for the same thing, but its call is
+// refused (and the process silently stays on whatever it already had, up to DPI-unaware: Windows then renders a 1280x720
+// logical desktop and bitmap-scales it to the 4K panel, which is soft) when an awareness was set earlier, for example by
+// a compatibility entry. Calling first makes the choice ours; a refusal is shown by the dpi: line fitWindowToMonitor() logs.
+static int g_dpiAwarenessRequest=-1;   // 1 granted, 0 refused (already set), -1 not tried
+void requestPerMonitorDpiAwareness() {
+    g_dpiAwarenessRequest=SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)?1:0;
+}
+static const char* dpiAwarenessName() {
+    const auto awareness=GetAwarenessFromDpiAwarenessContext(GetThreadDpiAwarenessContext());
+    return awareness==DPI_AWARENESS_PER_MONITOR_AWARE?"per-monitor":awareness==DPI_AWARENESS_SYSTEM_AWARE?"system":"unaware";
+}
+// The window must cover its monitor's physical rectangle exactly. Qt converts between logical and native pixels with the
+// ratio of the screen it believes the window is on, and Windows enforces size limits of its own, so after showFullScreen the
+// native rectangle is compared with the monitor's and corrected if it differs. Logged either way (device ratio, native and
+// monitor sizes) so a real TV run says what it did.
+void fitWindowToMonitor(QWidget* widget,const char* why) {
+    const HWND hwnd=reinterpret_cast<HWND>(widget->winId());
+    const HMONITOR monitor=MonitorFromWindow(hwnd,MONITOR_DEFAULTTONEAREST);
+    MONITORINFO info{};info.cbSize=sizeof(info);
+    RECT now{};
+    if(!monitor || !GetMonitorInfoW(monitor,&info) || !GetWindowRect(hwnd,&now))return;
+    const RECT& want=info.rcMonitor;
+    const bool same=now.left==want.left && now.top==want.top && now.right==want.right && now.bottom==want.bottom;
+    qInfo().noquote()<<QString("dpi: %1: awareness %2 (request %3), device ratio %4, window native %5x%6 at %7,%8, monitor %9x%10 at %11,%12%13")
+        .arg(QLatin1String(why),QLatin1String(dpiAwarenessName())).arg(g_dpiAwarenessRequest).arg(widget->devicePixelRatioF())
+        .arg(now.right-now.left).arg(now.bottom-now.top).arg(now.left).arg(now.top)
+        .arg(want.right-want.left).arg(want.bottom-want.top).arg(want.left).arg(want.top).arg(same?QString{}:QStringLiteral(" - corrected"));
+    if(!same)SetWindowPos(hwnd,HWND_TOP,want.left,want.top,want.right-want.left,want.bottom-want.top,SWP_NOACTIVATE|SWP_FRAMECHANGED);
+}
+#else
+void requestPerMonitorDpiAwareness() {}
+void fitWindowToMonitor(QWidget*,const char*) {}
+#endif
 }
