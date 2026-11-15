@@ -369,8 +369,27 @@ void TextRenderer::beginFrame(QOpenGLFunctions_3_3_Core& gl,const QSize& target,
     // invalidating texture coordinates halfway through a shaped string.
     if(!qFuzzyCompare(rasterScale_,rasterScale) || pages_.size()>=maxPages) {
         for(const auto& page:pages_)gl.glDeleteTextures(1,&page.texture);
-        pages_.clear();faces_.clear();layouts_.clear();rasterScale_=rasterScale;
+        pages_.clear();faces_.clear();layouts_.clear();rasterScale_=rasterScale;++generation_;
     }
+}
+bool TextRenderer::warmGlyphs(QOpenGLFunctions_3_3_Core& gl,const QString& text,const QFont& requested,int flags,qreal width,int& cursor,qint64 budgetNs) {
+    if(!ready_ || text.isEmpty() || int(pages_.size())>maxPages/2)return true;
+    QFont font=requested;   // the same font drawImpl builds, so the tiles land on the same faces
+    if(font.styleName().isEmpty() && font.weight()==QFont::Normal && !font.italic())font.setStyleName("Regular");
+    font.setPixelSize(std::max(1,int(std::lround(requested.pixelSize()*rasterScale_))));
+    font.setStyleStrategy(QFont::PreferAntialias);
+    font.setHintingPreference(QFont::PreferNoHinting);
+    // Copied: glyph() may create a face, and the layout cache must not move under the loop.
+    const QVector<PlacedGlyph> glyphs=layout(text,font,width*rasterScale_,flags).glyphs;
+    QElapsedTimer clock;clock.start();
+    const int phases=phases_?phaseSteps*phaseSteps:1;
+    for(;cursor<int(glyphs.size())*phases;++cursor) {
+        if(clock.nsecsElapsed()>=budgetNs)return false;
+        const auto& placed=glyphs[cursor/phases];
+        const int phase=cursor%phases;
+        glyph(gl,placed.face,placed.index,phase%phaseSteps,phase/phaseSteps);
+    }
+    return true;
 }
 int TextRenderer::face(const QRawFont& font) {
     for(int i=0;i<int(faces_.size());++i)if(faces_[size_t(i)].font==font)return i;

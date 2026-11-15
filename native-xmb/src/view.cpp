@@ -332,15 +332,74 @@ void View::warmRender(const std::function<void(QPainter&)>& draw) {
     }
     glBindFramebuffer(GL_FRAMEBUFFER,defaultFramebufferObject());glViewport(0,0,device.width(),device.height());
 }
+// ---- Column text prewarm (audit/COLUMN-HITCH.md) ---------------------------------------------------------------
+// The first visit to a category rasterised the glyph tiles of its rows (10 to 37 tiles, 7 to 16 ms at 3840x2160) on
+// the frame the column slid in. Every tile is keyed by glyph, size and pen phase and none depends on where the row
+// sits, so the tiles of every row of every category can be built beforehand: all four pen phases of each glyph of the
+// title (32 px), value (21), second line (17), help text (19) and the category's own name (21), nearest category
+// first, a 1.2 ms slice per quiet frame.
+void View::buildColumnWarmJobs() {
+    auto& w=columnWarm_;
+    w.jobs.clear();w.next=0;w.cursor=0;
+    const auto add=[&](const QString& text,int size,int flags,qreal width) {
+        if(text.isEmpty())return;
+        const QString key=QString::number(size)+QLatin1Char('|')+QString::number(flags)+QLatin1Char('|')+text;
+        if(w.seen.contains(key))return;
+        w.seen.insert(key);
+        w.jobs.push_back({text,size,flags,width});
+    };
+    const auto& categories=shell_.categories();
+    const int count=int(categories.size()),here=std::clamp(shell_.category(),0,std::max(0,count-1));
+    constexpr int row=Qt::AlignLeft|Qt::AlignVCenter,help=Qt::AlignLeft|Qt::AlignTop;
+    for(int distance=0;distance<count;++distance)for(const int sign:{1,-1}) {
+        const int index=here+sign*distance;
+        if(index<0 || index>=count || (distance==0 && sign<0))continue;
+        const auto& category=categories[index];
+        add(category.title,21,Qt::AlignCenter,280);
+        for(const auto& entry:category.entries) {
+            add(entry.title,32,row,1100);
+            add(shell_.valueText(entry),21,row,440);
+            add(shell_.subtitleText(entry),17,help,1100);
+            add(entry.detail,19,help,1182);
+        }
+    }
+}
+bool View::prewarmColumnText() {
+    static const bool off=qEnvironmentVariable("XMB_COLUMN_PREWARM")==QLatin1String("0");
+    if(off)return false;
+    auto& w=columnWarm_;
+    if(const quint32 generation=textRenderer_.atlasGeneration();generation!=w.generation){w=ColumnWarm{};w.generation=generation;}
+    if(w.next>=w.jobs.size()) {
+        if(clock_.elapsed()<w.recheckMs)return false;
+        w.recheckMs=clock_.elapsed()+2000;   // rows arrive later (libraries, friends, downloads): look again now and then
+        buildColumnWarmJobs();
+        if(w.next>=w.jobs.size())return false;
+    }
+    warmRender([this,&w](QPainter& p){
+        QElapsedTimer slice;slice.start();
+        constexpr qint64 sliceNs=1'200'000;
+        p.beginNativePainting();
+        while(w.next<w.jobs.size() && slice.nsecsElapsed()<sliceNs) {
+            const auto& job=w.jobs[w.next];
+            QFont font(shell_.fontFamily());font.setPixelSize(job.size);
+            if(textRenderer_.warmGlyphs(*this,job.text,font,job.flags,job.width,w.cursor,sliceNs-slice.nsecsElapsed())){++w.next;w.cursor=0;}
+        }
+        glBindTexture(GL_TEXTURE_2D,0);
+        p.endNativePainting();
+    });
+    if(w.next>=w.jobs.size())qInfo().noquote()<<QString("prewarm: column text done, %1 strings").arg(w.jobs.size());
+    if(xmb::frametrace::on())xmb::frametrace::note(QString("column prewarm %1/%2").arg(w.next).arg(w.jobs.size()));
+    return true;
+}
 void View::prewarmOverlays() {
-    constexpr int stages=10;
+    constexpr int stages=11;
     constexpr qint64 startAfterMs=2500,lateAfterMs=6000,idleForMs=800,spacingMs=150;
     {
         // The glyph atlas is dropped when the layer's scale changes (TextRenderer::beginFrame), so what was warmed
         // for another size is gone: a resize, or the fullscreen switch that follows startup, starts the text over.
         const QSize device(int(width()*devicePixelRatioF()),int(height()*devicePixelRatioF()));
         const QSize pixels=device*(qint64(device.width())*device.height()>qint64(2560)*1440?1:2);
-        if(prewarmStage_>=2 && pixels!=prewarmPixels_)prewarmStage_=2;
+        if(prewarmStage_>=2 && pixels!=prewarmPixels_){prewarmStage_=2;columnWarm_=ColumnWarm{};}
         if(prewarmStage_==2)prewarmPixels_=pixels;
     }
     if(prewarmStage_>=stages)return;
@@ -350,6 +409,10 @@ void View::prewarmOverlays() {
     if(!glReady_ || !uiMsaa_ || !textRenderer_.ready() || introRunning() || galleryDrawing() || shell_.inGame())return;
     if(clock_.elapsed()<(prewarmStage_>=7?lateAfterMs:startAfterMs) || clock_.elapsed()<prewarmNextMs_ || shell_.idleMilliseconds()<idleForMs)return;
     if(shell_.psMenuOpen() || shell_.optionsOpen() || !shell_.message().isEmpty() || osk_.open || shell_.mediaOpen() || depthPosition_>0.001)return;
+    if(prewarmStage_==10) { // the column labels: never "done", it looks again for rows that arrive later
+        prewarmNextMs_=clock_.elapsed()+(prewarmColumnText()?30:500);
+        return;
+    }
     QElapsedTimer cost;cost.start();
     switch(prewarmStage_) {
     case 0: assets_.prewarmNameIndex();break;
