@@ -398,7 +398,10 @@ int main(int argc,char** argv) {
     // The Windows build has no console: XMB_LOG=<file> appends every Qt message to that file (local diagnosis), rotated
     // by size (5 MB, 3 old files kept); a qFatal also writes a crash capture (diagnostics.h).
     xmb::diagnostics::installLogHandler();
-    QSurfaceFormat format;format.setVersion(3,3);format.setProfile(QSurfaceFormat::CoreProfile);format.setSwapInterval(1);format.setSamples(4);QSurfaceFormat::setDefaultFormat(format);
+#ifdef Q_OS_WIN
+    xmb::host::requestPerMonitorDpiAwareness();
+#endif
+    QSurfaceFormat format;format.setVersion(3,3);format.setProfile(QSurfaceFormat::CoreProfile);format.setSwapInterval(qEnvironmentVariable("XMB_SWAP_INTERVAL")==QStringLiteral("0")?0:1);   /* XMB_SWAP_INTERVAL=0: vsync off, to measure frame throughput (audit/HIGH-DPI.md) */format.setSamples(4);QSurfaceFormat::setDefaultFormat(format);
     QApplication app(argc,argv);app.setApplicationName("re-ps3-native");app.setApplicationVersion(QStringLiteral(XMB_APP_VERSION));QImageReader::setAllocationLimit(128);
     qInfo().noquote()<<QString("boot: QApplication ready after %1 ms").arg(processAgeMs(),0,'f',0);
     xmb::bootprof::mark("start");
@@ -1527,6 +1530,10 @@ int main(int argc,char** argv) {
         window.setScreen(kioskScreen);
         window.setGeometry(kioskScreen->geometry());
         window.showFullScreen();
+#ifdef Q_OS_WIN
+        xmb::host::fitWindowToMonitor(&window,"kiosk shown");
+        QTimer::singleShot(1500,&window,[&window]{xmb::host::fitWindowToMonitor(&window,"kiosk settled");});
+#endif
         app.installEventFilter(new CursorHider(&app));
         qInfo().noquote()<<QString("kiosk: frameless fullscreen on display %1 (%2), %3x%4")
             .arg(QGuiApplication::screens().indexOf(kioskScreen)).arg(kioskScreen->name())
@@ -1650,7 +1657,11 @@ int main(int argc,char** argv) {
                 const auto dimensions=token.mid(5).split('x');bool widthOk=false,heightOk=false;
                 const int w=dimensions.value(0).toInt(&widthOk),h=dimensions.value(1).toInt(&heightOk);
                 if(dimensions.size()==2 && widthOk && heightOk && w>=800 && h>=450 && w<=7680 && h<=4320) {
-                    shell.setFullscreen(false);window.showNormal();window.resize(w,h);
+                    shell.setFullscreen(false);
+                    // A framed top-level window cannot exceed its monitor (Windows clamps it), so a 3840x2160 or 7680x4320 capture
+                    // on a smaller PC needs a frameless popup, which is not limited. Opt-in: the pinned gate never sets it.
+                    if(qEnvironmentVariable("XMB_SCRIPT_FRAMELESS")==QStringLiteral("1")){window.setWindowFlag(Qt::FramelessWindowHint,true);window.setMinimumSize(1,1);}
+                    window.showNormal();window.resize(w,h);
                 } else qWarning()<<"script: invalid size"<<token;
             }
             else if(token.startsWith("idle=")) {bool ok=false;const auto age=token.mid(5).toLongLong(&ok);if(ok && age>=0)shell.setIdleTimeOverride(age);else qWarning()<<"script: invalid idle age";}

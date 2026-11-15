@@ -1,4 +1,5 @@
 #include "desktop_mode.h"
+#include "host.h"
 #include "elevation.h"
 #include "ps_watcher.h"
 #include "shell.h"
@@ -360,6 +361,7 @@ void DesktopMode::leave(const QString& source) {
         window_->setScreen(screen);
         window_->setGeometry(screen->geometry());
         window_->showFullScreen();
+        xmb::host::fitWindowToMonitor(window_,"desktop mode return");
     } else if(wasFullScreen_) {
         window_->setScreen(screen);
         window_->showFullScreen();

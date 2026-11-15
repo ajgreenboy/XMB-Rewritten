@@ -8,8 +8,14 @@
 #include <functional>
 
 class QAudioOutput;
+class QWidget;
 
 namespace xmb::host {
+// Windows only (no-ops elsewhere). requestPerMonitorDpiAwareness() must run before QApplication is constructed: it pins the
+// process to Per-Monitor-V2 so a 300% display scale reaches Qt as a device ratio of 3 and not as a bitmap-scaled 1280x720 desktop.
+// fitWindowToMonitor() makes a fullscreen window cover its monitor's physical rectangle exactly and logs what it found.
+void requestPerMonitorDpiAwareness();
+void fitWindowToMonitor(QWidget* window,const char* why);
 // The machine the XMB runs on, for the settings that map onto it (System Information, Network status, Video
 // Output, Volume). Everything here reads or writes the real host; nothing is simulated.
 using Label=std::function<QString(const QString& id,const QString& fallback)>; // firmware string lookup
