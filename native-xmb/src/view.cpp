@@ -1115,7 +1115,13 @@ void View::paintGL() {
     // UI layer on the GPU: Qt's OpenGL paint engine draws into a 4x multisampled framebuffer at twice the window size;
     // it is resolved, then composited at half scale, where the bilinear fetch averages each 2x2 block. MSAA plus 2x
     // supersampling gives smooth glyph and icon edges. The layer is redrawn only when something visible changed.
-    const QSize device(int(width()*devicePixelRatioF()),int(height()*devicePixelRatioF())),pixels=device*2;
+    const QSize device(int(width()*devicePixelRatioF()),int(height()*devicePixelRatioF()));
+    // The UI layer is supersampled 2x (4x MSAA at twice the device size, resolved by the bilinear half-scale composite). That is
+    // cheap at 1080p and 1440p, but at 4K it is a 7680x4320 4x-MSAA target and at 8K a 15360x8640 one (about 1 GB of samples: 6 fps
+    // in the measurement, audit/HIGH-DPI.md). Above 2560x1440 worth of pixels the layer is drawn at device size instead: 4x MSAA
+    // alone is smooth there, because the glyphs and edges already cover four times as many pixels per design pixel.
+    const int uiSupersample=qint64(device.width())*device.height()>qint64(2560)*1440?1:2;
+    const QSize pixels=device*uiSupersample;
     // PIC1 and wallpaper belong to the scene, below the glass icons and all UI.
     // Painting them into the UI cache would cover the separately drawn icon pass.
     if((shell_.backgroundMode()==2 && !wallpaperImage_.isNull()) || focusedBackgroundOpacity_>0. || departingBackgroundOpacity_>0.) {
@@ -1223,7 +1229,7 @@ void View::paintGL() {
         uiMsaa_->bind();glViewport(0,0,pixels.width(),pixels.height());glClearColor(0,0,0,0);glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT|GL_STENCIL_BUFFER_BIT);
         // Glyphs are rasterised for the layer's own scale (twice the window): at the window's scale they were
         // magnified 2x by bilinear sampling before the 2x2 resolve, which left all text soft.
-        textRenderer_.beginFrame(*this,pixels,DesignSpace(pixels).y,2);
+        textRenderer_.beginFrame(*this,pixels,DesignSpace(pixels).y,uiSupersample);
         {
             QOpenGLPaintDevice paintDevice(pixels);
             QPainter ui(&paintDevice);
