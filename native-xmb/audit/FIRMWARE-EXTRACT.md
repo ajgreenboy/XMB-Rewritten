@@ -7,13 +7,12 @@ directory containing another `dev_flash` directory. No download is performed.
 Success prints verified entry/package/byte counts and destination; failure exits
 2. A verified PUP with no dev_flash packages fails rather than claiming installation.
 
-## Keys (never commit populated values)
+## Keys
 
-Copy `src/firmware_keys.example.inc` to the gitignored `src/firmware_keys.inc`,
-replace the zero arrays with the public RPCS3 `Crypto/key_vault.h` declarations,
-and rebuild. Only `PUP_KEY` (64 bytes), `SCEPKG_ERK` (32 bytes), and `SCEPKG_RIV`
-(16 bytes) are used. There are no PKG AES keys. Builds without the local include
-compile with zero placeholders and report the missing-key error at extraction.
+`src/firmware_keys.inc` is committed (owner decision, 2026-11-14) and holds the publicly known `PUP_KEY` (64 bytes),
+`SCEPKG_ERK` (32 bytes) and `SCEPKG_RIV` (16 bytes) from RPCS3 `Crypto/key_vault.h`, so release builds can unpack Sony's
+firmware. There are no PKG AES keys. `src/firmware_keys.example.inc` is the zero-key template; a build without a real
+`firmware_keys.inc` compiles with zero placeholders and reports the missing-key error at extraction.
 
 Alternatively set `XMB_FIRMWARE_KEYS` to a local `.inc` file at runtime. It accepts
 the same three C array declarations, with exactly the required number of decimal
