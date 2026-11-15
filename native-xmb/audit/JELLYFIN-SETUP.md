@@ -91,7 +91,7 @@ written to disk until `Add Jellyfin` / `Save Address`.
 No default pinned frame changed. Only `jellyfin-signin` shows the TV/Video Services column, and its seed `apps.json`
 already registers Jellyfin, so the setup row is not listed there. Every other state is on another column. `XMB_NO_SETUP_ROWS=1`
 (documented in INSTALL.md) hides the setup row for any future recipe that needs a clean TV column. No reference was saved.
-Gate result: see the commit notes.
+Gate result: `bun work/ab-layers.ts --all` on this build: `states: 27/27 pass` (2026-11-14, PC unmuted).
 
 ## Not done / limits
 
