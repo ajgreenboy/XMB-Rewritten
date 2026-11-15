@@ -25,6 +25,7 @@
 #include "steam_overrides.h"
 #include "steam_family.h"
 #include "steam_downloads.h"
+#include "steam_quit.h"
 #include "web_adopt.h"
 #include "web_launch.h"
 #include <QDesktopServices>
@@ -737,8 +738,18 @@ bool Shell::titleRunning() const {
 // Steam launches itself, so the only honest lifecycle signal is Steam's own registry state. The
 // handoff records the app id, watches Apps\<id>\Running, and reports the return when it clears.
 bool Shell::startSteamTracked(const QString& appId,const QString& title) {
-    const QString exe=QDir(steamRoot_).filePath("steam.exe");
-    if(!QFileInfo(exe).isFile() || !QProcess::startDetached(exe,{"-applaunch",appId},steamRoot_)) {
+    QString exe=QDir(steamRoot_).filePath("steam.exe");
+    QStringList launchArguments{"-applaunch",appId};
+    QString launchDirectory=steamRoot_;
+    if(steamFake()) {
+        // Test seam: start the stand-in game from the scratch library's install folder, never steam.exe.
+        QString dir;for(const auto& g:steamInstalled_.games)if(g.appId==appId){dir=g.installDirectory;break;}
+        const QString name=qEnvironmentVariable("XMB_STEAM_FAKE_EXE");
+        exe=dir.isEmpty()||name.isEmpty()?QString():QDir(dir).filePath(name);
+        launchArguments=qEnvironmentVariable("XMB_STEAM_FAKE_ARGS").split(' ',Qt::SkipEmptyParts);
+        launchDirectory=dir;
+    }
+    if(!QFileInfo(exe).isFile() || !QProcess::startDetached(exe,launchArguments,launchDirectory)) {
         showMessage(title,"Steam could not be started. Refresh the game library and check the Steam installation.",MessageKind::Page);
         return false;
     }
@@ -751,7 +762,13 @@ bool Shell::startSteamTracked(const QString& appId,const QString& title) {
 }
 void Shell::pollSteamGame() {
     if(steamGameId_.isEmpty()) { steamWatch_.stop(); return; }
-    const auto state=steamAppState(steamGameId_);
+    auto state=steamAppState(steamGameId_);
+    // Test seam (audit/STEAM-QUIT.md): with XMB_STEAM_FAKE=1 a stand-in game in a scratch library stands for Steam's registry,
+    // and the title counts as running while any process runs from its install folder.
+    if(steamFake()) {
+        QString dir;for(const auto& g:steamInstalled_.games)if(g.appId==steamGameId_){dir=g.installDirectory;break;}
+        state={};state.running=qEnvironmentVariable("XMB_STEAM_FAKE_FORCE_RUNNING")==QLatin1String("1") || (!dir.isEmpty() && !steamquit::selectGameProcesses(steamquit::snapshotProcesses(),dir,{quint32(QCoreApplication::applicationPid())}).isEmpty());
+    }
     constexpr qint64 startTimeoutMs=5*60*1000;   // Steam may download/update before the title runs
     if(state.updating && !steamGameSeen_) { steamWatchAge_.restart(); return; }
     if(state.running) {
@@ -777,7 +794,11 @@ void Shell::pollSteamGame() {
     steamGameId_.clear();gameTitle_.clear();steamGameSeen_=false;steamGameClear_=0;
     qInfo().noquote()<<"returned from"<<title<<"(Steam reported it stopped)";
     clearInGame();
-    if(quitStage_>0){qInfo().noquote()<<"ingame: quit ended by stage steam +app_stop";quitStage_=0;quitTitle_.clear();}
+    if(quitStage_>0) {
+        static const char* const stages[]={"none","cooperative (WM_CLOSE)","terminate","kill"};
+        qInfo().noquote()<<"ingame: quit ended by stage"<<stages[std::clamp(quitStage_,0,3)]<<"(Steam cleared the running flag) title="+quitTitle_;
+        quitStage_=0;quitTitle_.clear();
+    }
     restoreFocus();
     emit changed();
     refreshContent();
@@ -1775,6 +1796,23 @@ Shell::Shell(QString dataDirectory,Assets& assets,QObject* parent):QObject(paren
     adoptedWatch_.setInterval(250);
     connect(&adoptedWatch_,&QTimer::timeout,this,&Shell::pollAdopted);
     connect(&steamWatch_,&QTimer::timeout,this,&Shell::pollSteamGame);
+    connect(&steamQuitter_,&steamquit::Quitter::finished,this,[this](int stage,const QString& survivors){
+        const QString appId=steamGameId_;
+        if(stage>0) {
+            quitStage_=stage;
+            static const char* const stages[]={"none","cooperative (WM_CLOSE)","terminate","kill"};
+            qInfo().noquote()<<"ingame: quit: every game process is gone after stage"<<stages[std::clamp(stage,0,3)]<<"title="+quitTitle_;
+            QTimer::singleShot(8000,this,[this,appId]{
+                if(steamGameId_!=appId || appId.isEmpty())return;
+                qWarning().noquote()<<"ingame: quit: Steam still reports"<<appId<<"running 8 s after the game processes ended; the registry watcher decides when the XMB returns";
+            });
+            return;
+        }
+        qWarning().noquote()<<"ingame: quit stage 3 failed: still running:"<<survivors;
+        quitStage_=0;
+        showMessage(quitTitle_,QObject::tr("The game could not be closed. These processes are still running: %1. They may be protected or run with higher rights.").arg(survivors),MessageKind::Page);
+        emit changed();
+    });
     discordFriendsError_=discordFriends_.configured()?QStringLiteral("Select Refresh Discord Friends to sign in."):(discordFriends_.unset()?QStringLiteral("Not set up yet. Discord Connection says how."):discordFriends_.configurationError());
     rebuildFriends();
     for(auto& category:categories_)if(category.id=="game") {
@@ -2857,14 +2895,7 @@ void Shell::quitRunningTitle() {
     // Only a title this XMB launched is ever closed, and only here, after the Yes answer.
     if(!gameRunning())return;
     quitTitle_=gameTitle_;quitStage_=1;
-    if(!steamGameId_.isEmpty()) {
-        // A Steam title is not our process: ask the client to stop it (audit/STEAM-CLI.md) and let the registry
-        // watcher report the return. Killing steam.exe would end the whole client.
-        QString stopError;
-        if(steamStopApp(steamGameId_,steamRoot_,&stopError))qInfo().noquote()<<"shell: asked Steam to stop"<<steamGameId_;
-        else{qWarning().noquote()<<"shell: Steam stop failed:"<<stopError;quitStage_=0;showMessage(quitTitle_,stopError,MessageKind::Page);}
-        return;
-    }
+    if(!steamGameId_.isEmpty()) { quitSteamTitle();return; }
     if(adoptedPid_) {
         // An adopted browser is not our QProcess: the same three stages, on its process tree only.
         const quint32 pid=adoptedPid_;
@@ -2906,6 +2937,51 @@ void Shell::quitRunningTitle() {
             process->kill();
         });
     });
+}
+bool Shell::steamFake() { return qEnvironmentVariable("XMB_STEAM_FAKE")==QLatin1String("1"); }
+// Quit Game for a Steam title (audit/STEAM-QUIT.md). Steam's own "+app_stop" does not end a running game, so the game's own
+// processes (image inside its install folder, plus their children) get the same three stages as any other title. steam.exe
+// is not started on this path; Steam's registry flag clears by itself once they are gone and pollSteamGame returns the XMB.
+void Shell::quitSteamTitle() {
+    const QString appId=steamGameId_;
+    if(steamQuitter_.active()){qInfo().noquote()<<"ingame: quit already in progress for"<<quitTitle_;return;}
+    QString installDir;
+    for(const auto& g:steamInstalled_.games)if(g.appId==appId){installDir=g.installDirectory;break;}
+    if(installDir.isEmpty()) {
+        const auto scan=scanSteam(steamRoot_);
+        for(const auto& g:scan.games)if(g.appId==appId){installDir=g.installDirectory;break;}
+    }
+    bool ok=false;int grace=qEnvironmentVariableIntValue("XMB_QUIT_GRACE_MS",&ok);
+    if(!ok || grace<0)grace=10000;
+    const QString folder=QFileInfo(installDir).fileName();
+    const auto state=steamAppState(appId);
+    if(!installDir.isEmpty()) {
+        const auto started=steamQuitter_.start(installDir,grace);
+        if(started.processes>0) {
+            qInfo().noquote()<<QStringLiteral("ingame: quit stage 1 WM_CLOSE posted to %1 window(s) of %2 process(es) [%3] in game folder \"%4\", waiting up to %5 ms (Steam registry running=%6)")
+                .arg(started.windows).arg(started.processes).arg(started.names).arg(folder).arg(grace).arg(state.running?1:0);
+            return;
+        }
+    }
+    const QString reason=installDir.isEmpty()
+        ?QObject::tr("The install folder of this title was not found in any Steam library.")
+        :QObject::tr("No running process was found in the game folder \"%1\".").arg(folder);
+    quitStage_=0;
+    qWarning().noquote()<<"ingame: quit found no game process ("+reason+") ; falling back to steam +app_stop";
+    QString stopError;
+    if(steamStopApp(appId,steamRoot_,&stopError)) {
+        qInfo().noquote()<<"shell: asked Steam to stop"<<appId<<"(fallback; no game process was found to close)";
+        QTimer::singleShot(15000,this,[this,appId,reason]{
+            if(steamGameId_!=appId)return;
+            qWarning().noquote()<<"ingame: quit fallback: Steam still reports"<<appId<<"running after 15 s";
+            quitStage_=0;
+            showMessage(quitTitle_,reason+QObject::tr(" Steam was asked to stop the title but it is still running. Close it from its own menu."),MessageKind::Page);
+            emit changed();
+        });
+    } else {
+        qWarning().noquote()<<"shell: Steam stop failed:"<<stopError;quitStage_=0;
+        showMessage(quitTitle_,reason+QStringLiteral(" ")+stopError,MessageKind::Page);
+    }
 }
 // --- Item options (Triangle) ----------------------------------------------------------------------
 // The firmware's item menu is explore_plugin's `expage_menu`: rows are installed at run time from an array

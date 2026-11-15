@@ -57,7 +57,7 @@ qt_add_executable(re-ps3-native
     src/text_renderer.cpp src/text_renderer.h
     src/font_raster.cpp src/font_raster.h
     src/profiles.cpp src/profiles.h
-    src/steam_library.cpp src/steam_library.h src/steam_vdf.cpp src/steam_vdf.h
+    src/steam_library.cpp src/steam_library.h src/steam_vdf.cpp src/steam_vdf.h src/steam_quit.cpp src/steam_quit.h
     src/steam_downloads.cpp src/steam_downloads.h src/steam_accounts.cpp src/steam_accounts.h src/steam_friends.cpp src/steam_friends.h
     src/steam_artwork.cpp src/steam_artwork.h src/steam_store.cpp src/steam_store.h src/steam_owned.cpp src/steam_owned.h src/steam_collections.cpp src/steam_collections.h src/steam_overrides.cpp src/steam_overrides.h src/steam_family.cpp src/steam_family.h
     src/content_registry.cpp src/content_registry.h src/web_launch.cpp src/web_launch.h src/app_editor.cpp src/app_editor.h
@@ -172,6 +172,22 @@ if(XMB_JELLYFIN_PLAYBACK_BUILD_TESTS)
     endif()
     if(MSVC)
         target_compile_options(xmb-jellyfin-playback-tests PRIVATE /W4 /permissive- /utf-8)
+    endif()
+endif()
+option(XMB_STEAM_QUIT_BUILD_TESTS "Build the Steam Quit Game process-selection and three-stage tests (and the stand-in game they close)" OFF)
+if(XMB_STEAM_QUIT_BUILD_TESTS)
+    qt_add_executable(xmb-steam-quit-tests tests/steam_quit_tests.cpp src/steam_quit.cpp src/steam_quit.h)
+    target_include_directories(xmb-steam-quit-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(xmb-steam-quit-tests PRIVATE Qt6::Core)
+    if(WIN32)
+        target_link_libraries(xmb-steam-quit-tests PRIVATE user32)
+        add_executable(xmb-steam-quit-standin WIN32 tests/steam_quit_standin.cpp)
+        target_link_libraries(xmb-steam-quit-standin PRIVATE user32 shell32)
+        if(MSVC)
+            target_compile_options(xmb-steam-quit-standin PRIVATE /W4 /permissive- /utf-8)
+            target_compile_options(xmb-steam-quit-tests PRIVATE /W4 /permissive- /utf-8)
+        endif()
+        add_dependencies(xmb-steam-quit-tests xmb-steam-quit-standin)
     endif()
 endif()
 if(Freetype_FOUND)

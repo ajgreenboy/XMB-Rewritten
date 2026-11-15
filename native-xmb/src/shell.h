@@ -27,6 +27,7 @@
 #include "steam_family.h"
 #include "steam_store.h"
 #include "steam_library.h"
+#include "steam_quit.h"
 #include "subtitles.h"
 #include "release_source.h"
 #include "hydra_library.h"
@@ -607,6 +608,8 @@ public:
     void setInGame(bool on);
     // Quit Game (the PS menu row and the in-game rows): impose_plugin:msg_game_quit_ask, Yes -> quitRunningTitle().
     void requestQuitGame();
+    void quitSteamTitle();
+    static bool steamFake();
     // ZF2: the in-game "Enter Text" row. The view opens the OSK and delivers the confirmed text (text_entry.h).
     void requestEnterText();
     // ZF1: the pop-up for an elevated window the controller cannot drive (elevation.h). Used by Desktop Mode and the text delivery.
@@ -1004,6 +1007,7 @@ private:
     QString gameCategory_;           // the column that launched the tracked content
     bool gameIsRpcs3_=false;         // the tracked process is RPCS3 (launched through the emulator path)
     QString steamGameId_;            // a Steam title handed to steam.exe, watched through the registry
+    steamquit::Quitter steamQuitter_;   // closes a Steam title's own processes (Quit Game)
     QTimer steamWatch_;              // polls Steam's Running flags while steamGameId_ is set
     QElapsedTimer steamWatchAge_;    // since the handoff (or last update tick), for the start timeout
     bool steamGameSeen_=false;       // Steam has reported the title running at least once

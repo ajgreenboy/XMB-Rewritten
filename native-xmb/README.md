@@ -305,6 +305,8 @@ Screenshots, Verify Game Files and Delete; each is a `steam://` hand-off, so Ste
 action. Row icons for the Steam, Jellyfin, Tailscale and Spotify services come from `src/service_icons.*` (the installed
 client's own icon, or a drawn mark). See [audit/STEAM-INTEGRATION.md](audit/STEAM-INTEGRATION.md).
 
+**Quit Game and the Guide button.** Quit Game (PS menu or the in-game row) closes a Steam title by ending the game's own processes, never Steam itself ([audit/STEAM-QUIT.md](audit/STEAM-QUIT.md)). While a Steam game is in front and Steam Input is enabled for the controller, Steam handles the Guide tap (Big Picture or the overlay), so turn off Steam's "Guide Button Focuses Steam" and Steam Input for Xbox controllers for the XMB to see a tap; the hold already reaches the XMB.
+
 ### Playlists and Jellyfin quality
 
 Music and Photo > Playlists are real (Create New Playlist, Add to Playlist, Add All, Move Up/Down, Delete; stored per user under

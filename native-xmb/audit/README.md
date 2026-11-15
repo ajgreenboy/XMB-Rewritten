@@ -132,6 +132,7 @@ native diff.
 | [STEAM-CLIENT-FRIENDS.md](STEAM-CLIENT-FRIENDS.md) | Friends through the signed-in Steam client |
 | [STEAM-DOWNLOADS.md](STEAM-DOWNLOADS.md) | Steam download state for the XMB download page |
 | [STEAM-CLI.md](STEAM-CLI.md) | What the Steam client accepts headless |
+| [STEAM-QUIT.md](STEAM-QUIT.md) | Quit Game for a Steam title: closing the game's own processes in three stages |
 | [SERVICES-BREADTH.md](SERVICES-BREADTH.md) | Account switch, launch/quit, avatars, trophies and honest rows |
 | [JELLYFIN-NATIVE.md](JELLYFIN-NATIVE.md) | Native Jellyfin playback |
 | [JELLYFIN-SETUP.md](JELLYFIN-SETUP.md) | Setting Jellyfin up from inside the XMB: setup row, address page, server check, network discovery |
