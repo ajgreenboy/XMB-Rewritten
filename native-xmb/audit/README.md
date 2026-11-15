@@ -91,6 +91,7 @@ native diff.
 | [RCO-OBJECT-MODEL.md](RCO-OBJECT-MODEL.md) | The runtime RCO object model and materials |
 | [SESSION-POWER.md](SESSION-POWER.md) | Session and power behaviour |
 | [PS-BUTTON.md](PS-BUTTON.md) | The PS button: console behaviour and the native equivalent |
+| [PS-MENU-HITCH.md](PS-MENU-HITCH.md) | The system menu's laggy first frames: the XMB_FRAME_TRACE=1 slow-frame log, measured causes (RCO name index, glyph tiles, per-frame bloom blur), the idle prewarm, per-overlay first-open numbers, how to re-measure |
 | [PAGE-MOVE.md](PAGE-MOVE.md) | Page-move timing and easing |
 | [INTERACTION-AUDIO.md](INTERACTION-AUDIO.md) | Interaction cues |
 | [MENUS-XMBML.md](MENUS-XMBML.md) | Firmware-driven menus, per-user profiles and list actions |

@@ -1,4 +1,5 @@
 #include "assets.h"
+#include "frame_trace.h"
 #include <QElapsedTimer>
 #include <QDir>
 #include <QFile>
@@ -503,6 +504,10 @@ const QImage& Assets::loadImage(const QString& container,const QString& name,Ima
     const struct LoadCost { const QElapsedTimer& clock;const QString& key;
         ~LoadCost(){ if(clock.isValid() && clock.nsecsElapsed()>5'000'000)
             qInfo().noquote()<<QString("text cost: image %1 took %2 ms").arg(key).arg(clock.nsecsElapsed()/1e6,0,'f',1); } } loadCost{loadClock,key};
+    // XMB_FRAME_TRACE=1: a first decode is a label on the frame that paid for it.
+    QElapsedTimer traceClock;if(xmb::frametrace::on())traceClock.start();
+    const struct LoadNote { const QElapsedTimer& clock;const QString& key;
+        ~LoadNote(){ if(clock.isValid())xmb::frametrace::note(QString("image %1 first decode %2 ms").arg(key).arg(clock.nsecsElapsed()/1e6,0,'f',1)); } } loadNote{traceClock,key};
     try {
         if(container=="file") { // installed content (dev_hdd0 ICON0.PNG etc.), by absolute path
             image=QImage(name);
@@ -714,12 +719,28 @@ QStringList Assets::containerOverrideRules() const {
                  QString::fromLatin1(rule.owner),QString::fromLatin1(rule.evidence));
     return rules;
 }
-void Assets::ensureNameIndex() {
-    if(!nameIndex_.isEmpty())return;
+// Reads only root_ and the RCO files, so it can run on a worker thread (readContainer keeps no shared state).
+QHash<QString,QStringList> Assets::buildNameIndex() const {
+    QHash<QString,QStringList> index;
     for(const auto& file:QDir(QDir(root_).filePath("vsh/resource")).entryInfoList({"*.rco"},QDir::Files,QDir::Name)) {
-        try { for(const auto& entry:readContainer(file.completeBaseName()).entries.keys())nameIndex_[entry].push_back(file.completeBaseName()); }
+        try { for(const auto& entry:readContainer(file.completeBaseName()).entries.keys())index[entry].push_back(file.completeBaseName()); }
         catch(const std::exception&) {}
     }
+    return index;
+}
+void Assets::prewarmNameIndex() {
+    if(!nameIndex_.isEmpty() || nameIndexFuture_.valid())return;
+    nameIndexFuture_=std::async(std::launch::async,[this]{return buildNameIndex();});
+}
+bool Assets::nameIndexReady() const {
+    return !nameIndex_.isEmpty() || (nameIndexFuture_.valid() && nameIndexFuture_.wait_for(std::chrono::seconds(0))==std::future_status::ready);
+}
+void Assets::ensureNameIndex() {
+    if(!nameIndex_.isEmpty())return;
+    QElapsedTimer indexClock;if(xmb::frametrace::on())indexClock.start();
+    const bool joined=nameIndexFuture_.valid();
+    const struct IndexNote { const QElapsedTimer& clock;bool joined; ~IndexNote(){ if(clock.isValid())xmb::frametrace::note(QString("RCO name index %1 %2 ms").arg(joined?"joined":"built").arg(clock.nsecsElapsed()/1e6,0,'f',1)); } } indexNote{indexClock,joined};
+    nameIndex_=joined?nameIndexFuture_.get():buildNameIndex();
 }
 QStringList Assets::imageContainers(const QString& name) {
     ensureNameIndex();

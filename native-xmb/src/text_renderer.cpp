@@ -1,4 +1,5 @@
 #include "text_renderer.h"
+#include "frame_trace.h"
 #include <QElapsedTimer>
 #include <QDir>
 #include <QGlyphRun>
@@ -387,8 +388,8 @@ const TextRenderer::Glyph& TextRenderer::glyph(QOpenGLFunctions_3_3_Core& gl,int
     const quint64 key=(quint64(index)<<4)|(quint64(phaseY&3)<<2)|quint64(phaseX&3);
     const auto found=f.glyphs.constFind(key);
     if(found!=f.glyphs.cend())return *found;
-    QElapsedTimer missClock;missClock.start();++misses_;
-    const struct MissCost { QElapsedTimer& clock;qint64& total; ~MissCost(){total+=clock.nsecsElapsed();} } missCost{missClock,missNs_};
+    QElapsedTimer missClock;missClock.start();++misses_;++totalMisses_;
+    const struct MissCost { QElapsedTimer& clock;qint64& total;qint64& grand; ~MissCost(){const qint64 ns=clock.nsecsElapsed();total+=ns;grand+=ns;} } missCost{missClock,missNs_,totalMissNs_};
     Glyph value;value.phaseX=phaseX;value.phaseY=phaseY;
     // libfontFT.prx cellFontFT_65E27CB3 @ 0x6aa4 loads outlines with flags 10, then uses
     // FT_Outline_Get_Bitmap. FT_RENDER_MODE_NORMAL uses FreeType's same grayscale outline rasterizer.
@@ -445,6 +446,7 @@ const TextRenderer::Glyph& TextRenderer::glyph(QOpenGLFunctions_3_3_Core& gl,int
         gl.glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR);gl.glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);
         gl.glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);gl.glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
         pages_.push_back(p);
+        if(xmb::frametrace::on())xmb::frametrace::note(QString("text atlas page %1 created").arg(pages_.size()));
     }
     auto& p=pages_.back();value.page=int(pages_.size())-1;value.atlas={p.x,p.y,tile.width(),tile.height()};
     const auto bounds=f.font.boundingRect(index);
@@ -753,6 +755,7 @@ bool TextRenderer::ensureMask(QOpenGLFunctions_3_3_Core& gl) {
         return false;
     }
     qInfo()<<"text mask: R8 coverage target"<<maskSize_;
+    if(xmb::frametrace::on())xmb::frametrace::note(QString("text mask target %1x%2 created").arg(maskSize_.width()).arg(maskSize_.height()));
     return true;
 }
 

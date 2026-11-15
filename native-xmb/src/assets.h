@@ -4,6 +4,7 @@
 #include <QImage>
 #include <QString>
 #include "qrc.h"
+#include <future>
 #include <memory>
 #include <unordered_map>
 
@@ -13,6 +14,11 @@ class Assets final {
 public:
     explicit Assets(QString flashRoot);
     const QImage& image(const QString& container, const QString& name);
+    // The RCO name index (every container's image names, 122 files) is what bestImage() needs for its first
+    // small picture, and building it on the draw path was a 50 to 75 ms stall the first time a surface drew a
+    // button glyph (audit/PS-MENU-HITCH.md). This starts it on a worker thread; ensureNameIndex() joins it.
+    void prewarmNameIndex();
+    bool nameIndexReady() const;
     // ---- Container resolution (audit/ICON-GAP-AUDIT.md bucket B/C icon wave) -------------------------
     // An image name is not a resolution: the same name can exist in several RCOs, sometimes as different
     // artwork (tex_music is the flat note in explore_plugin_full, the wrench note in explore_category_sysconf
@@ -109,6 +115,8 @@ private:
     // else the override rule's owner when that owner holds it, else the requested container.
     ImageHit hitFor(const QString& container,const QString& name) const;
     void ensureNameIndex();
+    QHash<QString,QStringList> buildNameIndex() const;
+    std::future<QHash<QString,QStringList>> nameIndexFuture_;
     QHash<QString,QString> readEnglish(const Container& container) const;
     // GIM decoder: RGBA8888 (0x3), DXT1/3/5 (0x8/0x9/0xA) and the indexed formats
     // INDEX4/INDEX8/INDEX16 (0x4/0x5/0x6) with the picture's palette block. Indexed
