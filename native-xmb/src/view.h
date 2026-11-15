@@ -17,6 +17,7 @@
 #include "media_keys.h"
 #include "game_capture.h"
 #include "text_entry.h"
+#include "frame_trace.h"
 #include <array>
 #include <functional>
 #include <QDateTime>
@@ -158,6 +159,11 @@ private:
     // Opt-in, bounded in-memory frame trace; written only on shutdown to avoid per-frame disk I/O.
     struct FrameSample { qint64 at,cpu; bool swap,rebuilt,moving; };
     QString frameTracePath_;
+    xmb::frametrace::Recorder frameLog_;   // XMB_FRAME_TRACE=1: the slow-frame log (frame_trace.h)
+    bool frameLogPsMenu_=false,frameLogOptions_=false,frameLogMessage_=false,frameLogOsk_=false;
+    QSet<QString> frameLogSeen_;
+    quint64 frameLogMisses_=0;qint64 frameLogMissNs_=0;
+    void traceSurfaceTransitions();
     qint64 sceneNs_=0,iconNs_=0; // XMB_TEXT_COST: the last frame's drawScene and glass-icon pass, CPU ns
     QVector<FrameSample> frameTrace_;
     void saveFrameTrace();
@@ -529,6 +535,21 @@ private:
     QDateTime backgroundOverride_;                                    // fixed clock for measurement, invalid = now
     double secondsOverride_=-1;                                       // fixed animation time for A/B captures, -1 = now
     void drawScene(QPainter& painter);
+    // The system menu's black frame (warm: 0 the real draw, 1 and 2 the idle prewarm's text and bloom passes).
+    void drawPsMenuBody(QPainter& painter,double content,double bloom,int warm,int part=0);
+    // Idle prewarm of what a first-opened surface would otherwise build on its first frame (audit/PS-MENU-HITCH.md):
+    // the RCO name index on a worker thread, then the system menu's glyph tiles, textures and bloom, each in its own
+    // quiet frame, drawn into the UI layer's own scratch target. XMB_OVERLAY_PREWARM=0 turns it off, =1 forces it on
+    // under a pinned capture clock (where it is otherwise skipped so the gate's frames are untouched).
+    void prewarmOverlays();
+    void warmRender(const std::function<void(QPainter&)>& draw);
+    int prewarmStage_=0;
+    qint64 prewarmNextMs_=0;   // the earliest time the next stage may run: stages are spread so no two hitches touch
+    QSize prewarmPixels_;   // the UI layer size the glyph tiles were warmed for; a resize or a display change warms them again
+    // The PS menu's bloom: the label's blurred coverage mask per label/size/scale, and the glow image built from it
+    // for the strength last drawn. The blur is the expensive part and depends on neither the strength nor the time.
+    struct BloomCache { QHash<QString,QImage> masks; QHash<QString,std::pair<double,QImage>> glows; };
+    BloomCache bloomCache_;
     // ---- Message surfaces (dialogs.cpp) -------------------------------------------------------------
     // Shell decides which of the firmware's five surfaces a message is (MessageKind); these paths draw
     // the measured layouts. There is no dialog RCO - the box, its plate and its button row are built by

@@ -271,12 +271,98 @@ View::View(Shell& shell,Assets& assets,QWidget* parent):QOpenGLWidget(parent),sh
     // TitleSession calls update() to restart it when the XMB is back in front.
     connect(this,&QOpenGLWidget::frameSwapped,this,[this]{++framesSwapped_;if(isVisible() && !renderPaused() && !liveOverlay_)update();},Qt::QueuedConnection);
     frameTracePath_=qEnvironmentVariable("XMB_FRAME_TRACE");
+    // "1" selects the slow-frame log (frame_trace.h); any other value is the older dump path, written at exit.
+    if(frameTracePath_==QLatin1String("1")) {
+        frameTracePath_.clear();
+        frameLog_.enable(true);
+        connect(this,&QOpenGLWidget::frameSwapped,this,[this]{frameLog_.swapped();});
+    }
     if(!frameTracePath_.isEmpty()) {
         frameTrace_.reserve(20000);
         connect(this,&QOpenGLWidget::frameSwapped,this,[this]{
             if(frameTrace_.size()<20000)frameTrace_.push_back({clock_.nsecsElapsed(),0,true,false,false});
         });
     }
+}
+// XMB_FRAME_TRACE=1: label the frame in which a surface opens or closes, and mark the first time each one opens,
+// because a first open is where lazy initialisation lands (audit/PS-MENU-HITCH.md).
+void View::traceSurfaceTransitions() {
+    const auto edge=[this](bool now,bool& was,const char* name) {
+        if(now==was)return;
+        was=now;
+        const QString key=QString::fromLatin1(name);
+        const bool first=now && !frameLogSeen_.contains(key);
+        if(now)frameLogSeen_.insert(key);
+        const QString what=QStringLiteral("%1 %2%3").arg(key,now?QStringLiteral("opened"):QStringLiteral("closed"),
+            first?QStringLiteral(" (FIRST)"):QString{});
+        xmb::frametrace::note(what);
+        qInfo().noquote()<<"frame-trace: surface"<<what;   // always logged, so a run can tell where the surface's frames start
+    };
+    edge(shell_.psMenuOpen(),frameLogPsMenu_,"ps-menu");
+    edge(shell_.optionsOpen(),frameLogOptions_,"options-panel");
+    edge(!shell_.message().isEmpty(),frameLogMessage_,"message");
+    edge(osk_.open,frameLogOsk_,"osk");
+}
+// ---- Idle prewarm (audit/PS-MENU-HITCH.md) -----------------------------------------------------------------
+// What the system menu needed on its first frames, measured on this build at 3840x2160: a 49 ms RCO name index
+// (bestImage's first small picture), the menu's 63 glyph tiles (17 to 20 ms) on the next frame, and a 9 ms bloom blur
+// on every frame of the 500 ms ramp. None of it depends on the menu being open, so it is done early, one piece per
+// frame, in quiet moments: the XMB shown, no intro, no input for a moment, nothing else open. The scratch draws go into
+// the UI layer's multisampled target on a frame that does not rebuild the layer; the next rebuild clears it, so the
+// screen never shows them.
+void View::warmRender(const std::function<void(QPainter&)>& draw) {
+    const QSize device(int(width()*devicePixelRatioF()),int(height()*devicePixelRatioF()));
+    const int supersample=qint64(device.width())*device.height()>qint64(2560)*1440?1:2;
+    const QSize pixels=device*supersample;
+    if(!uiMsaa_ || uiMsaa_->size()!=pixels)return;
+    uiMsaa_->bind();glViewport(0,0,pixels.width(),pixels.height());
+    textRenderer_.beginFrame(*this,pixels,DesignSpace(pixels).y,supersample);
+    {
+        QOpenGLPaintDevice paintDevice(pixels);
+        QPainter ui(&paintDevice);
+        ui.setRenderHints(QPainter::Antialiasing|QPainter::TextAntialiasing|QPainter::SmoothPixmapTransform);
+        ui.setTransform(DesignSpace(pixels).transform());
+        draw(ui);
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER,defaultFramebufferObject());glViewport(0,0,device.width(),device.height());
+}
+void View::prewarmOverlays() {
+    constexpr int stages=10;
+    constexpr qint64 startAfterMs=2500,lateAfterMs=6000,idleForMs=800,spacingMs=150;
+    {
+        // The glyph atlas is dropped when the layer's scale changes (TextRenderer::beginFrame), so what was warmed
+        // for another size is gone: a resize, or the fullscreen switch that follows startup, starts the text over.
+        const QSize device(int(width()*devicePixelRatioF()),int(height()*devicePixelRatioF()));
+        const QSize pixels=device*(qint64(device.width())*device.height()>qint64(2560)*1440?1:2);
+        if(prewarmStage_>=2 && pixels!=prewarmPixels_)prewarmStage_=2;
+        if(prewarmStage_==2)prewarmPixels_=pixels;
+    }
+    if(prewarmStage_>=stages)return;
+    static const QString setting=qEnvironmentVariable("XMB_OVERLAY_PREWARM");
+    if(setting==QLatin1String("0"))return;
+    if(secondsOverride_>=0 && setting!=QLatin1String("1"))return;      // a pinned capture: leave its frames alone
+    if(!glReady_ || !uiMsaa_ || !textRenderer_.ready() || introRunning() || galleryDrawing() || shell_.inGame())return;
+    if(clock_.elapsed()<(prewarmStage_>=7?lateAfterMs:startAfterMs) || clock_.elapsed()<prewarmNextMs_ || shell_.idleMilliseconds()<idleForMs)return;
+    if(shell_.psMenuOpen() || shell_.optionsOpen() || !shell_.message().isEmpty() || osk_.open || shell_.mediaOpen() || depthPosition_>0.001)return;
+    QElapsedTimer cost;cost.start();
+    switch(prewarmStage_) {
+    case 0: assets_.prewarmNameIndex();break;
+    case 1: if(!assets_.nameIndexReady())return;break;       // the worker is still reading; try again next frame
+    case 2: case 3: warmRender([this](QPainter& p){drawPsMenuBody(p,1.,0.,1,prewarmStage_-2);});break;
+    case 4: case 5: case 6: warmRender([this](QPainter& p){drawPsMenuBody(p,1.,1.,2,prewarmStage_-4);});break;
+    case 7: case 8: { // the on-screen keyboard, lower case then caps: 87 glyph tiles and its panel pieces were 45 ms of its first open
+        Osk saved=std::move(osk_);
+        osk_=Osk{};osk_.open=true;osk_.page=prewarmStage_-7;
+        warmRender([this](QPainter& p){drawOsk(p);});
+        osk_=std::move(saved);
+        break;
+    }
+    case 9: choiceBandFor(QStringLiteral("system/notificationMessages"));break;   // the settings choice model: 48 ms of sysconf_plugin on the first choice list
+    }
+    qInfo().noquote()<<QString("prewarm: stage %1 done in %2 ms").arg(prewarmStage_).arg(cost.nsecsElapsed()/1e6,0,'f',1);
+    if(xmb::frametrace::on())xmb::frametrace::note(QString("prewarm stage %1 %2 ms").arg(prewarmStage_).arg(cost.nsecsElapsed()/1e6,0,'f',1));
+    ++prewarmStage_;
+    prewarmNextMs_=clock_.elapsed()+spacingMs;
 }
 void View::saveFrameTrace() {
     if(frameTracePath_.isEmpty())return;
@@ -482,7 +568,7 @@ View::~View(){
 #ifdef Q_OS_WIN
     if(volumeKeys_ && qApp)qApp->removeNativeEventFilter(volumeKeys_.get());
 #endif
-    saveFrameTrace();if(context()){makeCurrent();liveOverlayResolved_.reset();gallery_.reset();textRenderer_.release(*this);monthTexture_.reset();for(auto& texture:monthTextures_)texture.reset();ribbon_.releaseTextures();particles_.releaseTextures();uiMsaa_.reset();uiResolved_.reset();inGameTexture_.reset();inGameProgram_.removeAllShaders();if(vao_)glDeleteVertexArrays(1,&vao_);background_.removeAllShaders();doneCurrent();}}
+    saveFrameTrace();if(context()){makeCurrent();liveOverlayResolved_.reset();gallery_.reset();textRenderer_.release(*this);monthTexture_.reset();for(auto& texture:monthTextures_)texture.reset();ribbon_.releaseTextures();particles_.releaseTextures();bloomCache_=BloomCache{};uiMsaa_.reset();uiResolved_.reset();inGameTexture_.reset();inGameProgram_.removeAllShaders();if(vao_)glDeleteVertexArrays(1,&vao_);background_.removeAllShaders();doneCurrent();}}
 void View::initializeGL() {
     xmb::bootprof::mark("before initializeGL");
     uniformcache::invalidate();
@@ -953,7 +1039,15 @@ void View::paintGL() {
             qInfo().noquote()<<line;window.restart();
         }
     }
-    const qint64 frameStart=frameTracePath_.isEmpty()?0:clock_.nsecsElapsed();
+    const qint64 frameStart=frameTracePath_.isEmpty() && !frameLog_.enabled()?0:clock_.nsecsElapsed();
+    // XMB_FRAME_TRACE=1: whatever way this paint returns, hand its CPU time and labels to the slow-frame log.
+    struct FrameLogGuard {
+        View* view;qint64 start;bool* rebuilt;
+        ~FrameLogGuard() { if(view->frameLog_.enabled())view->frameLog_.paintDone(double(view->clock_.nsecsElapsed()-start)/1e6,*rebuilt); }
+    };
+    bool frameLogRebuilt=false;
+    const FrameLogGuard frameLogGuard{this,frameStart,&frameLogRebuilt};
+    if(frameLog_.enabled())traceSurfaceTransitions();
     const qint64 nowNs=clock_.nsecsElapsed(),now=nowNs/1000000;
     const double dt=std::clamp(double(nowNs-previousFrameNs_)/1.e9,0.,.1);previousFrameNs_=nowNs;
     const qint64 artworkTime=focusedBackgroundIsPage_ && focusTimeOverride_<0?pageBackdropClock_.elapsed():focusTime();
@@ -1227,6 +1321,7 @@ void View::paintGL() {
         rebuild=true;
     }
     xmb::bootprof::markEarly("paint: ui FBOs");
+    frameLogRebuilt=rebuild;
     if(rebuild) {
         ProfScope profUi("ui rebuild");
         xmb::bootprof::markEarly("paint: background+ribbon (before ui rebuild)");
@@ -1242,6 +1337,7 @@ void View::paintGL() {
             ui.setTransform(DesignSpace(pixels).transform());
             xmb::bootprof::markEarly("paint: ui painter setup");
             const qint64 sceneStart=clock_.nsecsElapsed();drawScene(ui);sceneNs_=clock_.nsecsElapsed()-sceneStart;
+            if(frameLog_.enabled() && sceneNs_>2'000'000)xmb::frametrace::note(QString("scene %1 ms").arg(sceneNs_/1e6,0,'f',1));
             xmb::bootprof::markEarly("paint: drawScene");
             particles_.trackWidgets(windSites_,renderSeconds);
         }
@@ -1308,6 +1404,14 @@ void View::paintGL() {
         overlayBridgeMs=double(clock_.nsecsElapsed()-bridgeStart)/1e6;
     } else liveOverlayResolved_.reset();
     grabIntroFrame();
+    if(!rebuild)prewarmOverlays();
+    if(frameLog_.enabled()) {
+        const auto [misses,missNs]=textRenderer_.totalMissCost();
+        if(misses>frameLogMisses_)xmb::frametrace::note(QString("%1 glyph tiles rasterised (%2 ms)")
+            .arg(misses-frameLogMisses_).arg(double(missNs-frameLogMissNs_)/1e6,0,'f',1));
+        frameLogMisses_=misses;frameLogMissNs_=missNs;
+        if(iconNs_>2'000'000)xmb::frametrace::note(QString("glass icons %1 ms").arg(iconNs_/1e6,0,'f',1));
+    }
     if(!frameTracePath_.isEmpty() && frameTrace_.size()<20000) {
         bool moving=categoryEase_.running() || depthEase_.running() || fadeEase_.running();
         for(const auto& column:columns_)moving|=column.ease.running();
@@ -2134,32 +2238,51 @@ void boxBlurGray(QImage& image,int radius) {
         }
     }
 }
-void drawTextBloom(QPainter& p,const QFont& font,const QRectF& rect,const QString& value,double strength) {
+// The mask and its three box passes are the cost (about 9 ms at 4K), and they depend only on the label, its size and
+// the layer scale, so they are built once per label and kept; the bloom ramps in over 500 ms with a new strength every
+// frame, which used to rebuild the blur on each of them. The glow image (mask times strength, per pixel, through a
+// 256-entry table that is the old per-pixel expression) is kept for the strength last drawn, so a steady bloom hands
+// Qt the same image every frame and nothing is uploaded again.
+void drawTextBloom(QPainter& p,QHash<QString,QImage>& masks,QHash<QString,std::pair<double,QImage>>& glows,
+                   const QFont& font,const QRectF& rect,const QString& value,double strength) {
     if(rect.isEmpty() || value.isEmpty())return;
+    // XMB_PS_BLOOM_CACHE=0 rebuilds the blur on every draw, as before: the A/B for the frame-time measurement only.
+    static const bool cached=qEnvironmentVariable("XMB_PS_BLOOM_CACHE")!=QLatin1String("0");
+    if(!cached){masks.clear();glows.clear();}
     const double scale=std::max(1.,p.transform().m11());
     const int radius=std::max(2,int(std::lround(5.*scale)));
     const int pad=radius*3;
     const QSize size(int(std::ceil(rect.width()*scale))+2*pad,int(std::ceil(rect.height()*scale))+2*pad);
     if(size.width()<=0 || size.height()<=0 || size.width()>8192 || size.height()>2048)return;
-    QImage mask(size,QImage::Format_Grayscale8);mask.fill(0);
-    {
-        QPainter mp(&mask);mp.setRenderHint(QPainter::TextAntialiasing);
-        QFont f=font;f.setPixelSize(std::max(1,int(std::lround(double(font.pixelSize())*scale))));
-        mp.setFont(f);mp.setPen(Qt::white);
-        mp.drawText(QRectF(pad,pad,rect.width()*scale,rect.height()*scale),Qt::AlignLeft|Qt::AlignVCenter,value);
-    }
-    for(int i=0;i<3;++i)boxBlurGray(mask,radius);
-    QImage glow(size,QImage::Format_ARGB32_Premultiplied);
-    for(int y=0;y<size.height();++y) {
-        const uchar* in=mask.constScanLine(y);auto* out=reinterpret_cast<QRgb*>(glow.scanLine(y));
-        for(int x=0;x<size.width();++x) {
-            const int alpha=std::clamp(int(double(in[x])*strength),0,255);
-            out[x]=qRgba(alpha,alpha,alpha,alpha);
+    const QString key=QStringLiteral("%1|%2|%3|%4x%5|%6").arg(font.family()).arg(font.pixelSize()).arg(scale,0,'f',4).arg(size.width()).arg(size.height()).arg(value);
+    auto found=masks.find(key);
+    if(found==masks.end()) {
+        if(masks.size()>=24){masks.clear();glows.clear();}   // a handful of labels ever exist; a cap, not a policy
+        QImage mask(size,QImage::Format_Grayscale8);mask.fill(0);
+        {
+            QPainter mp(&mask);mp.setRenderHint(QPainter::TextAntialiasing);
+            QFont f=font;f.setPixelSize(std::max(1,int(std::lround(double(font.pixelSize())*scale))));
+            mp.setFont(f);mp.setPen(Qt::white);
+            mp.drawText(QRectF(pad,pad,rect.width()*scale,rect.height()*scale),Qt::AlignLeft|Qt::AlignVCenter,value);
         }
+        for(int i=0;i<3;++i)boxBlurGray(mask,radius);
+        found=masks.insert(key,mask);
+    }
+    auto glowFound=glows.find(key);
+    if(glowFound==glows.end() || glowFound->first!=strength) {
+        std::array<int,256> table{};
+        for(int level=0;level<256;++level)table[level]=std::clamp(int(double(level)*strength),0,255);
+        const QImage& mask=found.value();
+        QImage glow(size,QImage::Format_ARGB32_Premultiplied);
+        for(int y=0;y<size.height();++y) {
+            const uchar* in=mask.constScanLine(y);auto* out=reinterpret_cast<QRgb*>(glow.scanLine(y));
+            for(int x=0;x<size.width();++x){const int alpha=table[in[x]];out[x]=qRgba(alpha,alpha,alpha,alpha);}
+        }
+        glowFound=glows.insert(key,{strength,glow});
     }
     p.save();p.setRenderHint(QPainter::SmoothPixmapTransform);
     p.drawImage(QRectF(rect.x()-double(pad)/scale,rect.y()-double(pad)/scale,
-        double(size.width())/scale,double(size.height())/scale),glow);
+        double(size.width())/scale,double(size.height())/scale),glowFound->second);
     p.restore();
 }
 }
@@ -2171,6 +2294,7 @@ const View::ChoiceBand* View::choiceBandFor(const QString& setting) {
         // sysconf_plugin.rco once and only on a run that draws a choice list, which is why this is lazy
         // rather than part of start-up.
         choiceBandsBuilt_=true;
+        QElapsedTimer choiceClock;if(xmb::frametrace::on())choiceClock.start();
         int lists=0,items=0;
         const auto catalogue=settingsChoiceCatalogue(assets_);
         for(const auto& list:catalogue) {
@@ -2189,6 +2313,7 @@ const View::ChoiceBand* View::choiceBandFor(const QString& setting) {
         }
         qInfo().noquote()<<QStringLiteral("view: settings choice model -> %1 lists, %2 items (labels from the firmware's own pages)")
             .arg(lists).arg(items);
+        if(choiceClock.isValid())xmb::frametrace::note(QString("choice model built %1 ms").arg(choiceClock.nsecsElapsed()/1e6,0,'f',1));
     }
     const auto found=choiceBands_.constFind(setting);
     return found==choiceBands_.cend()?nullptr:&*found;
@@ -3343,63 +3468,7 @@ void View::drawScene(QPainter& p) {
         if(black) {
             const double content=psHoldTextAlpha(clock_.elapsed());
             const double bloom=psHoldBloomAmount(clock_.elapsed());
-            p.save();
-            p.fillRect(QRectF(0,0,1920,1080),QColor(0,0,0));   // the console blacks the whole frame
-            // Everything after the plate takes the envelope's staged alpha: the clock and both rules are
-            // outside the burst's crop, so they ride the entries' text (1279..1326) rather than a curve of
-            // their own.
-            p.setOpacity(content);
-            // The menu's own clock: ink x 1613..1802, y 166..185, with a 1 px luma-175 rule under it at y 199.
-            text({1383,153,420,45},shell_.clockText(),23,Qt::white,Qt::AlignRight|Qt::AlignVCenter);
-            p.fillRect(QRectF(0,199,1920,1),QColor(255,255,255,175));
-            const auto psItems=shell_.psMenuItems();
-            // Both entries start at the same left edge (measured ink x 831/832) and the selected one is ~7%
-            // larger: the shared prefix "Turn Off the " measures 156 px on the focused row and 146 px on the
-            // other, and the caps are 18 px and 17 px. The 43 px "pitch" in SCORECARD 16.5 is band tops:
-            // the bloom adds 2 rows above the focused cap, the baselines themselves are 40 px apart.
-            const double psTop=506.5;
-            for(int i=0;i<psItems.size();++i) {
-                const bool focused=!shell_.psMenuConfirmingOff() && i==shell_.psMenuSelection();
-                const int size=focused?24:23;
-                const QString label=shell_.psMenuConfirmingOff() && i==0?QObject::tr("Turn Off the System?"):psItems[i];
-                const QRectF row(831,psTop+i*40.,1000,34);
-                // Bloom strength 1.8 is a FIT by side-by-side crops against ps-menu__original__day__1080p: at 3.6 the
-                // clamped mask filled the letters into one white block, at 1.4 the halo was fainter than the console's.
-                if(focused && bloom>.01) {
-                    QFont bloomFont(shell_.fontFamily());bloomFont.setPixelSize(size);
-                    drawTextBloom(p,bloomFont,row,label,1.8*bloom);
-                }
-                // The label's drop shadow is a dark copy offset down-right: over the bloom it printed as a second,
-                // dark "Turn Off the System" behind the white one. The console's PS menu has no shadow on either
-                // entry (ps-menu__original__day__1080p: clean ink inside a soft halo), so it is drawn without one.
-                if(textRenderer_.ready()) {
-                    QFont f(shell_.fontFamily());f.setPixelSize(size);
-                    textRenderer_.draw(*this,p,row,label,f,Qt::white,Qt::AlignLeft|Qt::AlignVCenter,0,false);
-                } else text(row,label,size,Qt::white,Qt::AlignLeft|Qt::AlignVCenter);
-            }
-            if(shell_.psMenuConfirmingOff())
-                text({830,psTop+80,1000,34},QObject::tr("X turns the XMB off; the PC stays on   O cancels"),20,QColor(170,170,170),Qt::AlignLeft|Qt::AlignVCenter);
-            // Controller/charge panel: numbers above 17 px slots (x 132 + 44.33*i 1..4), labels at x 311, the
-            // pad glyph between "Controller" and "1", the charge dash centred on x 488.
-            p.setPen(Qt::NoPen);
-            for(int i=0;i<4;++i) {
-                const double x=132.+i*44.333;
-                p.setBrush(i==0?QColor(160,13,13):QColor(30,30,30));
-                p.drawRect(QRectF(x,828,17,17));
-                text({x-2,801,21,22},QString::number(i+1),19,QColor(215,215,215),Qt::AlignCenter);
-            }
-            text({311,795,220,34},QObject::tr("Controller"),24,Qt::white,Qt::AlignLeft|Qt::AlignVCenter);
-            drawImage(p,"system_plugin","tex_controller",{448,799,31,31});
-            text({494,795,60,34},"1",23,Qt::white,Qt::AlignLeft|Qt::AlignVCenter);
-            text({311,835,220,34},QObject::tr("Charge Level"),24,QColor(215,215,215),Qt::AlignLeft|Qt::AlignVCenter);
-            text({468,835,40,34},"-",24,QColor(215,215,215),Qt::AlignHCenter|Qt::AlignVCenter);
-            // Footer legend (console ink x 726/762 and 1155/1192, y 897-916) with the console's 1 px rule at y 880.
-            p.fillRect(QRectF(0,880,1920,1),QColor(255,255,255,175));
-            drawImage(p,"system_plugin","tex_cross",{726,898,18,18});
-            text({760,890,140,34},QObject::tr("Enter"),21,Qt::white,Qt::AlignLeft|Qt::AlignVCenter);
-            drawImage(p,"system_plugin","tex_circle",{1155,897,20,20});
-            text({1190,890,140,34},QObject::tr("Back"),21,Qt::white,Qt::AlignLeft|Qt::AlignVCenter);
-            p.restore();
+            drawPsMenuBody(p,content,bloom,0);
         }
     }
     else if(psHudAt_>0) {
@@ -3419,6 +3488,88 @@ void View::drawScene(QPainter& p) {
             p.restore();
         }
     }
+}
+// The system menu's black frame and everything on it. The menu's own staged envelope (psHoldTextAlpha,
+// psHoldBloomAmount) arrives as `content` and `bloom`; `warm` is described at the definition's first lines.
+void View::drawPsMenuBody(QPainter& p,double content,double bloom,int warm,int part) {
+    // warm: 0 draws the menu. 1 and 2 are the idle prewarm (prewarmOverlays), which runs this same code in pieces, with
+    // every row at both sizes, so the glyph tiles, the bloom mask and the textures the real open needs already
+    // exist. warm 1 part 0 draws the clock, the controller panel, the legend and the textures; warm 1 part 1 the rows
+    // and the confirm line; warm 2 the bloom of row `part`. They draw into the scratch UI target, never to the screen.
+    const bool panel=!warm || (warm==1 && part==0);
+    const auto text=[&](const QRectF& r,const QString& value,int size,QColor colour,int flags=Qt::AlignLeft|Qt::AlignVCenter){
+        if(textRenderer_.ready()) {QFont f(shell_.fontFamily());f.setPixelSize(size);textRenderer_.draw(*this,p,r,value,f,colour,flags);return;}
+        QFont f(shell_.fontFamily());f.setPixelSize(size);f.setStyleStrategy(QFont::PreferAntialias);f.setHintingPreference(QFont::PreferNoHinting);p.setFont(f);p.setPen(QColor(0,0,0,38));p.drawText(r.translated(1,1),flags,value);p.setPen(colour);p.drawText(r,flags,value);
+    };
+    p.save();
+    p.fillRect(QRectF(0,0,1920,1080),QColor(0,0,0));   // the console blacks the whole frame
+    // Everything after the plate takes the envelope's staged alpha: the clock and both rules are
+    // outside the burst's crop, so they ride the entries' text (1279..1326) rather than a curve of
+    // their own.
+    p.setOpacity(content);
+    // The menu's own clock: ink x 1613..1802, y 166..185, with a 1 px luma-175 rule under it at y 199.
+    if(panel)text({1383,153,420,45},shell_.clockText(),23,Qt::white,Qt::AlignRight|Qt::AlignVCenter);
+    p.fillRect(QRectF(0,199,1920,1),QColor(255,255,255,175));
+    auto psItems=shell_.psMenuItems();
+    if(warm) { // every row the menu can show, so a later Quit Game row or confirm line pays for no glyphs
+        for(const auto& extra:{QObject::tr("Quit Game"),QObject::tr("Turn Off the System?")})if(!psItems.contains(extra))psItems<<extra;
+    }
+    // Both entries start at the same left edge (measured ink x 831/832) and the selected one is ~7%
+    // larger: the shared prefix "Turn Off the " measures 156 px on the focused row and 146 px on the
+    // other, and the caps are 18 px and 17 px. The 43 px "pitch" in SCORECARD 16.5 is band tops:
+    // the bloom adds 2 rows above the focused cap, the baselines themselves are 40 px apart.
+    const double psTop=506.5;
+    for(int i=0;i<psItems.size();++i) {
+        if(warm==2 && i!=part)continue;
+        if(warm==1 && part!=1)break;
+        const bool focused=warm?warm==2:(!shell_.psMenuConfirmingOff() && i==shell_.psMenuSelection());
+        const int size=focused?24:23;
+        const QString label=!warm && shell_.psMenuConfirmingOff() && i==0?QObject::tr("Turn Off the System?"):psItems[i];
+        const QRectF row(831,psTop+i*40.,1000,34);
+        // Bloom strength 1.8 is a FIT by side-by-side crops against ps-menu__original__day__1080p: at 3.6 the
+        // clamped mask filled the letters into one white block, at 1.4 the halo was fainter than the console's.
+        if(focused && bloom>.01) {
+            QFont bloomFont(shell_.fontFamily());bloomFont.setPixelSize(size);
+            QElapsedTimer bloomClock;if(xmb::frametrace::on())bloomClock.start();
+            drawTextBloom(p,bloomCache_.masks,bloomCache_.glows,bloomFont,row,label,1.8*bloom);
+            if(bloomClock.isValid())xmb::frametrace::note(QString("ps-menu bloom %1 ms").arg(bloomClock.nsecsElapsed()/1e6,0,'f',1));
+        }
+        // The label's drop shadow is a dark copy offset down-right: over the bloom it printed as a second,
+        // dark "Turn Off the System" behind the white one. The console's PS menu has no shadow on either
+        // entry (ps-menu__original__day__1080p: clean ink inside a soft halo), so it is drawn without one.
+        if(textRenderer_.ready()) {
+            QFont f(shell_.fontFamily());f.setPixelSize(size);
+            textRenderer_.draw(*this,p,row,label,f,Qt::white,Qt::AlignLeft|Qt::AlignVCenter,0,false);
+        } else text(row,label,size,Qt::white,Qt::AlignLeft|Qt::AlignVCenter);
+        if(warm==1 && textRenderer_.ready()) { // the other size too: the focus moves between rows
+            QFont f(shell_.fontFamily());f.setPixelSize(24);
+            textRenderer_.draw(*this,p,row,label,f,Qt::white,Qt::AlignLeft|Qt::AlignVCenter,0,false);
+        }
+    }
+    if((warm==1 && part==1) || (!warm && shell_.psMenuConfirmingOff()))
+        text({830,psTop+80,1000,34},QObject::tr("X turns the XMB off; the PC stays on   O cancels"),20,QColor(170,170,170),Qt::AlignLeft|Qt::AlignVCenter);
+    if(!panel){p.restore();return;}
+    // Controller/charge panel: numbers above 17 px slots (x 132 + 44.33*i 1..4), labels at x 311, the
+    // pad glyph between "Controller" and "1", the charge dash centred on x 488.
+    p.setPen(Qt::NoPen);
+    for(int i=0;i<4;++i) {
+        const double x=132.+i*44.333;
+        p.setBrush(i==0?QColor(160,13,13):QColor(30,30,30));
+        p.drawRect(QRectF(x,828,17,17));
+        text({x-2,801,21,22},QString::number(i+1),19,QColor(215,215,215),Qt::AlignCenter);
+    }
+    text({311,795,220,34},QObject::tr("Controller"),24,Qt::white,Qt::AlignLeft|Qt::AlignVCenter);
+    drawImage(p,"system_plugin","tex_controller",{448,799,31,31});
+    text({494,795,60,34},"1",23,Qt::white,Qt::AlignLeft|Qt::AlignVCenter);
+    text({311,835,220,34},QObject::tr("Charge Level"),24,QColor(215,215,215),Qt::AlignLeft|Qt::AlignVCenter);
+    text({468,835,40,34},"-",24,QColor(215,215,215),Qt::AlignHCenter|Qt::AlignVCenter);
+    // Footer legend (console ink x 726/762 and 1155/1192, y 897-916) with the console's 1 px rule at y 880.
+    p.fillRect(QRectF(0,880,1920,1),QColor(255,255,255,175));
+    drawImage(p,"system_plugin","tex_cross",{726,898,18,18});
+    text({760,890,140,34},QObject::tr("Enter"),21,Qt::white,Qt::AlignLeft|Qt::AlignVCenter);
+    drawImage(p,"system_plugin","tex_circle",{1155,897,20,20});
+    text({1190,890,140,34},QObject::tr("Back"),21,Qt::white,Qt::AlignLeft|Qt::AlignVCenter);
+    p.restore();
 }
 // The console's tap indicator window: 155 ms delay, 66 ms fade in, ~2.0 s hold, 66 ms fade out, as
 // measured on the burst (luma 80.47 at rest, 68.85 from 321 ms to 2322 ms, 80.47 again by 2388 ms).
