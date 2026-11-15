@@ -58,7 +58,7 @@ qt_add_executable(re-ps3-native
     src/font_raster.cpp src/font_raster.h
     src/profiles.cpp src/profiles.h
     src/steam_library.cpp src/steam_library.h src/steam_vdf.cpp src/steam_vdf.h src/steam_quit.cpp src/steam_quit.h
-    src/steam_downloads.cpp src/steam_downloads.h src/steam_accounts.cpp src/steam_accounts.h src/steam_friends.cpp src/steam_friends.h
+    src/steam_downloads.cpp src/steam_downloads.h src/steam_accounts.cpp src/steam_accounts.h src/steam_switch.cpp src/steam_switch.h src/steam_friends.cpp src/steam_friends.h
     src/steam_artwork.cpp src/steam_artwork.h src/steam_store.cpp src/steam_store.h src/steam_owned.cpp src/steam_owned.h src/steam_collections.cpp src/steam_collections.h src/steam_overrides.cpp src/steam_overrides.h src/steam_family.cpp src/steam_family.h
     src/content_registry.cpp src/content_registry.h src/web_launch.cpp src/web_launch.h src/app_editor.cpp src/app_editor.h
     src/rawg_client.cpp src/rawg_client.h src/rawg_artwork.cpp src/rawg_artwork.h
@@ -140,6 +140,14 @@ if(XMB_STEAM_VDF_BUILD_TESTS)
     target_include_directories(xmb-steam-vdf-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
     target_compile_definitions(xmb-steam-vdf-tests PRIVATE XMB_VDF_GOLDEN="${CMAKE_CURRENT_SOURCE_DIR}/tests/steam_vdf_golden.txt")
     target_link_libraries(xmb-steam-vdf-tests PRIVATE Qt6::Core)
+endif()
+option(XMB_STEAM_SWITCH_BUILD_TESTS "Build the Steam account switch tests (loginusers.vdf rewrite, file and registry writes against a scratch root)" OFF)
+if(XMB_STEAM_SWITCH_BUILD_TESTS)
+    qt_add_executable(xmb-steam-switch-tests tests/steam_switch_tests.cpp
+        src/steam_switch.cpp src/steam_switch.h src/steam_accounts.cpp src/steam_accounts.h
+        src/steam_vdf.cpp src/steam_vdf.h)
+    target_include_directories(xmb-steam-switch-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(xmb-steam-switch-tests PRIVATE Qt6::Core)
 endif()
 option(XMB_DISCORD_BUILD_TESTS "Build the Discord sign-in message and discord.json tests" OFF)
 if(XMB_DISCORD_BUILD_TESTS)

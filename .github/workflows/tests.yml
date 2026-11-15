@@ -52,7 +52,7 @@ jobs:
         run: |
           cmake -S native-xmb -B "$env:BUILD_DIR" -G Ninja -DCMAKE_BUILD_TYPE=Release `
             -DCMAKE_PREFIX_PATH="$env:QT_ROOT_DIR" `
-            -DXMB_STEAM_VDF_BUILD_TESTS=ON -DXMB_SETUP_BUILD_TESTS=ON -DXMB_AUTOLOGON_BUILD_TESTS=ON `
+            -DXMB_STEAM_VDF_BUILD_TESTS=ON -DXMB_STEAM_SWITCH_BUILD_TESTS=ON -DXMB_SETUP_BUILD_TESTS=ON -DXMB_AUTOLOGON_BUILD_TESTS=ON `
             -DXMB_UPDATER_BUILD_TESTS=ON -DXMB_FIRMWARE_BUILD_TESTS=ON -DXMB_RELEASE_BUILD_TESTS=ON `
             -DXMB_MANAGER_BUILD_TESTS=ON -DXMB_FILE_OPS_BUILD_TESTS=ON -DXMB_DISCORD_BUILD_TESTS=ON -DXMB_FOLDER_BROWSER_BUILD_TESTS=ON -DXMB_OSK_PASTE_BUILD_TESTS=ON -DXMB_JELLYFIN_SETUP_BUILD_TESTS=ON -DXMB_JELLYFIN_PLAYBACK_BUILD_TESTS=ON -DXMB_STEAM_QUIT_BUILD_TESTS=ON
           if ($LASTEXITCODE) { throw 'CMake configuration failed.' }
@@ -61,7 +61,7 @@ jobs:
         shell: pwsh
         run: |
           cmake --build "$env:BUILD_DIR" --parallel --target `
-            xmb-steam-vdf-tests xmb-setup-tests xmb-autologon-tests xmb-updater-tests `
+            xmb-steam-vdf-tests xmb-steam-switch-tests xmb-setup-tests xmb-autologon-tests xmb-updater-tests `
             xmb-firmware-tests xmb-release-tests xmb-file-ops-tests xmb-folder-browser-tests xmb-osk-paste-tests xmb-discord-tests xmb-jellyfin-setup-tests xmb-jellyfin-playback-tests xmb-steam-quit-tests xmb-steam-quit-standin xmb-manager-tests xmb-manager
           if ($LASTEXITCODE) { throw 'Test build failed.' }
 
@@ -76,6 +76,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path $scratch | Out-Null
           $runs = @(
             @{ Name = 'steam-vdf'; Exe = 'xmb-steam-vdf-tests.exe'; Args = @() },
+            @{ Name = 'steam-switch'; Exe = 'xmb-steam-switch-tests.exe'; Args = @() },
             @{ Name = 'setup';     Exe = 'xmb-setup-tests.exe';     Args = @() },
             @{ Name = 'autologon'; Exe = 'xmb-autologon-tests.exe'; Args = @() },
             @{ Name = 'updater';   Exe = 'xmb-updater-tests.exe';   Args = @() },

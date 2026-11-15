@@ -5845,45 +5845,80 @@ void Shell::steamSwitchConfirmed() {
     steamSwitchNextStep();
 }
 void Shell::steamSwitchRun() {
-    // Both steps are accepted, so the handoff may run: close the client, then start it again with no account
-    // argument (steam_accounts.h: the XMB never passes -login, a name, a password or a token). A dry run of
-    // the same model is logged first, so the record shows the exact command lines and that nothing ran early.
+    // Both steps are accepted, so the switch may run (steam_switch.h): close the client, select the account for
+    // Steam's own automatic sign-in (only an account with a saved sign-in), start the client again with no
+    // account argument, and watch Steam's own ActiveUser. The XMB never passes -login, a name, a password or a
+    // token. A dry run of the same model is logged first, so the record shows the exact command lines and the
+    // exact writes, and that nothing ran early.
+    steamPrompt_=false;
     const auto account=std::find_if(steamAccounts_.cbegin(),steamAccounts_.cend(),
         [&](const SteamAccount& a){return a.steamId64==steamSwitchId_;});
     if(account==steamAccounts_.cend()) {
         steamSwitchResult(false,QObject::tr("The account is no longer in the Steam client's list."));
         return;
     }
+    if(steamSwitcher_ && steamSwitcher_->running()) {
+        showMessage(QObject::tr("Steam Account"),QObject::tr("A Steam account switch is already running."),MessageKind::Page);
+        emit changed();
+        return;
+    }
     const auto dry=steamSwitchDryRun(*account,steamRoot_);
     for(const auto& line:dry.commands)qInfo().noquote()<<"steam: dry run command:"<<line;
-    const QString exe=steamSwitch_.steamExe;
-    if(steamSwitchHold_) {
+    for(const auto& line:dry.actions)qInfo().noquote()<<"steam: dry run action:"<<line;
+    if(steamSwitchHold_)
         qInfo().noquote()<<QStringLiteral("steam: handoff held (XMB_STEAM_SWITCH_HOLD=1): %1 ; %2")
             .arg(dry.commands.value(0),dry.commands.value(1));
-        steamSwitchResult(true,QString{});
-        return;
+    SteamSwitchOptions options;
+    options.steamRoot=steamSwitch_.steamRoot;
+    options.steamExe=steamSwitch_.steamExe;
+    options.steamId64=steamSwitch_.steamId64;
+    options.accountName=steamSwitch_.accountName;
+    options.personaName=steamSwitch_.accountLabel;
+    options.select=steamSwitch_.automatic;
+    options.hold=steamSwitchHold_;
+    // Scripted-run seams (documented in audit/STEAM-ACCOUNT-SWITCH.md): a shorter verify wait.
+    bool numeric=false;
+    const int verifyMs=qEnvironmentVariable("XMB_STEAM_SWITCH_VERIFY_MS").toInt(&numeric);
+    if(numeric && verifyMs>=500 && verifyMs<=300000)options.verifyTimeoutMs=verifyMs;
+    const bool noProcesses=qEnvironmentVariableIsSet("XMB_STEAM_SWITCH_NOPROC");
+    steamSwitcher_=new SteamAccountSwitcher(options,noProcesses?makeNullSteamProcessControl():makeSystemSteamProcessControl(),this);
+    connect(steamSwitcher_,&SteamAccountSwitcher::progress,this,[this](const QString& text){steamSwitchStatus(text);});
+    connect(steamSwitcher_,&SteamAccountSwitcher::finished,this,[this](const SteamSwitchResult& result){steamSwitchFinished(result);});
+    steamSwitchStatus(steamSwitch_.automatic?QObject::tr("Switching to %1").arg(steamSwitch_.accountLabel)
+                                            :QObject::tr("Restarting Steam"));
+    steamSwitcher_->start();
+}
+// The status page: one Page message that the switch keeps rewriting while it is the page on screen. Cross
+// dismisses it and the switch carries on; the result then arrives as a notice instead.
+void Shell::steamSwitchStatus(const QString& body) {
+    const QString title=QObject::tr("Steam Account");
+    if(!steamStatusText_.isEmpty() && message_!=steamStatusText_)return;   // dismissed: wait for the result notice
+    showMessage(title,body,MessageKind::Page);
+    steamStatusText_=message_;
+    qInfo().noquote()<<"steam: switch status:"<<body;
+    emit changed();
+}
+void Shell::steamSwitchFinished(const SteamSwitchResult& result) {
+    const QString title=QObject::tr("Steam Account");
+    QString body=result.message;
+    if(result.outcome==SteamSwitchResult::Outcome::SignedIn)
+        body+=QStringLiteral("\n\n")+QObject::tr("Steam signed in by itself with the sign-in it had saved. The XMB entered no password.");
+    if(!result.backupPath.isEmpty() && result.changed)
+        body+=QStringLiteral("\n\n")+QObject::tr("A copy of Steam's previous account file is next to it: %1").arg(QFileInfo(result.backupPath).fileName());
+    qInfo().noquote()<<QStringLiteral("steam: handoff %1 outcome=%2: %3")
+        .arg(result.ok?QStringLiteral("finished"):QStringLiteral("failed")).arg(int(result.outcome)).arg(result.message);
+    const bool pageIsOurs=!steamStatusText_.isEmpty() && message_==steamStatusText_;
+    if(pageIsOurs) {
+        steamStatusText_.clear();
+        showMessage(title,body,MessageKind::Page);
+        steamStatusText_=message_;
+    } else {
+        steamStatusText_.clear();
+        notify(title,result.message);
     }
-    if(exe.isEmpty() || !QFileInfo(exe).isFile()) {
-        steamSwitchResult(false,QObject::tr("steam.exe was not found at %1").arg(exe.isEmpty()?QObject::tr("(no path)"):exe));
-        return;
-    }
-    // Step 1: ask the running client to exit. It is a short-lived child, so its own error string is
-    // available when the launch fails (a detached start would report only false).
-    QProcess close;
-    close.start(exe,steamSwitch_.shutdownArguments);
-    if(!close.waitForStarted(5000)) {
-        steamSwitchResult(false,QObject::tr("Steam could not be asked to close: %1").arg(close.errorString()));
-        return;
-    }
-    close.waitForFinished(10000);
-    qInfo().noquote()<<QStringLiteral("steam: close requested (%1) exit=%2").arg(exe).arg(close.exitCode());
-    // Step 2: start the client again, detached so it outlives the XMB. Its failure is reported from the
-    // launch's own result, and the success text never claims a sign-in: Steam's window does that.
-    if(!QProcess::startDetached(exe,steamSwitch_.relaunchArguments)) {
-        steamSwitchResult(false,QObject::tr("Steam could not be started again from %1").arg(exe));
-        return;
-    }
-    steamSwitchResult(true,QString{});
+    steamAccounts_=scanSteamAccounts(steamRoot_);   // the next selection sees Steam's new record
+    if(steamSwitcher_){steamSwitcher_->deleteLater();steamSwitcher_=nullptr;}
+    emit changed();
 }
 void Shell::steamSwitchResult(bool ok,const QString& error) {
     steamPrompt_=false;

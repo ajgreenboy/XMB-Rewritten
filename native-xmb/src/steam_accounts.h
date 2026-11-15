@@ -9,11 +9,13 @@
 namespace xmb {
 
 // One Steam account this machine remembers, read from Steam's own local files.
-// The source is <steam>/config/loginusers.vdf (login name, persona name, two
+// The source is <steam>/config/loginusers.vdf (login name, persona name, a few
 // booleans, a timestamp) plus two read-only registry values (the client's active
 // user id and its last auto-login name). No password, web token, cookie, SSFN
-// file or connect cache is read, stored or logged by this module, and nothing is
-// written to the Steam installation.
+// file or connect cache is read, stored or logged by this module. Scanning writes
+// nothing; the one place the XMB writes Steam's account selection is steam_switch.h
+// (loginusers.vdf MostRecent/AllowAutoLogin and the AutoLoginUser registry value),
+// and only after an explicit two-step confirmation.
 struct SteamAccount {
     QString steamId64;   // canonical 17-digit individual account id
     QString accountName; // the login name Steam remembers; compared case-insensitively
@@ -21,6 +23,7 @@ struct SteamAccount {
     bool rememberPassword = false;
     bool autoLogin = false;
     bool active = false;
+    bool wantsOfflineMode = false; // WantsOfflineMode 1: Steam starts this account offline
     bool hasUserdata = false; // userdata/<accountid>/config/localconfig.vdf exists
     qint64 lastLoginUnix = 0; // 0 when the client recorded no usable timestamp
 };
@@ -46,15 +49,25 @@ struct SteamAccount {
 // - Accounts are sorted active first, then newest recorded login, then SteamID64.
 QVector<SteamAccount> scanSteamAccounts(const QString& steamRoot = {}, QString* error = nullptr);
 
-// The only honest switch handoff. Steam exposes no supported "sign in as this
-// account" command; the XMB must hand control back to the client and let the
-// client's own sign-in window authenticate. The caller performs two launches:
+// The switch handoff. Steam exposes no supported "sign in as this account"
+// command, so the XMB does what a user does by hand: it lets the client exit,
+// changes which account Steam signs in on its own (steam_switch.h), and starts the
+// client again. The two launches are:
 //   1. steam.exe <steamShutdownArguments()>   (ask a running client to exit)
 //   2. steam.exe <steamRelaunchArguments()>   (start it again, no account args)
-// The XMB never passes -login, a user name, a password or a token, never claims
-// the switch succeeded, and never reports the target account as signed in.
+// The XMB never passes -login, a user name, a password or a token, and never
+// claims the switch succeeded: it reports "Signed in as ..." only after Steam's
+// own ActiveUser record names the account.
 QStringList steamShutdownArguments();
 QStringList steamRelaunchArguments();
+
+// The registry key that holds Steam's per-user values (SteamPath, AutoLoginUser,
+// RememberPassword, ActiveProcess\ActiveUser). It is HKEY_CURRENT_USER\Software\Valve\Steam
+// unless XMB_STEAM_REGISTRY_KEY names a key under HKEY_CURRENT_USER\Software\XmbTest\ (the test seam;
+// any other non-empty value is replaced by a dead scratch key under XmbTest, never by the real one).
+QString steamRegistryKeyPath();
+// True when the test seam is in effect.
+bool steamRegistryKeyIsTestSeam();
 
 // Everything the XMB can honestly offer for a requested account.
 struct SteamSwitchPlan {
@@ -62,6 +75,7 @@ struct SteamSwitchPlan {
     bool clientSignedIn = false; // the registry reports an active user id
     bool alreadyActive = false; // Steam already names this account as active
     QString steamExe;           // resolved client executable; empty when missing
+    QString steamRoot;          // the resolved Steam installation
     QStringList shutdownArguments; // pass to the running client first
     QStringList relaunchArguments; // pass to the fresh client second
     QString explanation;           // user-facing text; never claims XMB signed in
@@ -93,7 +107,16 @@ struct SteamSwitchPrompt {
     bool alreadyActive = false; // Steam already names this account as active: nothing to switch
     bool clientSignedIn = false; // Steam's registry reports an active user id
     QString steamExe;           // the resolved client executable
+    QString steamRoot;          // the resolved Steam installation
     QString accountLabel;       // persona name, else the login name; empty when none was selected
+    QString accountName;        // the login name (never a secret); what AutoLoginUser will hold
+    QString steamId64;
+    // True when the account already has a remembered login (RememberPassword 1), so the XMB may select it
+    // for Steam's own automatic sign-in. False: nothing is changed and the user signs in once inside Steam.
+    bool automatic = false;
+    bool wantsOfflineMode = false; // the account is set to start Steam offline (the XMB leaves that alone)
+    QString loginUsersPath;     // <steam>/config/loginusers.vdf, the one file that is rewritten (automatic)
+    QString registryKey;        // the registry key whose AutoLoginUser/RememberPassword are written (automatic)
     QString xmbNote;            // the one-line promise shown in both steps
     QStringList shutdownArguments; // step 1: pass to the running client
     QStringList relaunchArguments; // step 2: pass to the fresh client
@@ -129,6 +152,10 @@ struct SteamSwitchDryRun {
     bool executed = false;      // always false: a dry run never starts or stops Steam
     QVector<QString> transcript; // headings, both bodies, the labels pressed, the command lines
     QStringList commands;        // {"<steam.exe> -shutdown", "<steam.exe>"} in handoff order
+    // The exact writes an automatic switch performs, in order, as the log shows them: the file with its
+    // backup name pattern, then the registry values. The account NAME only; nothing secret.
+    QStringList actions;
+    bool automatic = false;
     SteamSwitchStep blocked;     // set when the prompt cannot proceed
     QString error;
 };

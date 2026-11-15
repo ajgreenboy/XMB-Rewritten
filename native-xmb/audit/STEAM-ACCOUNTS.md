@@ -153,6 +153,10 @@ XMB must still not own authentication.
   registry values (`SteamPath`/`SteamExe`/`AutoLoginUser`, `ActiveProcess`).
 - Never opened: any credential/session/cache file, any userdata content, any
   network endpoint.
-- Never written: the Steam installation, preferences, or any new file.
+- Scanning writes nothing. **Superseded for the switch itself:** the switch (`steam_switch.*`, see
+  [STEAM-ACCOUNT-SWITCH.md](STEAM-ACCOUNT-SWITCH.md)) now writes `config/loginusers.vdf` (account flags, with a
+  timestamped backup copy next to it) and the `AutoLoginUser`/`RememberPassword` registry values, only for an account
+  that already has a saved sign-in and only after the two-step confirmation. Credentials, tokens, `ssfn*` files,
+  `ConnectCache` and `config.vdf` are still never read or written.
 - This document records counts, key names, booleans and timestamps only; no
   account names, persona names, SteamID64 values or userdata directory names.

@@ -119,7 +119,7 @@ QStringList steamRootCandidates(const QString& explicitRoot) {
     if (!environmentRoot.isEmpty()) return {environmentRoot};
     QStringList candidates;
 #ifdef Q_OS_WIN
-    QSettings steam(QStringLiteral("HKEY_CURRENT_USER\\Software\\Valve\\Steam"), QSettings::NativeFormat);
+    QSettings steam(steamRegistryKeyPath(), QSettings::NativeFormat);
     if (steam.status() == QSettings::NoError)
         candidates.append(steam.value(QStringLiteral("SteamPath")).toString().trimmed());
     const QString programFilesX86 = qEnvironmentVariable("ProgramFiles(x86)").trimmed();
@@ -166,7 +166,7 @@ struct RegistryState {
 RegistryState readRegistryState(const QString& root) {
     RegistryState state;
 #ifdef Q_OS_WIN
-    QSettings steam(QStringLiteral("HKEY_CURRENT_USER\\Software\\Valve\\Steam"), QSettings::NativeFormat);
+    QSettings steam(steamRegistryKeyPath(), QSettings::NativeFormat);
     if (steam.status() != QSettings::NoError) return state;
     const QString registryRoot = canonicalDirectory(steam.value(QStringLiteral("SteamPath")).toString());
     const QString canonicalRoot = canonicalDirectory(root);
@@ -176,7 +176,7 @@ RegistryState readRegistryState(const QString& root) {
     state.rootMatches = true;
     state.steamExe = steam.value(QStringLiteral("SteamExe")).toString().trimmed();
     state.autoLoginUser = steam.value(QStringLiteral("AutoLoginUser")).toString().trimmed();
-    QSettings activeProcess(QStringLiteral("HKEY_CURRENT_USER\\Software\\Valve\\Steam\\ActiveProcess"),
+    QSettings activeProcess(steamRegistryKeyPath() + QStringLiteral("\\ActiveProcess"),
                             QSettings::NativeFormat);
     if (activeProcess.status() == QSettings::NoError) {
         state.activeProcessPresent = activeProcess.contains(QStringLiteral("ActiveUser"));
@@ -345,6 +345,7 @@ QVector<SteamAccount> scanSteamAccounts(const QString& steamRoot, QString* error
                                 ? truthy(stringValue(user.children, QStringLiteral("AllowAutoLogin")))
                                 : truthy(autoLoginValue);
         account.lastLoginUnix = loginTimestamp(user.children);
+        account.wantsOfflineMode = truthy(stringValue(user.children, QStringLiteral("WantsOfflineMode")));
 
         const qulonglong accountId = numericId - SteamIdBase;
         const QString localConfig = QDir(root).filePath(
@@ -370,6 +371,24 @@ QVector<SteamAccount> scanSteamAccounts(const QString& steamRoot, QString* error
     sortAccounts(accounts);
     if (error && !limitError.isEmpty()) *error = limitError;
     return accounts;
+}
+
+QString steamRegistryKeyPath() {
+    const QString real = QStringLiteral("HKEY_CURRENT_USER\\Software\\Valve\\Steam");
+    const QString override = qEnvironmentVariable("XMB_STEAM_REGISTRY_KEY").trimmed();
+    const QString allowed = QStringLiteral("HKEY_CURRENT_USER\\Software\\XmbTest\\");
+    if (override.size() > allowed.size() && override.startsWith(allowed, Qt::CaseInsensitive) &&
+        !override.contains(QStringLiteral("..")) && !override.contains(QLatin1Char('/')))
+        return override;
+    // An override that is set but not acceptable must never fall back to the real key: a run that asked for a
+    // scratch key and got the real one would write the real Steam registry. It gets a dead scratch key instead.
+    if (!override.isEmpty()) return allowed + QStringLiteral("RejectedOverride");
+    return real;
+}
+
+bool steamRegistryKeyIsTestSeam() {
+    return steamRegistryKeyPath().compare(QStringLiteral("HKEY_CURRENT_USER\\Software\\Valve\\Steam"),
+                                          Qt::CaseInsensitive) != 0;
 }
 
 QStringList steamShutdownArguments() {
@@ -401,6 +420,7 @@ SteamSwitchPlan steamAccountSwitchPlan(const SteamAccount& account, const QStrin
     const RegistryState registry = readRegistryState(root);
     plan.clientSignedIn = registry.signedInSteamId != 0;
     plan.steamExe = steamExecutable(root, registry);
+    plan.steamRoot = root;
     plan.shutdownArguments = steamShutdownArguments();
     plan.relaunchArguments = steamRelaunchArguments();
     plan.alreadyActive = !account.steamId64.isEmpty() && account.active;
@@ -428,18 +448,18 @@ SteamSwitchPlan steamAccountSwitchPlan(const SteamAccount& account, const QStrin
                                "another one, change it inside Steam's own account menu; the XMB cannot "
                                "sign in.")
                                .arg(display);
-    } else if (!account.hasUserdata) {
+    } else if (account.rememberPassword) {
         plan.explanation = QStringLiteral(
-                               "The XMB cannot sign in to Steam. Steam will be asked to close, then started "
-                               "again; sign in to %1 in Steam's own window. This account has no local "
-                               "userdata yet, so Steam creates it after the first signed-in session. The "
-                               "XMB does not store credentials.")
+                               "Steam will be closed, then started again signed in as %1: the XMB selects "
+                               "that account for Steam's own automatic sign-in. The XMB cannot sign in "
+                               "itself and never handles a password, token or session file.")
                                .arg(display);
     } else {
         plan.explanation = QStringLiteral(
-                               "The XMB cannot sign in to Steam. Steam will be asked to close, then started "
-                               "again; sign in to %1 in Steam's own window. Its local userdata is used only "
-                               "after Steam signs in. The XMB does not store credentials.")
+                               "%1 has no saved sign-in on this computer, so the XMB cannot select it. Steam "
+                               "will be closed and started again; sign in as %1 once in Steam's own window "
+                               "(tick Remember my password) and the next switch can be automatic. The XMB "
+                               "never handles a password, token or session file.")
                                .arg(display);
     }
     return plan;
@@ -464,7 +484,7 @@ QString switchCommandLine(const QString& executable, const QStringList& argument
 
 QString noSignInSentence() {
     return QStringLiteral(
-        "The XMB cannot sign in to Steam and never stores a password, token or session file.");
+        "The XMB cannot sign in to Steam and never handles a password, token or session file.");
 }
 
 } // namespace
@@ -478,15 +498,26 @@ SteamSwitchPrompt steamSwitchPlanFor(const SteamAccount& account, const QString&
     prompt.alreadyActive = plan.alreadyActive;
     prompt.clientSignedIn = plan.clientSignedIn;
     prompt.steamExe = plan.steamExe;
+    prompt.steamRoot = plan.steamRoot;
     prompt.accountLabel = accountLabel(account);
+    prompt.accountName = account.accountName;
+    prompt.steamId64 = account.steamId64;
+    prompt.automatic = plan.possible && account.rememberPassword;
+    prompt.wantsOfflineMode = account.wantsOfflineMode;
+    if (!plan.steamRoot.isEmpty()) {
+        prompt.loginUsersPath = QDir(plan.steamRoot).filePath(QStringLiteral("config/loginusers.vdf"));
+        prompt.registryKey = steamRegistryKeyPath();
+    }
     prompt.shutdownArguments = plan.shutdownArguments;
     prompt.relaunchArguments = plan.relaunchArguments;
     // The promise every step repeats: the XMB's own state is not part of the restart. It is true
     // because the handoff only starts and stops the Steam client process.
     prompt.xmbNote = QStringLiteral("Steam must restart; unsaved XMB state is unaffected.");
-    prompt.outcomeText = QStringLiteral(
-        "Steam is starting. The account is only known once Steam's own record changes; the XMB "
-        "re-reads that record and never reports a sign-in itself.");
+    prompt.outcomeText = prompt.automatic
+        ? QStringLiteral("Steam is starting. The XMB reports the account only once Steam's own record names it.")
+        : QStringLiteral(
+              "Steam is starting. The account is only known once Steam's own record changes; the XMB "
+              "re-reads that record and never reports a sign-in itself.");
 
     if (!plan.possible) {
         if (error && !planError.isEmpty()) *error = planError;
@@ -499,32 +530,51 @@ SteamSwitchPrompt steamSwitchPlanFor(const SteamAccount& account, const QString&
         // so the row never looks like a dead end.
         prompt.blocked.heading = QStringLiteral("Steam Account");
         prompt.blocked.body = QStringLiteral(
-                                  "Steam's own record already names %1 as the active account. "
-                                  "Nothing was started.\n\n"
-                                  "To use another account, change it in Steam's own account menu; "
-                                  "the XMB cannot sign in.")
+                                  "%1 is already the account Steam signs in. Steam was not restarted "
+                                  "and nothing was changed.")
                                   .arg(prompt.accountLabel);
         return prompt;
     }
 
     SteamSwitchStep close;
     close.heading = QStringLiteral("Switch Steam Account");
-    close.body = prompt.xmbNote + QStringLiteral("\n\n") +
-                 QStringLiteral("Steam will be asked to close. ") + noSignInSentence() +
-                 QStringLiteral("\n\nNext: start Steam again and sign in as %1 in Steam's own window.")
-                     .arg(prompt.accountLabel);
-    close.confirmLabel = QStringLiteral("Close Steam");
-    close.cancelLabel = QStringLiteral("Cancel");
-
     SteamSwitchStep relaunch;
     relaunch.heading = QStringLiteral("Start Steam Again");
-    relaunch.body = QStringLiteral(
-                        "Steam is closing. Start it again to reach Steam's own sign-in window.\n\n"
-                        "Sign in as %1 there. Steam asks for the password and Steam Guard, and the "
-                        "XMB cannot do either for you.\n\n"
-                        "Steam picks the account it signs in, so the XMB does not report a switch "
-                        "as done.")
-                        .arg(prompt.accountLabel);
+    if (prompt.automatic) {
+        close.body = prompt.xmbNote + QStringLiteral("\n\n") +
+                     QStringLiteral(
+                         "Steam will be closed (close any running game first) and started again as %1. "
+                         "Steam signs in by itself with the sign-in it already saved. ")
+                         .arg(prompt.accountLabel) +
+                     noSignInSentence();
+        if (prompt.wantsOfflineMode)
+            close.body += QStringLiteral(
+                              "\n\n%1 is set to start Steam in Offline Mode; the XMB leaves that as it is.")
+                              .arg(prompt.accountLabel);
+        relaunch.body = QStringLiteral(
+                            "Once Steam has closed, the XMB selects %1 for Steam's own automatic sign-in and "
+                            "changes nothing else of Steam's:\n"
+                            "Registry: AutoLoginUser = %1, RememberPassword = 1\n"
+                            "File: config\\loginusers.vdf (backed up first)\n\n"
+                            "Then Steam starts again and the XMB reports which account signed in. If a step "
+                            "fails, both changes are put back.")
+                            .arg(prompt.accountName);
+    } else {
+        close.body = prompt.xmbNote + QStringLiteral("\n\n") +
+                     QStringLiteral(
+                         "%1 has no saved sign-in on this computer, so the XMB cannot select it and "
+                         "changes nothing. Steam will be closed and started again. ")
+                         .arg(prompt.accountLabel) +
+                     noSignInSentence();
+        relaunch.body = QStringLiteral(
+                            "Steam starts again and shows its own sign-in window.\n\n"
+                            "Sign in as %1 there once and tick Remember my password. After that the XMB "
+                            "can switch to %1 by itself. Steam asks for the password and Steam Guard; "
+                            "the XMB cannot do either for you.")
+                            .arg(prompt.accountLabel);
+    }
+    close.confirmLabel = QStringLiteral("Close Steam");
+    close.cancelLabel = QStringLiteral("Cancel");
     relaunch.confirmLabel = QStringLiteral("Start Steam");
     relaunch.cancelLabel = QStringLiteral("Not Now");
 
@@ -601,6 +651,19 @@ SteamSwitchDryRun steamSwitchDryRun(const SteamAccount& account, const QString& 
         return run;
     }
     run.commands << switchCommandLine(prompt.steamExe, prompt.relaunchArguments);
+    run.automatic = prompt.automatic;
+    if (prompt.automatic) {
+        run.actions << QStringLiteral("backup: copy %1 to %1.xmb-backup-<time>").arg(prompt.loginUsersPath)
+                    << QStringLiteral("file: %1 : MostRecent=1 and AllowAutoLogin=1 (and AutoLogin=1 when the file uses it) for "
+                                      "account %2, MostRecent=0 and AutoLogin=0 for every other account, all other keys "
+                                      "unchanged (temp file, then replace)")
+                           .arg(prompt.loginUsersPath, prompt.accountName)
+                    << QStringLiteral("registry: %1 AutoLoginUser=%2").arg(prompt.registryKey, prompt.accountName)
+                    << QStringLiteral("registry: %1 RememberPassword=1 (DWORD)").arg(prompt.registryKey);
+    } else {
+        run.actions << QStringLiteral("no file or registry value is changed: account %1 has no saved sign-in")
+                           .arg(prompt.accountName);
+    }
     run.transcript << prompt.outcomeText;
     // executed stays false: this function is the dry run. The shell owns the real handoff.
     return run;

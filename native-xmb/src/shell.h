@@ -23,6 +23,7 @@
 #include "jellyfin_setup.h"
 #include "steam_owned.h"
 #include "steam_accounts.h"
+#include "steam_switch.h"
 #include "steam_collections.h"
 #include "steam_family.h"
 #include "steam_store.h"
@@ -1241,6 +1242,12 @@ private:
     void steamSwitchConfirmed();      // the model advanced one step: push step 2 or run the handoff
     void steamSwitchRun();
     void steamSwitchResult(bool ok,const QString& error);
+    // The asynchronous switch (steam_switch.h): close Steam, select the account, start Steam, verify. Its
+    // progress and result land on a status page while that page is up and as a notice once it was dismissed.
+    SteamAccountSwitcher* steamSwitcher_=nullptr;
+    QString steamStatusText_;         // the status page's text; the page is "ours" while message_ equals it
+    void steamSwitchStatus(const QString& body);
+    void steamSwitchFinished(const SteamSwitchResult& result);
     void steamSwitchCancel(const QString& why);
     void openSettings(const QString& page);
     void openChoices(const QString& key,const QString& title);

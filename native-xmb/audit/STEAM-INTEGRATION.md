@@ -7,7 +7,7 @@
 > hand-offs (`steam://nav/games/details/<id>`, `store/<id>`, `open/screenshots/<id>`, `validate/<id>`, `uninstall/<id>`) that
 > Steam itself carries out and confirms. Commits aff3cb6 and 4e64c31. The text below is the 2026-10-25 handoff.
 
-The Game column now discovers installed Steam titles directly. The Friends column is backed by a separate Steam service. Imported executables and service apps share a versioned native registry. Steam remains the owner of installation, DRM and game launch; Steam data is read-only.
+The Game column now discovers installed Steam titles directly. The Friends column is backed by a separate Steam service. Imported executables and service apps share a versioned native registry. Steam remains the owner of installation, DRM and game launch; Steam data is read-only except for the account switch, which selects an already-remembered account for Steam's own auto-sign-in ([STEAM-ACCOUNT-SWITCH.md](STEAM-ACCOUNT-SWITCH.md)).
 
 ## Installed-PKG presentation
 
@@ -95,7 +95,7 @@ Phase 6 of [PHASES-2026-10-27.md](../archive/PHASES-2026-10-27.md), in the Steam
 exact `shell.cpp`/`shell.h` hunks are in [SERVICES-BREADTH.md](SERVICES-BREADTH.md); nothing in `shell.*`,
 `view.*`, `main.cpp`, `CMakeLists.txt` or the harness was edited by this pass.
 
-- **Account switch UI (6.1).** `steam_accounts.*` gains the UI-facing layer over the existing switch plan:
+- **Account switch UI (6.1).** *(Superseded 2026-11-14: the switch now selects the account itself; see [STEAM-ACCOUNT-SWITCH.md](STEAM-ACCOUNT-SWITCH.md). The "never alters Steam" wording below is the original.)* `steam_accounts.*` gains the UI-facing layer over the existing switch plan:
   `steamSwitchPlanFor()` returns a `SteamSwitchPrompt` with two confirmation steps, the two labels per step,
   the one-line promise `Steam must restart; unsaved XMB state is unaffected.`, an outcome line that never
   claims a sign-in, and a blocked step for the already-active / no-executable / no-account cases.

@@ -176,7 +176,7 @@ The **Steam Store** row opens a browse page of live top sellers with prices (pub
 keyless endpoint); its rows hand the same `steam://install/<id>` to Steam. Nothing is bought or downloaded inside
 the XMB - the store page only lists, and Steam owns purchase, download and launch.
 
-Two different local sources feed this without writing to Steam:
+Two different local sources feed this without writing to Steam (the one exception is the account switch below):
 
 - installed titles, from `libraryfolders.vdf` + `appmanifest_*.acf`;
 - collections, from `userdata/<accountid>/config/cloudstorage/cloud-storage-namespace-1.json`
@@ -212,6 +212,15 @@ Artwork overrides go in `<native-data>/artwork/`: `<appid>.png` for the wide row
 override wins over the cached Steam header and the manifest icon; `XMB_STEAM_ARTWORK_LOG=1` logs which files are used.
 
 Open **Game → Artwork Settings**, enter a [RAWG API key](https://rawg.io/apidocs), then choose **Fetch Artwork**. XMB looks up installed Steam games and imported games during library scans. Matched artwork supplies the game card and focused background. Explicit local overrides take priority. Games without a confident match keep their existing artwork. Cached matches work offline. The key is saved in the user's application settings directory, separate from the library and repository. You can also set `RAWG_API_KEY` before launching XMB.
+
+**Switching Steam accounts.** **Users > Steam Account** lists the accounts this PC's Steam remembers. Choosing one asks two
+questions (Close Steam, Start Steam) and then, if that account has a saved sign-in (Remember my password was ticked once),
+closes Steam, selects the account for Steam's own automatic sign-in, starts Steam and reports "Signed in as <name>" once
+Steam's own record names it. The XMB never handles a password, token or session file. What it writes is exactly:
+`configloginusers.vdf` (account flags only, after a timestamped `loginusers.vdf.xmb-backup-<time>` copy next to it) and
+the `AutoLoginUser` / `RememberPassword` values under `HKCUSoftwareValveSteam`; a failure puts both back. An account
+without a saved sign-in is not changed: Steam restarts and the page says to sign in as it once inside Steam. Details,
+flow and test seams: [audit/STEAM-ACCOUNT-SWITCH.md](audit/STEAM-ACCOUNT-SWITCH.md).
 
 **Import Games and Apps** reads a versioned JSON manifest. The same tool is available without opening XMB:
 
