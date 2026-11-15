@@ -551,6 +551,19 @@ private:
     void warmRender(const std::function<void(QPainter&)>& draw);
     int prewarmStage_=0;
     qint64 prewarmNextMs_=0;   // the earliest time the next stage may run: stages are spread so no two hitches touch
+    // Idle prewarm of the labels every category's column will draw (audit/COLUMN-HITCH.md): the glyph tiles of each
+    // row's title, value, second line and help text, nearest category first, a time-boxed slice per quiet frame, so
+    // the first visit to a column finds its tiles in the atlas. XMB_COLUMN_PREWARM=0 turns it off.
+    struct ColumnWarmJob { QString text;int size=0,flags=0;qreal width=0; };
+    struct ColumnWarm {
+        QVector<ColumnWarmJob> jobs;
+        int next=0,cursor=0;
+        quint32 generation=0;
+        qint64 recheckMs=0;
+        QSet<QString> seen;
+    } columnWarm_;
+    bool prewarmColumnText();
+    void buildColumnWarmJobs();
     QSize prewarmPixels_;   // the UI layer size the glyph tiles were warmed for; a resize or a display change warms them again
     // The PS menu's bloom: the label's blurred coverage mask per label/size/scale, and the glow image built from it
     // for the strength last drawn. The blur is the expensive part and depends on neither the strength nor the time.

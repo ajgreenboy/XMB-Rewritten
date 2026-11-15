@@ -96,6 +96,13 @@ public:
     std::pair<int,qint64> takeMissCost() { const auto cost=std::pair{misses_,missNs_};misses_=0;missNs_=0;return cost; }
     // Running totals that nothing resets, for the XMB_FRAME_TRACE log (a per-frame difference of these).
     std::pair<quint64,qint64> totalMissCost() const { return {totalMisses_,totalMissNs_}; }
+    // Idle prewarm of the glyph tiles a string will need (audit/COLUMN-HITCH.md): every pen phase of every glyph of
+    // `text` at `font`'s size, i.e. the tiles drawImpl would rasterise for it wherever it lands. `cursor` is the resume
+    // point (0 to start); the call stops once `budgetNs` is spent and returns true when the string is finished. Does
+    // nothing (returns true) while the atlas is over half full, so a prewarm never makes the atlas reset.
+    bool warmGlyphs(QOpenGLFunctions_3_3_Core& gl,const QString& text,const QFont& font,int flags,qreal width,int& cursor,qint64 budgetNs);
+    // Bumped whenever the atlas is dropped (a scale change or a full atlas): warmed work from an older value is gone.
+    quint32 atlasGeneration() const { return generation_; }
 private:
     int misses_=0;qint64 missNs_=0;
     quint64 totalMisses_=0;qint64 totalMissNs_=0;
@@ -175,6 +182,7 @@ private:
     std::vector<Page> pages_;
     QHash<QString,Layout> layouts_;
     static constexpr int atlasSize=1024,maxPages=16,maxLayouts=512;
+    quint32 generation_=0;
     // Pen phases per layer pixel, per axis. The UI layer is 2x the window, so two phases per
     // layer pixel are four per output pixel. Each glyph tile is cached per (x,y) phase pair, so the
     // worst case is 4x the glyph tiles; the firmware's 26.6 pen has a 1/64 phase and this is the

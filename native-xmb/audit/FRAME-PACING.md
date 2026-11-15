@@ -31,7 +31,7 @@ unevenness of motion was. Everything below was measured on the development PC (R
    frames reach the screen at refresh multiples, so the step jitters even when every frame is on time and every
    stall shows up twice (once as a long step, once as a short one). Seen as: step p95 4.7 ms / p99 10.9 ms against a
    4.17 ms display period.
-3. **First-use glyph rasterisation on the first visit to a column (measured, NOT fixed).** A category or column
+3. **First-use glyph rasterisation on the first visit to a column (measured; fixed later, see the last section)** A category or column
    seen for the first time rasterises its labels' glyph tiles inside the move frame: 10-37 tiles at 0.33 ms each,
    i.e. 7-16 ms frames here (`scene 15.2 ms; 37 glyph tiles rasterised (12.3 ms)`), 2-3x that on a slower CPU.
    Tiles are keyed by sub-pixel phase (16 per glyph), so a blanket pre-rasterise of ASCII is not cheap; each
@@ -101,3 +101,40 @@ stall (`XMB_PACING=0`, old audio), after = this commit. One run each; the 239 Hz
 ## Gate
 
 `bun work/v2-fixtures.ts` then `bun work/ab-layers.ts --all --exe C:/dev/out/pace/re-ps3-native.exe`: 28/28 states pass, whole set PASS (all PSNR inf, SSIM 1.0). Pinned clocks take the old step and the audio change does not touch frames. Build: MSVC /W4, 0 warnings; `tests/frame_pacer_tests.cpp` (CMake option XMB_FRAME_PACER_BUILD_TESTS) passes.
+
+## First-visit column hitch (cause 3, fixed; 2026-11-15)
+
+Cause: the labels of a column are rasterised the first time the column is drawn. A glyph tile is keyed by (face, glyph,
+pen phase), 4 phases per glyph, and a row's title, value, second line and help text each need their own, so a first
+slide into a category rasterised 8 to 37 tiles (0.3 to 0.4 ms each) inside the move frame: 8 to 19 ms frames.
+
+Fix: `View::prewarmColumnText` is stage 10 of the idle prewarm (`prewarmOverlays`, same quiet gate: XMB shown, 800 ms
+without input, nothing open, never under a pinned clock). Nearest category first, it queues the title (32 px), value
+(21), second line (17), help text (19) and the category name (21) of every row, and `TextRenderer::warmGlyphs`
+rasterises all four pen phases of each glyph, 1.2 ms per slice, one slice per 30 ms, into the atlas through the scratch
+UI target. It stops while the atlas is over 8 of its 16 pages (so it cannot cause the atlas reset), restarts when the
+atlas is dropped (scale change, `atlasGeneration()`), and looks again every 2 s for rows that arrive later
+(libraries, friends). `XMB_COLUMN_PREWARM=0` restores the old behaviour. Pinned captures never run it, so the gate frames
+cannot move. Whole prewarm here: 125 strings, finished a few seconds after the existing stages; every slice stays under 8 ms.
+
+Measure: `bun work/col-hitch.ts --exe <exe> --size 3840x2160 --cats 13 --dir RIGHT|LEFT --slow-ms 8 --warm-s 25`
+(live clock, `XMB_FRAME_TRACE=1`; after the prewarm has finished it scrolls 13 categories, pausing on each to press
+DOWN, DOWN, UP, UP; counts frames over the threshold from then on). The 50 ms "choice model built" frame of the existing
+stage 9 is excluded from both columns.
+
+| first scroll, 13 categories | frames over 8 ms, before -> after | worst frame ms, before -> after |
+|---|---|---|
+| 1920x1080 RIGHT | 2 -> 0 | 17.7 -> under 5 |
+| 3840x2160 RIGHT | 2 -> 0 | 17.4 -> 3.3 |
+| 1920x1080 LEFT | 8 -> 3 | 19.4 -> 13.6 |
+| 3840x2160 LEFT | 4 -> 1 | 18.8 -> 8.1 |
+
+Every remaining frame is a `glass icons` frame (the category icons' GPU pass, 10 to 11 ms at 1080p on LEFT) or a first
+image decode: not text, not touched here. After the change no frame in either direction carries a "glyph tiles
+rasterised" label. Not covered: pages opened with Cross (Settings sub-pages, folders, game lists), whose rows exist
+only once opened; they share most glyphs with the warmed titles but a rare glyph still costs 0.3 ms on first sight.
+
+Unverified on the real TV: the 60 Hz frames (these are 239 Hz-display measurements on the dev PC, CPU time only); the
+slice cost on the HTPC's slower CPU (about 1.2 ms budget per slice, so a slice there may take up to the same plus one
+tile); the size of the real library columns (125 strings here, a large Game or Photo library queues more, spread over
+more slices, still capped at half the atlas).
