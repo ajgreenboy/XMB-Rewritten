@@ -41,6 +41,47 @@ const QImage& Shell::pageBackdrop() const {
     if(jellyfinBackdrop_.isNull() || pages_.isEmpty() || !pages_.last().jellyfin || mediaOpen_)return none;
     return jellyfinPageKey(pages_.size(),pages_.last())==jellyfinBackdropPage_?jellyfinBackdrop_:none;
 }
+// The focused Jellyfin row's backdrop identity: the page it is on plus the item id (set in id), or empty when the
+// focus is not on an item of an open Jellyfin page (More, Search, Sign Out, a player, another area).
+QString Shell::focusedJellyfinBackdropKey(QString& id) const {
+    id.clear();
+    if(pages_.isEmpty() || !pages_.last().jellyfin || mediaOpen_)return {};
+    const auto& page=pages_.last();
+    if(page.entries.isEmpty() || page.selection<0 || page.selection>=page.entries.size())return {};
+    const auto& row=page.entries.at(page.selection);
+    if(row.action!=Action::JellyfinPlay && row.action!=Action::JellyfinFolder)return {};
+    id=row.value;
+    return jellyfinPageKey(pages_.size(),page)+QLatin1Char('|')+id;
+}
+void Shell::applyJellyfinBackdrop(const QString& itemId,const QImage& image) {
+    QString id;const QString key=focusedJellyfinBackdropKey(id);
+    if(key.isEmpty() || id!=itemId)return;
+    jellyfinBackdrop_=image;jellyfinBackdropId_=itemId;
+    jellyfinBackdropPage_=jellyfinPageKey(pages_.size(),pages_.last());
+    emit changed();
+}
+// Called on every change: when the focused item differs from the one the backdrop was last arranged for, show
+// that item's picture. A cached picture is applied at once; otherwise the request waits out a short debounce so
+// skimming down a list asks only for where the cursor settles. The previous picture stays until the new one is
+// there (the view cross-fades), but an item with no backdrop, or one that fails to load, clears it, so art never
+// stays attributed to the wrong film.
+void Shell::syncJellyfinBackdrop() {
+    QString id;const QString key=focusedJellyfinBackdropKey(id);
+    if(key.isEmpty() || key==jellyfinBackdropWanted_)return;
+    jellyfinBackdropWanted_=key;
+    const QString tag=jellyfinBackdropTags_.value(id);
+    if(tag.isEmpty()) {
+        jellyfinBackdropDebounce_.stop();
+        if(!jellyfinBackdrop_.isNull()){jellyfinBackdrop_={};jellyfinBackdropId_.clear();emit changed();}
+        return;
+    }
+    if(const auto cached=jellyfinBackdropImages_.constFind(id);cached!=jellyfinBackdropImages_.constEnd()) {
+        jellyfinBackdropDebounce_.stop();
+        applyJellyfinBackdrop(id,cached.value());
+        return;
+    }
+    jellyfinBackdropDebounce_.start();
+}
 void Shell::initJellyfin() {
     jellyfin_.setImageCache(QDir(dataDirectory_).filePath("jellyfin/images"));
     jellyfin_.setSessionStore(QDir(dataDirectory_).filePath("jellyfin/session.bin"));
@@ -81,9 +122,12 @@ void Shell::initJellyfin() {
         jellyfinRequest_=0;loading_=false;status_.clear();jellyfinRestoring_=false;auto& page=pages_.last();
         const QString selected=page.entries.isEmpty()?QString{}:page.entries.value(page.selection).id;
         page.entries.clear();page.selection=0;
-        int posters=0;
-        QString backdrop;
+        int posters=0,backdrops=0;
+        if(jellyfinBackdropTags_.size()>4000)jellyfinBackdropTags_.clear();
         for(const auto& media:result.items) {
+            // Every item's backdrop tag is kept so the focused row can ask for its own picture (syncJellyfinBackdrop).
+            if(media.backdropTag.isEmpty())jellyfinBackdropTags_.remove(media.id);
+            else{jellyfinBackdropTags_.insert(media.id,media.backdropTag);++backdrops;}
             const bool folder=page.jellyfinViews || media.folder;
             auto e=jfEntry("jellyfin:"+media.id,media.title,folder?Action::JellyfinFolder:playable(media.type)?Action::JellyfinPlay:Action::Unavailable,media.id,folder);
             e.mediaKind=folder?QString{}:media.type=="Audio"?QString("Music"):media.type=="Movie"?QString("Movie"):media.type=="Episode"?QString("Episode"):QString("Video");e.option=media.type=="Audio";
@@ -100,11 +144,6 @@ void Shell::initJellyfin() {
                 if(!media.primaryTag.isEmpty() && posters<ArtworkRowsPerPage) {
                     ++posters;
                     jellyfin_.artwork(media.id,media.primaryTag,false);
-                }
-                if(backdrop.isEmpty() && !media.backdropTag.isEmpty()) {
-                    backdrop=media.id;
-                    jellyfinBackdropId_=media.id;jellyfinBackdropPage_=jellyfinPageKey(pages_.size(),page);
-                    jellyfin_.artwork(media.id,media.backdropTag,true);
                 }
             }
             if(e.id==selected)page.selection=int(page.entries.size());page.entries.push_back(std::move(e));
@@ -126,22 +165,42 @@ void Shell::initJellyfin() {
         qInfo().noquote()<<QString("jellyfin: %1 page with %2 row(s); %3 poster request(s)%4")
             .arg(page.jellyfinViews?QStringLiteral("library"):page.jellyfinSearch?QStringLiteral("search"):QStringLiteral("folder"))
             .arg(page.entries.size()).arg(posters)
-            .arg(backdrop.isEmpty()?QString{}:QStringLiteral(" and one backdrop"));
+            .arg(backdrops?QStringLiteral(" and %1 backdrop tag(s)").arg(backdrops):QString{});
         emit changed();
     });
     connect(&jellyfin_,&JellyfinClient::artworkReady,this,[this](quint64,const QString& itemId,bool backdrop,const QImage& image){
+        if(backdrop) {
+            // A completion for an item that is no longer focused is kept (a quick return to it is then free)
+            // but never drawn; a failed load for the focused item clears the previous item's picture.
+            QString focusedId;
+            const bool focused=!focusedJellyfinBackdropKey(focusedId).isEmpty() && focusedId==itemId;
+            if(image.isNull()){
+                if(focused && !jellyfinBackdrop_.isNull()){jellyfinBackdrop_={};jellyfinBackdropId_.clear();emit changed();}
+                return;
+            }
+            jellyfinBackdropImages_.insert(itemId,image);
+            jellyfinBackdropOrder_.removeAll(itemId);jellyfinBackdropOrder_.push_back(itemId);
+            while(jellyfinBackdropOrder_.size()>12)jellyfinBackdropImages_.remove(jellyfinBackdropOrder_.takeFirst());
+            if(focused)applyJellyfinBackdrop(itemId,image);
+            return;
+        }
         if(image.isNull())return;
         bool updated=false;
-        if(backdrop) {
-            if(itemId==jellyfinBackdropId_ && jellyfinBackdrop_!=image){jellyfinBackdrop_=image;updated=true;}
-        } else {
-            for(auto& page:pages_)if(page.jellyfin)for(auto& row:page.entries) {
-                if(row.value!=itemId || (row.action!=Action::JellyfinPlay && row.action!=Action::JellyfinFolder))continue;
-                row.artwork=image;row.iconSized=false;updated=true;
-            }
+        for(auto& page:pages_)if(page.jellyfin)for(auto& row:page.entries) {
+            if(row.value!=itemId || (row.action!=Action::JellyfinPlay && row.action!=Action::JellyfinFolder))continue;
+            row.artwork=image;row.iconSized=false;updated=true;
         }
         if(updated)emit changed();
     });
+    // The focused row owns the page backdrop: every change of focus (or of the open page) re-evaluates it.
+    jellyfinBackdropDebounce_.setSingleShot(true);jellyfinBackdropDebounce_.setInterval(120);
+    connect(&jellyfinBackdropDebounce_,&QTimer::timeout,this,[this]{
+        QString id;const QString key=focusedJellyfinBackdropKey(id);
+        if(key.isEmpty() || key!=jellyfinBackdropWanted_)return;   // focus moved on: that move restarted the timer
+        const QString tag=jellyfinBackdropTags_.value(id);
+        if(!tag.isEmpty())jellyfin_.artwork(id,tag,true);
+    });
+    connect(this,&Shell::changed,this,[this]{syncJellyfinBackdrop();});
     connect(&jellyfin_,&JellyfinClient::playbackReady,this,[this](quint64 request,const JellyfinPlayback& playback){
         if(request!=jellyfinRequest_ || !jellyfinQueue_ || !mediaOpen_)return;
         jellyfinRequest_=0;jellyfinPlayback_=playback;jellyfinStreamIssue_={};jellyfinProbe_=0;
@@ -275,7 +334,7 @@ void Shell::loadJellyfinPage(const QString& parent,const QString& title,int star
     if(!replace){Page page;page.title=title;pages_.push_back(std::move(page));}
     if(pages_.empty())return;
     auto& page=pages_.last();page.jellyfin=true;page.jellyfinViews=views;page.jellyfinParent=parent;page.jellyfinStart=start;
-    jellyfinBackdrop_={};jellyfinBackdropId_.clear();
+    jellyfinBackdrop_={};jellyfinBackdropId_.clear();jellyfinBackdropWanted_.clear();jellyfinBackdropDebounce_.stop();
     loading_=true;status_="Loading Jellyfin...";jellyfinRequestDepth_=int(pages_.size());
     jellyfinRequest_=views?jellyfin_.views():jellyfin_.items(parent,start);emit changed();
 }
@@ -297,7 +356,7 @@ void Shell::loadJellyfinSearchPage(const QString& term,const QString& title,int 
     if(!replace){Page page;page.title=title;page.jellyfinSearch=true;pages_.push_back(std::move(page));}
     if(pages_.empty())return;
     auto& page=pages_.last();page.jellyfin=true;page.jellyfinSearch=true;page.jellyfinParent=term;page.jellyfinStart=start;
-    jellyfinBackdrop_={};jellyfinBackdropId_.clear();
+    jellyfinBackdrop_={};jellyfinBackdropId_.clear();jellyfinBackdropWanted_.clear();jellyfinBackdropDebounce_.stop();
     loading_=true;status_=tr("Searching Jellyfin...");jellyfinRequestDepth_=int(pages_.size());
     qInfo().noquote()<<"jellyfin: search"<<term<<"from"<<start;
     jellyfinRequest_=jellyfin_.search(term,start);emit changed();
