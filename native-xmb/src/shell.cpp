@@ -1241,9 +1241,10 @@ void Shell::refreshContent() {
             auto& category=categories_[c];
             const auto selected=category.entries.isEmpty()?QString{}:category.entries[selections_[c]].id;
             category.entries.erase(std::remove_if(category.entries.begin(),category.entries.end(),[](const Entry& e){
-                return e.id.startsWith("steam:") || e.id.startsWith("steam-folder-") || e.id.startsWith("steam-store") || e.id.startsWith("steam-hub") || e.id.startsWith("custom:") || e.id=="jellyfin-setup";
+                return e.id.startsWith("steam:") || e.id.startsWith("steam-folder-") || e.id.startsWith("steam-store") || e.id.startsWith("steam-hub") || e.id.startsWith("custom:") || e.id.startsWith("jellyfin-music:") || e.id=="jellyfin-setup";
             }),category.entries.end());
             QVector<Entry> providers,installed,steam;
+            QVector<Entry> trailing;   // rows that go after the column's own (Music > Jellyfin Music, under Spotify)
             // TV/Video Services with no Jellyfin registered: a row that says Jellyfin exists and sets it up, so a
             // fresh install does not need a hand-edited apps.json (jellyfin_setup_shell.cpp). It goes where the
             // registered Jellyfin app's row goes and is gone once one is registered.
@@ -1283,6 +1284,15 @@ void Shell::refreshContent() {
                     e.artwork=serviceIcons::steam(steamRoot_);e.iconSized=true;steam.push_back(std::move(e));
                 }
             }
+            if(category.id=="music") {
+                int firstServer=0;
+                for(const auto& app:contentApps_)if(app.kind=="jellyfin") {
+                    auto e=item("jellyfin-music:"+app.id,firstServer++==0?QObject::tr("Jellyfin Music"):QObject::tr("%1 Music").arg(app.title),
+                        "item_tex_plain_folder","explore_plugin_full",Action::JellyfinMusicApp,app.id);
+                    e.artwork=serviceIcons::jellyfin();e.iconSized=true;e.source="native";
+                    trailing.push_back(std::move(e));
+                }
+            }
             for(const auto& app:contentApps_)if(app.category==category.id) {
                 auto e=item("custom:"+app.id,app.title,app.kind=="game"?"game_tex_default_ps3":"tex_video","explore_plugin_full",
                     app.kind=="game"?Action::LaunchApp:app.kind=="jellyfin"?Action::JellyfinApp:Action::OpenUrl,app.kind=="web"?app.url:app.id);
@@ -1317,7 +1327,7 @@ void Shell::refreshContent() {
                 providers.push_back(std::move(e));
                 providers.last().rawgArtworkVisible=result.rawgPaths.contains(QStringLiteral("custom:")+app.id);
             }
-            category.entries=installed+providers+steam+category.entries;
+            category.entries=installed+providers+steam+category.entries+trailing;
             selections_[c]=0;
             for(int i=0;i<category.entries.size();++i)if(category.entries[i].id==selected){selections_[c]=i;break;}
             // The first time the Game column is built it opens on its first row, whatever the placeholder list's first row
@@ -1332,6 +1342,7 @@ void Shell::refreshContent() {
             while(selections_[c]<category.entries.size() && category.entries[selections_[c]].sectionHeader)++selections_[c];
             selections_[c]=std::min(selections_[c],int(category.entries.size())-1);
         }
+        refreshJellyfinMusicRow();
         contentLoaded_=true;
         QVector<QPair<QString,QString>> rawgTargets;
         QSet<QString> liveRawgIds;
@@ -2261,6 +2272,7 @@ void Shell::activate() {
         bool network=false;
         switch(entry.action) {
         case Action::JellyfinApp:case Action::JellyfinFolder:case Action::JellyfinPlay:case Action::JellyfinMore:case Action::JellyfinSearch:
+        case Action::JellyfinMusicApp:case Action::JellyfinMusicNode:
         case Action::JellyfinSetup:case Action::JellyfinSetupCheck:case Action::JellyfinSetupFind:case Action::JellyfinSetupPick:
         case Action::SpotifyApp:case Action::SpotifySignIn:case Action::SpotifySignOut:case Action::SpotifyNowPlaying:
         case Action::SpotifyLiked:case Action::SpotifyPlaylist:case Action::SpotifyTrack:case Action::SpotifyDevice:
@@ -2572,10 +2584,13 @@ void Shell::activate() {
         activateJellyfinSetup(entry);break;
     case Action::JellyfinFolder:loadJellyfinPage(entry.value,entry.title);break;
     case Action::JellyfinPlay:openJellyfinMedia(entry);break;
+    case Action::JellyfinMusicApp:openJellyfinMusic(entry);break;
+    case Action::JellyfinMusicNode:openJellyfinMusicNode(entry);break;
     case Action::JellyfinMore:
         // A search page's More row carries the term in value and the page title in detail; a folder's
         // carries its parent id and the page title, exactly as before.
-        if(!pages_.isEmpty() && pages_.last().jellyfinSearch)loadJellyfinSearchPage(entry.value,entry.detail,entry.option.toInt());
+        if(!pages_.isEmpty() && !pages_.last().jellyfinMusic.isEmpty())loadJellyfinMusicPage(pages_.last().jellyfinMusic,pages_.last().jellyfinParent,pages_.last().jellyfinLibrary,entry.detail,entry.option.toInt());
+        else if(!pages_.isEmpty() && pages_.last().jellyfinSearch)loadJellyfinSearchPage(entry.value,entry.detail,entry.option.toInt());
         else loadJellyfinPage(entry.value,entry.detail,entry.option.toInt());
         break;
     case Action::JellyfinSearch:
@@ -2916,7 +2931,7 @@ void Shell::quitRunningTitle() {
 // invented (the audit's appended phase 12.2 table names each one and the condition that is missing).
 OptionLabel Shell::activateLabel(const Entry& entry) const {
     switch(entry.action) {
-    case Action::Folder:case Action::SteamFolder:case Action::JellyfinFolder:
+    case Action::Folder:case Action::SteamFolder:case Action::JellyfinFolder:case Action::JellyfinMusicApp:case Action::JellyfinMusicNode:
     case Action::Library:case Action::SteamStoreBrowse:case Action::SteamStoreSection:
     case Action::SteamDownloads:
         return {"msg_open","Open"};
@@ -3019,7 +3034,7 @@ QString Shell::entryKind(const Entry& entry) const {
     if(entry.id=="continue")return QObject::tr("In progress");
     if(entry.id.startsWith("continue:"))return categories_[category_].id=="music"?QObject::tr("Music"):QObject::tr("Video");
     switch(entry.action) {
-    case Action::Folder:case Action::Library:case Action::SteamFolder:case Action::JellyfinFolder:return QObject::tr("Folder");
+    case Action::Folder:case Action::Library:case Action::SteamFolder:case Action::JellyfinFolder:case Action::JellyfinMusicApp:case Action::JellyfinMusicNode:return QObject::tr("Folder");
     case Action::File: {
         const auto& kind=categories_[category_].id;
         return kind=="photo"?QObject::tr("Image"):kind=="music"?QObject::tr("Music"):QObject::tr("Video");
@@ -5541,7 +5556,9 @@ void Shell::runPluralDelete() {
 }
 void Shell::refreshDirectory(){
     if(!mediaOpen_ && !pages_.isEmpty() && pages_.last().jellyfin) {
-        const auto page=pages_.last();loadJellyfinPage(page.jellyfinParent,page.title,page.jellyfinStart,page.jellyfinViews,true);return;
+        const auto page=pages_.last();
+        if(!page.jellyfinMusic.isEmpty()){loadJellyfinMusicPage(page.jellyfinMusic,page.jellyfinParent,page.jellyfinLibrary,page.title,page.jellyfinStart,true);return;}
+        loadJellyfinPage(page.jellyfinParent,page.title,page.jellyfinStart,page.jellyfinViews,true);return;
     }
     // The download page has no directory to rescan: F5 is another Steam scan, rebuilt into the same page.
     if(!mediaOpen_ && !pages_.isEmpty() && pages_.last().downloads){reloadSteamDownloads();return;}
@@ -6200,6 +6217,7 @@ QString Shell::pageKind() const {
     if(!page.entries.isEmpty() && page.entries.first().id.startsWith("savedata:"))return QStringLiteral("saveData");
     if(page.signIn)return QStringLiteral("jellyfinSignIn");
     if(page.steamAccounts)return QStringLiteral("steamAccounts");
+    if(page.jellyfin && !page.jellyfinMusic.isEmpty())return QStringLiteral("jellyfinMusic");
     if(page.jellyfin)return page.jellyfinViews?QStringLiteral("jellyfinViews"):page.jellyfinSearch?QStringLiteral("jellyfinSearch"):QStringLiteral("jellyfinFolder");
     if(page.downloads)return QStringLiteral("downloads");
     if(page.continuePage)return QStringLiteral("continueWatching");
@@ -6320,6 +6338,7 @@ void Shell::setJellyfinSignInField(const QString& field,const QString& value) {
     // The one field-edit signal also carries the Jellyfin search term: the row that asks for it sends
     // the key "search", and the accepted text opens a result page. It is not a credential field, so it
     // is kept (for the next keyboard prefill) but only its length is logged.
+    if(field==QStringLiteral("musicsearch")){openJellyfinMusicSearch(value);return;}
     if(field==QStringLiteral("search")) {
         const QString term=value.trimmed();
         if(term.isEmpty())return;

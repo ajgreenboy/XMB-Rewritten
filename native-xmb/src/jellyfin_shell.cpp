@@ -16,16 +16,6 @@ Entry jfEntry(QString id,QString title,Action action,QString value={},bool folde
 Entry withGlyph(Entry e,const QImage& icon){if(!icon.isNull()){e.artwork=icon;e.iconSized=true;}return e;}
 bool sameService(QUrl a,QUrl b){return a.adjusted(QUrl::StripTrailingSlash|QUrl::NormalizePathSegments)==b.adjusted(QUrl::StripTrailingSlash|QUrl::NormalizePathSegments);}
 bool playable(const QString& type){return QStringList{"Movie","Episode","Video","MusicVideo","Audio","Trailer","Recording"}.contains(type);}
-// The row's one detail line: what it is, where it stands, how long it is. Kept to printable ASCII
-// because the label renderer is the firmware's and the evidence crops are ASCII text.
-QString progressDetail(const Entry& entry) {
-    QStringList parts;
-    if(!entry.mediaKind.isEmpty())parts<<entry.mediaKind;
-    if(entry.resumeMs>0)parts<<QObject::tr("Resume at %1").arg(MediaControls::formatTime(entry.resumeMs));
-    else if(entry.played)parts<<QObject::tr("Watched");
-    if(entry.durationMs>0)parts<<MediaControls::formatTime(entry.durationMs);
-    return parts.join(QStringLiteral(" - "));
-}
 // Posters are fetched for the rows a page can show without scrolling far. One request per row per
 // page open; the client caches each picture under the data directory, keyed by the server's tag.
 constexpr int ArtworkRowsPerPage = 60;
@@ -35,6 +25,19 @@ template<class Page> QString jellyfinPageKey(qsizetype depth,const Page& page) {
     return QStringLiteral("%1/%2/%3/%4").arg(depth).arg(page.jellyfinSearch?'s':page.jellyfinViews?'v':'f')
         .arg(page.jellyfinParent).arg(page.jellyfinStart);
 }
+}
+// The row's one detail line: what it is, where it stands, how long it is. Kept to printable ASCII
+// because the label renderer is the firmware's and the evidence crops are ASCII text. A music row leads with
+// "artist - album" instead of the word Music and is never "Watched".
+QString Shell::jellyfinRowDetail(const Entry& entry) {
+    const bool music=entry.mediaKind==QLatin1String("Music");
+    QStringList parts;
+    if(music){if(entry.music && !entry.music->info.isEmpty())parts<<entry.music->info;}
+    else if(!entry.mediaKind.isEmpty())parts<<entry.mediaKind;
+    if(entry.resumeMs>0)parts<<QObject::tr("Resume at %1").arg(MediaControls::formatTime(entry.resumeMs));
+    else if(entry.played && !music)parts<<QObject::tr("Watched");
+    if(entry.durationMs>0)parts<<MediaControls::formatTime(entry.durationMs);
+    return parts.join(QStringLiteral(" - "));
 }
 const QImage& Shell::pageBackdrop() const {
     static const QImage none;
@@ -98,6 +101,8 @@ void Shell::initJellyfin() {
             jellyfin_.forgetSession();
             qInfo()<<"jellyfin: stay-signed-in is off; nothing was written";
         }
+        refreshJellyfinMusicRow();
+        if(jellyfinMusicWanted_){startJellyfinMusicRoot();return;}
         loadJellyfinPage({},jellyfinServiceTitle_,0,true);
     });
     connect(&jellyfin_,&JellyfinClient::failed,this,[this](quint64 request,const QString& error){
@@ -111,27 +116,35 @@ void Shell::initJellyfin() {
             jellyfin_.signOut();
             jellyfin_.forgetSession();
             qWarning().noquote()<<"jellyfin: the remembered session was refused; it has been forgotten, signing in again";
+            jellyfinMusicWanted_=!pages_.isEmpty() && !pages_.last().jellyfinMusic.isEmpty();
+            jellyfinMusicLibraries_=-1;refreshJellyfinMusicRow();
             openJellyfinSignInPage(jellyfinServiceServer_);
             return;
         }
         if(jellyfinQueue_ && mediaOpen_){finishJellyfinPlayback();player_->stop();}
-        message_="Jellyfin\n\n"+error;emit changed();
+        showMessage(QStringLiteral("Jellyfin"),error,MessageKind::Page);
+        if(!pages_.isEmpty() && pages_.last().jellyfin && pages_.last().entries.isEmpty() && pages_.size()==jellyfinRequestDepth_)pages_.removeLast();   // the list that failed to load is not a page to stay on
+        emit changed();
     });
     connect(&jellyfin_,&JellyfinClient::pageReady,this,[this](quint64 request,const JellyfinPage& result){
         if(request!=jellyfinRequest_ || pages_.size()!=jellyfinRequestDepth_ || pages_.isEmpty() || !pages_.last().jellyfin)return;
         jellyfinRequest_=0;loading_=false;status_.clear();jellyfinRestoring_=false;auto& page=pages_.last();
+        if(!page.jellyfinMusic.isEmpty()){buildJellyfinMusicPage(result);emit changed();return;}
         const QString selected=page.entries.isEmpty()?QString{}:page.entries.value(page.selection).id;
         page.entries.clear();page.selection=0;
         int posters=0,backdrops=0;
         if(jellyfinBackdropTags_.size()>4000)jellyfinBackdropTags_.clear();
+        int musicLibraries=0;
         for(const auto& media:result.items) {
+            // Music libraries live in the Music column (jellyfin_music_shell.cpp); the TV page keeps the video ones.
+            if(page.jellyfinViews && media.collectionType==QLatin1String("music")){++musicLibraries;continue;}
             // Every item's backdrop tag is kept so the focused row can ask for its own picture (syncJellyfinBackdrop).
             if(media.backdropTag.isEmpty())jellyfinBackdropTags_.remove(media.id);
             else{jellyfinBackdropTags_.insert(media.id,media.backdropTag);++backdrops;}
             const bool folder=page.jellyfinViews || media.folder;
             auto e=jfEntry("jellyfin:"+media.id,media.title,folder?Action::JellyfinFolder:playable(media.type)?Action::JellyfinPlay:Action::Unavailable,media.id,folder);
             e.mediaKind=folder?QString{}:media.type=="Audio"?QString("Music"):media.type=="Movie"?QString("Movie"):media.type=="Episode"?QString("Episode"):QString("Video");e.option=media.type=="Audio";
-            if(!folder){e.resumeMs=media.resumeMs;e.durationMs=media.durationMs;e.played=media.played;e.detail=progressDetail(e);}
+            if(!folder){e.resumeMs=media.resumeMs;e.durationMs=media.durationMs;e.played=media.played;e.detail=jellyfinRowDetail(e);}
             if(media.type=="Audio")e.texture="tex_music";
             // A library wears its kind's glyph until (unless) the server's own library picture arrives.
             if(page.jellyfinViews)e=withGlyph(std::move(e),glyphs::library(media.collectionType));
@@ -148,6 +161,7 @@ void Shell::initJellyfin() {
             }
             if(e.id==selected)page.selection=int(page.entries.size());page.entries.push_back(std::move(e));
         }
+        if(page.jellyfinViews){jellyfinMusicLibraries_=musicLibraries;refreshJellyfinMusicRow();}
         const qint64 next=qint64(page.jellyfinStart)+result.items.size();
         if(!page.jellyfinViews && !result.items.empty() && next<result.total && next<=1000000){auto more=withGlyph(jfEntry("jellyfin:more","More...",Action::JellyfinMore,page.jellyfinParent,true),glyphs::more());more.option=int(next);more.detail=page.title;page.entries.push_back(std::move(more));}
         if(page.jellyfinSearch) {
@@ -185,8 +199,8 @@ void Shell::initJellyfin() {
             return;
         }
         if(image.isNull())return;
-        bool updated=false;
-        for(auto& page:pages_)if(page.jellyfin)for(auto& row:page.entries) {
+        bool updated=applyJellyfinMusicArt(itemId,image);   // music rows and Now Playing (jellyfin_music_shell.cpp)
+        for(auto& page:pages_)if(page.jellyfin && page.jellyfinMusic.isEmpty())for(auto& row:page.entries) {
             if(row.value!=itemId || (row.action!=Action::JellyfinPlay && row.action!=Action::JellyfinFolder))continue;
             row.artwork=image;row.iconSized=false;updated=true;
         }
@@ -313,7 +327,8 @@ void Shell::initJellyfin() {
 }
 void Shell::openJellyfin(const Entry& entry) {
     const auto app=std::find_if(contentApps_.cbegin(),contentApps_.cend(),[&](const ContentApp& candidate){return candidate.id==entry.value && candidate.kind=="jellyfin";});
-    if(app==contentApps_.cend()){message_="This Jellyfin registration could not be found.";return;}
+    if(app==contentApps_.cend()){showMessage(QStringLiteral("This Jellyfin registration could not be found."),MessageKind::Page);return;}
+    jellyfinMusicWanted_=false;
     jellyfinServiceTitle_=app->title;jellyfinRootDepth_=int(pages_.size());
     const QUrl server(app->url);
     jellyfinServiceServer_=server;
@@ -327,10 +342,10 @@ void Shell::openJellyfin(const Entry& entry) {
     } else {jellyfinRequest_=0;jellyfin_.signOut();emit requestJellyfinSignIn(server);}
 }
 void Shell::authenticateJellyfin(QUrl server,QString username,QString password){jellyfinSigningIn_=true;jellyfin_.signIn(server,std::move(username),std::move(password));}
-void Shell::cancelJellyfinSignIn(){jellyfinSigningIn_=false;jellyfinRequest_=0;jellyfin_.signOut();loading_=false;status_.clear();emit changed();}
+void Shell::cancelJellyfinSignIn(){jellyfinSigningIn_=false;jellyfinMusicWanted_=false;jellyfinRequest_=0;jellyfin_.signOut();loading_=false;status_.clear();emit changed();}
 void Shell::loadJellyfinPage(const QString& parent,const QString& title,int start,bool views,bool replace) {
-    if(!jellyfin_.signedIn()){message_="Jellyfin\n\nSign out and reopen the app to sign in again.";emit changed();return;}
-    if(!replace && pages_.size()>=32){message_="The maximum folder depth has been reached.";emit changed();return;}
+    if(!jellyfin_.signedIn()){showMessage(QStringLiteral("Jellyfin"),QStringLiteral("Sign out and reopen the app to sign in again."),MessageKind::Page);emit changed();return;}
+    if(!replace && pages_.size()>=32){showMessage(QStringLiteral("The maximum folder depth has been reached."),MessageKind::Page);emit changed();return;}
     if(!replace){Page page;page.title=title;pages_.push_back(std::move(page));}
     if(pages_.empty())return;
     auto& page=pages_.last();page.jellyfin=true;page.jellyfinViews=views;page.jellyfinParent=parent;page.jellyfinStart=start;
@@ -341,8 +356,8 @@ void Shell::loadJellyfinPage(const QString& parent,const QString& title,int star
 void Shell::openJellyfinSearch(const QString& term) {
     const QString query=term.trimmed();
     if(query.isEmpty())return;
-    if(!jellyfin_.signedIn()){message_="Jellyfin\n\nSign out and reopen the app to sign in again.";emit changed();return;}
-    if(pages_.size()>=32){message_="The maximum folder depth has been reached.";emit changed();return;}
+    if(!jellyfin_.signedIn()){showMessage(QStringLiteral("Jellyfin"),QStringLiteral("Sign out and reopen the app to sign in again."),MessageKind::Page);emit changed();return;}
+    if(pages_.size()>=32){showMessage(QStringLiteral("The maximum folder depth has been reached."),MessageKind::Page);emit changed();return;}
     // One search page at a time: a second search replaces the first result page instead of stacking.
     if(!pages_.isEmpty() && pages_.last().jellyfinSearch)pages_.removeLast();
     const QString title=tr("Search: %1").arg(query);
@@ -352,7 +367,7 @@ void Shell::openJellyfinSearch(const QString& term) {
     loadJellyfinSearchPage(query,title,0,true);
 }
 void Shell::loadJellyfinSearchPage(const QString& term,const QString& title,int start,bool replace) {
-    if(!jellyfin_.signedIn()){message_="Jellyfin\n\nSign out and reopen the app to sign in again.";emit changed();return;}
+    if(!jellyfin_.signedIn()){showMessage(QStringLiteral("Jellyfin"),QStringLiteral("Sign out and reopen the app to sign in again."),MessageKind::Page);emit changed();return;}
     if(!replace){Page page;page.title=title;page.jellyfinSearch=true;pages_.push_back(std::move(page));}
     if(pages_.empty())return;
     auto& page=pages_.last();page.jellyfin=true;page.jellyfinSearch=true;page.jellyfinParent=term;page.jellyfinStart=start;
@@ -366,6 +381,7 @@ void Shell::openJellyfinMedia(const Entry& entry,bool fromBeginning) {
     for(const auto& row:entries())if(row.action==Action::JellyfinPlay){if(row.id==entry.id)selected=int(queue.size());queue.push_back({row.value,row.title});jellyfinAudio_.insert(row.value,row.option.toBool());jellyfinResume_.insert(row.value,row.resumeMs);}
     if(selected<0)return;
     if(fromBeginning)jellyfinResume_.insert(entry.value,0);
+    rememberJellyfinTracks(entries());
     qInfo().noquote()<<QString("jellyfin: %1 \"%2\" (server position %3 ms)")
         .arg(fromBeginning?QStringLiteral("play from the beginning"):QStringLiteral("play"))
         .arg(entry.title).arg(fromBeginning?0:entry.resumeMs);
@@ -420,6 +436,7 @@ void Shell::startJellyfinMedia() {
     ++mediaRequest_;jellyfinRequest_=0;finishJellyfinPlayback();player_->stop();player_->setSource({});
     resumePath_.clear();resumePending_=0;
     jellyfinResumePending_=jellyfinResume_.value(media.path);
+    showJellyfinTrack(media.path);
     mediaOpen_=true;mediaTitle_=media.title;loading_=true;status_.clear();emit mediaFrame({});
     if(jellyfinResumePending_>0) {
         status_=tr("Resuming at %1").arg(MediaControls::formatTime(jellyfinResumePending_));
@@ -468,7 +485,7 @@ void Shell::finishJellyfinPlayback(bool completed) {
             const qint64 resume=completed?0:at;
             jellyfinResume_.insert(id,resume);
             for(auto& page:pages_)if(page.jellyfin)for(auto& row:page.entries)if(row.action==Action::JellyfinPlay && row.value==id) {
-                row.resumeMs=resume;if(duration>0)row.durationMs=duration;row.played=completed;row.detail=progressDetail(row);
+                row.resumeMs=resume;if(duration>0)row.durationMs=duration;row.played=completed;row.detail=jellyfinRowDetail(row);
                 if(completed)qInfo().noquote()<<"jellyfin: row now reads"<<row.detail;
             }
         }
@@ -601,6 +618,7 @@ void Shell::signOutJellyfin() {
     jellyfinRequest_=0;finishJellyfinPlayback();jellyfin_.signOut();jellyfin_.forgetSession();
     qInfo()<<"jellyfin: signed out; the remembered session was forgotten";
     jellyfinResume_.clear();jellyfinQueue_=false;loading_=false;status_.clear();
+    jellyfinMusicLibraries_=-1;jellyfinMusicWanted_=false;refreshJellyfinMusicRow();
     while(pages_.size()>jellyfinRootDepth_)pages_.removeLast();emit changed();
 }
 bool Shell::jellyfinRemembered() const { return jellyfin_.hasStoredSession(); }

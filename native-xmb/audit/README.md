@@ -136,6 +136,7 @@ native diff.
 | [JELLYFIN-NATIVE.md](JELLYFIN-NATIVE.md) | Native Jellyfin playback |
 | [JELLYFIN-SETUP.md](JELLYFIN-SETUP.md) | Setting Jellyfin up from inside the XMB: setup row, address page, server check, network discovery |
 | [JELLYFIN-PLAYBACK.md](JELLYFIN-PLAYBACK.md) | Jellyfin transcode (HLS) failures, the PGS subtitle deadline, the stale folder backdrop, stream diagnostics, stand-in server and tests |
+| [JELLYFIN-MUSIC.md](JELLYFIN-MUSIC.md) | Jellyfin music in the Music column: one shared session, artists / albums / playlists / songs / search, paging, covers, Now Playing, the music stand-in and tests |
 | [SPOTIFY.md](SPOTIFY.md) | Spotify in the Music column |
 | [DISCORD.md](DISCORD.md) | Discord friends: setup, restricted scope, failure messages |
 | [DLNA.md](DLNA.md) | Search for Media Servers (DLNA / UPnP AV) |

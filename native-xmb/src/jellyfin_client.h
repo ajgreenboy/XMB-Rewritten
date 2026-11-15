@@ -22,6 +22,10 @@ struct JellyfinItem {
     // The server's image tags, for the artwork cache key: a changed poster gets a new file
     // instead of serving the previous one forever.
     QString primaryTag, backdropTag;
+    // Music (Audio, MusicAlbum, MusicArtist, Playlist items): the performer line, the album an Audio item
+    // belongs to and that album's picture tag (a track has no cover of its own), its place on the disc.
+    QString artist, album, albumId, albumTag;
+    int trackNumber = 0, discNumber = 0, year = 0;
 };
 struct JellyfinPage { QVector<JellyfinItem> items; int startIndex = 0, total = 0; };
 // One MediaStream from PlaybackInfo. The player cannot necessarily switch to it; the shell asks
@@ -70,6 +74,13 @@ public:
     // A free-text library search: the same user-scoped /Items route with SearchTerm and
     // Recursive=true, so results carry the same UserData (resume/played) as a folder listing.
     quint64 search(QString term, int startIndex = 0);
+    // The lists of the Music column (audit/JELLYFIN-MUSIC.md). Every one is a paged, user-scoped request answered
+    // through pageReady like items(): Artists = the album artists, Albums, Songs, Playlists (audio playlists),
+    // Recent = albums by date added, Random = a random page of albums, ArtistAlbums (id = the artist),
+    // AlbumTracks (id = the album, disc and track order), PlaylistTracks (id = the playlist, its own order), Search
+    // (id = the term). libraryId, when given, limits a list to that music library.
+    enum class MusicList { Artists, Albums, Songs, Playlists, Recent, Random, ArtistAlbums, AlbumTracks, PlaylistTracks, Search };
+    quint64 music(MusicList kind, QString libraryId = {}, QString id = {}, int startIndex = 0);
     // maxBitrateKbps caps what the server may send: above the file's bitrate it direct-plays, below it the
     // server transcodes down (HLS) to fit.
     // burnSubtitleIndex >= 0 asks for that subtitle stream burned into a server transcode
