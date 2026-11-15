@@ -1241,9 +1241,18 @@ void Shell::refreshContent() {
             auto& category=categories_[c];
             const auto selected=category.entries.isEmpty()?QString{}:category.entries[selections_[c]].id;
             category.entries.erase(std::remove_if(category.entries.begin(),category.entries.end(),[](const Entry& e){
-                return e.id.startsWith("steam:") || e.id.startsWith("steam-folder-") || e.id.startsWith("steam-store") || e.id.startsWith("steam-hub") || e.id.startsWith("custom:");
+                return e.id.startsWith("steam:") || e.id.startsWith("steam-folder-") || e.id.startsWith("steam-store") || e.id.startsWith("steam-hub") || e.id.startsWith("custom:") || e.id=="jellyfin-setup";
             }),category.entries.end());
             QVector<Entry> providers,installed,steam;
+            // TV/Video Services with no Jellyfin registered: a row that says Jellyfin exists and sets it up, so a
+            // fresh install does not need a hand-edited apps.json (jellyfin_setup_shell.cpp). It goes where the
+            // registered Jellyfin app's row goes and is gone once one is registered.
+            if(category.id=="tv" && !jellyfinSetup::hasJellyfinApp(result.apps) && qEnvironmentVariable("XMB_NO_SETUP_ROWS")!=QLatin1String("1")) {
+                auto e=item("jellyfin-setup","Jellyfin","tex_video","explore_plugin_full",Action::JellyfinSetup);
+                e.detail=QObject::tr("Set up your Jellyfin server");
+                e.artwork=serviceIcons::jellyfin();e.iconSized=true;
+                providers.push_back(std::move(e));
+            }
             if(category.id=="game") {
                 // Installed titles lead the column as ICON0 tiles that launch directly, the way a real PS3
                 // lists its installed games at the top of Game (user direction 2026-11-02; the RPCS3 corpus has
@@ -1315,6 +1324,10 @@ void Shell::refreshContent() {
             // was (restoring that id put the focus on "Game Data Utility" once the Vita row went away, which also broke the
             // gate's "DOWN x index from row 0" navigation). Later rebuilds keep the focused row by id, above.
             if(!contentLoaded_ && category.id=="game")selections_[c]=0;
+            // The same for TV/Video Services while Jellyfin is not set up: the column opens on its Jellyfin row, not
+            // on the placeholder under it, so the way in is the first thing Cross reaches. A registered Jellyfin app
+            // keeps the existing behaviour.
+            if(!contentLoaded_ && category.id=="tv" && !category.entries.isEmpty() && category.entries.first().id=="jellyfin-setup")selections_[c]=0;
             // Never rest the selection on a section heading: skip forward to the first real row.
             while(selections_[c]<category.entries.size() && category.entries[selections_[c]].sectionHeader)++selections_[c];
             selections_[c]=std::min(selections_[c],int(category.entries.size())-1);
@@ -2248,6 +2261,7 @@ void Shell::activate() {
         bool network=false;
         switch(entry.action) {
         case Action::JellyfinApp:case Action::JellyfinFolder:case Action::JellyfinPlay:case Action::JellyfinMore:case Action::JellyfinSearch:
+        case Action::JellyfinSetup:case Action::JellyfinSetupCheck:case Action::JellyfinSetupFind:case Action::JellyfinSetupPick:
         case Action::SpotifyApp:case Action::SpotifySignIn:case Action::SpotifySignOut:case Action::SpotifyNowPlaying:
         case Action::SpotifyLiked:case Action::SpotifyPlaylist:case Action::SpotifyTrack:case Action::SpotifyDevice:
         case Action::DlnaScan:case Action::DlnaServer:case Action::DlnaFolder:case Action::DlnaPhoto:
@@ -2553,6 +2567,9 @@ void Shell::activate() {
     case Action::Setup:activateSetup(entry);break;
     case Action::SystemCheck:openSystemCheck();break;
     case Action::JellyfinApp:openJellyfin(entry);break;
+    case Action::JellyfinSetup:case Action::JellyfinSetupField:case Action::JellyfinSetupCheck:case Action::JellyfinSetupSave:
+    case Action::JellyfinSetupFind:case Action::JellyfinSetupPick:
+        activateJellyfinSetup(entry);break;
     case Action::JellyfinFolder:loadJellyfinPage(entry.value,entry.title);break;
     case Action::JellyfinPlay:openJellyfinMedia(entry);break;
     case Action::JellyfinMore:
@@ -2981,7 +2998,7 @@ bool Shell::optionGroupable() const {
     // appearing over rows it cannot name. A page that is already grouped is still groupable (All / re-group).
     if(pages_.isEmpty() || entries().size()<2)return false;
     const auto& page=pages_.last();
-    if(page.signIn || page.downloads || page.jellyfin || page.jellyfinViews || page.jellyfinSearch
+    if(page.signIn || page.jfSetup || page.downloads || page.jellyfin || page.jellyfinViews || page.jellyfinSearch
        || page.steamAccounts || page.continuePage || page.userInfoStep)return false;
     for(const auto& entry:entries())if(entry.title.trimmed().isEmpty())return false;
     return true;
@@ -3155,6 +3172,10 @@ void Shell::buildOptions() {
         addOption({"","Streaming Quality"},OptionCommand::JellyfinQuality,"jellyfin-video");
         options_.last().note=jellyfinQualityText();
     }
+    // A registered Jellyfin server's row: the address can be changed without editing apps.json (jellyfin_setup_shell.cpp).
+    if(entry.action==Action::JellyfinApp)
+        addOption({"","Change Server Address"},OptionCommand::JellyfinChangeAddress,"jellyfin-app",true,
+                  tr("Opens the address page for this server. Signing in again is needed if the server changes."));
     // msg_copy / msg_del. The firmware's per-item file commands, offered only for local content (A4's Copy
     // condition). This build has no copy or delete backend, so both rows are listed and cannot be chosen:
     // the panel's disabled-row rule puts the reason on screen instead of pretending the command exists.
@@ -3320,7 +3341,7 @@ void Shell::toggleOptions() {
     // The sign-in page is a form, not a content list: its five rows have no item-level options, and a panel
     // offering "Start"/"Information" over a password field is exactly the kind of noise a credential page
     // should not have. Triangle therefore does nothing there.
-    if(!pages_.isEmpty() && pages_.last().signIn)return;
+    if(!pages_.isEmpty() && (pages_.last().signIn || pages_.last().jfSetup))return;
     if(mediaOpen_) {
         // Triangle during video playback is the console's own control panel: subtitle, audio, repeat.
         // Anything else that reaches the player (music, a photo slideshow) keeps its old binding, so a
@@ -3547,6 +3568,14 @@ void Shell::optionsActivate() {
         qInfo().noquote()<<"steam: hand-off"<<url.toString()<<"for"<<entry.title;
         if(QDesktopServices::openUrl(url))interactionAudio_.play(InteractionAudio::Cue::Confirm);
         else showMessage(entry.title,tr("Steam could not be opened."),MessageKind::Page);
+        emit changed();
+        break;
+    }
+    case OptionCommand::JellyfinChangeAddress: {
+        const QString appId=entry.value;
+        resetOptions();
+        openJellyfinSetupPage(appId);
+        interactionAudio_.play(InteractionAudio::Cue::Confirm);
         emit changed();
         break;
     }
@@ -4554,6 +4583,7 @@ void Shell::back() {
     // flight, so Back can never strand an authentication the user has walked away from.
     else if(setupHandleBack());   // D8: Circle on the setup Welcome page asks before leaving
     else if(!pages_.isEmpty() && pages_.last().signIn)cancelJellyfinSignInPage();
+    else if(!pages_.isEmpty() && pages_.last().jfSetup)closeJellyfinSetupPage();   // abandons a check or a search in flight
     else if(multiSelect_)exitMultiSelect();   // Circle leaves the marking mode before it leaves the page
     else if(browseUp());   // Circle in the folder browser goes up one folder; at This PC it leaves the page
     else if(!pages_.isEmpty()){library_.cancel();scanRequest_=0;jellyfinRequest_=0;loading_=false;status_.clear();pages_.removeLast();}
@@ -6268,6 +6298,7 @@ void Shell::refreshJellyfinSignInPage() {
     page.selection=std::clamp(page.selection,0,std::max(0,int(page.entries.size())-1));
 }
 void Shell::setJellyfinSignInField(const QString& field,const QString& value) {
+    if(field==QStringLiteral("jfsetup:address")){setJellyfinSetupAddress(value);return;}
     if(field==QStringLiteral("debrid:token")){saveDebridToken(value);return;}
     if(field==QStringLiteral("flaresolverr:url")){saveFlareSolverrUrl(value);return;}
     if(field==QStringLiteral("game:search")){runGameSearch(value);return;}

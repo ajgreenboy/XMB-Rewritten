@@ -23,6 +23,11 @@ struct ContentApp {
 
 class ContentRegistry {
 public:
+    // The rule every web and Jellyfin registration's url obeys: http(s), a host, no credentials; a Jellyfin
+    // server address also carries no query or fragment. One definition for the importer, the editor and the
+    // in-XMB Jellyfin setup.
+    static bool isValidServerUrl(const QString& url, bool jellyfin);
+
     // Read a version 1 JSON registry. Missing files are treated as an empty registry.
     static bool load(const QString& path, QVector<ContentApp>& apps, QString& error);
 

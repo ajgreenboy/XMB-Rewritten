@@ -134,6 +134,7 @@ native diff.
 | [STEAM-CLI.md](STEAM-CLI.md) | What the Steam client accepts headless |
 | [SERVICES-BREADTH.md](SERVICES-BREADTH.md) | Account switch, launch/quit, avatars, trophies and honest rows |
 | [JELLYFIN-NATIVE.md](JELLYFIN-NATIVE.md) | Native Jellyfin playback |
+| [JELLYFIN-SETUP.md](JELLYFIN-SETUP.md) | Setting Jellyfin up from inside the XMB: setup row, address page, server check, network discovery |
 | [SPOTIFY.md](SPOTIFY.md) | Spotify in the Music column |
 | [DISCORD.md](DISCORD.md) | Discord friends: setup, restricted scope, failure messages |
 | [DLNA.md](DLNA.md) | Search for Media Servers (DLNA / UPnP AV) |
