@@ -8,6 +8,10 @@
 #include "settings_menu.h"
 #include "musicvis.h"
 #include "raf_render.h"
+#include "osk_paste.h"
+#include <QClipboard>
+#include <QGuiApplication>
+#include <QMimeData>
 #include <QPainter>
 #include <QKeyEvent>
 #include <QAbstractNativeEventFilter>
@@ -1165,10 +1169,11 @@ void View::paintGL() {
     // The keyboard's cached UI signature: the focused key, the page, the palette window and the caret phase,
     // plus the text being composed. A masked field contributes its bullet count only, so the plaintext never
     // enters this cache string (which is one bug away from a captured frame - audit/JELLYFIN-NATIVE.md 3).
-    if(osk_.open)signature+=QString::asprintf("osk %d %d %d %d %d %d %d %d %d ",
+    if(osk_.open)signature+=QString::asprintf("osk %d %d %d %d %d %d %d %d %d %d ",
         osk_.row,osk_.column,osk_.cursor,osk_.page,int(osk_.paletteOpen),osk_.paletteRow,osk_.paletteColumn,
-        osk_.paletteScroll,int(osk_.caretLit))+
-        (osk_.masked?QString(osk_.text.size(),oskLayout_.mask.glyph):osk_.text);
+        osk_.paletteScroll,int(osk_.caretLit),int(osk_.onPaste))+
+        (osk_.masked?QString(osk_.text.size(),oskLayout_.mask.glyph):osk_.text)+
+        QString::asprintf(" paste %d ",int(osk_.pasteReady))+osk_.toast;
     // The notification composite animates outside a shell change (slide/fade), so its amount and content are
     // part of the signature: quantised by 1/256, which is finer than the 2x layer can show.
     // The operation guide fades on the focus clock alone, so its amount is part of the drawn state.
@@ -4909,6 +4914,9 @@ void View::keyPressEvent(QKeyEvent* e) {
             break;
         case Qt::Key_Backspace:oskBackspace();break;
         default: {
+            // Ctrl+V and Shift+Insert (QKeySequence::Paste on Windows) paste the clipboard; any other Ctrl chord is not text.
+            if(e->matches(QKeySequence::Paste) || (e->key()==Qt::Key_V && (e->modifiers()&Qt::ControlModifier))){oskPaste();break;}
+            if(e->modifiers()&Qt::ControlModifier)break;
             const auto scalars=e->text().toUcs4();
             if(!scalars.isEmpty() && QChar::isPrint(scalars.first()))oskInsert(e->text());
             break;
@@ -5251,6 +5259,37 @@ void View::oskInsert(const QString& value) {
     if(count>0 && count<value.size() && value[count-1].isHighSurrogate() && value[count].isLowSurrogate())--count;
     osk_.text.insert(osk_.cursor,value.left(count));osk_.cursor+=count;update();
 }
+int View::oskPasteRow() const {
+    const auto& l=oskLayout_;
+    return (l.bands.pasteButton.center().y()-l.gridOrigin.y())/std::max(1,l.cell.height());
+}
+void View::oskToast(const QString& text) {
+    osk_.toast=text;
+    const quint64 serial=++oskToastSerial_;
+    QTimer::singleShot(2500,this,[this,serial]{if(serial==oskToastSerial_ && !osk_.toast.isEmpty()){osk_.toast.clear();update();}});
+    update();
+}
+// The clipboard is read here and only here, on an explicit paste action. The pasted text goes into the field and nowhere
+// else: the log lines carry the verdict and counts, never the text (a masked field holds secrets).
+void View::oskPaste() {
+    if(!osk_.open)return;
+    const QMimeData* mime=QGuiApplication::clipboard()->mimeData();
+    if(!mime || !mime->hasText()) {
+        osk_.pasteReady=false;
+        qInfo().noquote()<<"osk: paste verdict=no-text";
+        oskToast(xmb::oskpaste::messageNoText());
+        return;
+    }
+    const auto result=xmb::oskpaste::prepare({mime->text(),int(osk_.text.size()),osk_.maxLength,false});
+    osk_.pasteReady=result.verdict==xmb::oskpaste::Verdict::Inserted || result.verdict==xmb::oskpaste::Verdict::Truncated ||
+                    result.verdict==xmb::oskpaste::Verdict::NoRoom;
+    if(!result.text.isEmpty()) {
+        osk_.text.insert(osk_.cursor,result.text);osk_.cursor+=int(result.text.size());
+    }
+    qInfo().noquote()<<QString("osk: paste verdict=%1 characters=%2 removed=%3 masked=%4")
+        .arg(int(result.verdict)).arg(result.characters).arg(result.removed).arg(int(osk_.masked));
+    oskToast(xmb::oskpaste::message(result));
+}
 void View::oskBackspace() {
     if(osk_.cursor>0) {
         const int before=oskAdjacent(osk_.text,osk_.cursor,false);
@@ -5264,6 +5303,20 @@ void View::oskMove(int dx,int dy) {
     const OskPage* page=oskLayout_.page(osk_.page);
     if(!page || page->rows.isEmpty())return;
     const int rowCount=int(page->rows.size());
+    // The Paste button sits right of the grid, level with one row: Right from that row's last key lands on it, Left or
+    // Right leaves it again, Up and Down move to the neighbouring row's last key (audit/OSK-PASTE.md).
+    if(osk_.onPaste) {
+        osk_.onPaste=false;
+        osk_.row=(osk_.row+dy+rowCount)%rowCount;
+        if(dx>0)osk_.column=0;
+        else osk_.column=oskLayout_.columns-1;
+        if(const OskKey* key=page->keyAt(osk_.row,osk_.column))osk_.column=key->column;
+        update();return;
+    }
+    if(dx>0 && osk_.row==oskPasteRow()) {
+        const OskKey* current=page->keyAt(osk_.row,osk_.column);
+        if((current?current->column+current->span:osk_.column+1)>=oskLayout_.columns){osk_.onPaste=true;update();return;}
+    }
     osk_.row=(osk_.row+dy+rowCount)%rowCount;   // up/down wrap over the six rows, keeping the column
     if(dx!=0) {
         // Left/right land on keys, not cells: a wide key occupies its span, so a horizontal move jumps the whole
@@ -5308,6 +5361,7 @@ void View::oskPalettePress() {
 }
 void View::oskPress() {
     if(osk_.paletteOpen) { oskPalettePress();return; }
+    if(osk_.onPaste) { oskPaste();update();return; }
     const OskKey* key=oskLayout_.keyAt(osk_.page,osk_.row,osk_.column);
     if(!key)return;
     // Every action the layout can carry is dispatched, and the three that the native build cannot honour say so
@@ -5325,7 +5379,8 @@ void View::oskPress() {
     case OskAction::CaretLeft:osk_.cursor=oskAdjacent(osk_.text,osk_.cursor,false);break;
     case OskAction::CaretRight:osk_.cursor=oskAdjacent(osk_.text,osk_.cursor,true);break;
     case OskAction::Mode:qInfo().noquote()<<"osk: Input Mode is unavailable (no IME modules; audit 8.3)";break;
-    case OskAction::Copy:case OskAction::Paste:qInfo().noquote()<<"osk: copy/paste is not wired to a clipboard yet";break;
+    case OskAction::Copy:qInfo().noquote()<<"osk: copy is not wired (the OSK has no selection)";break;
+    case OskAction::Paste:oskPaste();break;
     case OskAction::None:break;
     }
     update();
@@ -5472,7 +5527,7 @@ void View::drawOsk(QPainter& p) {
                               double(l.gridOrigin.y()+row.row*l.cell.height()+l.faceInset.y()),
                               double(key.span*l.cell.width()-2*l.faceInset.x()),
                               double(l.cell.height()-2*l.faceInset.y()));
-            const bool focused=osk_.row==row.row && osk_.column>=key.column && osk_.column<key.column+key.span;
+            const bool focused=!osk_.onPaste && osk_.row==row.row && osk_.column>=key.column && osk_.column<key.column+key.span;
             // The focused face brightens instead of changing colour: measured on s3/f0020-0078.png the focused a/A
             // reads 152,159,140 / 206,219,140 / 210,220,183 against 157,163,124 / 172,178,139 / 162,165,138 at rest.
             const auto lit=[&](const QColor& colour) {
@@ -5563,6 +5618,17 @@ void View::drawOsk(QPainter& p) {
         QLinearGradient gradient(rect.topLeft(),rect.bottomLeft());
         gradient.setColorAt(0,QColor(137,169,175));gradient.setColorAt(1,QColor(112,145,151));
         p.setPen(Qt::NoPen);p.setBrush(gradient);p.drawRoundedRect(rect,l.keyCornerRadius,l.keyCornerRadius);
+        // Paste is drawn disabled, as captured, until a paste finds text on the clipboard (the clipboard is never polled).
+        const bool buttonEnabled=button.enabled || (button.action==OskAction::Paste && osk_.pasteReady);
+        const bool buttonFocused=button.action==OskAction::Paste && osk_.onPaste;
+        if(buttonFocused) {   // the focused face brightens, as a key's does
+            QLinearGradient lit(rect.topLeft(),rect.bottomLeft());
+            lit.setColorAt(0,QColor(179,199,203));lit.setColorAt(1,QColor(164,189,193));
+            p.setBrush(lit);p.drawRoundedRect(rect,l.keyCornerRadius,l.keyCornerRadius);
+            const QImage& ring=texture(QStringLiteral("SBTN_FOCUS"));   // the same firmware ring a key gets
+            if(!ring.isNull())p.drawImage(QRectF(rect.center().x()-ring.width()/2.,rect.center().y()-ring.height()/2.,ring.width(),ring.height()),ring);
+            else {p.setPen(QPen(QColor(255,255,255,190),2));p.setBrush(Qt::NoBrush);p.drawRoundedRect(rect.adjusted(-6,-6,6,6),7,7);}
+        }
         // KEYTOP_COPY / KEYTOP_PASTE carry the glyph as a white mask (24x24 of ink inside a 72x54 transparent card) for
         // paf's icon material, so painting them raw draws a white block on the light key. The mask is tinted to the
         // measured ink colour and cached per texture; the card is drawn at the button's own size, which puts the glyph
@@ -5581,13 +5647,13 @@ void View::drawOsk(QPainter& p) {
             }
             return tintedCards.insert(key,tinted).value();
         };
-        const QImage& glyph=card(button.texture,QColor(30,50,60,button.enabled?255:120));
+        const QImage& glyph=card(button.texture,QColor(30,50,60,buttonEnabled?255:120));
         if(!glyph.isNull()) {
-            p.save();p.setOpacity(button.enabled?1.:.55);p.drawImage(rect,glyph);p.restore();continue;
+            p.save();p.setOpacity(buttonEnabled?1.:.55);p.drawImage(rect,glyph);p.restore();continue;
         }
         // The fallback shapes, for a run without the RCO: two offset plates for copy, a clipboard for paste.
-        p.setPen(QPen(QColor(30,50,60,button.enabled?255:120),2));
-        p.setBrush(QColor(30,50,60,button.enabled?255:120));
+        p.setPen(QPen(QColor(30,50,60,buttonEnabled?255:120),2));
+        p.setBrush(QColor(30,50,60,buttonEnabled?255:120));
         if(button.action==OskAction::Copy) {
             p.drawRect(QRectF(rect.left()+19,rect.top()+16,17,17));
             p.drawRect(QRectF(rect.left()+26,rect.top()+23,17,17));
@@ -5603,6 +5669,9 @@ void View::drawOsk(QPainter& p) {
                       double(l.bands.footer.width()),2),QColor(102,100,102));
     p.fillRect(QRectF(double(l.bands.footer.left()),double(l.bands.footer.bottom()-1),
                       double(l.bands.footer.width()),1),l.bands.footerBottom);
+    // The paste confirmation lives in the footer strip, which the captured keyboard leaves empty: nothing is drawn there
+    // unless a paste has just happened, so the default frame is unchanged.
+    if(!osk_.toast.isEmpty())label(QRectF(l.bands.footer),osk_.toast,20,QColor(237,237,237));
     // The symbol palette, last so it covers the left half of the keyboard: the RCO's BASE_SYMBOL plate as a
     // nine-slice (its interior reads 112,111,112 against the measured 114,114,114), a 7x5 window of 53x53 cells on a
     // 48 px pitch, and FOCUS_SYMBOL on the focused cell (4.3).

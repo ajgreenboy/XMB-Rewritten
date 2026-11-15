@@ -38,6 +38,7 @@ qt_add_executable(re-ps3-native
     src/system_power.cpp src/system_power.h
     src/boot_prefetch.cpp src/boot_prefetch.h
     src/file_ops.cpp src/file_ops.h
+    src/osk_paste.cpp src/osk_paste.h
     src/folder_browser.cpp src/folder_browser.h src/folder_browse_shell.cpp
     src/weather_client.cpp src/weather_client.h src/weather_shell.cpp
     src/self_check.cpp src/self_check.h src/system_check_shell.cpp
@@ -118,6 +119,12 @@ if(XMB_FILE_OPS_BUILD_TESTS)
     if(WIN32)
         target_link_libraries(xmb-file-ops-tests PRIVATE ole32 shell32)
     endif()
+endif()
+option(XMB_OSK_PASTE_BUILD_TESTS "Build the on-screen keyboard clipboard paste (sanitising and limit) tests" OFF)
+if(XMB_OSK_PASTE_BUILD_TESTS)
+    qt_add_executable(xmb-osk-paste-tests tests/osk_paste_tests.cpp src/osk_paste.cpp src/osk_paste.h)
+    target_include_directories(xmb-osk-paste-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(xmb-osk-paste-tests PRIVATE Qt6::Core)
 endif()
 option(XMB_FOLDER_BROWSER_BUILD_TESTS "Build the in-XMB folder browser listing and navigation tests" OFF)
 if(XMB_FOLDER_BROWSER_BUILD_TESTS)

@@ -149,6 +149,12 @@ Input comes from the keyboard, media keys and remotes (WM_APPCOMMAND; [audit/INP
 DualShock 4 and DualSense (USB or Bluetooth). The left stick works as the D-pad. ✕ confirms and ○ goes back, as
 XInput's A and B do.
 
+On-screen keyboard: arrows or the pad move, Enter or ✕ presses a key, Backspace or □ deletes, △ is Space, Ctrl+Enter or
+Start accepts, Escape or ○ cancels. **Ctrl+V or Shift+Insert pastes the Windows clipboard** into the field at the caret
+(long tokens, URLs, paths; works in password fields too, and the pasted text is never logged). Without a keyboard, move
+right from Enter to the Paste key in the prediction column and press ✕. A line at the foot of the keyboard confirms
+("Pasted 40 characters") or says why nothing was pasted. Details: [audit/OSK-PASTE.md](audit/OSK-PASTE.md).
+
 Titles in `dev_hdd0/game`, and disc copies in RPCS3's `config/games.yml`, start in the RPCS3 that sits next to
 dev_hdd0 (`rpcs3.exe --no-gui`). A title RPCS3 lists starts by Title ID (`%RPCS3_GAMEID%:<id>`); any other starts
 from its `USRDIR/EBOOT.BIN`. Both pieces follow MaXMB (MIT); see `THIRD-PARTY.md`.

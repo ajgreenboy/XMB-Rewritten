@@ -629,6 +629,9 @@ private:
         // `@#:` popup with its own 5-visible-row window over the 32 symbols; caretLit is the blink phase.
         bool paletteOpen=false,caretLit=true;
         int page=0,paletteRow=0,paletteColumn=0,paletteScroll=0;
+        bool onPaste=false;      // focus is on the prediction column's Paste button (right of Enter, in the bottom row)
+        bool pasteReady=false;   // the last paste found text: the Paste key is drawn enabled (default: as captured, disabled)
+        QString toast;           // the footer confirmation ("Pasted N characters"); never carries the pasted text
         QString title,text;
         int row=0,column=0,cursor=0,maxLength=32;
         std::function<void(QString)> done;
@@ -645,6 +648,10 @@ private:
     void oskPalettePress();
     void oskInsert(const QString& value);
     void oskBackspace();
+    void oskPaste();                 // Ctrl+V, Shift+Insert, the pad's Select: the Windows clipboard into the field (audit/OSK-PASTE.md)
+    void oskToast(const QString& text);
+    int oskPasteRow() const;   // the grid row the Paste button sits level with
+    quint64 oskToastSerial_=0;
     void oskClose(bool accept);
     QString oskCharacter(int row,int column) const;
     void drawImage(QPainter& painter,const QString& container,const QString& texture,const QRectF& rect,qreal opacity=1);
