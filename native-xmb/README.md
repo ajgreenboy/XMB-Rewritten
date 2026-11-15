@@ -408,6 +408,11 @@ Animation diagnostics and measured high-refresh results are in
 eases without opening a window. `XMB_FRAME_TRACE=<file>` records a bounded callback trace on orderly shutdown;
 `bun work/frame-report.ts <file> --warmup-ms 6000 --until-ms 10000` summarizes a chosen interval.
 
+Frame pacing (a swap-timestamp animation clock, the move-cue audio off the render thread) is in
+[FRAME-PACING.md](audit/FRAME-PACING.md); the system menu's first-open prewarm is in
+[PS-MENU-HITCH.md](audit/PS-MENU-HITCH.md); scaling to any window size or display scale is in
+[HIGH-DPI.md](audit/HIGH-DPI.md); the kiosk intro setting is in [KIOSK-INTRO.md](audit/KIOSK-INTRO.md).
+
 ## Decrypted modules for the ribbon
 
 dev_flash holds the VSH modules encrypted (`*.sprx`). The ribbon cloth starts from rest tables inside
