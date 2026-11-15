@@ -94,6 +94,10 @@ enum class Action { Unavailable, SettingsPage, SettingChoices, SetSetting, EditN
     // Music > Spotify (spotify_shell.cpp, audit/SPOTIFY.md): the column row, sign-in/out, Now Playing, Liked Songs,
     // one playlist (value = id, setting = its URI), one track (value = URI) and one Connect device (value = id).
     SpotifyApp, SpotifySignIn, SpotifySignOut, SpotifyNowPlaying, SpotifyLiked, SpotifyPlaylist, SpotifyTrack, SpotifyDevice,
+    // Music > Jellyfin Music (jellyfin_music_shell.cpp, audit/JELLYFIN-MUSIC.md): the column row (value = the registered app's id)
+    // and one list or item of the music pages (value = its id, setting = its kind: artists, albums, playlists, songs, recent,
+    // random, search, lib, artist, album, playlist; option = the music library it is scoped to).
+    JellyfinMusicApp, JellyfinMusicNode,
     // Search for Media Servers (dlna_shell.cpp, audit/DLNA.md): the scan row, one found server (value = its index),
     // one server folder (value = object id), and one server photo (value = its URL). Audio and video items are
     // ordinary File rows whose value is the server's http URL.
@@ -190,6 +194,10 @@ struct Entry {
     QString mediaKind;
     qint64 resumeMs=0,durationMs=0;
     bool played=false;
+    // A Jellyfin music row: the line "artist - album" its detail starts with, and what the player's Now Playing page
+    // shows for the track (a server stream carries no usable tags), with the album whose cover it wears.
+    struct MusicMeta { QString info, artist, album, albumId, albumTag; };
+    std::shared_ptr<const MusicMeta> music;   // one pointer, not five strings: Entry is copied by the thousand (Steam rows)
 };
 struct Category { QString id,title,container,texture; QVector<Entry> entries; QString themeIcon; };
 // Item-level Triangle options menu: the firmware builds it per item from explore_plugin_full's English text
@@ -951,6 +959,28 @@ private:
     void openJellyfin(const Entry& entry);
     void loadJellyfinPage(const QString& parent,const QString& title,int start=0,bool views=false,bool replace=false);
     void openJellyfinSearch(const QString& term);
+    // ---- Music > Jellyfin Music (jellyfin_music_shell.cpp, audit/JELLYFIN-MUSIC.md) ----
+    // One shared Jellyfin session: a Music entry opens the music pages when the TV row's session is live (or a remembered
+    // one restores) and otherwise routes to the same sign-in page the TV row uses, then lands on the music pages.
+    void refreshJellyfinMusicRow();
+    void openJellyfinMusic(const Entry& entry);
+    void startJellyfinMusicRoot();
+    void openJellyfinMusicNode(const Entry& entry);
+    void loadJellyfinMusicPage(const QString& kind,const QString& id,const QString& library,const QString& title,int start=0,bool replace=false);
+    void openJellyfinMusicSearch(const QString& term);
+    void buildJellyfinMusicPage(const JellyfinPage& result);
+    QVector<Entry> jellyfinMusicRootRows(const QString& library);
+    void rememberJellyfinTracks(const QVector<Entry>& rows);
+    void showJellyfinTrack(const QString& itemId);
+    bool applyJellyfinMusicArt(const QString& itemId,const QImage& image);
+    static QString jellyfinRowDetail(const Entry& entry);
+    bool jellyfinMusicWanted_=false;          // the sign-in page in front of the user was reached from the Music column
+    int jellyfinMusicLibraries_=-1;           // music libraries the server listed last time, -1 until it has
+    QString jellyfinMusicApp_,jellyfinMusicSearchLibrary_;
+    struct JellyfinNowTrack { QString title, artist, album, albumId, albumTag; };
+    QHash<QString,JellyfinNowTrack> jellyfinTracks_;   // item id -> what Now Playing shows for it (filled from the queue's rows)
+    QHash<QString,QImage> jellyfinAlbumArt_;        // album id -> its picture, a few dozen, newest kept
+    QStringList jellyfinAlbumArtOrder_;
     void loadJellyfinSearchPage(const QString& term,const QString& title,int start=0,bool replace=false);
     void openJellyfinMedia(const Entry& entry,bool fromBeginning=false);
     void startJellyfinMedia();
@@ -1081,7 +1111,7 @@ private:
     int columnSink_=0;
     // `grouped` is a page the item menu's Group Content level rebuilt into letter folders: `groupedSource` keeps
     // the ungrouped rows so All can put them back without a rescan, and the folders' rows are the same entries.
-    struct Page { QString title; QVector<Entry> entries; int selection=0; QString directory; bool jellyfin=false,jellyfinViews=false,jellyfinSearch=false; QString jellyfinParent; int jellyfinStart=0; bool downloads=false; bool continuePage=false; bool signIn=false; bool jfSetup=false; bool steamAccounts=false; bool grouped=false; QString groupKey; QVector<Entry> groupedSource; bool sysconfPlugin=false; QString playlistsType,playlistId; QString spotify,spotifyContext; QString dlna; int dlnaServer=-1; QString tailscale; QString wol,ha; bool weather=false; bool systemCheck=false; QString userInfo; int userInfoStep=0; bool browse=false; QString browsePath; QString browseFiles; };
+    struct Page { QString title; QVector<Entry> entries; int selection=0; QString directory; bool jellyfin=false,jellyfinViews=false,jellyfinSearch=false; QString jellyfinParent; QString jellyfinMusic,jellyfinLibrary; int jellyfinStart=0; bool downloads=false; bool continuePage=false; bool signIn=false; bool jfSetup=false; bool steamAccounts=false; bool grouped=false; QString groupKey; QVector<Entry> groupedSource; bool sysconfPlugin=false; QString playlistsType,playlistId; QString spotify,spotifyContext; QString dlna; int dlnaServer=-1; QString tailscale; QString wol,ha; bool weather=false; bool systemCheck=false; QString userInfo; int userInfoStep=0; bool browse=false; QString browsePath; QString browseFiles; };
     QVector<Page> pages_;
     bool psMenu_=false;              // the PS-button system menu is showing
     bool desktopMode_=false;         // the XMB window is hidden for Desktop Mode (main.cpp DesktopMode)

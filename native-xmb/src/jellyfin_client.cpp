@@ -192,6 +192,23 @@ JellyfinItem parseItem(const QJsonObject& json) {
     const QJsonArray backdrops = json.value(QStringLiteral("BackdropImageTags")).toArray();
     const QString backdrop = backdrops.isEmpty() ? QString{} : backdrops.first().toString();
     if (validImageKey(backdrop)) result.backdropTag = backdrop;
+    // Music: the performer, the album and the tag of the album's cover, the track's place on its disc.
+    const QJsonArray artists = json.value(QStringLiteral("Artists")).toArray();
+    result.artist = json.value(QStringLiteral("AlbumArtist")).toString().left(200);
+    if (result.artist.isEmpty() && !artists.isEmpty()) result.artist = artists.first().toString().left(200);
+    if (result.type == QLatin1String("Audio") && !artists.isEmpty()) {
+        QStringList names;
+        for (const auto& name : artists) { if (names.size() >= 4) break; if (!name.toString().isEmpty()) names << name.toString().left(120); }
+        if (!names.isEmpty()) result.artist = names.join(QStringLiteral(", "));
+    }
+    result.album = json.value(QStringLiteral("Album")).toString().left(200);
+    const QString albumId = json.value(QStringLiteral("AlbumId")).toString();
+    if (validId(albumId)) result.albumId = albumId;
+    const QString albumTag = json.value(QStringLiteral("AlbumPrimaryImageTag")).toString();
+    if (validImageKey(albumTag)) result.albumTag = albumTag;
+    result.trackNumber = std::clamp(json.value(QStringLiteral("IndexNumber")).toInt(0), 0, 9999);
+    result.discNumber = std::clamp(json.value(QStringLiteral("ParentIndexNumber")).toInt(0), 0, 999);
+    result.year = std::clamp(json.value(QStringLiteral("ProductionYear")).toInt(0), 0, 9999);
     return result;
 }
 }
@@ -432,13 +449,80 @@ quint64 JellyfinClient::search(QString term, int startIndex) {
     query.addQueryItem(QStringLiteral("Limit"), QString::number(PageLimit));
     query.addQueryItem(QStringLiteral("Recursive"), QStringLiteral("true"));
     query.addQueryItem(QStringLiteral("IncludeItemTypes"),
-                       QStringLiteral("Movie,Episode,Video,MusicVideo,Audio,Trailer,Recording,Series,Season"));
+                       QStringLiteral("Movie,Episode,Video,MusicVideo,Trailer,Recording,Series,Season"));
     query.addQueryItem(QStringLiteral("SortBy"), QStringLiteral("SortName"));
     query.addQueryItem(QStringLiteral("SortOrder"), QStringLiteral("Ascending"));
     query.addQueryItem(QStringLiteral("EnableUserData"), QStringLiteral("true"));
     query.addQueryItem(QStringLiteral("Fields"), QStringLiteral("Overview"));
     url.setQuery(query);
     return send(Operation::Search, get(url), QString::number(startIndex));
+}
+
+quint64 JellyfinClient::music(MusicList kind, QString libraryId, QString id, int startIndex) {
+    if (!signedIn()) { const quint64 request = ++nextRequest_; fail(request, QStringLiteral("Sign in to Jellyfin first.")); return request; }
+    const bool needsId = kind == MusicList::ArtistAlbums || kind == MusicList::AlbumTracks || kind == MusicList::PlaylistTracks;
+    bool idOk = needsId ? validId(id) : true;
+    if (kind == MusicList::Search) {
+        id = id.trimmed();
+        idOk = !id.isEmpty() && id.size() <= 200;
+        for (const QChar ch : id) if (ch.isNull() || ch.category() == QChar::Other_Control) idOk = false;
+    }
+    if (startIndex < 0 || !idOk || (!libraryId.isEmpty() && !validId(libraryId))) {
+        const quint64 request = ++nextRequest_;
+        fail(request, QStringLiteral("Choose a valid Jellyfin music list."));
+        return request;
+    }
+    QUrl url;
+    QUrlQuery query;
+    query.addQueryItem(QStringLiteral("UserId"), userId_);
+    query.addQueryItem(QStringLiteral("StartIndex"), QString::number(startIndex));
+    query.addQueryItem(QStringLiteral("Limit"), QString::number(kind == MusicList::Random ? 50 : PageLimit));
+    query.addQueryItem(QStringLiteral("EnableImageTypes"), QStringLiteral("Primary"));
+    query.addQueryItem(QStringLiteral("ImageTypeLimit"), QStringLiteral("1"));
+    query.addQueryItem(QStringLiteral("EnableUserData"), QStringLiteral("true"));
+    const auto items = [&](const QString& types, const QString& sort, const QString& order) {
+        url = apiUrl(QStringLiteral("Items"));
+        query.addQueryItem(QStringLiteral("IncludeItemTypes"), types);
+        query.addQueryItem(QStringLiteral("Recursive"), QStringLiteral("true"));
+        query.addQueryItem(QStringLiteral("SortBy"), sort);
+        query.addQueryItem(QStringLiteral("SortOrder"), order);
+        if (!libraryId.isEmpty()) query.addQueryItem(QStringLiteral("ParentId"), libraryId);
+    };
+    switch (kind) {
+    case MusicList::Artists:
+        url = apiUrl(QStringLiteral("Artists/AlbumArtists"));
+        query.addQueryItem(QStringLiteral("SortBy"), QStringLiteral("SortName"));
+        query.addQueryItem(QStringLiteral("SortOrder"), QStringLiteral("Ascending"));
+        if (!libraryId.isEmpty()) query.addQueryItem(QStringLiteral("ParentId"), libraryId);
+        break;
+    case MusicList::Albums: items(QStringLiteral("MusicAlbum"), QStringLiteral("SortName"), QStringLiteral("Ascending")); break;
+    case MusicList::Songs: items(QStringLiteral("Audio"), QStringLiteral("SortName"), QStringLiteral("Ascending")); break;
+    case MusicList::Recent: items(QStringLiteral("MusicAlbum"), QStringLiteral("DateCreated,SortName"), QStringLiteral("Descending")); break;
+    case MusicList::Random: items(QStringLiteral("MusicAlbum"), QStringLiteral("Random"), QStringLiteral("Ascending")); break;
+    case MusicList::Playlists:
+        items(QStringLiteral("Playlist"), QStringLiteral("SortName"), QStringLiteral("Ascending"));
+        query.removeAllQueryItems(QStringLiteral("ParentId"));   // playlists live in their own view, not in a music library
+        query.addQueryItem(QStringLiteral("MediaTypes"), QStringLiteral("Audio"));
+        break;
+    case MusicList::ArtistAlbums:
+        items(QStringLiteral("MusicAlbum"), QStringLiteral("ProductionYear,SortName"), QStringLiteral("Ascending"));
+        query.addQueryItem(QStringLiteral("ArtistIds"), id);
+        break;
+    case MusicList::AlbumTracks:
+        items(QStringLiteral("Audio"), QStringLiteral("ParentIndexNumber,IndexNumber,SortName"), QStringLiteral("Ascending"));
+        query.removeAllQueryItems(QStringLiteral("ParentId"));
+        query.addQueryItem(QStringLiteral("ParentId"), id);
+        break;
+    case MusicList::PlaylistTracks:
+        url = apiUrl(QStringLiteral("Playlists/") + id + QStringLiteral("/Items"));   // the playlist's own order
+        break;
+    case MusicList::Search:
+        items(QStringLiteral("MusicArtist,MusicAlbum,Audio"), QStringLiteral("SortName"), QStringLiteral("Ascending"));
+        query.addQueryItem(QStringLiteral("SearchTerm"), id);
+        break;
+    }
+    url.setQuery(query);
+    return send(Operation::Items, get(url), QString::number(startIndex));
 }
 
 quint64 JellyfinClient::playback(QString itemId, bool audio, int maxBitrateKbps, int burnSubtitleIndex, QString burnCodec) {
@@ -448,9 +532,9 @@ quint64 JellyfinClient::playback(QString itemId, bool audio, int maxBitrateKbps,
                                   {QStringLiteral("Type"), QStringLiteral("Video")},
                                   {QStringLiteral("VideoCodec"), QStringLiteral("h264,hevc")},
                                   {QStringLiteral("AudioCodec"), QStringLiteral("aac,ac3,mp3,opus")}};
-    const QJsonObject audioDirect{{QStringLiteral("Container"), QStringLiteral("mp3,aac,m4a,flac,ogg")},
+    const QJsonObject audioDirect{{QStringLiteral("Container"), QStringLiteral("mp3,aac,m4a,flac,ogg,oga,opus,wav,webm,mka")},
                                   {QStringLiteral("Type"), QStringLiteral("Audio")},
-                                  {QStringLiteral("AudioCodec"), QStringLiteral("aac,mp3,opus,flac")}};
+                                  {QStringLiteral("AudioCodec"), QStringLiteral("aac,mp3,opus,flac,vorbis,alac,pcm_s16le,pcm_s24le")}};
     const QJsonObject videoTranscode{{QStringLiteral("Container"), QStringLiteral("ts")},
         {QStringLiteral("Type"), QStringLiteral("Video")}, {QStringLiteral("VideoCodec"), QStringLiteral("h264")},
         {QStringLiteral("AudioCodec"), QStringLiteral("aac")}, {QStringLiteral("Protocol"), QStringLiteral("hls")},
@@ -766,7 +850,30 @@ void JellyfinClient::finish(QNetworkReply* reply, Operation operation, quint64 r
         emit subtitleReady(request, context.toInt(), ok ? bytes : QByteArray{});
         return;
     }
-    if (!ok) { fail(request, QStringLiteral("Jellyfin could not complete that request.")); return; }
+    if (!ok) {
+        // The real reason: the status and the server's own words (scrubbed, short), or the network's error when nothing answered.
+        // A JSON error body ({"Message": "..."}, or ASP.NET's problem details) is read for its text; anything else is shown as it is.
+        QByteArray shown = bytes;
+        if (status) {
+            const QJsonObject error = QJsonDocument::fromJson(bytes.left(4096)).object();
+            for (const char* key : {"Message", "message", "detail", "title", "error"}) {
+                const QString text = error.value(QLatin1String(key)).toString().trimmed();
+                if (!text.isEmpty()) { shown = text.toUtf8(); break; }
+            }
+        }
+        QString words = status ? scrubDiagnostic(shown, 120) : scrubDiagnostic(reply->errorString().toUtf8(), 120);
+        const QString quote = words.isEmpty() ? QString{} : QStringLiteral(": \"%1\"").arg(words);
+        QString text;
+        if (status == 401 || status == 403) text = QStringLiteral("Jellyfin refused the request (HTTP %1%2). Sign out of Jellyfin and sign in again.").arg(status).arg(quote);
+        else if (status == 404) text = QStringLiteral("Jellyfin has no such page (HTTP 404%1). The item may have been moved or removed.").arg(quote);
+        else if (status >= 500) text = QStringLiteral("Jellyfin failed to answer (HTTP %1%2). Check the server's log.").arg(status).arg(quote);
+        else if (status >= 400) text = QStringLiteral("Jellyfin rejected the request (HTTP %1%2).").arg(status).arg(quote);
+        else if (status == 0) text = QStringLiteral("The Jellyfin server did not answer%1.").arg(quote.isEmpty() ? QString{} : QStringLiteral(" (%1)").arg(words));
+        else text = QStringLiteral("Jellyfin sent a reply this build cannot read (HTTP %1, %2 bytes): the list may be too large.").arg(status).arg(bytes.size());
+        qWarning().noquote() << "jellyfin: request failed:" << text;
+        fail(request, text);
+        return;
+    }
     QJsonParseError parse{};
     const auto document = QJsonDocument::fromJson(bytes, &parse);
     if (parse.error != QJsonParseError::NoError) {

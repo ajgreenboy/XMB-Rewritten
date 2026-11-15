@@ -243,7 +243,7 @@ Server Address. See [audit/JELLYFIN-SETUP.md](audit/JELLYFIN-SETUP.md).
 The manual route still works: edit `examples/jellyfin.json` (or `examples/media-apps.json` for Jellyfin, Plex,
 YouTube and Spotify) for your setup and import it. This adds a TV/Video Services app: Jellyfin is a native service with library/folder
 pages, direct play and server-negotiated HLS, and it signs in on an XMB page with a masked keyboard
-(audit/JELLYFIN-NATIVE.md); the Plex, YouTube and Spotify entries are URL apps that still open in your browser. Spotify also has a native page in the Music column (see "Spotify" below); the example's Spotify entry is only a browser shortcut.
+(audit/JELLYFIN-NATIVE.md); the Plex, YouTube and Spotify entries are URL apps that still open in your browser. Spotify and Jellyfin also have native pages in the Music column (see "Spotify" and "Jellyfin Music" below); the example's Spotify entry is only a browser shortcut.
 See [content schema](audit/CONTENT-REGISTRY.md) and
 [Steam handoff, verification and limits](audit/STEAM-INTEGRATION.md). No firmware or installed game files are changed.
 
@@ -266,6 +266,23 @@ redirect URI `http://127.0.0.1:8888/callback`, and put the client id in `<native
 `SPOTIFY_CLIENT_ID` / `SPOTIFY_REDIRECT_PORT` override the file. Without a client id the page shows one "Set Up Spotify" row
 with these steps. Code: `src/spotify_client.*`, `src/spotify_shell.cpp`; details, limits and the real-account run:
 [audit/SPOTIFY.md](audit/SPOTIFY.md).
+
+### Jellyfin Music (Music column)
+
+With a Jellyfin server registered, the Music column ends with a `Jellyfin Music` row under Spotify. It uses the one
+Jellyfin session of the TV/Video Services row: signed in, Cross opens the music pages at once; a remembered session
+restores silently; with no session the row (it says "Not signed in") opens the same Jellyfin sign-in page and lands on the
+music pages after it. Signing out in either place signs out of both. The row stays while the server is registered and its
+second line follows the session ("No music libraries" when the server has none).
+
+The pages: Artists (album artists), Albums, Playlists (audio playlists), Songs, Recently Added, Random Albums and Search
+Music, all A to Z by the server's SortName where a list has an order; an artist opens its albums, an album its tracks in disc
+order, a playlist its tracks in the playlist's own order. Cross on a track plays the page's tracks as the queue in the
+existing audio player (Now Playing with title, artist, album and cover, Next and Previous, the server's play, progress and
+stop reports). Tracks direct-play the original file and fall back to the server's own transcode. Lists are paged 200 at a
+time with a `More...` row, covers are the server's own pictures cached on disk. Music libraries no longer appear under
+TV > Jellyfin, and TV search no longer returns songs. Details, stand-in runs and what is unverified:
+[audit/JELLYFIN-MUSIC.md](audit/JELLYFIN-MUSIC.md).
 
 ### Discord friends (Friends column)
 
