@@ -1,4 +1,5 @@
 #include "jellyfin_client.h"
+#include "jellyfin_stream.h"
 
 #include <QBuffer>
 #include <QCryptographicHash>
@@ -45,6 +46,8 @@ constexpr qsizetype MaxResponseBytes = 4 * 1024 * 1024;
 // (image_subtitles.h) and a longer deadline.
 constexpr qsizetype MaxImageSubtitleBytes = 64 * 1024 * 1024;
 constexpr int ImageSubtitleTimeoutMs = 180000;   // the server extracts every subtitle stream of the file before it answers (measured: 64 s on a 1080p remux)
+constexpr int ProbeTimeoutMs = 8000;
+constexpr qsizetype ProbeBytes = 2048;
 constexpr qsizetype MaxImageBytes = 4 * 1024 * 1024;
 constexpr int PageLimit = 200;
 // Artwork is bounded on both sides of the network: the server is asked for a small picture, and
@@ -285,7 +288,7 @@ quint64 JellyfinClient::send(Operation operation, QNetworkReply* reply, QString 
     auto* timeout = new QTimer(reply);
     timeout->setSingleShot(true);
     connect(timeout, &QTimer::timeout, reply, &QNetworkReply::abort);
-    timeout->start(operation == Operation::SubtitleImage || operation == Operation::Subtitle ? ImageSubtitleTimeoutMs : RequestTimeoutMs);
+    timeout->start(operation == Operation::SubtitleImage || operation == Operation::Subtitle ? ImageSubtitleTimeoutMs : operation == Operation::Probe ? ProbeTimeoutMs : RequestTimeoutMs);
     connect(reply, &QNetworkReply::downloadProgress, this, [reply, limit](qint64 received, qint64) {
         if (received > limit) reply->abort();
     });
@@ -523,6 +526,22 @@ void JellyfinClient::reportPlayback(const JellyfinPlayback& playbackInfo, qint64
     }
 }
 
+quint64 JellyfinClient::probeStream(const QUrl& url) {
+    if (!signedIn() || !trustedServerUrl(url)) {
+        const quint64 request = ++nextRequest_;
+        QTimer::singleShot(0, this, [this, request] {
+            emit probeFinished(request, 0, QStringLiteral("not signed in, or the address is not the signed-in server"));
+        });
+        return request;
+    }
+    auto* reply = get(url, ProbeTimeoutMs);
+    const quint64 request = send(Operation::Probe, reply);
+    connect(reply, &QIODevice::readyRead, this, [reply] {
+        if (reply->bytesAvailable() >= ProbeBytes) reply->abort();   // a few KB are all the diagnostic needs
+    });
+    return request;
+}
+
 void JellyfinClient::setImageCache(QString directory) {
     imageCache_ = std::move(directory);
     if (!imageCache_.isEmpty()) QDir().mkpath(imageCache_);
@@ -721,6 +740,12 @@ void JellyfinClient::finish(QNetworkReply* reply, Operation operation, quint64 r
                     bytes.size() <= (operation == Operation::SubtitleImage ? MaxImageSubtitleBytes : MaxResponseBytes);
     reply->deleteLater();
     if (operation == Operation::Report) {flushLogouts();return;}
+    if (operation == Operation::Probe) {
+        // The digest is the server's own words (scrubbed), or the network error when nothing answered.
+        const QString detail = status ? scrubDiagnostic(bytes) : scrubDiagnostic(reply->errorString().toUtf8());
+        emit probeFinished(request, status, detail);
+        return;
+    }
     // Artwork missing or broken is not an error the viewer needs: the row keeps its built-in
     // glyph and the report is a null image.
     if (operation == Operation::Artwork) {

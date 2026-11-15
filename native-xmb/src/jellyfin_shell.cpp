@@ -144,7 +144,7 @@ void Shell::initJellyfin() {
     });
     connect(&jellyfin_,&JellyfinClient::playbackReady,this,[this](quint64 request,const JellyfinPlayback& playback){
         if(request!=jellyfinRequest_ || !jellyfinQueue_ || !mediaOpen_)return;
-        jellyfinRequest_=0;jellyfinPlayback_=playback;
+        jellyfinRequest_=0;jellyfinPlayback_=playback;jellyfinStreamIssue_={};jellyfinProbe_=0;
         QStringList streams;
         for(const auto& stream:playback.streams)streams<<stream.type+":"+stream.title;
         qInfo().noquote()<<"jellyfin: playback"<<playback.itemId<<playback.playMethod<<playback.streams.size()
@@ -205,9 +205,22 @@ void Shell::initJellyfin() {
         refreshPlayerOptions();
         emit changed();
     });
-    connect(&jellyfinStream_,&JellyfinStream::failed,this,[this](const QString&){
+    // What the stream saw: the server's status and the first bytes of its reply (scrubbed), or the stream's own
+    // reason for refusing to relay. Logged at once, and kept for the message if the player then gives up.
+    connect(&jellyfinStream_,&JellyfinStream::upstreamRejected,this,[this](int status,const QString& request,const QString& detail){
+        qWarning().noquote()<<"jellyfin: stream request rejected:"<<request<<(status?QStringLiteral("-> HTTP %1").arg(status):QStringLiteral("(not relayed)"))
+            <<(detail.isEmpty()?QString{}:QStringLiteral("-- \"%1\"").arg(detail));
+        if(!jellyfinStreamIssue_.valid || (status>=500 && jellyfinStreamIssue_.status<500))
+            jellyfinStreamIssue_={status,request,detail,true};
+    });
+    connect(&jellyfinStream_,&JellyfinStream::failed,this,[this](const QString& reason){
         if(!jellyfinQueue_ || !mediaOpen_)return;const auto request=mediaRequest_;
-        QTimer::singleShot(0,this,[this,request]{if(request==mediaRequest_ && mediaOpen_ && jellyfinQueue_)advanceMedia(true,{});});
+        QTimer::singleShot(0,this,[this,request,reason]{if(request==mediaRequest_ && mediaOpen_ && jellyfinQueue_)advanceMedia(true,reason);});
+    });
+    connect(&jellyfin_,&JellyfinClient::probeFinished,this,[this](quint64 request,int status,const QString& detail){
+        if(request!=jellyfinProbe_)return;
+        jellyfinProbe_=0;
+        reportJellyfinFailure(status,detail,true);
     });
     connect(player_.get(),&QMediaPlayer::playbackStateChanged,this,[this]{
         if(jellyfinResumePending_>0)applyJellyfinResume();else reportJellyfinPlaybackState();
@@ -403,6 +416,61 @@ void Shell::finishJellyfinPlayback(bool completed) {
     }
     jellyfinPlayback_={};jellyfinStarted_=false;jellyfinResumePending_=0;jellyfinStream_.close();
     jellyfinSubtitleRequests_.clear();jellyfinSubtitleErrors_.clear();
+}
+// The screen text for a stream that would not open: what the server (or the XMB's own relay) actually said, in one
+// or two sentences, instead of a generic hint. The numbers and the server's own words come from the stream's
+// record of the failing request, else from the diagnostic probe of the same URL.
+static QString jellyfinFailureText(const QString& playerError,int status,const QString& detail,bool relayRefused,bool answered) {
+    QString words=detail.left(120);
+    if(detail.size()>120)words+=QStringLiteral("...");
+    const QString quote=words.isEmpty()?QString{}:QStringLiteral(": \"%1\"").arg(words);
+    if(relayRefused)
+        return Shell::tr("The XMB could not relay the stream: %1.").arg(words.isEmpty()?Shell::tr("unknown reason"):words);
+    if(status>=500)
+        return Shell::tr("Jellyfin failed to start the stream (HTTP %1%2). Check the server's log and its transcoding settings.").arg(status).arg(quote);
+    if(status==401 || status==403)
+        return Shell::tr("Jellyfin refused the stream (HTTP %1%2). Sign out of Jellyfin and sign in again.").arg(status).arg(quote);
+    if(status==404)
+        return Shell::tr("Jellyfin has no such stream (HTTP 404%1). The item may have been moved or removed.").arg(quote);
+    if(status>=400)
+        return Shell::tr("Jellyfin rejected the stream request (HTTP %1%2).").arg(status).arg(quote);
+    if(answered)
+        return Shell::tr("Jellyfin answers (HTTP %1) but the player could not open the stream: %2.").arg(status).arg(playerError.isEmpty()?Shell::tr("unknown error"):playerError.left(100));
+    if(!detail.isEmpty())
+        return Shell::tr("The server did not answer the stream request: %1.").arg(words);
+    return playerError.isEmpty()?Shell::tr("This media could not be played."):Shell::tr("This media could not be played: %1.").arg(playerError.left(100));
+}
+// A Jellyfin playback failed. When the stream already named the failing request (an error status from the server,
+// or its own refusal) that is reported at once; otherwise the XMB asks the server for the same URL itself
+// (JellyfinClient::probeStream: same headers, a few KB, 8 s) so the real answer shows in the log and on screen.
+void Shell::beginJellyfinFailureReport(const QString& playerError,const JellyfinStreamIssue& issue,const QUrl& url) {
+    jellyfinPlayerError_=scrubDiagnostic(playerError.toUtf8(),160);
+    jellyfinFailedIssue_=issue;
+    jellyfinProbePath_=url.isValid()?url.path():QString{};
+    jellyfinProbe_=0;
+    if(issue.valid || !url.isValid() || !jellyfin_.signedIn()){reportJellyfinFailure(0,{},false);return;}
+    status_=QStringLiteral("Playback stopped");
+    jellyfinProbe_=jellyfin_.probeStream(url);
+    // The probe has its own 8 s deadline; this only guards against the page being left open on a stuck state.
+    const auto probe=jellyfinProbe_;
+    QTimer::singleShot(12000,this,[this,probe]{if(jellyfinProbe_==probe && probe!=0){jellyfinProbe_=0;reportJellyfinFailure(0,QStringLiteral("no answer"),true);}});
+}
+void Shell::reportJellyfinFailure(int probeStatus,const QString& probeDetail,bool probed) {
+    const auto issue=jellyfinFailedIssue_;
+    int status=issue.status;QString detail=issue.detail;bool refused=issue.valid && issue.status==0;
+    bool answered=false;
+    if(!issue.valid && probed){
+        status=probeStatus;detail=probeDetail;
+        answered=probeStatus>=200 && probeStatus<400;
+        if(answered)detail.clear();
+    }
+    qWarning().noquote()<<"jellyfin: stream open failed: player=\""+jellyfinPlayerError_+"\""
+        <<(issue.valid?QStringLiteral("stream saw %1 %2%3").arg(issue.request,issue.status?QStringLiteral("HTTP %1").arg(issue.status):QStringLiteral("(not relayed)"),
+                issue.detail.isEmpty()?QString{}:QStringLiteral(" \"%1\"").arg(issue.detail)):QString{})
+        <<(probed?QStringLiteral("probe GET %1 -> %2%3").arg(jellyfinProbePath_,probeStatus?QStringLiteral("HTTP %1").arg(probeStatus):QStringLiteral("no answer"),
+                probeDetail.isEmpty()?QString{}:QStringLiteral(" \"%1\"").arg(probeDetail)):QString{});
+    showMessage("Jellyfin",jellyfinFailureText(jellyfinPlayerError_,status,detail,refused,answered),MessageKind::Page);
+    emit changed();
 }
 // One track per text subtitle stream of the item about to play (at most eight), each fetched as SRT.
 // The tracks start empty, so their rows read "Loading" until the bytes arrive (subtitleReady above).

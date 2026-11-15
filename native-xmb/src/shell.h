@@ -885,6 +885,14 @@ private:
     JellyfinClient jellyfin_;
     JellyfinStream jellyfinStream_;
     JellyfinPlayback jellyfinPlayback_;
+    // Why the last stream open failed (jellyfin_shell.cpp): what the stream saw, and the diagnostic probe.
+    struct JellyfinStreamIssue { int status=0; QString request, detail; bool valid=false; };
+    JellyfinStreamIssue jellyfinStreamIssue_;
+    quint64 jellyfinProbe_=0;
+    QString jellyfinProbePath_, jellyfinPlayerError_;
+    JellyfinStreamIssue jellyfinFailedIssue_;
+    void reportJellyfinFailure(int probeStatus,const QString& probeDetail,bool probed);
+    void beginJellyfinFailureReport(const QString& playerError,const JellyfinStreamIssue& issue,const QUrl& url);
     // Server text subtitles (jellyfin_shell.cpp): each text stream becomes a subtitle track keyed
     // "jellyfin:<item>#<stream index>", filled when its SRT arrives; a failed fetch keeps its reason.
     QHash<quint64,int> jellyfinSubtitleRequests_;   // request -> stream index

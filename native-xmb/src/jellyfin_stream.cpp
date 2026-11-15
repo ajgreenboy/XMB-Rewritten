@@ -74,6 +74,27 @@ QByteArray safeHeaderValue(QByteArray value) {
 
 } // namespace
 
+QString scrubDiagnostic(const QByteArray& bytes, int maxChars) {
+    QString text = QString::fromUtf8(bytes.left(4096));
+    for (QChar& ch : text)
+        if (ch.category() == QChar::Other_Control || ch == QChar(0xfffd))
+            ch = QLatin1Char(' ');
+    static const QRegularExpression secretPair(
+        QStringLiteral(R"re(\b(api_?key|access_?token|token|authorization|password|pw|secret)\b(\s*["']?\s*[=:]\s*)("[^"]*"|'[^']*'|[^\s&,;}]+))re"),
+        QRegularExpression::CaseInsensitiveOption);
+    text.replace(secretPair, QStringLiteral(R"(\1\2<hidden>)"));
+    static const QRegularExpression hexId(QStringLiteral(R"(\b[0-9a-fA-F]{32}\b)"));
+    text.replace(hexId, QStringLiteral("<id>"));
+    static const QRegularExpression opaque(QStringLiteral(R"([A-Za-z0-9_+/=-]{28,})"));
+    text.replace(opaque, QStringLiteral("<hidden>"));
+    static const QRegularExpression spaces(QStringLiteral(R"(\s+)"));
+    text.replace(spaces, QStringLiteral(" "));
+    text = text.trimmed();
+    if (text.size() > maxChars)
+        text = text.left(maxChars) + QStringLiteral("...");
+    return text;
+}
+
 struct JellyfinStream::Request {
     QPointer<QTcpSocket> socket;
     QPointer<QNetworkReply> reply;
@@ -96,6 +117,8 @@ struct JellyfinStream::Request {
     bool upstreamFailed = false;   // the server dropped the body part-way: end the client's connection as an error
     bool failed = false;
     bool validated = false;
+    bool reported = false;         // upstreamRejected was emitted for this request
+    QByteArray errorBody;          // the first bytes of an error reply, for the diagnostic
 };
 
 JellyfinStream::JellyfinStream(QObject* parent) : QObject(parent) {
@@ -278,7 +301,7 @@ void JellyfinStream::beginRequest(QTcpSocket* socket, const QByteArray& bytes) {
 void JellyfinStream::startUpstream(Request* request, const QUrl& url, int redirects) {
     if (!request || !request->socket || !active_ || !sameOrigin(url) || redirects > 5) {
         if (request)
-            fail(request);
+            fail(request, 502, QStringLiteral("the stream could not follow the request (origin, redirect depth)"));
         return;
     }
     request->url = url;
@@ -366,7 +389,7 @@ void JellyfinStream::onMetadata(Request* request) {
             startUpstream(request, withoutSecretQueryKeys(redirect), request->redirects + 1);
             return;
         }
-        fail(request);
+        fail(request, 502, QStringLiteral("the server redirected to another address, which the stream does not follow"));
         return;
     }
     request->status = status;
@@ -386,6 +409,10 @@ void JellyfinStream::onMetadata(Request* request) {
     request->headersSent = true;
     request->socket->write(responseHead(status, headers, !lengthOk));
     if (request->head || status == 204 || status == 304) {
+        if (status >= 400 && !request->reported) {
+            request->reported = true;
+            emit upstreamRejected(status, describe(request), QString{});
+        }
         request->upstreamFinished = true;
         auto* old=request->reply.data();request->reply=nullptr;disconnect(old,nullptr,this,nullptr);old->abort();old->deleteLater();
         request->socket->disconnectFromHost();
@@ -427,7 +454,7 @@ void JellyfinStream::pump(Request* request) {
         while (request->reply->bytesAvailable() > 0) {
             const qint64 room = kMaxPlaylistBytes - request->playlistBytes.size();
             if (room <= 0) {
-                fail(request);
+                fail(request, 502, QStringLiteral("the playlist is larger than %1 MB").arg(kMaxPlaylistBytes / (1024 * 1024)));
                 return;
             }
             request->playlistBytes += request->reply->read(std::min<qint64>(room, 64 * 1024));
@@ -438,6 +465,8 @@ void JellyfinStream::pump(Request* request) {
         socket->bytesToWrite() < kSocketHighWater && request->reply->bytesAvailable() > 0) {
         const qint64 amount = std::min<qint64>(64 * 1024, request->reply->bytesAvailable());
         request->pending = request->reply->read(amount);
+        if (request->status >= 400 && request->errorBody.size() < 512)
+            request->errorBody += request->pending.left(512 - request->errorBody.size());
         if (!request->pending.isEmpty())
             pump(request);
     }
@@ -465,12 +494,12 @@ void JellyfinStream::finish(Request* request) {
     QNetworkReply* reply = completedReply;
     if (request->playlist) {
         if (reply->error() != QNetworkReply::NoError || request->playlistBytes.size() > kMaxPlaylistBytes) {
-            fail(request);
+            fail(request, 502, reply->error() != QNetworkReply::NoError ? QStringLiteral("the playlist download failed: %1").arg(reply->errorString()) : QStringLiteral("the playlist is larger than %1 MB").arg(kMaxPlaylistBytes / (1024 * 1024)));
             return;
         }
         while (reply->bytesAvailable() > 0) {
             if (request->playlistBytes.size() + reply->bytesAvailable() > kMaxPlaylistBytes) {
-                fail(request);
+                fail(request, 502, QStringLiteral("the playlist is larger than %1 MB").arg(kMaxPlaylistBytes / (1024 * 1024)));
                 return;
             }
             request->playlistBytes += reply->read(64 * 1024);
@@ -491,7 +520,7 @@ void JellyfinStream::finish(Request* request) {
                 if (!trimmed.isEmpty()) {
                     const QUrl candidate = request->url.resolved(QUrl(trimmed));
                     if (!sameOrigin(candidate)) {
-                        fail(request);
+                        fail(request, 502, QStringLiteral("the playlist names another server"));
                         return;
                     }
                     const QString local = localUrl(withoutSecretQueryKeys(candidate)).toString(QUrl::FullyEncoded);
@@ -506,7 +535,7 @@ void JellyfinStream::finish(Request* request) {
                     const auto match = it.next();
                     const QUrl candidate = request->url.resolved(QUrl(match.captured(1)));
                     if (!sameOrigin(candidate)) {
-                        fail(request);
+                        fail(request, 502, QStringLiteral("the playlist names another server"));
                         return;
                     }
                     replacements.append(localUrl(withoutSecretQueryKeys(candidate)).toString(QUrl::FullyEncoded));
@@ -516,7 +545,7 @@ void JellyfinStream::finish(Request* request) {
                     line.replace(spans.at(i).first, spans.at(i).second, replacements.at(i));
             }
             rewrittenBytes+=line.toUtf8().size()+1;
-            if(rewrittenBytes>2*kMaxPlaylistBytes){fail(request);return;}
+            if(rewrittenBytes>2*kMaxPlaylistBytes){fail(request, 502, QStringLiteral("the rewritten playlist is too large"));return;}
             outputLines.append(line);
         }
         request->playlistOutput = outputLines.join(QLatin1Char('\n')).toUtf8();
@@ -539,22 +568,38 @@ void JellyfinStream::finish(Request* request) {
 
     if (!request->headersSent) {
         if (reply->error() != QNetworkReply::NoError) {
-            fail(request);
+            fail(request, 502, QStringLiteral("the server connection failed: %1").arg(reply->errorString()));
             return;
         }
         onMetadata(request);
     } else if (reply->error() != QNetworkReply::NoError) {
         request->upstreamFailed = true;   // buffered bytes still drain first; the client then sees a reset, not a clean end
     }
+    if (request->status >= 400 && !request->reported) {
+        request->reported = true;
+        request->errorBody += reply->peek(std::max<qint64>(0, 512 - request->errorBody.size()));
+        emit upstreamRejected(request->status, describe(request), scrubDiagnostic(request->errorBody));
+    }
     request->upstreamFinished = true;
     pump(request); // Retain unread reply bytes until downstream backpressure clears.
 }
 
-void JellyfinStream::fail(Request* request, int status) {
+QString JellyfinStream::describe(const Request* request) const {
+    if (!request || !request->url.isValid())
+        return QStringLiteral("(request not read)");
+    return QStringLiteral("%1 %2").arg(request->head ? QStringLiteral("HEAD") : QStringLiteral("GET"),
+                                       request->url.path(QUrl::FullyEncoded));
+}
+
+void JellyfinStream::fail(Request* request, int status, const QString& reason) {
     if (!request || request->failed)
         return;
     const bool notify=request->validated && status>=500;
     request->failed = true;
+    if (!reason.isEmpty() && !request->reported) {
+        request->reported = true;
+        emit upstreamRejected(0, describe(request), reason);
+    }
     if (request->reply) {
         auto* old=request->reply.data();request->reply=nullptr;disconnect(old,nullptr,this,nullptr);old->abort();old->deleteLater();
     }
@@ -565,7 +610,8 @@ void JellyfinStream::fail(Request* request, int status) {
     } else if (request->socket) {
         request->socket->abort();
     }
-    if(notify)emit failed(QStringLiteral("Jellyfin stream request failed."));
+    if(notify)emit failed(reason.isEmpty() ? QStringLiteral("Jellyfin stream request failed.")
+                                           : QStringLiteral("The XMB could not relay the stream: %1.").arg(reason));
 }
 
 void JellyfinStream::removeRequest(QTcpSocket* socket) {
