@@ -32,7 +32,7 @@ qt_add_executable(re-ps3-native
     src/glyphs.cpp src/glyphs.h
     src/dlna_client.cpp src/dlna_client.h src/dlna_shell.cpp
     src/steam_activity.cpp src/steam_activity.h
-    src/service_icons.cpp src/service_icons.h src/ha_icon_data.cpp
+    src/service_icons.cpp src/service_icons.h
     src/service_installer.cpp src/service_installer.h
     src/tailscale_client.cpp src/tailscale_client.h src/tailscale_shell.cpp
     src/system_power.cpp src/system_power.h

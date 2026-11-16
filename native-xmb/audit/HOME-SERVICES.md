@@ -39,11 +39,11 @@ Two native pages after Tailscale in the Network column (not firmware surfaces; p
   `homeassistant.toggle` and the state was read back.
 - **Not verified**: a real wake; a real HA action (needs the token).
 
-## Home Assistant icon (2026-11-14)
+## Home Assistant icon (2026-11-15)
 
-The Home Assistant rows and the Set Up Home Assistant page show Home Assistant's own icon: the user's server icon when it
-has been fetched, otherwise a 256x256 PNG embedded in `src/ha_icon_data.cpp` (no runtime download). Source:
-https://brands.home-assistant.io/_/homeassistant/icon.png (the `home-assistant/brands` repository). Licence finding: the
-brands repository has no LICENSE file and its README only calls the marks property of their owners, used "for
-identification purposes only"; treat it as Home Assistant's trademark with no stated reuse licence (the owner believes
-CC BY-NC-SA 4.0, which I could not confirm). The owner should judge whether to keep it in a public repository.
+The Home Assistant rows and the Set Up Home Assistant page show the user's own server icon once it has been fetched at
+run time from that server (`/static/icons/favicon-1024x1024.png`, cached locally, never shipped). Until then they show
+`glyphs::house()`, a plain house outline drawn with QPainter in code. The repository ships no Home Assistant artwork:
+the 256x256 PNG previously embedded from the `home-assistant/brands` repository was removed (that repository has no
+reuse licence and the project's terms treat its logo and graphics as copyright-protected). Git history before this
+change still contains it.

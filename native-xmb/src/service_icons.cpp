@@ -202,14 +202,9 @@ void loadSiteIcon(QNetworkAccessManager* network, const QUrl& url, const QString
 }
 
 QImage homeAssistantIcon;
-extern const unsigned char homeAssistantPng[];extern const unsigned int homeAssistantPngSize;   // ha_icon_data.cpp
 const QImage& homeAssistant() {
-    // The user's own server's icon once fetched, else Home Assistant's embedded official icon, else the drawn house.
-    static const QImage embedded = [] {
-        QImage image;image.loadFromData(homeAssistantPng, homeAssistantPngSize, "PNG");
-        return image.isNull() ? QImage() : squared(image);
-    }();
-    return !homeAssistantIcon.isNull() ? homeAssistantIcon : !embedded.isNull() ? embedded : glyphs::house();
+    // The user's own server's icon once fetched at run time, else the drawn house outline (no third-party artwork shipped).
+    return !homeAssistantIcon.isNull() ? homeAssistantIcon : glyphs::house();
 }
 
 void loadHomeAssistant(QNetworkAccessManager* network, const QUrl& server, const QString& cacheFile, std::function<void()> done) {
