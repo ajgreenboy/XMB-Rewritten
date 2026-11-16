@@ -332,8 +332,8 @@ const QVector<RowSpec>* firmwareRows(const QString& id) {
         {"timezone","msg_timezone","msg_timezone_explanation",Action::SettingChoices,"clock/timeZone",nullptr,"Time Zone"},
         {"summertime","msg_summertime","msg_summertime_explanation",Action::Information,nullptr,nullptr,"Daylight Saving"}};
     // System Settings: the console's 25-row order (ref2 tails/system-page-top + system-down1..20, M2 4.6),
-    // plus `Install Other OS`, which the RCO carries and the 25-row walk does not draw; it stays where the
-    // firmware's own sequence puts it (between Restore PS3 System and System Information). Every row that
+    // without `Install Other OS`: the RCO carries it, but neither the 25-row walk nor the 4.93 sweep-7 frames (RPCS3, Restore
+    // PS3 System straight into System Information) draw it. Every row that
     // has no honest host value is an Action::Information row whose page says so (SETTINGS 1.7).
     static const QVector<RowSpec> system{
         {"auto_update","msg_auto_update","msg_auto_update_explanation",Action::Information,nullptr,nullptr,"Automatic Update"},
@@ -359,7 +359,6 @@ const QVector<RowSpec>* firmwareRows(const QString& id) {
         {"data_transfer","msg_data_transfer_utility","msg_data_transfer_utility_explanation",Action::Information,nullptr,nullptr,"Data Transfer Utility"},
         {"init_setting","msg_init_setting","msg_init_setting_explanation",Action::ResetPreferences,nullptr,nullptr,"Restore Default Settings"},
         {"init_console","msg_init_console","msg_init_console_explanation",Action::Information,nullptr,nullptr,"Restore PS3 System"},
-        {"ex_os_install","msg_ex_os_install","msg_ex_os_install_explanation",Action::Information,nullptr,nullptr,"Install Other OS"},
         {"information","msg_console_info","msg_console_info_explanation",Action::Information,nullptr,nullptr,"System Information"},
         // Native: a read-only check of this PC (self_check.h), after the console's own System Information.
         {"system_check",nullptr,nullptr,Action::SystemCheck,nullptr,nullptr,"System Check","Checks this PC's files, network and services."},
@@ -595,6 +594,7 @@ PageRows segmentRows(const QString& id,Assets& assets) {
     static const QHash<QString,QString> skipped{
         {"pd_usbhdset_setting","the row only exists when a Sony wireless stereo headset is connected"},
         {"pd_keybind","Japanese kana input only"},
+        {"pd_keyboard_input","the 4.93 console (sweep 7 capture) lists Keyboard Type, Key Repeat Interval, Key Repeat Speed, Mouse Type and Pointer Speed only; the entry-method row belongs to a kana keyboard group"},
         {"game_psp_emu_viewmode",pspRemasterRow},{"game_psp_emu_3d",pspRemasterRow},
         {"game_psp_emu_adhoc_ch",pspRemasterRow},{"game_psp_emu_adhoc_mode",pspRemasterRow}};
     PageRows data;data.id=id;

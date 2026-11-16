@@ -2546,6 +2546,17 @@ void View::drawScene(QPainter& p) {
                 for(int stop=0;stop<band->stopCount;++stop)
                     fill.setColorAt(band->stops[stop].at,QColor(255,255,255,band->stops[stop].alpha));
                 p.fillRect(QRectF(x0,0,fadeEnd-x0,1080),fill);
+                // The plane's 2 px bright edge is not a constant step: on the console (RPCS3 4.93, sweep 7, Date, Sound and
+                // Display lists, columns 1261-1262 minus 1266) its excess over the fill is 0 at y 0-120, 26 at 240, 45 at
+                // 360, 56 at 480-600, 44 at 720, 26 at 840, 9 at 960 and 0 at 1020, the same hump on every page. The fill
+                // stops above carry only the ~9 luma it has at the y=100 row they were read on. [TRACED: the hump.]
+                if(band==&kChoiceBand) {
+                    static const BandStop edgeHump[]={{0.,0},{.09,0},{.12,4},{.17,14},{.22,27},{.28,38},{.33,47},{.39,55},
+                        {.44,58},{.5,59},{.56,60},{.61,57},{.67,50},{.72,42},{.78,33},{.83,26},{.89,15},{.94,7},{.98,1},{1.,0}};
+                    QLinearGradient edge(0,0,0,1080);
+                    for(const auto& stop:edgeHump)edge.setColorAt(stop.at,QColor(255,255,255,stop.alpha));
+                    p.fillRect(QRectF(x0+1,0,2,1080),edge);
+                }
             }
         } else {
             QLinearGradient fill(x0,0,1920,0);fill.setColorAt(0,QColor(255,255,255,46));fill.setColorAt(.08,QColor(255,255,255,30));fill.setColorAt(1,QColor(255,255,255,22));
