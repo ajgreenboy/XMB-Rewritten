@@ -29,9 +29,9 @@ The screenshots show the firmware's icons, fonts and artwork, because that is wh
 ## What it does
 
 - **The XMB shell:** category navigation, a page stack with selection restore, the Options menu, message boxes, settings pages, the system menu, themes (`.p3t`), the 4.93 cold-boot intro and the traced interaction sounds.
-- **Local media:** video with sidecar subtitles and resume, a music player with a visualizer, photo viewing and the 3D Photo Gallery, and playlists. Folder and file pickers are drawn inside the XMB, so a controller can drive them.
+- **Local media:** the video player follows the console's own player resources (the Triangle menu is the console's control matrix, with this build's extras in a Native Extras panel after it), video with sidecar subtitles and resume, a music player with a visualizer, photo viewing and the 3D Photo Gallery, and playlists. Folder and file pickers are drawn inside the XMB, so a controller can drive them.
 - **Streaming and content:**
-  - **Jellyfin:** set up from inside the XMB (server address, a server check and an optional LAN search), libraries and folders, direct play and HLS transcodes, subtitles, a remembered sign-in, and a Music-column entry that reuses it (artists, albums, playlists, songs).
+  - **Jellyfin:** set up from inside the XMB (server address, a server check and an optional LAN search), libraries and folders, direct play and HLS transcodes, subtitles, a remembered sign-in, and a Music-column entry that reuses it (artists, albums, playlists, songs, favourites, lyrics). Playback reports progress to the server, resumes from its position, offers Next Up and Up Next, chapters, audio and subtitle choice, and watched and favourite marks.
   - **Steam:** installed titles in the Game column, collections, the store, downloads, accounts, and Quit Game that closes the game's own processes.
   - **Spotify**, **DLNA / UPnP** discovery and **RAWG** artwork.
 - **Home and network:** Tailscale, Wake on LAN, Home Assistant and weather, each as a native page.
@@ -88,12 +88,12 @@ You need Windows 10 or 11, Visual Studio 2022 with the C++ workload, Qt 6 (MSVC 
 
 ## Status
 
-Version **0.3.6**. It builds cleanly, and its own checks pass. Real-hardware testing on a living-room PC is still in progress, so treat anything that depends on a physical TV, remote or game as unverified until you try it.
+Version **0.3.7**. It builds cleanly, and its own checks pass. Real-hardware testing on a living-room PC is still in progress, so treat anything that depends on a physical TV, remote or game as unverified until you try it.
 
 | Measure | Result | Where |
 |---|---|---|
 | Render gate | 6 layers and 28 named states pass against their stored baselines | `bun work/ab-layers.ts --all` |
-| Unit tests | 17 runners in CI: Steam (including account switch and Quit Game), setup, firmware, Jellyfin setup, playback, music and others | [tests.yml](.github/workflows/tests.yml) |
+| Unit tests | 19 runners in CI: Steam (including account switch and Quit Game), setup, firmware, Jellyfin setup, playback, music and others | [tests.yml](.github/workflows/tests.yml) |
 | Console parity | Compared against the real 4.93 firmware in RPCS3, with differences recorded | [native-xmb/audit/README.md](native-xmb/audit/README.md) |
 | Release hygiene | Credentials, firmware data and broken links are checked before a release | `work/release-check.ps1` |
 | Real-hardware run | In progress on a living-room PC | [RELEASE-CHECKLIST.md](native-xmb/audit/RELEASE-CHECKLIST.md) |
