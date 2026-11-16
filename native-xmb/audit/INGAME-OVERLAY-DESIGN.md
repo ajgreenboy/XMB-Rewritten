@@ -228,3 +228,46 @@ image and the title bar drifts (same reason the existing in-game states score fr
 - Whether `Shell::runningTitlePid()` returns anything for a Steam title (UNVERIFIED).
 - The location of the named-state recipe definitions for `ab-layers.ts` (not found by name search).
 - Any specific game's anti-cheat reaction (UNVERIFIED, EXTERNAL).
+
+## 10. Status: milestone 1 built (2026-11-15)
+
+Labels as above; everything here was READ or MEASURED on the dev PC (two 1080p monitors), no real game, no Steam.
+
+What changed:
+- The live overlay is the default for `Windowed` and `Borderless` titles. `enterInGame` classifies the window, tries `LiveOverlay::create`
+  first, and calls `captureGameWindow` only when the overlay is declined or fails, so the 150-300 ms blocking capture is gone from the live
+  entry path. `XMB_INGAME_LIVE=0` forces the frozen path. Exclusive, Minimized, Invalid or no window: frozen, as before.
+- Every entry logs one line: `ingame: overlay=live reason=borderless title|windowed title ...` or `ingame: overlay=frozen reason=...`
+  (`XMB_INGAME_LIVE=0`, `mode=exclusive (...)`, `overlay creation failed: ...`, `no title window`). A failure while the menu is open logs
+  `overlay=frozen reason=runtime failure: ...`, stops the overlay, restores the owner and does one deferred capture for the backdrop.
+- The GL to D3D bridge no longer reads back at the window size and flips on the CPU. The GPU resolves the 4x MSAA framebuffer, a second
+  blit flips and downscales to at most 1920 wide (the design space; the overlay's visual transform stretches it to the monitor), and the
+  result is read back asynchronously through one pixel-pack buffer and presented on the next paint. A read-back is issued only when the UI
+  signature changed (plus a 66 ms heartbeat for glass-icon shimmer, which is not in the signature). A readback is therefore still there, but it
+  is 1920x1080 at most, dirty frames only, and only while the menu is open. Zero-copy WGL_NV_DX_interop (M4) was not attempted.
+- The widget requests an alpha buffer by default now (previously only with `XMB_INGAME_LIVE=1`); the render gate showed no pinned frame change.
+- The three in-game gate states (`ingame-xmb`, `ingame-enter-text`, `ingame-enter-text-keyboard`) set `XMB_INGAME_LIVE=0` in their recipe, because
+  their stand-in is a plain window that the new default would otherwise send down the live path. They pin the frozen path; references unchanged.
+- Untouched: `Shell::psHeld/psTapped`, `ps_watcher`, focus handling (the Qt owner stays active at opacity 0, `returnToGame` as before), Quit Game.
+
+Measured (`XMB_OVERLAY_COST=1`, `work/overlay-live-test.ts`, stand-in `tests/overlay_standin.cpp`): CPU time of the bridge per dirty frame
+(issue plus present of the previous frame, GUI thread), 60-frame windows:
+- 1080p device: mean 0.22-0.24 ms, max 0.96 ms; `LiveOverlay::present` (UpdateSubresource + Present) 0.5-0.7 ms. Before: 5.9 ms median (DOC).
+- 3840x2160 device (frameless XMB window of that size on a 1080p monitor, script `size=3840x2160` with `XMB_SCRIPT_FRAMELESS=1`): mean 0.22-0.35 ms,
+  max 1.8 ms, still a 1920x1080 target and overlay window sized to the game's monitor. CPU-side only: the GPU cost of the 4K resolve and
+  downscale blits is not measured (needs a timer query). Idle, about one frame in four reads back.
+Tests: `bun work/overlay-live-test.ts [--size 3840x2160]` (borderless live, `XMB_INGAME_LIVE=0` frozen, windowed live): the stand-in keeps changing behind the
+live menu (98% of probe pixels) and not at all behind the frozen one, the screen is dimmed (luma 29 vs 169 bare), focus returns to the stand-in.
+An earlier 4K failure was a too-slow colour cycle in the stand-in under an 80% dim, not a covering window; fixed in the stand-in.
+Gate (merged with main's library-chooser change): 6/6 layers; 25/28 states. The three failures (`jellyfin-signin`, `steam-download-page`,
+`settings-autologon-row`) fail identically with `XMB_INGAME_LIVE=0` (no alpha buffer) and with the pre-change `libchoose-base` exe, so they are
+not caused by this change; `ingame-xmb`, `ingame-enter-text`, `ingame-enter-text-keyboard` and the three library-chooser states pass. No reference was saved.
+Manual HTPC procedure: build with `XMB_OVERLAY_BUILD_TESTS=ON` or use a real borderless game; set `XMB_PS_LOG=1 XMB_OVERLAY_COST=1 XMB_LOG=<file>`;
+launch a Steam game borderless, tap PS, confirm the log says `overlay=live`, the game is visible and moving behind the dimmed menu, `bridge ... meanMs`
+stays small, then Circle at the column root and confirm the game regains focus and input (and Quit Game still works, STEAM-QUIT.md); repeat with
+`XMB_INGAME_LIVE=0` and with the game in exclusive fullscreen (expect `overlay=frozen reason=mode=exclusive`).
+
+Only the HTPC can verify: 4K game-plus-XMB frame time and GPU cost of the bridge with PresentMon; true exclusive fullscreen (FSO off, Vulkan exclusive)
+and how the heuristic classifies real titles; Steam Input and Guide-button behaviour with a DualSense or Xbox pad; whether a real game keeps reading
+the pad while the XMB is active; anti-cheat tolerance of a screen-sized topmost NOREDIRECTIONBITMAP window; HDR, VRR and independent-flip loss; capture
+border or indicator on the fallback path; Steam title window discovery (M3) for a windowed game that does not hold the foreground.

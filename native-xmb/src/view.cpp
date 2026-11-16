@@ -130,10 +130,13 @@ private:
 };
 #endif
 // Opt-in trace for the volume path; the per-change read-back line is logged unconditionally.
+// Live overlay (audit/INGAME-OVERLAY-DESIGN.md M1): the default for a windowed/borderless title. XMB_INGAME_LIVE=0 forces the
+// frozen captured-frame path; any other value (including unset) lets enterInGame try the overlay first.
+bool inGameLiveEnabled() { return qEnvironmentVariable("XMB_INGAME_LIVE")!=QStringLiteral("0"); }
 bool volumeTrace() { static const bool on=qEnvironmentVariableIsSet("XMB_VOLUME_LOG");return on; }
 }
 View::View(Shell& shell,Assets& assets,QWidget* parent):QOpenGLWidget(parent),shell_(shell),assets_(assets) {
-    if(qEnvironmentVariable("XMB_INGAME_LIVE")==QStringLiteral("1")) {
+    if(inGameLiveEnabled()) {
         auto surface=format();surface.setAlphaBufferSize(8);setFormat(surface);
     }
     idleprofile::startSampler();
@@ -638,7 +641,7 @@ View::~View(){
 #ifdef Q_OS_WIN
     if(volumeKeys_ && qApp)qApp->removeNativeEventFilter(volumeKeys_.get());
 #endif
-    saveFrameTrace();if(context()){makeCurrent();liveOverlayResolved_.reset();gallery_.reset();textRenderer_.release(*this);monthTexture_.reset();for(auto& texture:monthTextures_)texture.reset();ribbon_.releaseTextures();particles_.releaseTextures();bloomCache_=BloomCache{};uiMsaa_.reset();uiResolved_.reset();inGameTexture_.reset();inGameProgram_.removeAllShaders();if(vao_)glDeleteVertexArrays(1,&vao_);background_.removeAllShaders();doneCurrent();}}
+    saveFrameTrace();if(context()){makeCurrent();liveBridgeRelease();gallery_.reset();textRenderer_.release(*this);monthTexture_.reset();for(auto& texture:monthTextures_)texture.reset();ribbon_.releaseTextures();particles_.releaseTextures();bloomCache_=BloomCache{};uiMsaa_.reset();uiResolved_.reset();inGameTexture_.reset();inGameProgram_.removeAllShaders();if(vao_)glDeleteVertexArrays(1,&vao_);background_.removeAllShaders();doneCurrent();}}
 void View::initializeGL() {
     xmb::bootprof::mark("before initializeGL");
     uniformcache::invalidate();
@@ -1474,33 +1477,22 @@ void View::paintGL() {
     double overlayBridgeMs=0.;
     if(liveOverlay_) {
         const qint64 bridgeStart=clock_.nsecsElapsed();
-        if(liveOverlayPixels_.size()!=device)liveOverlayPixels_=QImage(device,QImage::Format_ARGB32_Premultiplied);
-        if(!liveOverlayResolved_ || liveOverlayResolved_->size()!=device) {
-            QOpenGLFramebufferObjectFormat f;f.setInternalTextureFormat(GL_RGBA8);
-            liveOverlayResolved_=std::make_unique<QOpenGLFramebufferObject>(device,f);
-        }
-        if(liveOverlayPixels_.isNull() || !liveOverlayResolved_->isValid()) {
-            psLog(QStringLiteral("ingame: live framebuffer allocation failed; captured-frame fallback"));
-            glBindFramebuffer(GL_FRAMEBUFFER,defaultFramebufferObject());stopLiveOverlay();update();return;
-        }
-        // The widget requests 4x MSAA (main.cpp). Reading it directly is GL_INVALID_OPERATION;
-        // resolve explicitly, preserving alpha, before bypassing Qt's opaque top-level blit.
-        glBindFramebuffer(GL_READ_FRAMEBUFFER,defaultFramebufferObject());
-        glBindFramebuffer(GL_DRAW_FRAMEBUFFER,liveOverlayResolved_->handle());
-        glBlitFramebuffer(0,0,device.width(),device.height(),0,0,device.width(),device.height(),GL_COLOR_BUFFER_BIT,GL_NEAREST);
-        glBindFramebuffer(GL_FRAMEBUFFER,liveOverlayResolved_->handle());
-        glPixelStorei(GL_PACK_ALIGNMENT,4);
-        glReadPixels(0,0,device.width(),device.height(),GL_BGRA,GL_UNSIGNED_BYTE,liveOverlayPixels_.bits());
-        glBindFramebuffer(GL_FRAMEBUFFER,defaultFramebufferObject());
         QString error;
-        const GLenum readError=glGetError();
-        if(readError!=GL_NO_ERROR)error=QStringLiteral("OpenGL framebuffer readback: 0x%1").arg(readError,0,16);
-        if(readError!=GL_NO_ERROR || !liveOverlay_->present(liveOverlayPixels_.flipped(Qt::Vertical),&error)) {
-            psLog(QStringLiteral("ingame: live overlay failed; captured-frame fallback: %1").arg(error));
-            stopLiveOverlay();update();
+        bool ok=true;
+        // Present the frame whose read-back was issued by the previous paint (the pixel-pack buffer has had a whole frame to
+        // finish), then issue a new read-back only when something drawn changed. The UI layer's signature (rebuild) is the dirty
+        // flag; 66 ms is a heartbeat for the glass icons, whose shimmer is not part of it.
+        if(liveReadPending_)ok=liveBridgePresent(&error);
+        const bool dirty=rebuild || !liveIssued_ || bridgeStart-liveIssuedNs_>=66'000'000;
+        if(ok && dirty) {ok=liveBridgeIssue(device,&error);if(ok){++liveIssued_;liveIssuedNs_=bridgeStart;}}
+        else if(ok)++liveSkipped_;
+        if(!ok) {
+            glBindFramebuffer(GL_FRAMEBUFFER,defaultFramebufferObject());
+            liveOverlayFailed(error);update();return;
         }
         overlayBridgeMs=double(clock_.nsecsElapsed()-bridgeStart)/1e6;
-    } else liveOverlayResolved_.reset();
+        if(dirty) {liveBridgeMsSum_+=overlayBridgeMs;liveBridgeMsMax_=std::max(liveBridgeMsMax_,overlayBridgeMs);++liveBridgeSamples_;}
+    } else liveBridgeRelease();
     grabIntroFrame();
     if(!rebuild)prewarmOverlays();
     if(frameLog_.enabled()) {
@@ -1528,6 +1520,12 @@ void View::paintGL() {
     if(shell_.inGame() && qEnvironmentVariableIsSet("XMB_OVERLAY_COST"))
         qInfo().noquote()<<QString("ingame: render cost live=%1 cpuMs=%2 bridgeMs=%3")
             .arg(liveOverlay_?1:0).arg(double(clock_.nsecsElapsed()-nowNs)/1e6,0,'f',3).arg(overlayBridgeMs,0,'f',3);
+    if(liveOverlay_ && qEnvironmentVariableIsSet("XMB_OVERLAY_COST") && liveBridgeSamples_>=60) {
+        qInfo().noquote()<<QString("ingame: overlay bridge %1x%2 device %3x%4 meanMs=%5 maxMs=%6 presentMs=%7 issued=%8 skipped=%9")
+            .arg(liveOverlayTarget_?liveOverlayTarget_->width():0).arg(liveOverlayTarget_?liveOverlayTarget_->height():0).arg(device.width()).arg(device.height())
+            .arg(liveBridgeMsSum_/liveBridgeSamples_,0,'f',3).arg(liveBridgeMsMax_,0,'f',3).arg(liveOverlay_->lastPresentMilliseconds(),0,'f',3).arg(liveIssued_).arg(liveSkipped_);
+        liveBridgeMsSum_=0;liveBridgeMsMax_=0;liveBridgeSamples_=0;
+    }
     ++frames_;if(now-reportAt_>=5000){qInfo()<<"native frames:"<<frames_*1000./double(now-reportAt_)<<"fps; decoded images"<<assets_.decodedImages()<<"missing images"<<assets_.failedImages();frames_=0;reportAt_=now;}
 }
 // Local verification: XMB_INTRO_GRAB=<dir>@<seconds>,<seconds>,... saves the frame (as drawn) the first time the
@@ -4914,14 +4912,30 @@ void View::enterInGame(const QString& reason) {
         }
     }
     if(!hwnd && root)hwnd=findMainWindow(root);
+    std::unique_ptr<LiveOverlay> liveCandidate;
+    QString overlayReason;
     if(hwnd) {
         info=classifyGameWindow(hwnd);
+        // Overlay first (INGAME-OVERLAY-DESIGN M1): only a windowed or borderless title is composed by DWM in a way a
+        // DirectComposition window can sit over. When it is created, the 150-300 ms blocking capture is skipped entirely.
+        if(!inGameLiveEnabled())overlayReason=QStringLiteral("XMB_INGAME_LIVE=0");
+        else if(info.mode!=GameWindowMode::Windowed && info.mode!=GameWindowMode::Borderless)
+            overlayReason=QStringLiteral("mode=%1 (%2)").arg(QLatin1String(gameWindowModeName(info.mode)),info.reason);
+        else {
+            auto overlay=std::make_unique<LiveOverlay>();QString error;
+            if(overlay->create(quintptr(window()->winId()),info.monitorRect,&error))liveCandidate=std::move(overlay);
+            else overlayReason=QStringLiteral("overlay creation failed: %1").arg(error);
+        }
         // TRACED limits (design 2.1): an exclusive-fullscreen frame bypasses DWM, a minimised window has no content.
         // Capture is still tried for Exclusive - it reports black or fails, never throws - but not for Minimized.
-        if(info.mode!=GameWindowMode::Minimized && info.mode!=GameWindowMode::Invalid)capture=captureGameWindow(hwnd,1500);
+        if(liveCandidate)capture.detail=QStringLiteral("not captured (live overlay)");
+        else if(info.mode!=GameWindowMode::Minimized && info.mode!=GameWindowMode::Invalid)capture=captureGameWindow(hwnd,1500);
         else capture.detail=QStringLiteral("not captured (%1)").arg(info.reason);
         psLog(gameCaptureLogLine(info,capture));
-    } else psLog(QStringLiteral("ingame: no title window found (root pid %1, foreground %2)").arg(root).arg(foregroundDescription()));
+    } else {
+        overlayReason=inGameLiveEnabled()?QStringLiteral("no title window"):QStringLiteral("XMB_INGAME_LIVE=0");
+        psLog(QStringLiteral("ingame: no title window found (root pid %1, foreground %2)").arg(root).arg(foregroundDescription()));
+    }
 #endif
     inGameBackdrop_=capture.status==GameCaptureStatus::Ok?capture.image:QImage();
     inGameHwnd_=hwnd;inGamePid_=info.pid;inGameMode_=info.mode;
@@ -4930,22 +4944,19 @@ void View::enterInGame(const QString& reason) {
     if(!shell_.inGame())return;   // the title may have ended while its frame was being captured
     inGameWindowActive_=true;
     psLog(QStringLiteral("ingame: enter reason=\"%1\" mode=%2 backdrop=%3").arg(reason,QLatin1String(gameWindowModeName(info.mode)))
-        .arg(inGameBackdrop_.isNull()?QStringLiteral("plain dark"):QStringLiteral("captured %1x%2").arg(inGameBackdrop_.width()).arg(inGameBackdrop_.height())));
+        .arg(liveCandidate?QStringLiteral("live overlay"):inGameBackdrop_.isNull()?QStringLiteral("plain dark"):QStringLiteral("captured %1x%2").arg(inGameBackdrop_.width()).arg(inGameBackdrop_.height())));
     bringXmbForward(reason);
 #ifdef Q_OS_WIN
     // Game Bar style: stay above the game while the in-game XMB is up (INGAME-XMB-DESIGN, "always there").
     setTopmost(reinterpret_cast<HWND>(window()->winId()), true);
-    if(qEnvironmentVariable("XMB_INGAME_LIVE")==QStringLiteral("1")) {
-        if(inGameMode_==GameWindowMode::Windowed || inGameMode_==GameWindowMode::Borderless) {
-            auto overlay=std::make_unique<LiveOverlay>();QString error;
-            if(overlay->create(quintptr(window()->winId()),info.monitorRect,&error)) {
-                liveOverlayOwnerOpacity_=window()->windowOpacity();
-                liveOverlay_=std::move(overlay);
-                window()->setWindowOpacity(0.);
-                psLog(QStringLiteral("ingame: DirectComposition live overlay started (live=1, Qt owner retains focus)"));
-            } else psLog(QStringLiteral("ingame: live overlay creation failed; captured-frame fallback: %1").arg(error));
-        } else psLog(QStringLiteral("ingame: live overlay declined mode=%1; captured-frame fallback").arg(QLatin1String(gameWindowModeName(inGameMode_))));
-    }
+    if(liveCandidate) {
+        liveOverlayOwnerOpacity_=window()->windowOpacity();
+        liveOverlay_=std::move(liveCandidate);
+        liveIssued_=0;liveSkipped_=0;liveReadPending_=false;liveBridgeMsSum_=0;liveBridgeMsMax_=0;liveBridgeSamples_=0;
+        window()->setWindowOpacity(0.);
+        psLog(QStringLiteral("ingame: overlay=live reason=%1 mode=%2 (DirectComposition over the running title, Qt owner retains focus)")
+            .arg(inGameMode_==GameWindowMode::Borderless?QStringLiteral("borderless title"):QStringLiteral("windowed title"),QLatin1String(gameWindowModeName(inGameMode_))));
+    } else psLog(QStringLiteral("ingame: overlay=frozen reason=%1").arg(overlayReason));
 #endif
     update();
 }
@@ -5039,9 +5050,85 @@ void View::syncInGameWindow() {
 }
 void View::stopLiveOverlay() {
     if(!liveOverlay_)return;
-    liveOverlay_.reset();liveOverlayPixels_=QImage();
+    liveOverlay_.reset();liveReadPending_=false;
     window()->setWindowOpacity(liveOverlayOwnerOpacity_);
     psLog(QStringLiteral("ingame: DirectComposition live overlay stopped"));
+}
+void View::liveOverlayFailed(const QString& why) {
+    stopLiveOverlay();
+    psLog(QStringLiteral("ingame: overlay=frozen reason=runtime failure: %1").arg(why));
+#ifdef Q_OS_WIN
+    // No frame was captured on the live entry path. One deferred capture (the XMB is in front, WGC reads the title's own
+    // surface) replaces the plain dark backdrop; it is rare, so the blocking cost is acceptable here.
+    const quintptr hwnd=inGameHwnd_;
+    if(!hwnd || !inGameBackdrop_.isNull())return;
+    QTimer::singleShot(0,this,[this,hwnd]{
+        if(!shell_.inGame() || inGameHwnd_!=hwnd || liveOverlay_ || !IsWindow(reinterpret_cast<HWND>(hwnd)))return;
+        const auto info=classifyGameWindow(hwnd);
+        if(info.mode==GameWindowMode::Minimized || info.mode==GameWindowMode::Invalid)return;
+        const auto capture=captureGameWindow(hwnd,1500);
+        psLog(gameCaptureLogLine(info,capture));
+        if(capture.status==GameCaptureStatus::Ok)inGameBackdrop_=capture.image;
+        update();
+    });
+#endif
+}
+void View::liveBridgeRelease() {
+    liveReadPending_=false;
+    liveOverlayResolved_.reset();liveOverlayTarget_.reset();
+    if(liveOverlayPbo_ && context()) {glDeleteBuffers(1,&liveOverlayPbo_);liveOverlayPbo_=0;liveOverlayPboBytes_=0;}
+}
+// One bridge step, all on the GPU except the final copy: resolve the 4x MSAA default framebuffer, then a flipping, filtering blit
+// to a target at most 1920 wide (the design space; the overlay's visual transform stretches it to the monitor), then an
+// asynchronous read-back into a pixel-pack buffer. No CPU flip and no full-size readback at 4K.
+bool View::liveBridgeIssue(const QSize& device,QString* error) {
+    const int targetWidth=std::min(device.width(),1920);
+    const int targetHeight=std::max(1,int(qint64(device.height())*targetWidth/device.width()));
+    const QSize target(targetWidth,targetHeight);
+    QOpenGLFramebufferObjectFormat f;f.setInternalTextureFormat(GL_RGBA8);
+    if(!liveOverlayResolved_ || liveOverlayResolved_->size()!=device)liveOverlayResolved_=std::make_unique<QOpenGLFramebufferObject>(device,f);
+    if(!liveOverlayTarget_ || liveOverlayTarget_->size()!=target)liveOverlayTarget_=std::make_unique<QOpenGLFramebufferObject>(target,f);
+    if(!liveOverlayResolved_->isValid() || !liveOverlayTarget_->isValid()) {
+        if(error)*error=QStringLiteral("live framebuffer allocation failed");return false;
+    }
+    const GLsizeiptr bytes=GLsizeiptr(target.width())*target.height()*4;
+    if(!liveOverlayPbo_)glGenBuffers(1,&liveOverlayPbo_);
+    glBindBuffer(GL_PIXEL_PACK_BUFFER,liveOverlayPbo_);
+    if(liveOverlayPboBytes_!=bytes){glBufferData(GL_PIXEL_PACK_BUFFER,bytes,nullptr,GL_STREAM_READ);liveOverlayPboBytes_=bytes;}
+    glBindBuffer(GL_PIXEL_PACK_BUFFER,0);
+    // The widget requests 4x MSAA (main.cpp): resolve explicitly, preserving alpha, before anything else touches it.
+    glBindFramebuffer(GL_READ_FRAMEBUFFER,defaultFramebufferObject());
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER,liveOverlayResolved_->handle());
+    glBlitFramebuffer(0,0,device.width(),device.height(),0,0,device.width(),device.height(),GL_COLOR_BUFFER_BIT,GL_NEAREST);
+    // Single-sample to single-sample, so this blit may scale and flip: destination Y runs top-down, which makes the read-back
+    // top-down for Direct3D.
+    glBindFramebuffer(GL_READ_FRAMEBUFFER,liveOverlayResolved_->handle());
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER,liveOverlayTarget_->handle());
+    glBlitFramebuffer(0,0,device.width(),device.height(),0,target.height(),target.width(),0,GL_COLOR_BUFFER_BIT,
+        target==device?GL_NEAREST:GL_LINEAR);
+    glBindFramebuffer(GL_FRAMEBUFFER,liveOverlayTarget_->handle());
+    glBindBuffer(GL_PIXEL_PACK_BUFFER,liveOverlayPbo_);
+    glPixelStorei(GL_PACK_ALIGNMENT,4);
+    glReadPixels(0,0,target.width(),target.height(),GL_BGRA,GL_UNSIGNED_BYTE,nullptr);
+    glBindBuffer(GL_PIXEL_PACK_BUFFER,0);
+    glBindFramebuffer(GL_FRAMEBUFFER,defaultFramebufferObject());
+    const GLenum glError=glGetError();
+    if(glError!=GL_NO_ERROR){if(error)*error=QStringLiteral("OpenGL bridge: 0x%1").arg(glError,0,16);return false;}
+    liveReadPending_=true;
+    return true;
+}
+bool View::liveBridgePresent(QString* error) {
+    liveReadPending_=false;
+    if(!liveOverlay_ || !liveOverlayTarget_ || !liveOverlayPbo_)return true;
+    glBindBuffer(GL_PIXEL_PACK_BUFFER,liveOverlayPbo_);
+    const void* mapped=glMapBufferRange(GL_PIXEL_PACK_BUFFER,0,liveOverlayPboBytes_,GL_MAP_READ_BIT);
+    bool ok=false;
+    if(mapped) {
+        ok=liveOverlay_->present(static_cast<const uchar*>(mapped),liveOverlayTarget_->width()*4,liveOverlayTarget_->size(),error);
+        glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
+    } else if(error)*error=QStringLiteral("glMapBufferRange failed: 0x%1").arg(glGetError(),0,16);
+    glBindBuffer(GL_PIXEL_PACK_BUFFER,0);
+    return ok;
 }
 void View::drawInGameBackdrop(int width,int height) {
     glBindFramebuffer(GL_FRAMEBUFFER,defaultFramebufferObject());glViewport(0,0,width,height);
