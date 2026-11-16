@@ -56,7 +56,7 @@ Without a client id, the Spotify page shows one row, "Set Up Spotify", which car
 - `src/spotify_shell.cpp`: the pages. Root: Now Playing, Liked Songs, playlists, Sign Out. Track pages. "Play on",
   shown only when several devices are free and none is active. A playlist plays as its own context from the
   chosen track; Liked Songs plays a queue of the chosen track and up to 99 after it.
-- `src/shell.*`: the Music column row (`spotify`, a native row after Choose Media Folder), the actions and the Now
+- `src/shell.*`: the Music column row (`spotify`, a native row after Music Library), the actions and the Now
   Playing options.
 
 ## Verification (local stub, never committed)

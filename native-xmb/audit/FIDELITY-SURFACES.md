@@ -842,9 +842,9 @@ dump, and the rows are grouped at the end.
 
 | column | console rows, in order (`source = xmbml`) | native rows (`source = native`) | new count | old count |
 |---|---|---:|---:|---:|
-| Video | `bddata` BD Data Utility, `dlna-scan` Search for Media Servers, `video-editor` Video Editor & Uploader | `continue` Continue Watching, `library` Video Library, `choose` Choose Media Folder | **6** | 4 |
-| Music | `dlna-scan` Search for Media Servers, `playlists` Playlists | `library` Music Library, `choose` Choose Media Folder | **4** | 3 |
-| Photo | `dlna-scan` Search for Media Servers, `gallery` Photo Gallery, `playlists` Playlists | `library` Photo Library, `choose` Choose Media Folder, `options` Photo Settings | **6** | 3 |
+| Video | `bddata` BD Data Utility, `dlna-scan` Search for Media Servers, `video-editor` Video Editor & Uploader | `continue` Continue Watching, `library` Video Library (first row inside: Choose Media Folder) | **6** | 3 |
+| Music | `dlna-scan` Search for Media Servers, `playlists` Playlists | `library` Music Library (first row inside: Choose Media Folder) | **4** | 2 |
+| Photo | `dlna-scan` Search for Media Servers, `gallery` Photo Gallery, `playlists` Playlists | `library` Photo Library (first row inside: Choose Media Folder), `options` Photo Settings | **6** | 2 |
 
 Two former native rows are **gone**, and neither loses a function: Video Settings and Music Settings are
 the same pages the Settings column's own "Video Settings" / "Music Settings" rows open (`Action::

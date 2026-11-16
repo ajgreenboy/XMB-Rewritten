@@ -267,7 +267,7 @@ original page schemas are not reproduced, and one stored field is cosmetic.
 
 **Where implemented.**
 
-- Category surface: Photo Library, Photo Settings, Choose Media Folder
+- Category surface: Photo Library (Choose Media Folder is its first row), Photo Settings
   (`src/shell.cpp:390`).
 - Library selection and persistence: `src/shell.cpp:638-644` (stored
   `library/photo`, else request the picker), picker `src/view.cpp:51`,
@@ -345,7 +345,7 @@ work.
 
 **Where implemented.**
 
-- Surface: Music Library, Music Settings, Choose Media Folder
+- Surface: Music Library (Choose Media Folder is its first row), Music Settings
   (`src/shell.cpp:391`).
 - Browsing: same scanner as Photo with music extensions
   (`src/media_library.cpp:46`); rows are folders/files with size and date
@@ -431,7 +431,7 @@ stays partial.
 
 **Where implemented.**
 
-- Surface: Video Library, Video Settings, Choose Media Folder
+- Surface: Video Library (Choose Media Folder is its first row), Video Settings
   (`src/shell.cpp:392`); video extensions `src/media_library.cpp:47`.
 - Playback path: the same queue and player as audio
   (`src/shell.cpp:720-749`), with the `QVideoSink` frame signal forwarded to the
