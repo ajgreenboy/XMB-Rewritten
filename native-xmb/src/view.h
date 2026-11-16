@@ -582,7 +582,7 @@ private:
     struct PageWarm { QVector<ColumnWarmJob> jobs;int next=0,cursor=0;quint32 generation=0;bool built=false,announced=false; } pageWarm_;
     bool prewarmPageText();
     void buildPageWarmJobs();
-    bool warmSlice(QVector<ColumnWarmJob>& jobs,int& next,int& cursor);   // one 1.2 ms slice of a warm queue (inside warmRender)
+    bool warmSlice(QVector<ColumnWarmJob>& jobs,int& next,int& cursor,qint64 sliceNs=1'200'000);   // one 1.2 ms slice of a warm queue (inside warmRender)
     void saveTextDemand();
     void buildColumnWarmJobs();
     QSize prewarmPixels_;   // the UI layer size the glyph tiles were warmed for; a resize or a display change warms them again

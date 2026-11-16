@@ -395,9 +395,8 @@ void View::buildColumnWarmJobs() {
         }
     }
 }
-bool View::warmSlice(QVector<ColumnWarmJob>& jobs,int& next,int& cursor) {
+bool View::warmSlice(QVector<ColumnWarmJob>& jobs,int& next,int& cursor,qint64 sliceNs) {
     QElapsedTimer slice;slice.start();
-    constexpr qint64 sliceNs=1'200'000;
     while(next<jobs.size() && slice.nsecsElapsed()<sliceNs) {
         const auto& job=jobs[next];
         QFont font(shell_.fontFamily());font.setPixelSize(job.size);
@@ -445,6 +444,11 @@ void View::buildPageWarmJobs() {
         add(entry.detail,19,help,1182);
     }
     for(const int size:{21,32,17,19})add(QStringLiteral("0123456789:.,-+/%()&'!?")+QChar(0x2026),size,row,8000);
+    // (4) the letters of the text styles pages put values, choice lists, dialogs and the keyboard's field in (a value such as a
+    // device name or a date is the machine's own and no row list holds it): most used style first, so the atlas guard cuts the tail.
+    add(QStringLiteral("System Name"),27,row,1100);
+    for(const int size:{21,23,24,22,26,27,20})
+        add(QStringLiteral("etaoinshrdlucmfwypvbgkjqxzETAOINSHRDLUCMFWYPVBGKJQXZ0123456789.,:;'\"!?-()/%&"),size,row,8000);
     qInfo().noquote()<<QString("prewarm: page text queued, %1 strings (%2 learned styles)").arg(w.jobs.size()).arg(learned);
 }
 bool View::prewarmPageText() {
@@ -454,12 +458,12 @@ bool View::prewarmPageText() {
     if(const quint32 generation=textRenderer_.atlasGeneration();generation!=w.generation){w=PageWarm{};w.generation=generation;}
     if(!w.built){buildPageWarmJobs();w.built=true;}
     if(w.next>=w.jobs.size()) {
-        if(!w.announced){w.announced=true;qInfo().noquote()<<QString("prewarm: page text done, %1 strings").arg(w.jobs.size());}
+        if(!w.announced){w.announced=true;qInfo().noquote()<<QString("prewarm: page text done, %1 strings, %2 atlas pages in use").arg(w.jobs.size()).arg(textRenderer_.atlasPagesInUse());}
         return false;
     }
     warmRender([this,&w](QPainter& p){
         p.beginNativePainting();
-        warmSlice(w.jobs,w.next,w.cursor);
+        warmSlice(w.jobs,w.next,w.cursor,2'400'000);   // the queue is long (the alphabets), the slice still far under a frame
         glBindTexture(GL_TEXTURE_2D,0);
         p.endNativePainting();
     });
@@ -522,7 +526,8 @@ void View::prewarmOverlays() {
     if(clock_.elapsed()<(prewarmStage_>=7?lateAfterMs:startAfterMs) || clock_.elapsed()<prewarmNextMs_ || shell_.idleMilliseconds()<idleForMs)return;
     if(shell_.psMenuOpen() || shell_.optionsOpen() || !shell_.message().isEmpty() || osk_.open || shell_.mediaOpen() || depthPosition_>0.001)return;
     if(prewarmStage_==10) { // the column labels: never "done", it looks again for rows that arrive later; with none queued, the pages' text
-        prewarmNextMs_=clock_.elapsed()+(prewarmColumnText() || prewarmPageText()?30:500);
+        const bool column=prewarmColumnText(),pageWork=!column && prewarmPageText();
+        prewarmNextMs_=clock_.elapsed()+(column?30:pageWork?20:500);
         return;
     }
     QElapsedTimer cost;cost.start();

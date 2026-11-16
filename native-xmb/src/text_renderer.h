@@ -106,6 +106,7 @@ public:
     bool warmGlyphs(QOpenGLFunctions_3_3_Core& gl,const QString& text,const QFont& font,int flags,qreal width,int& cursor,qint64 budgetNs);
     // Bumped whenever the atlas is dropped (a scale change or a full atlas): warmed work from an older value is gone.
     quint32 atlasGeneration() const { return generation_; }
+    int atlasPagesInUse() const { return int(pages_.size()); }
     // What the session actually had to rasterise (audit/FRAME-PACING.md, first-open page hitch): per text style
     // (design pixel size, bold in bit 16) the distinct characters of every string whose draw missed the glyph cache.
     // The View saves it for the next session and warms those characters at idle, so a page seen before opens warm.

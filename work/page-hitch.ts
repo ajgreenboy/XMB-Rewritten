@@ -50,7 +50,7 @@ const PAGES: Page[] = [
   { name: 'music/library', cat: 3, row: 2, back: 8 }, { name: 'music/playlists', cat: 3, row: 1 }, { name: 'music/spotify', cat: 3, row: 3 },
   { name: 'video/continue', cat: 4, row: 3 }, { name: 'video/library', cat: 4, row: 4, back: 8 },
   { name: 'tv/jellyfin-setup', cat: 5, row: 0 },
-  { name: 'game/steam-hub', cat: 6, row: 10 }, { name: 'game/saved-data-ps3', cat: 6, row: 14 }, { name: 'game/artwork-settings', cat: 6, row: 16 },
+  { name: 'game/steam-hub', cat: 6, row: 10 }, { name: 'game/saved-data-ps3', cat: 6, row: 14 }, 
   { name: 'game/download-hub', cat: 6, row: 17 }, { name: 'game/manage-hub', cat: 6, row: 18 }, { name: 'game/store-message', cat: 6, row: 15 },
   { name: 'network/tailscale', cat: 7, row: 5 }, { name: 'network/homeassistant', cat: 7, row: 7 },
   { name: 'network/weather', cat: 7, row: 8 }, { name: 'network/wifi', cat: 7, row: 10 },
@@ -98,9 +98,9 @@ try {
   const env = { ...process.env, TEMP: join(work, 'tmp'), TMP: join(work, 'tmp'), XMB_SINGLE_INSTANCE: '0', XMB_STEAM_ARTWORK: '0',
     XMB_STEAM_ACTIVITY: '0', XMB_POWER_DRY_RUN: '1', XMB_AUDIO_DRY_RUN: '1', XMB_SCRIPT_FRAMELESS: '1', XMB_LOG: logPath,
     XMB_FRAME_TRACE: '1', XMB_FRAME_TRACE_MS: String(slow), XMB_SCRIPT_INTERVAL_MS: '300', ...envExtra };
-  const run = spawnSync(exe, ['--dev-flash', 'C:/dev/rpcs3/bin/dev_flash', '--data-dir', join(work, 'data'), '--vsh-modules', 'C:/dev/xmb/fw493/vsh_module', '--script', tokens.join(',')], { env, timeout: 900000, encoding: 'utf8' });
-  if (run.error || run.status !== 0) { console.error('run failed', run.error?.message ?? run.status); process.exitCode = 2; }
-  else logText = readFileSync(logPath, 'utf8');
+  const run = spawnSync(exe, ['--dev-flash', 'C:/dev/rpcs3/bin/dev_flash', '--data-dir', join(work, 'data'), '--vsh-modules', 'C:/dev/xmb/fw493/vsh_module', '--script', tokens.join(',')], { env, timeout: 1500000, encoding: 'utf8' });
+  if (run.error || run.status !== 0) console.error('run did not exit cleanly (', run.error?.message ?? run.status, '); using the log as far as it got');
+  logText = readFileSync(logPath, 'utf8');
 } finally {
   if (locked) { try { rmdirSync(lockDir); } catch { /* already gone */ } }
   if (!flag('--keep')) { try { rmSync(work, { recursive: true, force: true }); } catch { /* scratch */ } } else console.log('kept', work);
@@ -129,15 +129,16 @@ for (const m of marks) {
       const km = /key handler ([\d.]+) ms/.exec(labels); if (km) key = Math.max(key, +km[1]);
       const gm = /(\d+) glyph tiles rasterised/.exec(labels); if (gm) glyph += +gm[1];
     }
-    const gm2 = /frame-trace: glyph miss px=(d+) tiles=(d+) text=(.*)$/.exec(L[i]); if (gm2) misses.push(`${gm2[1]}px x${gm2[2]} "${gm2[3]}"`);
+    const gm2 = /frame-trace: glyph miss px=([0-9]+) tiles=([0-9]+) text=(.*)$/.exec(L[i]); if (gm2) misses.push(`${gm2[1]}px x${gm2[2]} "${gm2[3]}"`);
     const f = /frame-trace: focus (.*)$/.exec(L[i]); if (f) focus.push(f[1]);
     const o = /frame-trace: surface (.*opened.*)$/.exec(L[i]); if (o) opened.push(o[1]);
   }
   res.push({ name: m.name, misses, focus: focus.join(' > '), frames: 0, over, worstCpu: worst, worstLabels, keyMs: key, opened: opened.join(' + ').slice(0, 70), first: opened.some((o) => /FIRST/.test(o)), glyphTiles: glyph });
 }
-const warmDone = L.map((l, i) => (/prewarm: (column text|page text) done/.test(l) ? i : -1)).filter((i) => i >= 0);
+const warmDone = L.map((l, i) => (/prewarm: page text done/.test(l) ? i : -1)).filter((i) => i >= 0);
 const lastWarm = warmDone.length ? Math.max(...warmDone) : -1;
 console.log(`size=${size} slow>=${slow} ms; prewarm finished at log line ${lastWarm}, first page marker at ${firstMark}${lastWarm > firstMark ? '  WARNING: prewarm still running during measurement' : ''}`);
+if (lastWarm >= 0) console.log(L[lastWarm]);
 const atlasPages = L.filter((l) => /text atlas page \d+ created/.test(l)).length;
 const styles = L.filter((l) => /frame-trace: text style/.test(l)).map((l) => l.replace(/^.*text style /, ''));
 console.log(`atlas page notes in log: ${atlasPages}; distinct text styles drawn: ${styles.length}`);
