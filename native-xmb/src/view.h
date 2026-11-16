@@ -1,4 +1,5 @@
 #pragma once
+#include "video_panel.h"
 #include "assets.h"
 #include "coldboot.h"
 #include "gallery_controller.h"
@@ -451,10 +452,27 @@ private:
     void videoPanelMove(int dx,int dy);
     void videoPanelActivate();
     bool videoPanelOpen_=false;
-    int videoPanelFocus_=15; // RCO play button, including the dummy slot
+    int videoPanelFocus_=15; // videopanel::kPlay: the RCO play button, counting the dummy slot
     QString videoPanelNotice_;
     QString videoPanelStatus_;
+    QString videoPanelStatusText_;   // videoplayer_status_text: the repeat string after a repeat change
     qint64 videoPanelStatusUntil_=0;
+    // Go To (videoplayer_display_time_jump_*): the time-entry spinners over the time bar.
+    void gotoMove(int dx,int dy);
+    void gotoConfirm();
+    void gotoCancel();
+    void drawVideoGoto(QPainter& painter,const QRectF& bar,double opacity);
+    bool gotoActive_=false;
+    videopanel::GotoEntry gotoEntry_;
+    QString gotoNotice_;
+    // Screen Mode and the information page (videoplayer_information_page), both transient and view-owned.
+    videopanel::ScreenMode screenMode_=videopanel::ScreenMode::Normal;
+    void showVideoInformation(const char* icon,const QString& text);
+    void drawVideoInformation(QPainter& painter);
+    void drawVideoInfoBar(QPainter& painter);
+    QString infoIcon_,infoText_;
+    qint64 infoStarted_=0;
+    int infoSerialSeen_=0;
     // Surface B2, the XMB music control panel (explore_plugin_full control_panel_page): tex_cp_panel 72x72
     // scaled 1.3 (0x270a54), the 10 status planes, progress_bar_playing_time 200x6 with label_playing_time,
     // and the 7-button group at 90x60 over the shared tex_cp_focus. Triangle opens it (audit 7.2); R keeps

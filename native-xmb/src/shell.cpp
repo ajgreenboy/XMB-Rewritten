@@ -32,6 +32,7 @@
 #include <QAudioOutput>
 #include <QMediaPlayer>
 #include <QMediaMetaData>
+#include <QMediaFormat>
 #include <QCryptographicHash>
 #include <QJsonObject>
 #include <QJsonDocument>
@@ -3472,6 +3473,7 @@ void Shell::toggleOptions() {
         // Anything else that reaches the player (music, a photo slideshow) keeps its old binding, so a
         // photo still rotates and a track still cycles Repeat.
         if(!videoOpen())return;
+        playerPanelKind_=PlayerPanelKind::Extras;
         buildPlayerOptions();
         optionsOpen_=true;
         // Open on the current choice rather than on the first row: a stray Cross on an untouched panel
@@ -3721,7 +3723,7 @@ void Shell::optionsActivate() {
         refreshPlayerOptions();
         break;
     case OptionCommand::JellyfinQualityTarget:chooseJellyfinQuality(option.index);break;
-    case OptionCommand::JellyfinAudioStream:chooseJellyfinAudio(option.index);break;
+    case OptionCommand::JellyfinAudioStream:chooseJellyfinAudio(option.index);notePlayerInfo("tex_i_sound",option.title);break;
     case OptionCommand::PlayerChapters:openChapterList();break;
     case OptionCommand::PlayerChapterTarget:chooseChapter(option.index);break;
     case OptionCommand::SpotifyPlayAll:case OptionCommand::SpotifyShuffleAll: {
@@ -4046,18 +4048,22 @@ void Shell::optionsActivate() {
     // also what makes the state checkable from a capture; Circle is what closes it.
     case OptionCommand::SubtitlesOff:
         chooseSubtitleTrack(-1);
+        notePlayerInfo("tex_i_subtitle",assets_.text("videoplayer_plugin","msg_off","Off"));
         refreshPlayerOptions();
         break;
     case OptionCommand::SubtitleTrack:
         chooseSubtitleTrack(option.index);
+        notePlayerInfo("tex_i_subtitle",option.title);
         refreshPlayerOptions();
         break;
     case OptionCommand::SubtitleBurnIn:
         // Already burning this stream: nothing to re-open. Otherwise the title re-opens at the same point.
         if(jellyfinPlayback_.burnSubtitleIndex!=option.index)chooseJellyfinBurnIn(option.index);
+        notePlayerInfo("tex_i_subtitle",option.title);
         break;
     case OptionCommand::AudioTrack:
         chooseAudioTrack(option.index);
+        notePlayerInfo("tex_i_sound",option.title);
         break;
     case OptionCommand::RepeatMode:
         cycleMediaRepeat();
@@ -4102,14 +4108,23 @@ void Shell::dismissOptions() {
 void Shell::buildPlayerOptions() {
     resetOptions();
     playerPanel_=true;
-    optionsTitle_=QObject::tr("Playback");
+    // Three panels, never one mixed list (audit/VIDEO-PLAYER-PARITY-2026-11-16.md): the console's Audio and
+    // Subtitle buttons are separate controls whose titles are the container's own msg_audio_change /
+    // msg_subtitle_change; everything this build has beyond the console's control panel (quality, chapters,
+    // speed, next episode, shuffle) lives in a panel the matrix reaches from its last, native-only slot.
+    const bool wantSubtitles=playerPanelKind_==PlayerPanelKind::Subtitle;
+    const bool wantAudio=playerPanelKind_==PlayerPanelKind::Audio;
+    const bool wantExtras=playerPanelKind_==PlayerPanelKind::Extras;
+    optionsTitle_=wantSubtitles?assets_.text("videoplayer_plugin","msg_subtitle_change","Subtitle Options")
+                 :wantAudio?assets_.text("videoplayer_plugin","msg_audio_change","Audio Options")
+                 :QObject::tr("Native Extras");
     // A Jellyfin stream's tracks are the server's own MediaStreams; a local file's are the sidecars
     // beside it and what QMediaPlayer reports. The panel keeps the same honesty rule in both cases:
     // a track this build cannot switch is listed with the reason and cannot be chosen.
     const bool streamed=mediaProvider()=="Jellyfin" && !jellyfinPlayback_.streams.isEmpty();
     const int burning=streamed?jellyfinPlayback_.burnSubtitleIndex:-1;
-    options_.push_back({QObject::tr("Subtitles Off"),OptionCommand::SubtitlesOff,-1,true,subtitleTrackIndex_<0 && burning<0,{}});
-    if(streamed) {
+    if(wantSubtitles)options_.push_back({assets_.text("videoplayer_plugin","msg_off","Off"),OptionCommand::SubtitlesOff,-1,true,subtitleTrackIndex_<0 && burning<0,{}});
+    if(wantSubtitles && streamed) {
         int seen=0;
         for(const auto& stream:jellyfinPlayback_.streams) {
             if(stream.type!="Subtitle")continue;
@@ -4157,14 +4172,14 @@ void Shell::buildPlayerOptions() {
             row.note=QObject::tr("The server's PlaybackInfo lists no subtitle stream for this item.");
             options_.push_back(row);
         }
-    } else if(subtitleTracks_.isEmpty()) {
+    } else if(wantSubtitles && subtitleTracks_.isEmpty()) {
         MenuOption row{QObject::tr("Subtitles: none found"),OptionCommand::SubtitlesOff};
         row.enabled=false;
         row.note=mediaProvider()=="Jellyfin"
             ?QObject::tr("Streamed media: sidecar subtitles are read for local video files only.")
             :QObject::tr("No .srt, .vtt, .sup or .idx/.sub beside this video, and the player reports no embedded subtitle stream.");
         options_.push_back(row);
-    } else {
+    } else if(wantSubtitles) {
         for(int i=0;i<subtitleTracks_.size();++i) {
             const auto& track=subtitleTracks_[i];
             MenuOption row{QObject::tr("Subtitles: %1").arg(track.name),OptionCommand::SubtitleTrack};
@@ -4187,8 +4202,8 @@ void Shell::buildPlayerOptions() {
         }
     }
     // What the player itself reports, never a list this build invents.
-    refreshAudioTracks();
-    if(streamed) {
+    if(wantAudio)refreshAudioTracks();
+    if(wantAudio && streamed) {
         int seen=0,audioCount=0;
         for(const auto& stream:jellyfinPlayback_.streams)if(stream.type=="Audio")++audioCount;
         // A transcode carries one audio stream, and a player may report fewer tracks than the server lists: in both
@@ -4221,12 +4236,12 @@ void Shell::buildPlayerOptions() {
             row.note=QObject::tr("The server's PlaybackInfo lists no audio stream for this item.");
             options_.push_back(row);
         }
-    } else if(audioTracks_.isEmpty()) {
+    } else if(wantAudio && audioTracks_.isEmpty()) {
         MenuOption row{QObject::tr("Audio: not reported"),OptionCommand::AudioTrack};
         row.enabled=false;
         row.note=QObject::tr("The media backend reports no audio track for this file, so there is nothing to choose.");
         options_.push_back(row);
-    } else {
+    } else if(wantAudio) {
         for(int i=0;i<audioTracks_.size();++i) {
             MenuOption row{QObject::tr("Audio %1: %2").arg(i+1).arg(audioTracks_[i].label),OptionCommand::AudioTrack};
             row.index=i;row.active=i==activeAudioTrack_;
@@ -4236,37 +4251,36 @@ void Shell::buildPlayerOptions() {
             options_.push_back(row);
         }
     }
-    if(mediaProvider()=="Jellyfin" && !jellyfinAudio_.value(jellyfinPlayback_.itemId)) {
+    if(wantExtras && mediaProvider()=="Jellyfin" && !jellyfinAudio_.value(jellyfinPlayback_.itemId)) {
         MenuOption quality{QObject::tr("Quality: %1").arg(jellyfinQualityText()),OptionCommand::JellyfinQuality};
         quality.note=QObject::tr("Choosing another re-opens this title at the same point.");
         options_.push_back(quality);
     }
-    if(mediaChapters_.size()>1) {
+    if(wantExtras && mediaChapters_.size()>1) {
         const int at=jfplayer::chapterIndexAt(mediaChapters_,player_->position());
         MenuOption chapters{QObject::tr("Chapters: %1 of %2").arg(std::max(at,0)+1).arg(mediaChapters_.size()),OptionCommand::PlayerChapters};
         chapters.note=QObject::tr("Jump to a chapter. Next and Previous skip chapters too.");
         options_.push_back(chapters);
     }
     // Speed: set on the player and read back. There is no audio delay row: Qt Multimedia has no such setting.
-    if(!photoOpen()) {
+    if(wantExtras && !photoOpen()) {
         MenuOption speed{QObject::tr("Speed: %1").arg(jfplayer::speedLabel(mediaSpeed_)),OptionCommand::PlayerSpeed};
         speed.note=QObject::tr("0.5x to 2x. The player is asked and the panel reads the rate back.");
         options_.push_back(speed);
     }
-    if(mediaProvider()=="Jellyfin" && jellyfinKinds_.value(jellyfinPlayback_.itemId)==QLatin1String("Episode") && !jellyfinSeries_.value(jellyfinPlayback_.itemId).isEmpty()) {
+    if(wantExtras && mediaProvider()=="Jellyfin" && jellyfinKinds_.value(jellyfinPlayback_.itemId)==QLatin1String("Episode") && !jellyfinSeries_.value(jellyfinPlayback_.itemId).isEmpty()) {
         MenuOption autoplay{QObject::tr("Play Next Episode: %1").arg(autoplayNextEnabled()?QObject::tr("On"):QObject::tr("Off")),OptionCommand::ToggleAutoplayNext};
         autoplay.note=QObject::tr("When an episode ends, count down to the server's next one. Circle cancels the countdown.");
         options_.push_back(autoplay);
     }
-    // Repeat and Shuffle live here now, which is what frees Triangle for this panel.
-    static const char* const repeatNames[]={"Off","One","All"};
-    MenuOption repeat{QObject::tr("Repeat: %1").arg(QString::fromLatin1(repeatNames[std::clamp(mediaRepeatMode(),0,2)])),
-        OptionCommand::RepeatMode};
-    repeat.note=QObject::tr("Also on the R key while a video plays.");
-    options_.push_back(repeat);
-    MenuOption shuffle{QObject::tr("Shuffle: %1").arg(preferences_.value("media/shuffle").toBool()?QObject::tr("On"):QObject::tr("Off")),
-        OptionCommand::ToggleShuffle};
-    options_.push_back(shuffle);
+    // Repeat is the console's own control-panel button (cycled there and on R); only Shuffle, which the
+    // console's video panel does not have, is a native row.
+    if(wantExtras) {
+        MenuOption shuffle{QObject::tr("Shuffle: %1").arg(preferences_.value("media/shuffle").toBool()?QObject::tr("On"):QObject::tr("Off")),
+            OptionCommand::ToggleShuffle};
+        shuffle.note=QObject::tr("Also on the M key and the pad's X button while a video plays.");
+        options_.push_back(shuffle);
+    }
 }
 void Shell::refreshPlayerOptions() {
     if(!optionsOpen_ || !playerPanel_)return;
@@ -5542,13 +5556,67 @@ QString Shell::mediaQueueSummary() const {
     return result;
 }
 bool Shell::mediaSeekable() const { return mediaOpen_ && !photoOpen() && player_->isSeekable(); }
-void Shell::openMediaOption(const QString& key) {
-    if(!videoOpen() || busy() || !message_.isEmpty() || psMenu_)return;
-    if(key!="audio" && key!="subtitle" && key!="repeat")return;
-    touch();buildPlayerOptions();optionsOpen_=true;optionsSelection_=0;
-    const auto command=key=="audio"?OptionCommand::AudioTrack:key=="repeat"?OptionCommand::RepeatMode:OptionCommand::SubtitlesOff;
-    for(int i=0;i<options_.size();++i)if(options_[i].command==command){optionsSelection_=i;break;}
-    interactionAudio_.play(InteractionAudio::Cue::Options);emit changed();
+QString Shell::openMediaOption(const QString& key) {
+    if(!videoOpen() || busy() || !message_.isEmpty() || psMenu_)return {};
+    if(key!="audio" && key!="subtitle" && key!="extras")return {};
+    touch();
+    playerPanelKind_=key=="audio"?PlayerPanelKind::Audio:key=="subtitle"?PlayerPanelKind::Subtitle:PlayerPanelKind::Extras;
+    buildPlayerOptions();
+    // The console refuses an empty selector with its own sentence; this build adds why, from the row it would list.
+    if(playerPanelKind_!=PlayerPanelKind::Extras) {
+        bool anyTrack=false;
+        QString reason;
+        for(const auto& row:options_) {
+            const bool placeholder=!row.enabled && row.index<0 && (row.command==OptionCommand::SubtitlesOff || row.command==OptionCommand::AudioTrack);
+            if(row.command==OptionCommand::SubtitlesOff && row.enabled)continue;   // the Off row is not a choice
+            if(placeholder){reason=row.note;continue;}
+            anyTrack=true;
+        }
+        if(!anyTrack) {
+            resetOptions();
+            const bool audio=playerPanelKind_==PlayerPanelKind::Audio;
+            const QString sentence=audio?assets_.text("videoplayer_plugin","msg_error_no_audio","There is no audio.")
+                                         :assets_.text("videoplayer_plugin","msg_error_no_subtitle","There are no subtitle options available.");
+            interactionAudio_.play(InteractionAudio::Cue::Error);
+            qInfo().noquote()<<"shell: playback"<<key<<"panel refused:"<<sentence<<reason;
+            emit changed();
+            return reason.isEmpty()?sentence:sentence+QLatin1Char(' ')+reason;
+        }
+    }
+    optionsOpen_=true;optionsSelection_=0;
+    for(int i=0;i<options_.size();++i)if(options_[i].active){optionsSelection_=i;break;}
+    interactionAudio_.play(InteractionAudio::Cue::Options);
+    QStringList titles;for(const auto& option:options_)titles<<option.title;
+    qInfo().noquote()<<"shell: playback panel opened kind="<<key<<"rows="<<options_.size()<<optionsTitle_<<titles.join('|');
+    emit changed();
+    return {};
+}
+Shell::MediaCodecInfo Shell::mediaCodecInfo() const {
+    MediaCodecInfo info;
+    if(!videoOpen())return info;
+    if(mediaProvider()=="Jellyfin" && !jellyfinPlayback_.streams.isEmpty()) {
+        for(const auto& stream:jellyfinPlayback_.streams) {
+            if(stream.type=="Video" && info.video.isEmpty())info.video=stream.codec;
+            if(stream.type=="Audio" && info.audio.isEmpty()){info.audio=stream.codec;info.channels=stream.channels;}
+        }
+        return info;
+    }
+    const auto tags=player_->metaData();
+    const auto video=tags.value(QMediaMetaData::VideoCodec);
+    const auto audio=tags.value(QMediaMetaData::AudioCodec);
+    if(video.isValid())info.video=QMediaFormat::videoCodecName(video.value<QMediaFormat::VideoCodec>());
+    if(audio.isValid())info.audio=QMediaFormat::audioCodecName(audio.value<QMediaFormat::AudioCodec>());
+    info.videoKbps=tags.value(QMediaMetaData::VideoBitRate).toInt()/1000;
+    info.audioKbps=tags.value(QMediaMetaData::AudioBitRate).toInt()/1000;
+    return info;
+}
+void Shell::notePlayerInfo(const char* icon,const QString& text) {
+    // "Subtitles 2: English" / "Audio 1: Japanese 5.1" -> the part after the colon; a row with none is used whole.
+    QString shown=text;
+    const int colon=shown.indexOf(QStringLiteral(": "));
+    if(colon>=0 && colon<14)shown=shown.mid(colon+2);
+    playerInfoIcon_=QString::fromLatin1(icon);playerInfoText_=shown.trimmed();++playerInfoSerial_;
+    qInfo().noquote()<<"shell: player information"<<playerInfoIcon_<<playerInfoText_;
 }
 void Shell::openMediaInformation() {
     if(!mediaOpen_ || busy())return;

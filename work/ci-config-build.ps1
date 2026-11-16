@@ -53,7 +53,7 @@ $old = @{ P = $env:QT_QPA_PLATFORM; Q = $env:QT_PLUGIN_PATH; PATH = $env:PATH }
 $env:QT_QPA_PLATFORM = 'offscreen'; $env:QT_PLUGIN_PATH = Join-Path $QtRoot 'plugins'; $env:PATH = (Join-Path $QtRoot 'bin') + ';' + $env:PATH
 $failed = @()
 try {
-    foreach ($n in 'xmb-jellyfin-playback-tests', 'xmb-jellyfin-player-tests', 'xmb-jellyfin-music-tests', 'xmb-frame-pacer-tests', 'xmb-osk-paste-tests', 'xmb-steam-vdf-tests', 'xmb-steam-switch-tests') {
+    foreach ($n in 'xmb-jellyfin-playback-tests', 'xmb-jellyfin-player-tests', 'xmb-jellyfin-music-tests', 'xmb-frame-pacer-tests', 'xmb-video-panel-tests', 'xmb-osk-paste-tests', 'xmb-steam-vdf-tests', 'xmb-steam-switch-tests') {
         $exe = Join-Path $out "$n.exe"
         if (-not (Test-Path $exe)) { continue }
         & $exe | Out-Null

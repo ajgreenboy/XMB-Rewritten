@@ -439,7 +439,19 @@ public:
     bool mediaPaused() const;
     bool videoOpen() const;
     bool mediaSeekable() const;
-    void openMediaOption(const QString& key); // audio, subtitle or repeat: existing playback selector
+    // The video control panel's selector buttons. "audio" and "subtitle" open the console-titled lists, "extras" the
+    // native-only panel. Returns the sentence to show instead when there is nothing to choose (the container's
+    // msg_error_no_audio / msg_error_no_subtitle plus this build's reason), empty when the panel opened.
+    QString openMediaOption(const QString& key);
+    // The console's information page (videoplayer_information_page): the last audio/subtitle choice, for the view to
+    // show for a moment. `serial` changes with every new choice.
+    // The stream's codec facts for the Display information bar: what the player (a local file) or the server's
+    // MediaStreams (Jellyfin) report; a field it does not report stays empty or zero.
+    struct MediaCodecInfo { QString video,audio; int channels=0,audioKbps=0,videoKbps=0; };
+    MediaCodecInfo mediaCodecInfo() const;
+    int playerInfoSerial() const { return playerInfoSerial_; }
+    const QString& playerInfoIcon() const { return playerInfoIcon_; }
+    const QString& playerInfoText() const { return playerInfoText_; }
     void openMediaInformation();
     void togglePhotoFill();
     void cyclePhotoInterval();
@@ -1209,6 +1221,10 @@ private:
     // tracks the player reports, then Repeat and Shuffle (which used to hold the face buttons).
     bool playerPanel_=false;
     bool playFromBeginning_=false;   // one-shot: start the next local file at 0 instead of its stored position
+    enum class PlayerPanelKind { Audio, Subtitle, Extras };
+    PlayerPanelKind playerPanelKind_=PlayerPanelKind::Extras;
+    void notePlayerInfo(const char* icon,const QString& text);
+    int playerInfoSerial_=0;QString playerInfoIcon_,playerInfoText_;
     void buildPlayerOptions();
     void refreshPlayerOptions();
     void dismissOptions();
