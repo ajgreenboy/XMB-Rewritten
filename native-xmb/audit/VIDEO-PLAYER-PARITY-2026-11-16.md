@@ -87,4 +87,26 @@ Classes: **matches**, **fixed here**, **fixable-small** (not done), **recorded-l
 
 ## Verification
 
-See the section at the end (captures, unit tests, gate) filled in when the run finished.
+- **Unit tests**: `xmb-video-panel-tests` (new, `tests/video_panel_tests.cpp`, wired in CMake, `tests.yml` and `work/ci-config-build.ps1`): the 26-slot
+  order and cells, the single native slot last, 24 distinct console icons, the focus walk (every console slot reachable from Play, the dummy
+  never a target, the native slot only reached from Repeat or from below Instant Advance), Go To spin/wrap/range rules, the four Screen Mode
+  rectangles, the repeat status keys, the console's two "nothing to choose" keys and the codec-picture mapping. `bun work/ci-guard.ts` and
+  `work/ci-config-build.ps1` pass (21 targets built, all runnable tests ok).
+- **Frames** (scratch states derived from `subtitle-cue`, real build, 1920x1080, under `C:/dev/out/vplayer-ev/frames`, not in git): closed bar with the
+  console key hint; matrix with the native plate last; Audio Options and Subtitle Options panels; Native Extras; Go To (spinner field boxed, jump
+  marker, past-the-end sentence, jump to 10 s); Screen Mode Original and Full Screen with the information plate; Repeat with "Title Repeat"; Display
+  with the upper bar, `AVC` and `AAC` pictures and `1.3 Mbps 96 kbps` (the clip's own metadata). Local test clip: `Cue Test.mp4`.
+- **Gate** (queued behind the shared lock; MSVC /W4, 0 warnings): baseline on the unmodified `main` build 27/28 (only `ingame-xmb`). After the change and
+  `git merge main`: 26/28 before saving, the two failures being `subtitle-cue` (frame 34.56 dB / 0.9962: the new Triangle hint text) and `ingame-xmb`
+  (52.43 dB / 0.9994, the same numbers as on the unmodified build, also failing alone with `--state ingame-xmb`; not touched by this change).
+  `subtitle-cue` was re-saved alone (old reference and sidecar backed up to `C:/dev/out/ref-backup-vplayer`) and then passes. `video-options-panel` is the Video Library
+  item menu (not the player) and did not change. No other pinned state moved: the player surfaces draw only while media is open.
+- **Not verified**: a real controller (the pad paths for Go To and the extras slot mirror the keyboard ones but were not driven by hardware); Jellyfin
+  streams through the new panels (the shell code paths are the old ones behind a kind switch; local file only was captured, the Jellyfin unit
+  tests pass); codec art for HLS/transcoded streams; any console frame (see the method section).
+
+## Left for later (not done here)
+
+- A pad/remote check of Go To on the HTPC; the Jellyfin watched/favourite toggles stay in the XMB item menu (they were never in the player).
+- Scene Search thumbnails, AV Settings, Change Icon, scan speeds and slow motion need backends this build does not have (recorded above).
+- The chapter selector in the time page (`msg_chapter`) and a resume prompt style: no layout evidence; left alone.

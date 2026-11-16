@@ -119,3 +119,7 @@ one" at 3.7 s and brought the choice back on the next play (`ffmpeg` from the pr
 - The "final seconds" trigger and a countdown for local files were not built.
 - Commits: the work is one logical change across shared files (shell.cpp/h, the client), so it is committed as a code commit and a
   docs commit, not one commit per item.
+
+## Where the player rows live now (2026-11-16)
+
+The single "Playback" panel was split to follow the console (`VIDEO-PLAYER-PARITY-2026-11-16.md`): the control matrix (Triangle) opens "Audio Options" and "Subtitle Options" from its own buttons, and the rows that are not on the console (Quality, Chapters, Speed, Play Next Episode, Shuffle) are in "Native Extras", reached from the last, native-only matrix slot. Repeat is the matrix button (and R). Behaviour of every row is unchanged.
