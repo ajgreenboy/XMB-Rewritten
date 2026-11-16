@@ -1,59 +1,182 @@
 # RAF-THEMES - animated (RAF) theme support, F6 remainder
 
-Status 2026-11-08: **parse and report only. No RAF scene is drawn.** A dynamic theme still shows its still background
-(`bgimage` hd/sd picture), exactly as before. This file records what is known, how it is known, and what is left.
-Evidence tags: TRACED (firmware module/address), M (measured on a local file), INFERRED.
+Status 2026-11-16: **a dynamic theme's scene is drawn as ONE STILL FRAME (initial pose, script not run); nothing is
+animated.** On any failure, and with `XMB_RAF_THEMES=0`, the theme's still background (`bgimage` hd/sd) is shown exactly
+as before. Air Paint, the theme the request named, turned out to be a **static** theme (section 1.1), so it is unchanged
+by all of this. No real dynamic theme exists on this machine, so the still-frame path is proven only on a local
+fixture that wraps the firmware's coldboot.raf in a theme (section 4).
 
-No firmware or theme content is shipped. The reader works on a user-supplied `.p3t` (or a bare `.raf`); reports and
-dumps go to local folders outside the repository.
+Evidence tags: TRACED (firmware module, by string or address), M (measured on a local file this pass), INFERRED,
+UNPROVABLE (cannot be settled with what is on this machine).
 
-## 1. What landed
+No firmware or theme content is shipped. Every reader/decoder works on the user's own files at run time; reports, dumps,
+translated programs and fixtures stay under `C:\dev\out\raf\analysis` (outside the repository).
 
-| Piece | Where | Tag |
+## 1. Measured facts
+
+### 1.1 Air Paint is a static theme (M)
+
+`dev_flash/vsh/resource/theme/01.p3t` (2,016,992 B, SHA-256 `BB2059AB...922CA`, `info/name` "Air Paint"):
+
+| Check | Result |
+|---|---|
+| `--p3t-dump` tree | 92 elements: `bgimage=2, bgimagetable=1, color=1, font=1, icon=63, icontable=1, info=1, infotable=1, localizedinfo=20, theme=1` |
+| `bgimage` attributes | both are `hd` + `sd` only (packed hd 172,356 B / 205,948 B); **no `anim`** |
+| `--raf-report` | `dynamic=false`, `hasScene=false`, exit 3 |
+| raw scan for `_RAF`, `RAFO`, `VSMX`, `EA03`, `.edge`, `.gtf`, `.jsx` | 0 hits |
+
+So Air Paint has no actors, models, effects, GTF textures, animation or script: there is nothing to animate. It already
+renders completely today (still background + 63 icons). The only open Air Paint question is which of its two
+backgrounds the console shows when (THEMES.md 1.2; not a RAF matter).
+
+### 1.2 Which dynamic themes exist locally (M)
+
+Magic scan (`P3TF`/`_RAF`/`RAFO`/`VSMX` at offset 0) of RPCS3's `dev_flash`, `dev_flash2`, `dev_flash3`, `dev_hdd0`,
+`dev_hdd1`, `dev_usb000`, plus a `*.p3t`/`*.raf`/`*.pkg` name search of `C:\dev`, the user's Downloads/Desktop/Documents
+and `D:`/`E:` (depth 6): the only RAF scene is `dev_flash/vsh/resource/coldboot.raf` (and copies of it); the only theme
+is Air Paint. `dev_hdd0/theme` does not exist. The `.pkg` files found are games. **No dynamic theme is available.**
+
+### 1.3 coldboot.raf through the extended `--raf-report` (M)
+
+The only real RAF, used as the stand-in for "a real scene":
+
+| Item | Value |
+|---|---|
+| Actors / models / lights / camera | 6 (logo, footer, blur + `_sd` copies) / 1 (`plane`) / 2 (point, ambient) / perspective, yfov 0.927 |
+| Edge | `plane.edge`: 1 segment; native decoder: 16 vertices, 18 triangles (ok) |
+| Textures | 6 GTF, all format `0xa1` = B8 **linear**, header mipmap byte 10 (HD 700x350) / 8 (SD 240x120); level 0 decodes |
+| Effects | `sce01` only (tokens: base `sce01`, no modifiers) |
+| `.skel` / `.anim` | 48-B skeleton; 0 animations (no EA03) |
+| Script | `coldboot.jsx`, VSMX 4,848 B, 518 instructions, 4 function literals |
+| Script constructors | `Actor` x6, `Camera` x1, `Light` x1, `OneShotTimer` x4 |
+| Script methods | `setColor` x8, `setPosition` x2, `setAttenuation` x2 |
+| Runtime globals used | `Actor, Camera, Light, System, OneShotTimer` |
+| Properties read / written | `resolution, aspect, position, timer` / `scale, color, position` |
+| Opcodes without a known name | `0x4a` (1x, in the `System.resolution` test), `0x4d` (6x, operand 2, in the SD branch) |
+| Native evaluator (`vsmx_eval`) | keys for 7 actors/lights; not evaluated: `setAttenuation`, two calls, non-linear (Bezier) easing |
+
+### 1.4 What the firmware's RAF runtime offers a script (TRACED, raf.prx strings)
+
+From the user's decrypted `raf.prx` (4.93, local only; strings, not yet disassembled):
+
+- **Script globals**: `Actor`, `Camera`, `Light`, `IntervalTimer`, `OneShotTimer`, `Date`, `Math`, `System`.
+- **Time of day**: the clock reaches a scene only through the script's `Date` object ("getting the local time
+  failed", "too many date objects"; the module imports `cellRtc`). There is no time-of-day attribute in the RAF tree.
+  That this is the only clock input is INFERRED (no other clock string or import found).
+- **Actor properties**: `position, rotation, scale, uv_scale, uv_offset, color, material, anim_weight, anim_speed,
+  anim_time`; `zsort` = `unspecified | back_to_front | front_to_back`; `Base.prototype.setAttrib()`; interpolation and
+  Bezier type errors (so timed property changes take an interpolation mode).
+- **Effects** are composed from tokens: base `pure_texture | basic_lighting | sce01`, modifiers `edge_lit, alpha_0,
+  alpha_1, alpha_add, depth_0, depth_1`. `--raf-report` now splits each effect into these tokens (`effectTokens`).
+- **Textures**: `wrap_s/t/p, min/mag/mip_filter, format, dimension, width, height, depth, miplevel`.
+- **Post**: `Blur` (`/blur.fpo`, `/blur_mask.fpo`), `AlphaAdd`, `AlphaMul`, `lib/glutils/ScreenCopy.fpo`, ConeFilter.
+- **Edge** geometry and animation run as SPU jobs (`edgegeom.cpp`, `edgeanim_spu.cpp`).
+
+### 1.5 The effect programs exist in the user's firmware (M)
+
+`dev_flash/vsh/resource/qgl/raf.qrc` holds `lib/raf/vert0.vpo`, `sce01.fpo`, **sixteen `_gen_ubber1_XXXX.fpo`**
+(four flag digits), and `glutils/ScreenCopy`, `ConeFilter(.vpo/.fpo)`, `ConeFilterSimple`. raf.prx builds the name from
+`lib/raf/` + `_gen_ubber1` + flags + `.fpo`. `--dump-cg` (now listing all sixteen) translates **all 18 RAF programs**
+with the existing `CgProgram` reader, at run time from dev_flash, exactly the way `coldboot.cpp` already loads
+`vert0`/`sce01` (nothing committed). What the translations show:
+
+| Digits | Instructions | Inputs | Reading |
+|---|---:|---|---|
+| `xxx0` (8 variants) | 13 | ColorMap, Material, vertex colour, LightingMisc | unlit textured (`pure_texture`-like) |
+| `0xx1` | 68 | + SpotLight, SpecularMap, DiffuseWarp, normal, world pos/eye | lit (`basic_lighting`-like) |
+| `10x1` | 78 | + NormalMap, ModelInverseTranspose | lit, object-space normal map |
+| `11x1` | 90 | + NormalMap, tangent | lit, tangent-space normal map |
+
+The two middle digits produce byte-identical translated code (`0001`=`0011`=`0101`=`0111`; `0000`=`0010`), and
+`1000` differs from `0000` only in the sampler unit: those flags most likely select render state (alpha/depth),
+not shader code (INFERRED). **Which effect name sets which digit is not traced** (needs the raf.prx code that formats
+`_gen_ubber1`); until then the renderer cannot honestly pick a firmware program for `pure_texture*`/`basic_lighting*`.
+
+## 2. What exists in code (status of section-3 steps 1-4)
+
+| Step | Piece | Where | Evidence |
+|---|---|---|---|
+| 1 | `--raf-report`: scene graph, per-texture GTF facts (`formatCode`, `layout` linear/swizzled, `mipmaps`, `dimension`, `cubemap`, `decode` ok/error), per-model `edgeDecode` ok/vertices/triangles or error, `effectTokens`, a truthful `renderer` block (`drawn: still`, `scriptRun: false`, `firmwarePrograms: false`, kill switch) | `P3t::rafReportJson` | M (coldboot.raf, fixtures) |
+| 2 | VSMX disassembler (`disassembleVsmx`) + usage sweep (`vsmxUsage`: constructors, methods, calls, runtime globals, properties read/written, unknown opcodes, function literals) in the report's `script.usage`; the evaluator's `notEvaluated` list in `script.evaluator` | `src/vsmx_eval.*` | M (coldboot), unit tests |
+| 3 | GTF decode: B8, A8R8G8B8 (linear and Morton-swizzled), DXT1/3/5; level 0 only | `src/gtf_decode.*` | M (coldboot B8), unit tests for the others |
+| 4 | Edge decode: one segment, compressed index stream, the plane.edge vertex descriptor set only (float3 / X11Y11Z10 / half2); everything else refused | `src/edge_decode.*` | M (coldboot), unit tests |
+| 4 | Still frame behind the XMB: `renderRafStill` (offscreen GL 3.3, generic GLSL lit/unlit/edge-lit, initial pose, no script) when a theme with a scene is selected in wallpaper mode; `XMB_RAF_THEMES=0` kill switch; still bgimage on any failure | `src/raf_render.*`, `View::loadWallpaper` | M on fixtures (section 4) |
+| 5 | Interpreter subset + `Track` reuse + firmware effect programs + animation | - | **not done** |
+
+The interpreter subset as it stands (`evalVsmx`) is the coldboot subset: `new Actor/Light/Camera("id")`,
+`OneShotTimer(delay, function)`, `setColor/setPosition/setScale(value, duration[, curve])` with **linear** easing,
+`obj.color = [...]`, arithmetic, conditionals on known values, `System.resolution` fixed to 1080. Decided from the
+only real script; a theme script would need at least `Date`, `Math`, `IntervalTimer`, `setRotation` and the actor
+animation properties (section 1.4), which cannot be prioritised without one.
+
+## 3. The honest gap (why it does not animate)
+
+1. **No dynamic theme to measure (UNPROVABLE here).** Every number a theme renderer must match (effects actually used,
+   texture formats, mesh streams, script API surface, scene size) is unknown for real themes. Building playback against
+   coldboot.raf alone would fit one 10-second logo scene.
+2. **Time lives in the script** (M for coldboot, TRACED for the runtime): `Date`, timers and interpolated property
+   changes. Drawing the initial pose is the still; anything more is the interpreter.
+3. **Edge**: only the one vertex-descriptor set from plane.edge; multi-segment meshes, other stream formats and skinning
+   are refused (refusal = still background).
+4. **Skeleton/`.anim`**: EA03 headers only; no keyframes.
+5. **Effects**: the firmware programs are available (1.5) but the effect-name -> flag mapping is untraced, so the still
+   uses approximate GLSL (`renderRafStill`: lit = point light + ambient + fixed specular; edge-lit adds a rim term;
+   `pure_texture*` unlit). Normal/specular maps are ignored.
+6. **Textures**: mip levels > 0, cubemaps and 3D textures are not decoded (level 0 only).
+7. **Composition**: the still is a picture in the wallpaper slot (drawn once per window size, under the same 35/255
+   black veil as any wallpaper), not a per-frame 3D layer; zsort, blur/post effects, pause/resume do not exist.
+
+## 4. Verification this pass
+
+- `--raf-report` on Air Paint: exit 3, `dynamic=false` (M). On coldboot.raf: the table in 1.3 (M).
+- `--raf-render` on coldboot.raf: 6 actors, 1 model, 6 textures, 18 triangles, camera and light from the scene (M).
+- Local fixtures (`C:\dev\out\raf\analysis\fixtures`, built by a local script, never committed): a minimal P3TF with
+  a magenta still `bgimage hd` and `anim` = the firmware's coldboot.raf (`dynamic-ok.p3t`), and the same with one
+  vertex-descriptor byte of plane.edge changed (`dynamic-broken.p3t`). `--raf-report` parses both as embedded scenes;
+  `--raf-render` draws the first and fails the second with "model plane: unsupported vertex stream format".
+- In the running shell (theme selected, wallpaper mode): see section 4.1.
+- Unit tests `xmb-raf-tests` (synthetic fixtures only): GTF B8/linear pitch/A8R8G8B8 swizzled and linear/DXT1 (both
+  modes)/DXT3/DXT5 and five refusals; Edge quad (selectors, reuse codes, explicit delta, positions, normals, half UVs)
+  and three refusals; VSMX disassembly operands, usage sweep (including a constructor whose argument is a function
+  literal), evaluator interpolation and timer, unknown-opcode reporting, two refusals. 41 checks, all pass.
+- Pixel gate: the gated states use the Original theme; the theme path is not on their route. Result in 4.2.
+- No new pinned gate state. The existing `raf-static-scene` state already pins `renderRafStill` on coldboot.raf (read
+  from dev_flash at run time); a state with a theme selected would need a committed dynamic theme, and the only scene
+  available is firmware.
+
+### 4.1 Shell run (fallback and kill switch) (M)
+
+`--script` grabs of the real shell (scratch data dir, preferences `appearance/theme` = fixture, `appearance/background`
+= 2, held under the gate lock), local only:
+
+| Run | Log | Picture |
 |---|---|---|
-| `.p3t` container + element tree; `bgimage/anim` located and its RAF container (`_RAF`+u32 BE size+zlib, raw `RAFO`, bare zlib) unpacked | `P3t::read`, `readScene` in `src/p3t.cpp` | M (Air Paint, coldboot.raf, synthetic fixtures) |
-| Scene model: one camera, lights, actors (position/rotation/scale/uv/colour), models, EA03 animation headers, GTF texture headers, material map bindings, VSMX script header | `P3t::Raf` in `src/p3t.h` | M on coldboot.raf; EA03 path on a synthetic RAFO only |
-| `--raf-report <theme.p3t\|scene.raf>@<report.json>` (this pass): the whole parsed scene graph as JSON, with actor -> material -> effect -> colour map bindings resolved, and a `renderer` block saying nothing is drawn. Exit 0 when a scene parsed, 3 when the theme has none, 2 on read errors | `P3t::rafReportJson`, `src/main.cpp` | M |
-| `XMB_P3T_TRACE=1` one-line summary through `--p3t-dump` | `P3t::trace` | M |
-| The fixed coldboot RAF renderer (3 HD actors, `raf.qrc` `vert0.vpo`/`sce01.fpo`, hardcoded `coldboot.jsx` timeline) | `src/coldboot.cpp` | M / TRACED (see `coldboot.h` header) |
+| `dynamic-ok.p3t` | `theme: animated scene shown as a still frame (initial pose; script not run)` | the coldboot scene's PS3 logo behind the XMB (generic GLSL, initial pose, SD and HD actors overlaid), no magenta |
+| same, `XMB_RAF_THEMES=0` | no scene line | the magenta still background, as before this work |
+| `dynamic-broken.p3t` | `theme: scene render failed; using still background: model plane: unsupported vertex stream format` | the magenta still background |
 
-Verified this pass with `--raf-report` on `coldboot.raf` (real: 6 actors, 2 lights, camera, `sce01` effect, VSMX script
-with 518 instructions, no `.anim` files) and on the synthetic fixture (1 EA03 header, 30 fps, 75 frames, timeline 0..2).
-The static fixture `.p3t` reports `hasScene=false` and exits 3. **No real dynamic-theme RAF was available locally**, so
-nothing here has been checked against one; the theme-embedded path (`bgimage/anim`) is proven only by the synthetic
-theme fixture, not by a shipped dynamic theme. Run `--raf-report` on a real dynamic theme first; its `effects`,
-`textures[].format` and `script` blocks decide the work order below.
+The still is drawn once per window size on the UI thread (offscreen GL context) when the theme is applied; it is not
+redrawn per frame.
 
-## 2. Why nothing is drawn (the honest gap)
+### 4.2 Gate (M)
 
-Parsing the container is the easy part. The motion is not in the container:
+Full run: 27/28 states + 6/6 layers; the one failure was `ingame-xmb` (frame PSNR 52.43, game frame and guide
+identical), the known flaky state, with the same score in other worktrees' runs of unrelated branches. Alone on the
+final build: PASS (frame 60.21 / SSIM 1.0000). So 28/28 + 6 layers. `raf-static-scene` passed in the full run. No
+reference was saved or replaced.
 
-1. **Time lives in the script (INFERRED from coldboot.raf, M for its content).** There is no keyframe track list in the
-   tree; `coldboot.raf` has zero `.anim` files and its whole timeline is VSMX code. Without the interpreter the actors
-   would sit at their initial pose. Drawing that and calling it a dynamic theme would be a fake.
-2. **Edge geometry** (`.edge`): compressed index stream, segments, several vertex stream types. `coldboot.cpp`'s
-   `parsePlane` special-cases a 4x4 plane. Arbitrary theme meshes need a real decoder.
-3. **Skeleton and `.anim`** (EA03): only the header (duration, fps, joints, frames) is read; keyframes are not.
-4. **VSMX interpreter**: compiled PlayStation JavaScript; `setPosition`/`setColor`/timers/time-of-day. `coldboot.cpp`
-   pattern-matches eight assignments, which does not generalise.
-5. **Effects/materials**: only `sce01` is wired. Themes name others (`pure_texture*`, `basic_lighting*`); each needs its
-   Cg program from `raf.qrc` (or the equivalent) plus blend/depth state.
-6. **Textures**: GTF DXT1/3/5, A8R8G8B8 (maybe swizzled) and B8 with mipmaps; coldboot uploads B8 only.
-7. **Composition and lifecycle**: depth/zsort, background layer under the XMB, fallback to the still background on any
-   failure, pause/resume.
+## 5. Remaining work, in order
 
-Detail for items 2-7 is in `THEMES.md` section 3.3; that analysis stands.
+1. **Get one or more real dynamic themes** (the user's own `.p3t`) and run `--raf-report` on them. Record effects,
+   `effectTokens`, texture `formatCode`/`layout`/`mipmaps`, `edgeDecode` results and `script.usage` here. This
+   decides everything below; without it, stop.
+2. Trace in raf.prx the code that formats `_gen_ubber1` + flags (string at 0x53278 in the local module) to map effect
+   tokens to the four digits and to blend/depth state. Then load those programs from `raf.qrc` at run time like
+   `coldboot.cpp` does (no committed blobs needed).
+3. Extend Edge decode to the stream formats and segment counts the real themes use; GTF mip/cubemap only if used.
+4. Interpreter: extend `evalVsmx` to the calls `script.usage` lists for the real themes (`Date` for time of day,
+   `Math`, `IntervalTimer`, rotation/animation properties, Bezier easing via the `Track` evaluator in coldboot.cpp).
+5. Move the scene from a one-off offscreen still to a per-frame layer behind the XMB (pause/resume, device loss,
+   fallback mid-run), then add a V2 pinned state from a fixture that can be committed.
 
-## 3. Remaining work, in order
-
-1. Run `--raf-report` on 2-3 real dynamic themes the user supplies (needs the user's files; never commit them). Record the
-   effects, texture formats, model count and script size distribution here, replacing INFERRED with M.
-2. Decode VSMX far enough to list the calls a theme script makes (a disassembler mode, `--raf-report` extension).
-   Decide the subset from real scripts, not from coldboot alone.
-3. GTF decode for the formats found in step 1 (the RCO/GIM DXT paths are reusable for DXT).
-4. Edge geometry decode, then a first static frame of a real theme behind the XMB, labelled as a still until the script
-   runs. Only after step 2 does it become playback.
-5. Interpreter subset + `Track` evaluator reuse from `coldboot.cpp`, effect programs, lifecycle and fallback.
-6. A pinned-state gate scenario (V2) once a frame renders.
-
-Size: unchanged from F6, **L**. This pass is the groundwork that makes step 1 possible without a debugger.
+Size: **L** remains for playback; step 1 is a user action, step 2 a short trace.
