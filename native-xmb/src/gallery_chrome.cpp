@@ -43,7 +43,7 @@ void View::openGallery() {
     GalleryThumbs::Config thumbConfig;
     if (problem.isEmpty() && !GalleryThumbs::policyFromParams(g.params, &thumbConfig.policy, &problem)) {}
     g.roots = galleryRoots_.isEmpty() ? shell_.photoLibraryRoots() : galleryRoots_;
-    if (problem.isEmpty() && g.roots.isEmpty()) problem = tr("No photo folder is set. Choose one with Photo > Choose Media Folder.");
+    if (problem.isEmpty() && g.roots.isEmpty()) problem = tr("No photo folder is set. Choose one with Photo > Photo Library > Choose Media Folder.");
     if (!problem.isEmpty()) {
         qWarning().noquote() << "gallery: cannot open:" << problem;
         shell_.galleryMessage(galleryText("msg_error_no_image", tr("There are no images.")));

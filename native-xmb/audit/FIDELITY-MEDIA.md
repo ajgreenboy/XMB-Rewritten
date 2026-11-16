@@ -107,7 +107,7 @@ panel, the time page or the status page** (GRAPHICS-INVENTORY 14 item 4).
 
 | # | element | firmware (evidence) | native (evidence) | verdict |
 |---|---|---|---|---|
-| V1 | Video column row set | `BD Data Utility`, `Search for Media Servers`, `Video Editor & Uploader` - 3 rows (M: `col2-video-r00..r02`) | `Continue Watching`, `Video Library`, `Video Settings`, `Choose Media Folder` - 4 rows (NS `shell.cpp` category table; M: `v1`, `v2`, `pv0`) | **differ** - a different row set, not a re-skin |
+| V1 | Video column row set | `BD Data Utility`, `Search for Media Servers`, `Video Editor & Uploader` - 3 rows (M: `col2-video-r00..r02`) | `Continue Watching`, `Video Library`, `Video Settings` - 3 rows (Choose Media Folder is the first row inside Video Library) (NS `shell.cpp` category table; M: `v1`, `v2`, `pv0`) | **differ** - a different row set, not a re-skin |
 | V2 | Video column row icons | plain folder / sliders+magnifier / triangle-over-dots (M: same frames) | `video_tex_album_default` for two rows, `tex_video`, `item_tex_plain_folder` (NS) | **differ** |
 | V3 | Full-screen backing plane | `videoplayer_full_screen_page` has **0 children** (FC, MEDIA-PANELS 3.1); the only declared full-screen plane in the media set is the *photo* container's `tex_front_screen`, 1x1, pixel (0,0,0) (FC, exported this pass) | `p.fillRect(QRectF(0,0,1920,1080),Qt::black)` then the frame letterboxed (NS `drawScene`, `view.cpp:1699`) | **match** |
 | V4 | 25-button control matrix | 25 named buttons, 13 columns x 3 rows of cells, icons 70x70 (98x70 repeat), each with `_shadow` + `_focus` (FC, MEDIA-PANELS 3.3) | **no button is drawn** (NS: no `videoplayer_cp_*` image is referenced anywhere in `src/`) | **absent** |
@@ -135,7 +135,7 @@ Console reference: `col-music-r00/r01` (column), `page3-music-row0*`, `page2-mus
 
 | # | element | firmware (evidence) | native (evidence) | verdict |
 |---|---|---|---|---|
-| M1 | Music column row set | `Search for Media Servers`, `Playlists` - 2 rows (M: `col-music-r00/r01`) | `Music Library`, `Music Settings`, `Choose Media Folder` - 3 rows (NS `shell.cpp`; M: `m0`) | **differ** |
+| M1 | Music column row set | `Search for Media Servers`, `Playlists` - 2 rows (M: `col-music-r00/r01`) | `Music Library`, `Music Settings` - 2 rows (Choose Media Folder is the first row inside Music Library) (NS `shell.cpp`; M: `m0`) | **differ** |
 | M2 | Music column row icons | sliders+magnifier / play-triangle-over-dots (M) | `music_tex_album_pic`, `tex_music`, `item_tex_plain_folder` (NS) | **differ** |
 | M3 | B1 audio player's own progress page | `play_progress_page` - 8 time cells, `audioplayer_display_time_bar` Progress height 20 max 100, track number, title, artist, codec label (FC 4.1) | flat 4 px track `QRectF(110,941,1700,4)` + one `MM:SS / MM:SS` at 23 px in (1450,963,360x45), plus the ASCII sentence at 21 px and the title at 27 px (NS `view.cpp:1716-1721`, `:1703`, `:1707`) | **differ** |
 | M4 | B1 14-button panel | 14 buttons at cells -3..+3, icons 70x70 (98x70 repeat/shuffle), alpha 0.8 template (FC 4.1) | none | **absent** |
@@ -160,7 +160,7 @@ elements that need a frame marked as such.
 
 | # | element | firmware (evidence) | native (evidence) | verdict |
 |---|---|---|---|---|
-| P1 | Photo column row set | `Search for Media Servers`, `Photo Gallery`, `Playlists` - 3 rows (M: `col-photo-r00..r02`) | `Photo Library`, `Photo Settings`, `Choose Media Folder` (NS `shell.cpp`) | **differ** |
+| P1 | Photo column row set | `Search for Media Servers`, `Photo Gallery`, `Playlists` - 3 rows (M: `col-photo-r00..r02`) | `Photo Library`, `Photo Settings` (Choose Media Folder is the first row inside Photo Library) (NS `shell.cpp`) | **differ** |
 | P2 | Front/back screen planes | `Pv_front_screen_plane` / `Pv_back_screen_plane` 1920x1080 with `tex_front_screen` / `tex_back_screen` 1x1 (FC 6.1); the front pixel is (0,0,0) (exported this pass) | `p.fillRect(QRectF(0,0,1920,1080),Qt::black)` then the image (NS `view.cpp:1699-1705`) | **match** |
 | P3 | View control panel (20 buttons + label + hint plane) | `view_controlpanel_group`, 20 buttons on a -7..+7 / step-2 grid, rows y=2 and y=0, icons 70x70, `button_description_label_incpv` width 300 height 9 size 10, `direct_key_icon` (FC 6.2) | none | **absent** |
 | P4 | Direct-key hint strip | 19 `tex_dki_*` icons 86x30 (FC 6.4) | one ASCII sentence at 21 px, (110,1020,1700x35): `Circle Back  Cross Slideshow/Pause  L1/R1 or +/- Zoom  Square/0 Reset  Triangle/Q/E Rotate  Arrows Pan when zoomed  [/] Photo` (NS `view.cpp:1705`) | **absent** |
