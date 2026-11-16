@@ -20,6 +20,7 @@ namespace {
 QVector3D vec(const P3t::Raf::Vec3& v) { return {float(v.x),float(v.y),float(v.z)}; }
 struct Mesh { GLuint vao=0,vbo=0,ibo=0; int count=0; };
 }
+bool rafThemesEnabled() { return qEnvironmentVariable("XMB_RAF_THEMES")!=QStringLiteral("0"); }
 QImage renderRafStill(const QByteArray& raf,const QString& devFlash,int width,int height,QString* error,RafStillStats* stats) {
     Q_UNUSED(devFlash); // The generic shader does not depend on firmware shader archives.
     if(error)error->clear();
