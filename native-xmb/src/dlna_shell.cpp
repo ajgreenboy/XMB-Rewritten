@@ -64,7 +64,8 @@ void Shell::initDlna() {
         dlnaServers_=servers;
         qInfo().noquote()<<"dlna: scan found"<<servers.size()<<"media server(s)";
         if(servers.isEmpty()) {
-            showMessage(assets_.text("dlna_plugin","msg_error_mediaserver_notfound","No media servers were found."),MessageKind::Page);
+            // The console keeps the scan row's heading and icon on this page (parity sweep 8, same page chrome as the wait page).
+            showMessage(dlnaScanTitle_,assets_.text("dlna_plugin","msg_error_mediaserver_notfound","No media servers were found."),MessageKind::Page);
             emit changed();return;
         }
         if(pages_.size()>=32){emit changed();return;}
@@ -171,7 +172,9 @@ bool Shell::activateDlna(const Entry& entry) {
     case Action::DlnaScan:
         if(dlnaScanning_)return true;
         dlnaScanning_=true;dlnaKind_=categories_[category_].id;
-        loading_=true;status_=QObject::tr("Searching for media servers...");
+        loading_=true;dlnaScanTitle_=entry.title;
+        // dlna_plugin msg_searching: the wait page's own two-line body ("Scanning...", newline, "Please wait.", RPCS3 4.93 capture, parity sweep 8)
+        status_=assets_.text("dlna_plugin","msg_searching",QStringLiteral("Scanning...\nPlease wait."));
         qInfo().noquote()<<"dlna: scan started from the"<<dlnaKind_<<"column";
         dlna_.discover(3000);
         emit changed();
