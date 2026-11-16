@@ -787,6 +787,7 @@ private:
     QVector<DlnaServer> dlnaServers_;
     quint64 dlnaRequest_=0,dlnaPhotoRequest_=0;
     bool dlnaScanning_=false;
+    QString dlnaScanTitle_;   // the scan row's own title: the heading of the "not found" page, as the console titles it
     QString dlnaKind_;                         // the column the scan was started from: music, video or photo
     QNetworkAccessManager* dlnaNetwork_=nullptr; // server photos (bounded download, then the photo viewer)
     void initDlna();
