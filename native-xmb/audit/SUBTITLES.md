@@ -482,10 +482,9 @@ The item-level panel was also re-captured after the drawing generalisation
 
 ## 9. What is not done, and why
 
-1. **Embedded subtitle streams** (`QMediaPlayer::subtitleTracks`) are not listed or switched. The
-   ffmpeg backend does support subtitle track selection, but the panel would then need to render
-   backend-delivered bitmaps and the local fixture set has none; the disabled row says so rather
-   than leaving the user guessing.
+1. **Embedded subtitle streams** (`QMediaPlayer::subtitleTracks`): listed and switched since the media phase 2
+   (JELLYFIN-PLAYER.md, "Phase 2"): text delivered to the video sink is drawn like a sidecar cue and the choice is
+   remembered per title. Picture-based embedded streams are not known to be drawn (the sink carries text; not tried).
 2. **Jellyfin subtitles** are not fetched. Streamed media has no user directory beside it, so
    discovery finds nothing; the panel's note says "Streamed media: sidecar subtitles are read for
    local video files only." The server-side VTT path is a follow-on.
