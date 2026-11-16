@@ -166,6 +166,15 @@ int main(int argc, char** argv) {
         check(audioNeedsPlayedMark(book, true) && !audioNeedsPlayedMark(song, true) && !audioNeedsPlayedMark(book, false), "audio: only a played long item gets the explicit mark");
     }
 
+    // ---- Play All windows ---------------------------------------------------------------------------------------------------
+    {
+        check(nextPlayAllWindow(200, 450) == 200 && nextPlayAllWindow(400, 450) == 400, "play all: the next window starts where the rows read end");
+        check(nextPlayAllWindow(450, 450) == -1 && nextPlayAllWindow(10, 10) == -1 && nextPlayAllWindow(10, 5) == -1, "play all: a complete list stops");
+        check(nextPlayAllWindow(0, 450) == -1, "play all: an empty window never loops the client");
+        check(nextPlayAllWindow(kPlayAllCap, 25000) == -1 && nextPlayAllWindow(kPlayAllCap - 200, 25000) == kPlayAllCap - 200, "play all: at most kPlayAllCap rows are read");
+        check(nextPlayAllWindow(200, 25000, 200) == -1 && nextPlayAllWindow(-5, 100) == -1, "play all: a custom cap and a negative count stop");
+    }
+
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

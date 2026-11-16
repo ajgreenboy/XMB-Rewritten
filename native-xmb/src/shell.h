@@ -240,6 +240,8 @@ enum class OptionCommand { Activate, Information,
     JellyfinAudioStream, PlayerChapters, PlayerChapterTarget,
     // Phase 2 (audit/JELLYFIN-PLAYER.md): the item menu's watched and favourite toggles, and the player panel's speed list.
     JellyfinTogglePlayed, JellyfinToggleFavorite, PlayerSpeed, PlayerSpeedTarget, ToggleAutoplayNext,
+    // Music (audit/MUSIC-PLAN-2026-11-16.md): play an album, an artist's songs or a playlist from its row, in order or shuffled.
+    JellyfinPlayAll, JellyfinShuffleAll,
     // A registered Jellyfin app's own row: reopen the setup page on its address (Change Server Address).
     JellyfinChangeAddress,
     // Edit (explore_plugin msg_edit) on a playlist row or an item inside one opens the two-pane editor
@@ -1037,6 +1039,13 @@ private:
     QStringList jellyfinAlbumArtOrder_;
     void loadJellyfinSearchPage(const QString& term,const QString& title,int start=0,bool replace=false);
     void openJellyfinMedia(const Entry& entry,bool fromBeginning=false);
+    void playJellyfinQueue(const QVector<Entry>& rows,int selected,bool fromBeginning=false);
+    // Play All / Shuffle Play on an album, artist or playlist row: the tracks are read window by window, then queued.
+    void startJellyfinPlayAll(const Entry& node,bool shuffle);
+    void continueJellyfinPlayAll(const JellyfinPage& result);
+    static Entry jellyfinTrackEntry(const JellyfinItem& media,bool albumPage);
+    struct JellyfinPlayAll { quint64 request=0; QString kind,id,library,title; bool shuffle=false; QVector<JellyfinItem> tracks; int fetched=0; };
+    JellyfinPlayAll jellyfinPlayAll_;
     void startJellyfinMedia();
     void applyJellyfinResume();
     void reportJellyfinPlaybackState();

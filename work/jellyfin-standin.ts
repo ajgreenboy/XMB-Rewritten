@@ -273,7 +273,10 @@ function musicRoutes(req: any, res: any, path: string, q: URLSearchParams, body:
       const parent = q.get("ParentId");
       const album = albums.find((a) => a.id === parent);
       if (parent && !album && parent !== MUSIC_VIEW && parent !== MUSIC_VIEW2) return reply({ Items: [], TotalRecordCount: 0, StartIndex: 0 });
-      const list = album ? tracks.filter((t) => t.album === album) : [...tracks].sort(byName);
+      const artistId = q.get("ArtistIds");
+      const list = album ? tracks.filter((t) => t.album === album)
+        : artistId ? tracks.filter((t) => t.artist.id === artistId).sort((a, b) => a.album.name.localeCompare(b.album.name) || a.no - b.no)   // an artist's songs, album by album
+        : [...tracks].sort(byName);
       return reply(windowOf(list, q, trackJson));
     }
     if (types.includes("Playlist")) {

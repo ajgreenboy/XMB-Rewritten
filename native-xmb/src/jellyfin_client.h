@@ -94,8 +94,9 @@ public:
     // through pageReady like items(): Artists = the album artists, Albums, Songs, Playlists (audio playlists),
     // Recent = albums by date added, Random = a random page of albums, ArtistAlbums (id = the artist),
     // AlbumTracks (id = the album, disc and track order), PlaylistTracks (id = the playlist, its own order), Search
-    // (id = the term). libraryId, when given, limits a list to that music library.
-    enum class MusicList { Artists, Albums, Songs, Playlists, Recent, Random, ArtistAlbums, AlbumTracks, PlaylistTracks, Search };
+    // (id = the term), ArtistTracks (id = the artist: every song they perform, album by album, for "Play All"). libraryId, when
+    // given, limits a list to that music library.
+    enum class MusicList { Artists, Albums, Songs, Playlists, Recent, Random, ArtistAlbums, AlbumTracks, PlaylistTracks, Search, ArtistTracks };
     quint64 music(MusicList kind, QString libraryId = {}, QString id = {}, int startIndex = 0);
     // maxBitrateKbps caps what the server may send: above the file's bitrate it direct-plays, below it the
     // server transcodes down (HLS) to fit.

@@ -19,6 +19,7 @@
 #include "jellyfin_player.h"
 #include <QDir>
 #include <QUrl>
+#include <QRandomGenerator>
 #include <algorithm>
 
 namespace xmb {
@@ -52,6 +53,20 @@ bool musicKind(const QString& kind,JellyfinClient::MusicList& out) {
 QString joinDetail(const QStringList& parts){return parts.join(QStringLiteral(" - "));}
 }
 
+// One track as a row: what Cross plays and what Now Playing shows. Covers are asked for by the page, not here.
+Entry Shell::jellyfinTrackEntry(const JellyfinItem& media,bool albumPage) {
+    Entry e=musicRow(QStringLiteral("jellyfin:")+media.id,media.title,Action::JellyfinPlay,media.id);
+    e.container=QStringLiteral("explore_plugin_full");e.texture=QStringLiteral("music_tex_album_pic");e.iconSized=true;
+    e.mediaKind=QStringLiteral("Music");e.option=true;
+    e.resumeMs=jfplayer::audioRowResumeMs(media.resumeMs,media.durationMs);e.durationMs=media.durationMs;e.played=media.played;e.favorite=media.favorite;
+    auto meta=std::make_shared<Entry::MusicMeta>();meta->artist=media.artist;meta->album=media.album;meta->albumId=media.albumId;meta->albumTag=media.albumTag;
+    QStringList info;
+    if(!media.artist.isEmpty())info<<media.artist;
+    if(!albumPage && !media.album.isEmpty())info<<media.album;
+    meta->info=joinDetail(info);e.music=std::move(meta);
+    e.detail=jellyfinRowDetail(e);
+    return e;
+}
 // The column row: its second line says whether the shared session is live. The row stays while a Jellyfin app is registered,
 // so signing in or out changes what it says, never whether the way in exists.
 void Shell::refreshJellyfinMusicRow() {
@@ -186,15 +201,7 @@ void Shell::buildJellyfinMusicPage(const JellyfinPage& result) {
             continue;
         }
         if(media.type!="Audio")continue;
-        Entry e=musicRow(QStringLiteral("jellyfin:")+media.id,media.title,Action::JellyfinPlay,media.id);
-        e.container=QStringLiteral("explore_plugin_full");e.texture=QStringLiteral("music_tex_album_pic");e.iconSized=true;
-        e.mediaKind=QStringLiteral("Music");e.option=true;
-        e.resumeMs=jfplayer::audioRowResumeMs(media.resumeMs,media.durationMs);e.durationMs=media.durationMs;e.played=media.played;e.favorite=media.favorite;
-        auto meta=std::make_shared<Entry::MusicMeta>();meta->artist=media.artist;meta->album=media.album;meta->albumId=media.albumId;meta->albumTag=media.albumTag;
-        QStringList info;
-        if(!media.artist.isEmpty())info<<media.artist;
-        if(!albumPage && !media.album.isEmpty())info<<media.album;
-        meta->info=joinDetail(info);e.music=std::move(meta);
+        Entry e=jellyfinTrackEntry(media,albumPage);
         // The cover is the album's (a track rarely has its own); one request per album per page, and none for one already held.
         const QString coverId=!media.albumId.isEmpty() && !media.albumTag.isEmpty()?media.albumId:media.id;
         const QString coverTag=!media.albumId.isEmpty() && !media.albumTag.isEmpty()?media.albumTag:media.primaryTag;
@@ -222,6 +229,48 @@ void Shell::buildJellyfinMusicPage(const JellyfinPage& result) {
     }
     qInfo().noquote()<<QString("jellyfin: music %1 page with %2 row(s) of %3; %4 cover request(s)")
         .arg(kind).arg(page.entries.size()).arg(result.total).arg(covers);
+}
+// Play All / Shuffle Play: read the tracks of an album, an artist or a playlist (200 a request, up to jfplayer::kPlayAllCap) and queue
+// them. Shuffle Play turns the Shuffle preference on (the panel's own setting) and starts at a random track.
+void Shell::startJellyfinPlayAll(const Entry& node,bool shuffle) {
+    JellyfinClient::MusicList list{};
+    const QString kind=node.setting;
+    if(kind==QLatin1String("album"))list=JellyfinClient::MusicList::AlbumTracks;
+    else if(kind==QLatin1String("playlist"))list=JellyfinClient::MusicList::PlaylistTracks;
+    else if(kind==QLatin1String("artist"))list=JellyfinClient::MusicList::ArtistTracks;
+    else return;
+    if(!jellyfin_.signedIn()){showMessage(QStringLiteral("Jellyfin"),tr("Sign in to Jellyfin again from Music > Jellyfin Music."),MessageKind::Page);emit changed();return;}
+    jellyfinPlayAll_={};jellyfinPlayAll_.kind=kind;jellyfinPlayAll_.id=node.value;jellyfinPlayAll_.library=node.option.toString();
+    jellyfinPlayAll_.title=node.title;jellyfinPlayAll_.shuffle=shuffle;
+    loading_=true;status_=tr("Loading tracks...");jellyfinRequestDepth_=int(pages_.size());
+    jellyfinRequest_=jellyfin_.music(list,jellyfinPlayAll_.library,node.value,0);jellyfinPlayAll_.request=jellyfinRequest_;
+    qInfo().noquote()<<"jellyfin: play all"<<kind<<(shuffle?"shuffled":"in order");
+    emit changed();
+}
+void Shell::continueJellyfinPlayAll(const JellyfinPage& result) {
+    auto& all=jellyfinPlayAll_;
+    all.fetched+=int(result.items.size());
+    for(const auto& media:result.items)if(media.type=="Audio")all.tracks.push_back(media);
+    const int next=result.items.isEmpty()?-1:jfplayer::nextPlayAllWindow(all.fetched,result.total);
+    if(next>=0) {
+        JellyfinClient::MusicList list=all.kind==QLatin1String("album")?JellyfinClient::MusicList::AlbumTracks:
+            all.kind==QLatin1String("playlist")?JellyfinClient::MusicList::PlaylistTracks:JellyfinClient::MusicList::ArtistTracks;
+        loading_=true;status_=tr("Loading tracks...");
+        jellyfinRequest_=jellyfin_.music(list,all.library,all.id,next);all.request=jellyfinRequest_;
+        return;
+    }
+    const auto tracks=std::move(all.tracks);const bool shuffle=all.shuffle,albumKind=all.kind==QLatin1String("album");const QString title=all.title;
+    jellyfinPlayAll_={};
+    if(tracks.isEmpty()){notify(QStringLiteral("Jellyfin"),tr("%1 has no tracks the server can play.").arg(title));return;}
+    QVector<Entry> rows;
+    for(const auto& media:tracks)rows.push_back(jellyfinTrackEntry(media,albumKind));
+    int selected=0;
+    if(shuffle) {
+        preferences_.setValue("media/shuffle",true);
+        selected=int(QRandomGenerator::global()->bounded(quint32(rows.size())));
+    }
+    qInfo().noquote()<<QString("jellyfin: play all queued %1 track(s) of %2%3").arg(rows.size()).arg(title).arg(shuffle?QStringLiteral(" (shuffled)"):QString{});
+    playJellyfinQueue(rows,selected);
 }
 // What Now Playing shows for a queue's tracks: the rows' own tags, because a server stream carries none this player reads.
 void Shell::rememberJellyfinTracks(const QVector<Entry>& rows) {

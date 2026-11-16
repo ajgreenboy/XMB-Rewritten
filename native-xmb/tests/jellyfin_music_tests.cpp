@@ -293,6 +293,23 @@ int main(int argc, char** argv) {
             check(t.durationMs == 240000 && t.resumeMs == 0, "track: 4:00 and no resume point");
         }
     }
+    // ---- Play All: an artist's songs, album by album; an album's and a playlist's tracks are the lists above --------------------------
+    {
+        const auto p = ask(ML::ArtistTracks, kLib, kArtist, 0, "artist tracks answered");
+        const Req r = fake.last("/Items");
+        check(r.query().queryItemValue("ArtistIds") == kArtist && r.query().queryItemValue("IncludeItemTypes") == QLatin1String("Audio") && r.query().queryItemValue("Recursive") == QLatin1String("true"), "artist tracks: songs by ArtistIds, recursive");
+        check(r.query().queryItemValue("SortBy") == QLatin1String("Album,ParentIndexNumber,IndexNumber,SortName") && r.query().queryItemValue("SortOrder") == QLatin1String("Ascending"), "artist tracks: album by album, disc and track order");
+        check(r.query().queryItemValue("UserId") == kUser && r.query().queryItemValue("Limit") == QLatin1String("200") && !r.rawQuery.contains(kToken), "artist tracks: user scoped, a 200-row window, no credential in the url");
+        check(!p.items.isEmpty() && p.items[0].type == QLatin1String("Audio"), "artist tracks: tracks parsed");
+        ask(ML::ArtistTracks, kLib, kArtist, 200, "artist tracks window 2 answered");
+        check(fake.last("/Items").query().queryItemValue("StartIndex") == QLatin1String("200"), "artist tracks: the next window asks StartIndex=200");
+        errors.clear();
+        const int before = int(fake.log.size());
+        client.music(ML::ArtistTracks, kLib, {});
+        client.music(ML::ArtistTracks, kLib, QStringLiteral("../x"));
+        check(waitFor([&] { return errors.size() >= 2; }) && int(fake.log.size()) == before, "artist tracks: a missing or invalid artist id is refused before anything is sent");
+        errors.clear();
+    }
     // ---- a very large library is paged, never read whole -----------------------------------------------------------------
     {
         QElapsedTimer timer; timer.start();

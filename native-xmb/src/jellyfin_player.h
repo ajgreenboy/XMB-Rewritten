@@ -63,6 +63,13 @@ qint64 chapterSkipTarget(const QVector<Chapter>& chapters, qint64 positionMs, in
 // "1. Opening  00:00", or "3. Chapter 3" for an unnamed one.
 QString chapterLabel(const Chapter& chapter, int index);
 
+// ---- Play All (audit/MUSIC-PLAN-2026-11-16.md) ------------------------------------------------------------------
+// "Play All" on an album, an artist or a playlist reads the tracks window by window (200 a request) up to this many.
+constexpr int kPlayAllCap = 1000;
+// The StartIndex of the next window to read after `fetched` rows of `total`, or -1 when nothing more is wanted: the list is
+// complete, the cap is reached, or nothing came back (a server that answers an empty window must not loop the client).
+int nextPlayAllWindow(int fetched, int total, int cap = kPlayAllCap);
+
 // ---- Streams and the per-title choice --------------------------------------------------------------------
 // The server stream index to ask for: the remembered one when this item still has that audio stream, else the
 // stream the server marks default, else the first audio stream, else -1.

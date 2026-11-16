@@ -484,7 +484,7 @@ quint64 JellyfinClient::search(QString term, int startIndex) {
 
 quint64 JellyfinClient::music(MusicList kind, QString libraryId, QString id, int startIndex) {
     if (!signedIn()) { const quint64 request = ++nextRequest_; fail(request, QStringLiteral("Sign in to Jellyfin first.")); return request; }
-    const bool needsId = kind == MusicList::ArtistAlbums || kind == MusicList::AlbumTracks || kind == MusicList::PlaylistTracks;
+    const bool needsId = kind == MusicList::ArtistAlbums || kind == MusicList::AlbumTracks || kind == MusicList::PlaylistTracks || kind == MusicList::ArtistTracks;
     bool idOk = needsId ? validId(id) : true;
     if (kind == MusicList::Search) {
         id = id.trimmed();
@@ -530,6 +530,10 @@ quint64 JellyfinClient::music(MusicList kind, QString libraryId, QString id, int
         break;
     case MusicList::ArtistAlbums:
         items(QStringLiteral("MusicAlbum"), QStringLiteral("ProductionYear,SortName"), QStringLiteral("Ascending"));
+        query.addQueryItem(QStringLiteral("ArtistIds"), id);
+        break;
+    case MusicList::ArtistTracks:
+        items(QStringLiteral("Audio"), QStringLiteral("Album,ParentIndexNumber,IndexNumber,SortName"), QStringLiteral("Ascending"));
         query.addQueryItem(QStringLiteral("ArtistIds"), id);
         break;
     case MusicList::AlbumTracks:

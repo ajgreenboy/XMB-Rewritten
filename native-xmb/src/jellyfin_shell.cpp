@@ -110,6 +110,7 @@ void Shell::initJellyfin() {
         if(request==0){if(jellyfinSigningIn_){jellyfinSigningIn_=false;emit jellyfinSignInFinished(false,error);}return;}
         if(request!=jellyfinRequest_)return;
         jellyfinRequest_=0;loading_=false;status_.clear();
+        if(jellyfinPlayAll_.request==request)jellyfinPlayAll_={};
         // A remembered session the server no longer accepts: forget it and show the sign-in page,
         // because that is the surface that can fix it.
         if(jellyfinRestoring_) {
@@ -130,6 +131,7 @@ void Shell::initJellyfin() {
     connect(&jellyfin_,&JellyfinClient::pageReady,this,[this](quint64 request,const JellyfinPage& result){
         if(request!=jellyfinRequest_ || pages_.size()!=jellyfinRequestDepth_ || pages_.isEmpty() || !pages_.last().jellyfin)return;
         jellyfinRequest_=0;loading_=false;status_.clear();jellyfinRestoring_=false;auto& page=pages_.last();
+        if(jellyfinPlayAll_.request==request){continueJellyfinPlayAll(result);emit changed();return;}   // Play All, not a page of rows
         if(!page.jellyfinMusic.isEmpty()){buildJellyfinMusicPage(result);emit changed();return;}
         const QString selected=page.entries.isEmpty()?QString{}:page.entries.value(page.selection).id;
         page.entries.clear();page.selection=0;
@@ -493,15 +495,23 @@ void Shell::loadJellyfinSearchPage(const QString& term,const QString& title,int 
     jellyfinRequest_=jellyfin_.search(term,start);emit changed();
 }
 void Shell::openJellyfinMedia(const Entry& entry,bool fromBeginning) {
-    QVector<PlaybackQueue::Item> queue;int selected=-1;jellyfinAudio_.clear();jellyfinResume_.clear();jellyfinSeries_.clear();jellyfinKinds_.clear();
+    QVector<Entry> rows;int selected=-1;
     const bool homePage=!pages_.isEmpty() && !pages_.last().jellyfinHome.isEmpty();
-    for(const auto& row:entries())if(row.action==Action::JellyfinPlay && (!homePage || row.id==entry.id)){if(row.id==entry.id)selected=int(queue.size());queue.push_back({row.value,row.title});jellyfinAudio_.insert(row.value,row.option.toBool());jellyfinResume_.insert(row.value,row.resumeMs);jellyfinSeries_.insert(row.value,row.seriesId);jellyfinKinds_.insert(row.value,row.mediaKind);}
+    for(const auto& row:entries())if(row.action==Action::JellyfinPlay && (!homePage || row.id==entry.id)){if(row.id==entry.id)selected=int(rows.size());rows.push_back(row);}
     if(selected<0)return;
-    if(fromBeginning)jellyfinResume_.insert(entry.value,0);
-    rememberJellyfinTracks(entries());
     qInfo().noquote()<<QString("jellyfin: %1 \"%2\" (server position %3 ms)")
         .arg(fromBeginning?QStringLiteral("play from the beginning"):QStringLiteral("play"))
         .arg(entry.title).arg(fromBeginning?0:entry.resumeMs);
+    playJellyfinQueue(rows,selected,fromBeginning);
+}
+// Queue `rows` (Jellyfin playable rows) and start the one at `selected`: the page's rows for Cross on a track, the tracks of an album,
+// an artist or a playlist for Play All.
+void Shell::playJellyfinQueue(const QVector<Entry>& rows,int selected,bool fromBeginning) {
+    if(selected<0 || selected>=rows.size())return;
+    QVector<PlaybackQueue::Item> queue;jellyfinAudio_.clear();jellyfinResume_.clear();jellyfinSeries_.clear();jellyfinKinds_.clear();
+    for(const auto& row:rows){queue.push_back({row.value,row.title});jellyfinAudio_.insert(row.value,row.option.toBool());jellyfinResume_.insert(row.value,row.resumeMs);jellyfinSeries_.insert(row.value,row.seriesId);jellyfinKinds_.insert(row.value,row.mediaKind);}
+    if(fromBeginning)jellyfinResume_.insert(rows.at(selected).value,0);
+    rememberJellyfinTracks(rows);
     jellyfinQueue_=true;mediaQueue_.clear();mediaQueue_.setRepeat(static_cast<PlaybackQueue::Repeat>(mediaRepeatMode()));
     mediaQueue_.setShuffle(preferences_.value("media/shuffle").toBool());mediaQueue_.reset(std::move(queue),selected);mediaFailures_=0;startJellyfinMedia();
 }

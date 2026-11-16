@@ -43,6 +43,11 @@ qint64 audioRowResumeMs(qint64 serverResumeMs, qint64 durationMs) {
 
 bool audioNeedsPlayedMark(qint64 durationMs, bool played) { return played && audioResumable(durationMs); }
 
+int nextPlayAllWindow(int fetched, int total, int cap) {
+    if (fetched <= 0 || total <= fetched || fetched >= cap) return -1;
+    return fetched;
+}
+
 QVector<Chapter> normalizedChapters(QVector<Chapter> chapters) {
     chapters.erase(std::remove_if(chapters.begin(), chapters.end(), [](const Chapter& c) { return c.startMs < 0; }), chapters.end());
     std::stable_sort(chapters.begin(), chapters.end(), [](const Chapter& a, const Chapter& b) { return a.startMs < b.startMs; });

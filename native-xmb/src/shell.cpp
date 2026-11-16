@@ -3186,6 +3186,16 @@ void Shell::buildOptions() {
         addOption({"msg_prev","Previous"},OptionCommand::SpotifyPrevious,"spotify-now");
         return;
     }
+    // ---- A Jellyfin album, artist or playlist row: start it from its row, in order or shuffled (audit/MUSIC-PLAN-2026-11-16.md) ----
+    if(entry.action==Action::JellyfinMusicNode && jellyfin_.signedIn() &&
+       (entry.setting==QLatin1String("album") || entry.setting==QLatin1String("artist") || entry.setting==QLatin1String("playlist"))) {
+        const bool artist=entry.setting==QLatin1String("artist");
+        addOption({"msg_play","Play"},OptionCommand::JellyfinPlayAll,"jellyfin-music",true,
+                  artist?tr("Every song by this artist, album by album."):tr("Every track, in order."));
+        addOption({"","Shuffle Play"},OptionCommand::JellyfinShuffleAll,"jellyfin-music",true,tr("Turns Shuffle on and starts at a random track."));
+        addOption({"msg_open","Open"},OptionCommand::Activate,"jellyfin-music");
+        return;
+    }
     // ---- A Spotify playlist row: start the whole playlist without opening it ---------------------------------
     if(entry.action==Action::SpotifyPlaylist) {
         addOption({"msg_play","Play"},OptionCommand::SpotifyPlayAll,"spotify-playlist");
@@ -3706,6 +3716,14 @@ void Shell::optionsActivate() {
         const Entry row=entry;
         resetOptions();
         toggleJellyfinFlag(row,option.command==OptionCommand::JellyfinToggleFavorite);
+        interactionAudio_.play(InteractionAudio::Cue::Confirm);
+        emit changed();
+        break;
+    }
+    case OptionCommand::JellyfinPlayAll:case OptionCommand::JellyfinShuffleAll: {
+        const Entry row=entry;
+        resetOptions();
+        startJellyfinPlayAll(row,option.command==OptionCommand::JellyfinShuffleAll);
         interactionAudio_.play(InteractionAudio::Cue::Confirm);
         emit changed();
         break;
