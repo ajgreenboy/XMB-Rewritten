@@ -1026,7 +1026,8 @@
       "env": {
         "XMB_STEAM_ROOT": "C:/dev/out/v2/empty-steam",
         "XMB_NO_GAMEBOOT": "1",
-        "XMB_PS_LOG": "1"
+        "XMB_PS_LOG": "1",
+        "XMB_INGAME_LIVE": "0"
       },
       "stubLog": "C:/dev/out/v2/stub.log",
       "waits": 10,
@@ -1404,6 +1405,7 @@
         "XMB_STEAM_ROOT": "C:/dev/out/v2/empty-steam",
         "XMB_NO_GAMEBOOT": "1",
         "XMB_PS_LOG": "1",
+        "XMB_INGAME_LIVE": "0",
         "XMB_SINGLE_INSTANCE": "0"
       },
       "stubLog": "C:/dev/out/v2/stub.log",
@@ -1499,6 +1501,7 @@
         "XMB_STEAM_ROOT": "C:/dev/out/v2/empty-steam",
         "XMB_NO_GAMEBOOT": "1",
         "XMB_PS_LOG": "1",
+        "XMB_INGAME_LIVE": "0",
         "XMB_SINGLE_INSTANCE": "0"
       },
       "stubLog": "C:/dev/out/v2/stub.log",

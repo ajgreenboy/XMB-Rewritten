@@ -223,9 +223,22 @@ private:
     bool inGameBack();
     void drawInGameBackdrop(int width,int height);
     void stopLiveOverlay();
+    // The live overlay failed while the menu was open: back to the frozen path (one deferred capture, then the opaque XMB).
+    void liveOverlayFailed(const QString& why);
+    // GL to D3D bridge (view.cpp): resolve, flip and downscale to <= 1920 wide on the GPU, read back asynchronously through
+    // one pixel-pack buffer, present the previous paint's frame.
+    bool liveBridgeIssue(const QSize& device,QString* error);
+    bool liveBridgePresent(QString* error);
+    void liveBridgeRelease();
     std::unique_ptr<class LiveOverlay> liveOverlay_;
-    QImage liveOverlayPixels_;
     std::unique_ptr<QOpenGLFramebufferObject> liveOverlayResolved_;
+    std::unique_ptr<QOpenGLFramebufferObject> liveOverlayTarget_;   // flipped, <= 1920 wide, the size the overlay presents
+    GLuint liveOverlayPbo_=0;
+    GLsizeiptr liveOverlayPboBytes_=0;
+    bool liveReadPending_=false;       // a read-back was issued and not yet presented
+    qint64 liveIssuedNs_=0;            // clock_ time of the last issued read-back (idle heartbeat)
+    quint32 liveIssued_=0,liveSkipped_=0;
+    double liveBridgeMsSum_=0,liveBridgeMsMax_=0;quint32 liveBridgeSamples_=0;
     qreal liveOverlayOwnerOpacity_=1.;
     QImage inGameBackdrop_;           // the captured game frame, empty when capture was black/failed/unsupported
     std::unique_ptr<QOpenGLTexture> inGameTexture_;

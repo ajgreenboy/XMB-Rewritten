@@ -9,6 +9,7 @@
 #include <wrl/client.h>
 #endif
 #include "live_overlay.h"
+#include <chrono>
 
 namespace xmb {
 #ifdef Q_OS_WIN
@@ -40,10 +41,11 @@ struct LiveOverlay::Impl {
     ComPtr<IDCompositionVisual> visual;
     QSize size;
     QRect monitor;
+    double presentMs=0.;
     ~Impl() { if(window)DestroyWindow(window); }
 };
 #else
-struct LiveOverlay::Impl {};
+struct LiveOverlay::Impl { double presentMs=0.; };
 #endif
 LiveOverlay::LiveOverlay():impl_(std::make_unique<Impl>()) {}
 LiveOverlay::~LiveOverlay()=default;
@@ -79,12 +81,20 @@ bool LiveOverlay::create(quintptr owner, const QRect& monitor, QString* error) {
 #endif
 }
 bool LiveOverlay::present(const QImage& image, QString* error) {
-#ifdef Q_OS_WIN
-    auto& s=*impl_;
-    if(!IsWindow(s.window) || !IsWindow(s.owner) || image.isNull() || image.format()!=QImage::Format_ARGB32_Premultiplied) {
+    if(image.isNull() || image.format()!=QImage::Format_ARGB32_Premultiplied) {
         if(error)*error=QStringLiteral("invalid overlay window or premultiplied framebuffer");return false;
     }
-    if(s.size!=image.size()) {
+    return present(image.constBits(),int(image.bytesPerLine()),image.size(),error);
+}
+double LiveOverlay::lastPresentMilliseconds() const { return impl_->presentMs; }
+bool LiveOverlay::present(const uchar* bits, int bytesPerLine, const QSize& image, QString* error) {
+#ifdef Q_OS_WIN
+    auto& s=*impl_;
+    if(!IsWindow(s.window) || !IsWindow(s.owner) || !bits || image.isEmpty()) {
+        if(error)*error=QStringLiteral("invalid overlay window or premultiplied framebuffer");return false;
+    }
+    const auto t0=std::chrono::steady_clock::now();
+    if(s.size!=image) {
         s.context->ClearState();
         if(s.chain) {
             if(!checked(s.chain->ResizeBuffers(2,UINT(image.width()),UINT(image.height()),DXGI_FORMAT_B8G8R8A8_UNORM,0),"ResizeBuffers",error))return false;
@@ -102,11 +112,11 @@ bool LiveOverlay::present(const QImage& image, QString* error) {
         const D2D_MATRIX_3X2_F scale{float(s.monitor.width())/image.width(),0,0,float(s.monitor.height())/image.height(),0,0};
         if(!checked(s.visual->SetTransform(scale),"SetTransform",error) ||
            !checked(s.composition->Commit(),"Commit",error))return false;
-        s.size=image.size();
+        s.size=image;
     }
     ComPtr<ID3D11Texture2D> buffer;
     if(!checked(s.chain->GetBuffer(0,IID_PPV_ARGS(&buffer)),"GetBuffer",error))return false;
-    s.context->UpdateSubresource(buffer.Get(),0,nullptr,image.constBits(),UINT(image.bytesPerLine()),0);
+    s.context->UpdateSubresource(buffer.Get(),0,nullptr,bits,UINT(bytesPerLine),0);
     // Qt already paces this loop; do not add a second blocking vsync wait.
     if(!checked(s.chain->Present(0,0),"Present",error) ||
        !checked(s.device->GetDeviceRemovedReason(),"D3D device",error))return false;
@@ -115,9 +125,10 @@ bool LiveOverlay::present(const QImage& image, QString* error) {
             if(error)*error=QStringLiteral("show overlay failed: %1").arg(GetLastError());return false;
         }
     }
+    s.presentMs=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-t0).count();
     return true;
 #else
-    Q_UNUSED(image);Q_UNUSED(error);return false;
+    Q_UNUSED(bits);Q_UNUSED(bytesPerLine);Q_UNUSED(image);Q_UNUSED(error);return false;
 #endif
 }
 } // namespace xmb

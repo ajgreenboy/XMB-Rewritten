@@ -102,7 +102,7 @@ The 28 states are self-baselines of this renderer, not measurements of the conso
 
 ### Known gaps
 
-- The system menu over a running game brings the XMB window forward. It is not yet a translucent overlay drawn over the game.
+- The system menu over a running game is a translucent overlay drawn over the live game for borderless and windowed titles, and falls back to a frozen frame of the game for exclusive fullscreen (or when the overlay cannot start; `XMB_INGAME_LIVE=0` forces the frozen frame). It is unverified on real games until tried on the HTPC: 4K timing, exclusive fullscreen, Steam Input and anti-cheat tolerance are listed in [INGAME-OVERLAY-DESIGN.md](native-xmb/audit/INGAME-OVERLAY-DESIGN.md).
 - A DualSense is read directly over HID. Steam Input for PlayStation controllers can hide it from the XMB while a Steam game runs.
 - PSN is not connected. Rows that need it say so.
 - Differences from the console that are recorded and not yet fixed are listed in the parity audits, for example the depth-1 item page icons ([PARITY-SWEEP-6A](native-xmb/audit/PARITY-SWEEP-6A-RPCS3-2026-11-14.md)).
