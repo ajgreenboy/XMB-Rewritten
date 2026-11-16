@@ -252,14 +252,16 @@ What changed:
 
 Measured (`XMB_OVERLAY_COST=1`, `work/overlay-live-test.ts`, stand-in `tests/overlay_standin.cpp`): CPU time of the bridge per dirty frame
 (issue plus present of the previous frame, GUI thread), 60-frame windows:
-- 1080p device: mean 0.22 ms, max 0.96 ms; `LiveOverlay::present` (UpdateSubresource + Present) about 0.5 ms. Before: 5.9 ms median (DOC).
-- 3840x2160 device (frameless XMB window of that size on a 1080p monitor): mean 0.23 ms, max 1.44 ms, still a 1920x1080 target.
-  These are CPU-side numbers; the GPU cost of the 4K resolve and downscale blits is not measured (needs a timer query). While idle only about
-  one frame in four reads back (205 skipped of 265).
-Tests: `bun work/overlay-live-test.ts` (borderless live, `XMB_INGAME_LIVE=0` frozen, windowed live; desktop probe shows the stand-in keeps
-changing behind the menu live (about 95% of probe pixels) and not at all frozen, mean luma 23 vs 71 bare; focus returns to the stand-in). The
-4K-window variant (`--size 3840x2160`) failed the changed-pixels check (2786 of 187200): not understood, probably the oversized frameless XMB
-window covering the overlay on this PC; the cost line is still valid.
+- 1080p device: mean 0.22-0.24 ms, max 0.96 ms; `LiveOverlay::present` (UpdateSubresource + Present) 0.5-0.7 ms. Before: 5.9 ms median (DOC).
+- 3840x2160 device (frameless XMB window of that size on a 1080p monitor, script `size=3840x2160` with `XMB_SCRIPT_FRAMELESS=1`): mean 0.22-0.35 ms,
+  max 1.8 ms, still a 1920x1080 target and overlay window sized to the game's monitor. CPU-side only: the GPU cost of the 4K resolve and
+  downscale blits is not measured (needs a timer query). Idle, about one frame in four reads back.
+Tests: `bun work/overlay-live-test.ts [--size 3840x2160]` (borderless live, `XMB_INGAME_LIVE=0` frozen, windowed live): the stand-in keeps changing behind the
+live menu (98% of probe pixels) and not at all behind the frozen one, the screen is dimmed (luma 29 vs 169 bare), focus returns to the stand-in.
+An earlier 4K failure was a too-slow colour cycle in the stand-in under an 80% dim, not a covering window; fixed in the stand-in.
+Gate (merged with main's library-chooser change): 6/6 layers; 25/28 states. The three failures (`jellyfin-signin`, `steam-download-page`,
+`settings-autologon-row`) fail identically with `XMB_INGAME_LIVE=0` (no alpha buffer) and with the pre-change `libchoose-base` exe, so they are
+not caused by this change; `ingame-xmb`, `ingame-enter-text`, `ingame-enter-text-keyboard` and the three library-chooser states pass. No reference was saved.
 Manual HTPC procedure: build with `XMB_OVERLAY_BUILD_TESTS=ON` or use a real borderless game; set `XMB_PS_LOG=1 XMB_OVERLAY_COST=1 XMB_LOG=<file>`;
 launch a Steam game borderless, tap PS, confirm the log says `overlay=live`, the game is visible and moving behind the dimmed menu, `bridge ... meanMs`
 stays small, then Circle at the column root and confirm the game regains focus and input (and Quit Game still works, STEAM-QUIT.md); repeat with
