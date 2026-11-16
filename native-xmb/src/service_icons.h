@@ -18,7 +18,7 @@ const QImage& spotify();
 const QImage& steam(const QString& steamRoot);
 const QImage& jellyfin();   // the user's own server's icon once fetched, else the embedded official icon (jellyfin_icon_data.cpp)
 const QImage& tailscale();
-const QImage& homeAssistant();   // the user's own HA server's icon once fetched, else the embedded official icon (ha_icon_data.cpp)
+const QImage& homeAssistant();   // the user's own HA server's icon once fetched, else a plain drawn house outline (glyphs::house, no third-party artwork)
 // A web app's own icon (the site's apple-touch-icon or largest declared icon, else /favicon.ico), cached per host
 // under cacheDirectory. siteIcon() is null until loaded; loadSiteIcon() calls done once when one arrives.
 const QImage& siteIcon(const QUrl& url);
