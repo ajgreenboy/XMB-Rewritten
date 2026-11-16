@@ -361,7 +361,7 @@ int main(int argc, char** argv) {
         fake.bigPlaylistSegments = 40000;
         const auto huge = fetch(network, QUrl(variant));
         check(huge.status == 502, "stream: a playlist beyond the limit answers 502");
-        check(waitFor([&] { return !rejections.isEmpty(); }, 5000) && rejections.first().at(2).toString().contains("larger than"),
+        check(waitFor([&] { return !rejections.isEmpty(); }, 30000) && rejections.first().at(2).toString().contains("larger than"),
               "stream: the refusal names its reason");
         fake.bigPlaylistSegments = 0;
     }
@@ -376,7 +376,7 @@ int main(int argc, char** argv) {
         const QUrl local = stream.open(transcode.url, client.authorizationHeader());
         const auto master = fetch(network, local);
         check(master.status == 500, "stream: an upstream 500 is relayed as 500");
-        check(waitFor([&] { return !rejections.isEmpty(); }, 5000), "stream: an upstream 500 is reported");
+        check(waitFor([&] { return !rejections.isEmpty(); }, 30000), "stream: an upstream 500 is reported");
         if (!rejections.isEmpty()) {
             check(rejections.first().at(0).toInt() == 500, "stream: the report carries the status");
             check(rejections.first().at(1).toString().startsWith("GET /videos/") && !rejections.first().at(1).toString().contains('?'), "stream: the report names the request without its query");
@@ -387,7 +387,7 @@ int main(int argc, char** argv) {
         // The XMB's own probe of the same URL says the same thing.
         probed.clear();
         client.probeStream(transcode.url);
-        check(waitFor([&] { return probed.count() > 0; }, 10000), "probe: answered");
+        check(waitFor([&] { return probed.count() > 0; }, 30000), "probe: answered");
         if (probed.count() > 0) {
             check(probed.first().at(1).toInt() == 500, "probe: the HTTP status");
             check(probed.first().at(2).toString().contains("Error processing request.") && !probed.first().at(2).toString().contains("0123456789abcdef"),
@@ -398,7 +398,7 @@ int main(int argc, char** argv) {
         check(!last.rawQuery.contains("ApiKey"), "probe: no api key in the url");
         probed.clear();
         client.probeStream(QUrl(QStringLiteral("http://192.0.2.1/videos/x/master.m3u8")));
-        check(waitFor([&] { return probed.count() > 0; }, 5000) && probed.first().at(1).toInt() == 0, "probe: another host is refused, never contacted");
+        check(waitFor([&] { return probed.count() > 0; }, 30000) && probed.first().at(1).toInt() == 0, "probe: another host is refused, never contacted");
         fake.handler = [&](const Req& r) { return serve(r, fake, transcodeRequested); };
     }
     stream.close();

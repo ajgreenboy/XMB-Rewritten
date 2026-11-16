@@ -112,8 +112,11 @@ jobs:
           $failed = @()
           foreach ($r in $runs) {
             Write-Host "::group::$($r.Name)"
-            & (Join-Path $b $r.Exe) @($r.Args)
+            $lines = & (Join-Path $b $r.Exe) @($r.Args) 2>&1 | ForEach-Object { "$_" }
             $code = $LASTEXITCODE
+            $lines | ForEach-Object { Write-Host $_ }
+            # Surface each failing check as an annotation so a red run names the check without opening the log.
+            if ($code -ne 0) { $lines | Where-Object { $_ -match "FAIL|rror" } | Select-Object -First 8 | ForEach-Object { Write-Host "::error::$($r.Name): $_" } }
             Write-Host "::endgroup::"
             if ($code -ne 0) { Write-Host "::error::$($r.Name) tests failed (exit $code)"; $failed += $r.Name }
             else { Write-Host "$($r.Name): passed" }
