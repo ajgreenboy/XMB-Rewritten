@@ -37,7 +37,7 @@ param(
     [string]$Package,              # the installed package folder (re-ps3-native.exe, watchdog.ps1, xmb-config.json)
     [string]$Checklist,            # default: ..\audit\RELEASE-CHECKLIST.md, or RELEASE-CHECKLIST.md next to this script
     [string]$Zip,                  # the downloaded re-ps3.zip (V1); its .sha256 is looked for next to it
-    [string]$Version = '0.3.4',    # the release under test
+    [string]$Version = '0.3.5',    # the release under test
     [int]$Display = 1,
     [int]$Sitting = 0,
     [string[]]$Only,
