@@ -20,6 +20,7 @@
 #include "content_registry.h"
 #include "jellyfin_client.h"
 #include "jellyfin_stream.h"
+#include "jellyfin_player.h"
 #include "jellyfin_setup.h"
 #include "steam_owned.h"
 #include "steam_accounts.h"
@@ -233,6 +234,9 @@ enum class OptionCommand { Activate, Information,
     SpotifyPlayAll, SpotifyShuffleAll,
     // Jellyfin's streaming ceiling: the list (from an item row or the player panel) and one choice in it.
     JellyfinQuality, JellyfinQualityTarget,
+    // The player panel (audit/JELLYFIN-PLAYER.md): a server audio stream to re-open the title with, the chapter list and
+    // one chapter in it.
+    JellyfinAudioStream, PlayerChapters, PlayerChapterTarget,
     // A registered Jellyfin app's own row: reopen the setup page on its address (Change Server Address).
     JellyfinChangeAddress,
     // Edit (explore_plugin msg_edit) on a playlist row or an item inside one opens the two-pane editor
@@ -428,6 +432,7 @@ public:
     }
     qint64 mediaPosition() const;
     qint64 mediaDuration() const;
+    int mediaChapterCount() const { return int(mediaChapters_.size()); }   // chapter marks of the open title (Jellyfin only), 0 = none
     bool mediaPaused() const;
     bool videoOpen() const;
     bool mediaSeekable() const;
@@ -937,6 +942,22 @@ private:
     QUrl jellyfinServiceServer_;      // the registration's URL, for a sign-in page reached after a refused restore
     QHash<QString,bool> jellyfinAudio_;
     QHash<QString,qint64> jellyfinResume_;
+    // Player state (audit/JELLYFIN-PLAYER.md): the open title's chapter marks, the server audio stream a title is
+    // re-opened with, and the per-title audio/subtitle choice kept in the "media/choices" preference.
+    QVector<jfplayer::Chapter> mediaChapters_;
+    quint64 jellyfinChapterRequest_=0;
+    QHash<QString,int> jellyfinAudioReopen_;
+    int jellyfinAudioApplyTries_=0;
+    void loadJellyfinHomePage(const QString& kind,const QString& title);
+    void chooseJellyfinAudio(int streamIndex);
+    void applyRememberedJellyfinAudio();
+    void openChapterList();
+    void chooseChapter(int index);
+    QString choiceKey() const;
+    jfplayer::Choice recallChoice() const;
+    void rememberChoice(int audio,int subtitle);
+    void noteAudioChoice(int ordinal);
+    void noteSubtitleChoice(int index);
     static const QVector<QPair<int,QString>>& jellyfinQualities();
     QString jellyfinQualityText() const;
     void openJellyfinQualityList();
@@ -1111,7 +1132,7 @@ private:
     int columnSink_=0;
     // `grouped` is a page the item menu's Group Content level rebuilt into letter folders: `groupedSource` keeps
     // the ungrouped rows so All can put them back without a rescan, and the folders' rows are the same entries.
-    struct Page { QString title; QVector<Entry> entries; int selection=0; QString directory; bool jellyfin=false,jellyfinViews=false,jellyfinSearch=false; QString jellyfinParent; QString jellyfinMusic,jellyfinLibrary; int jellyfinStart=0; bool downloads=false; bool continuePage=false; bool signIn=false; bool jfSetup=false; bool steamAccounts=false; bool grouped=false; QString groupKey; QVector<Entry> groupedSource; bool sysconfPlugin=false; QString playlistsType,playlistId; QString spotify,spotifyContext; QString dlna; int dlnaServer=-1; QString tailscale; QString wol,ha; bool weather=false; bool systemCheck=false; QString userInfo; int userInfoStep=0; bool browse=false; QString browsePath; QString browseFiles; bool libraryRoot=false; };
+    struct Page { QString title; QVector<Entry> entries; int selection=0; QString directory; bool jellyfin=false,jellyfinViews=false,jellyfinSearch=false; QString jellyfinParent; QString jellyfinMusic,jellyfinLibrary; QString jellyfinHome; int jellyfinStart=0; bool downloads=false; bool continuePage=false; bool signIn=false; bool jfSetup=false; bool steamAccounts=false; bool grouped=false; QString groupKey; QVector<Entry> groupedSource; bool sysconfPlugin=false; QString playlistsType,playlistId; QString spotify,spotifyContext; QString dlna; int dlnaServer=-1; QString tailscale; QString wol,ha; bool weather=false; bool systemCheck=false; QString userInfo; int userInfoStep=0; bool browse=false; QString browsePath; QString browseFiles; bool libraryRoot=false; };
     QVector<Page> pages_;
     bool psMenu_=false;              // the PS-button system menu is showing
     bool desktopMode_=false;         // the XMB window is hidden for Desktop Mode (main.cpp DesktopMode)

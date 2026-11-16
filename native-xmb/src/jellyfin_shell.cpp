@@ -135,6 +135,17 @@ void Shell::initJellyfin() {
         int posters=0,backdrops=0;
         if(jellyfinBackdropTags_.size()>4000)jellyfinBackdropTags_.clear();
         int musicLibraries=0;
+        // The server's own home lists lead the libraries page: what is half watched and what comes next.
+        if(page.jellyfinViews) {
+            auto resume=withGlyph(jfEntry("jellyfin:home-resume",tr("Continue Watching"),Action::JellyfinFolder,"home:resume",true),glyphs::play());
+            resume.detail=tr("Titles you started on any Jellyfin device, at the server's saved position.");
+            if(resume.id==selected)page.selection=int(page.entries.size());
+            page.entries.push_back(std::move(resume));
+            auto next=withGlyph(jfEntry("jellyfin:home-nextup",tr("Next Up"),Action::JellyfinFolder,"home:nextup",true),glyphs::check());
+            next.detail=tr("The next episode of every show you are watching.");
+            if(next.id==selected)page.selection=int(page.entries.size());
+            page.entries.push_back(std::move(next));
+        }
         for(const auto& media:result.items) {
             // Music libraries live in the Music column (jellyfin_music_shell.cpp); the TV page keeps the video ones.
             if(page.jellyfinViews && media.collectionType==QLatin1String("music")){++musicLibraries;continue;}
@@ -146,6 +157,11 @@ void Shell::initJellyfin() {
             e.mediaKind=folder?QString{}:media.type=="Audio"?QString("Music"):media.type=="Movie"?QString("Movie"):media.type=="Episode"?QString("Episode"):QString("Video");e.option=media.type=="Audio";
             if(!folder){e.resumeMs=media.resumeMs;e.durationMs=media.durationMs;e.played=media.played;e.detail=jellyfinRowDetail(e);}
             if(media.type=="Audio")e.texture="tex_music";
+            // The home lists mix shows, so an episode names its show and its place in it.
+            if(!page.jellyfinHome.isEmpty() && media.type=="Episode" && !media.seriesName.isEmpty()) {
+                const QString place=media.seasonNumber>0 && media.episodeNumber>0?QStringLiteral(" S%1E%2").arg(media.seasonNumber).arg(media.episodeNumber):QString{};
+                e.title=QStringLiteral("%1%2 - %3").arg(media.seriesName,place,media.title);
+            }
             // A library wears its kind's glyph until (unless) the server's own library picture arrives.
             if(page.jellyfinViews)e=withGlyph(std::move(e),glyphs::library(media.collectionType));
             // Folders (libraries, series, seasons, albums) fetch their poster as items do.
@@ -175,7 +191,9 @@ void Shell::initJellyfin() {
             page.entries.push_back(std::move(search));
             auto out=withGlyph(jfEntry("jellyfin:signout","Sign Out of Jellyfin",Action::JellyfinSignOut),glyphs::signOut());page.entries.push_back(std::move(out));
         }
-        if(page.entries.empty())status_=page.jellyfinSearch?"No Jellyfin items match that search.":"There are no supported items in this library.";
+        if(page.entries.empty())status_=page.jellyfinSearch?"No Jellyfin items match that search.":
+            page.jellyfinHome==QLatin1String("resume")?"Nothing to continue watching on Jellyfin.":
+            page.jellyfinHome==QLatin1String("nextup")?"No next episodes to watch on Jellyfin.":"There are no supported items in this library.";
         qInfo().noquote()<<QString("jellyfin: %1 page with %2 row(s); %3 poster request(s)%4")
             .arg(page.jellyfinViews?QStringLiteral("library"):page.jellyfinSearch?QStringLiteral("search"):QStringLiteral("folder"))
             .arg(page.entries.size()).arg(posters)
@@ -222,10 +240,39 @@ void Shell::initJellyfin() {
         for(const auto& stream:playback.streams)streams<<stream.type+":"+stream.title;
         qInfo().noquote()<<"jellyfin: playback"<<playback.itemId<<playback.playMethod<<playback.streams.size()
             <<"server stream(s)"<<streams.join('|');
+        // A title with a remembered audio stream the server did not start with is re-requested with it, but only when
+        // the player cannot switch tracks itself (a transcode); a direct play switches locally once it has loaded.
+        if(!playback.audio && playback.audioStreamIndex<0 && playback.playMethod!=QLatin1String("DirectPlay")) {
+            const auto remembered=recallChoice();
+            const int pick=remembered.audio>=0?jfplayer::pickAudioStream(playback.streams,remembered.audio):-1;
+            if(pick>=0 && pick!=jfplayer::pickAudioStream(playback.streams,-1)) {
+                qInfo().noquote()<<"jellyfin: re-requesting with the remembered audio stream"<<pick<<"for"<<playback.itemId;
+                jellyfinAudioReopen_.insert(playback.itemId,pick);
+                const auto burn=jellyfinBurnIn_.value(playback.itemId,{-1,QString{}});
+                jellyfinRequest_=jellyfin_.playback(playback.itemId,false,preferences_.value("jellyfin/maxBitrateKbps").toInt(),burn.first,burn.second,pick);
+                return;
+            }
+        }
+        // Chapter marks: from PlaybackInfo when it carried them, else asked for once (silently empty when none).
+        QVector<jfplayer::Chapter> marks;
+        for(const auto& chapter:playback.chapters)marks.push_back({chapter.startMs,chapter.name});
+        mediaChapters_=jfplayer::normalizedChapters(marks);
+        jellyfinChapterRequest_=0;
+        if(mediaChapters_.size()<2 && !playback.audio)jellyfinChapterRequest_=jellyfin_.chapters(playback.itemId);
+        else qInfo().noquote()<<"jellyfin:"<<mediaChapters_.size()<<"chapter mark(s) from PlaybackInfo";
         requestJellyfinSubtitles();
         const auto local=jellyfinStream_.open(playback.url,jellyfin_.authorizationHeader());
         if(!local.isValid() || local.isEmpty()){advanceMedia(true,{});return;}
         player_->setSource(local);player_->play();emit changed();
+    });
+    connect(&jellyfin_,&JellyfinClient::chaptersReady,this,[this](quint64 request,const QString& itemId,const QVector<JellyfinChapter>& list){
+        if(request!=jellyfinChapterRequest_ || itemId!=jellyfinPlayback_.itemId || !mediaOpen_ || !jellyfinQueue_)return;
+        jellyfinChapterRequest_=0;
+        QVector<jfplayer::Chapter> marks;
+        for(const auto& chapter:list)marks.push_back({chapter.startMs,chapter.name});
+        mediaChapters_=jfplayer::normalizedChapters(marks);
+        qInfo().noquote()<<"jellyfin:"<<mediaChapters_.size()<<"chapter mark(s) from the item";
+        refreshPlayerOptions();emit changed();
     });
     // A server subtitle stream arrived: parse it with the sidecar parser, fill its track, and select it when
     // the server marks it default and this item has no session choice yet.
@@ -302,6 +349,7 @@ void Shell::initJellyfin() {
     connect(player_.get(),&QMediaPlayer::durationChanged,this,[this]{applyJellyfinResume();});
     connect(player_.get(),&QMediaPlayer::mediaStatusChanged,this,[this](QMediaPlayer::MediaStatus state){
         if(state!=QMediaPlayer::LoadedMedia && state!=QMediaPlayer::BufferedMedia)return;
+        applyRememberedJellyfinAudio();
         applyJellyfinResume();
         if(jellyfinQueue_ && jellyfinResumePending_>0) {
             const auto request=mediaRequest_;
@@ -353,6 +401,20 @@ void Shell::loadJellyfinPage(const QString& parent,const QString& title,int star
     loading_=true;status_="Loading Jellyfin...";jellyfinRequestDepth_=int(pages_.size());
     jellyfinRequest_=views?jellyfin_.views():jellyfin_.items(parent,start);emit changed();
 }
+// The server's own lists behind the root page's Continue Watching and Next Up rows (audit/JELLYFIN-PLAYER.md). The rows
+// of the answer carry the server's UserData, so a position saved by another Jellyfin client resumes here.
+void Shell::loadJellyfinHomePage(const QString& kind,const QString& title) {
+    if(kind!=QLatin1String("resume") && kind!=QLatin1String("nextup"))return;
+    if(!jellyfin_.signedIn()){showMessage(QStringLiteral("Jellyfin"),QStringLiteral("Sign out and reopen the app to sign in again."),MessageKind::Page);emit changed();return;}
+    if(pages_.size()>=32){showMessage(QStringLiteral("The maximum folder depth has been reached."),MessageKind::Page);emit changed();return;}
+    Page page;page.title=title;page.jellyfin=true;page.jellyfinHome=kind;page.jellyfinParent=QStringLiteral("home:")+kind;
+    pages_.push_back(std::move(page));
+    jellyfinBackdrop_={};jellyfinBackdropId_.clear();jellyfinBackdropWanted_.clear();jellyfinBackdropDebounce_.stop();
+    loading_=true;status_=tr("Loading Jellyfin...");jellyfinRequestDepth_=int(pages_.size());
+    qInfo().noquote()<<"jellyfin: home list"<<kind;
+    jellyfinRequest_=jellyfin_.home(kind==QLatin1String("nextup")?JellyfinClient::HomeList::NextUp:JellyfinClient::HomeList::Resume);
+    emit changed();
+}
 void Shell::openJellyfinSearch(const QString& term) {
     const QString query=term.trimmed();
     if(query.isEmpty())return;
@@ -378,7 +440,8 @@ void Shell::loadJellyfinSearchPage(const QString& term,const QString& title,int 
 }
 void Shell::openJellyfinMedia(const Entry& entry,bool fromBeginning) {
     QVector<PlaybackQueue::Item> queue;int selected=-1;jellyfinAudio_.clear();jellyfinResume_.clear();
-    for(const auto& row:entries())if(row.action==Action::JellyfinPlay){if(row.id==entry.id)selected=int(queue.size());queue.push_back({row.value,row.title});jellyfinAudio_.insert(row.value,row.option.toBool());jellyfinResume_.insert(row.value,row.resumeMs);}
+    const bool homePage=!pages_.isEmpty() && !pages_.last().jellyfinHome.isEmpty();
+    for(const auto& row:entries())if(row.action==Action::JellyfinPlay && (!homePage || row.id==entry.id)){if(row.id==entry.id)selected=int(queue.size());queue.push_back({row.value,row.title});jellyfinAudio_.insert(row.value,row.option.toBool());jellyfinResume_.insert(row.value,row.resumeMs);}
     if(selected<0)return;
     if(fromBeginning)jellyfinResume_.insert(entry.value,0);
     rememberJellyfinTracks(entries());
@@ -437,6 +500,7 @@ void Shell::startJellyfinMedia() {
     resumePath_.clear();resumePending_=0;
     jellyfinResumePending_=jellyfinResume_.value(media.path);
     showJellyfinTrack(media.path);
+    mediaChapters_.clear();jellyfinChapterRequest_=0;jellyfinAudioApplyTries_=0;
     mediaOpen_=true;mediaTitle_=media.title;loading_=true;status_.clear();emit mediaFrame({});
     if(jellyfinResumePending_>0) {
         status_=tr("Resuming at %1").arg(MediaControls::formatTime(jellyfinResumePending_));
@@ -445,7 +509,7 @@ void Shell::startJellyfinMedia() {
     for(int i=0;i<entries().size();++i)if(entries()[i].value==media.path && entries()[i].action==Action::JellyfinPlay){currentSelection()=i;break;}
     const auto burn=jellyfinBurnIn_.value(media.path,{-1,QString{}});
     jellyfinRequest_=jellyfin_.playback(media.path,jellyfinAudio_.value(media.path),preferences_.value("jellyfin/maxBitrateKbps").toInt(),
-        burn.first,burn.second);emit changed();
+        burn.first,burn.second,jellyfinAudioReopen_.value(media.path,-1));emit changed();
 }
 void Shell::applyJellyfinResume() {
     if(!jellyfinQueue_ || !mediaOpen_ || jellyfinPlayback_.itemId.isEmpty() || jellyfinResumePending_<=0 || jellyfinApplyingResume_ || !player_->isSeekable())return;
@@ -471,7 +535,7 @@ void Shell::reportJellyfinPlaybackState() {
 void Shell::finishJellyfinPlayback(bool completed) {
     if(!jellyfinPlayback_.itemId.isEmpty()) {
         const auto id=jellyfinPlayback_.itemId;
-        const qint64 duration=player_->duration();
+        const qint64 duration=player_->duration()>0?player_->duration():jellyfinPlayback_.durationMs;
         // A completed title is reported at its end position even when the backend has already
         // rewound to zero, so the server can mark it played; an abandoned one is reported where it
         // actually stopped.
@@ -481,16 +545,25 @@ void Shell::finishJellyfinPlayback(bool completed) {
         jellyfin_.reportPlayback(jellyfinPlayback_,at,completed?false:mediaPaused(),"stop");
         qInfo().noquote()<<QString("jellyfin: stop report item=%1 at %2 ms%3").arg(id).arg(at)
             .arg(completed?" (reached the end)":"");
+        // Reaching the end or 90 percent is "watched": the server is told so explicitly (idempotent next to its own
+        // rule on the stop report), and the resume point goes. A stop near the start keeps no resume point.
+        const auto outcome=jfplayer::stopOutcome(at,duration,completed);
+        if((jellyfinStarted_ || completed) && outcome.played && !jellyfinPlayback_.audio) {
+            qInfo().noquote()<<QString("jellyfin: marking %1 watched (%2 of %3 ms)").arg(id).arg(at).arg(duration);
+            jellyfin_.markPlayed(id);
+        }
         if(jellyfinStarted_ || completed) {
-            const qint64 resume=completed?0:at;
+            const qint64 resume=outcome.resumeMs;
             jellyfinResume_.insert(id,resume);
             for(auto& page:pages_)if(page.jellyfin)for(auto& row:page.entries)if(row.action==Action::JellyfinPlay && row.value==id) {
-                row.resumeMs=resume;if(duration>0)row.durationMs=duration;row.played=completed;row.detail=jellyfinRowDetail(row);
-                if(completed)qInfo().noquote()<<"jellyfin: row now reads"<<row.detail;
+                row.resumeMs=resume;if(duration>0)row.durationMs=duration;
+                if(outcome.played)row.played=true;else if(resume>0)row.played=false;
+                row.detail=jellyfinRowDetail(row);
+                if(outcome.played)qInfo().noquote()<<"jellyfin: row now reads"<<row.detail;
             }
         }
     }
-    jellyfinPlayback_={};jellyfinStarted_=false;jellyfinResumePending_=0;jellyfinStream_.close();
+    jellyfinPlayback_={};jellyfinStarted_=false;jellyfinResumePending_=0;jellyfinStream_.close();mediaChapters_.clear();jellyfinChapterRequest_=0;
     jellyfinSubtitleRequests_.clear();jellyfinSubtitleErrors_.clear();
 }
 // The screen text for a stream that would not open: what the server (or the XMB's own relay) actually said, in one
@@ -583,6 +656,15 @@ void Shell::requestJellyfinSubtitles() {
     // A remembered choice of a PGS track (or a server default PGS stream with no text default) starts
     // its fetch now; text tracks are selected when their SRT arrives (subtitleReady).
     if(jellyfinPlayback_.burnSubtitleIndex>=0)return;
+    // The subtitle this title was last played with (media/choices), when the server still lists that stream.
+    if(!subtitleChoice_.contains(subtitleMediaPath_)) {
+        const auto remembered=recallChoice();
+        if(remembered.subtitle==-1)subtitleChoice_.insert(subtitleMediaPath_,QString{});
+        else if(remembered.subtitle>=0) {
+            const QString key=jellyfinSubtitleKey(remembered.subtitle);
+            for(const auto& track:subtitleTracks_)if(track.path==key){subtitleChoice_.insert(subtitleMediaPath_,key);break;}
+        }
+    }
     int image=-1;
     if(subtitleChoice_.contains(subtitleMediaPath_)) {
         const QString chosen=subtitleChoice_.value(subtitleMediaPath_);
@@ -594,6 +676,58 @@ bool Shell::jellyfinPgsCodec(const QString& codec) {
     const QString c=codec.trimmed().toLower();
     return c==QLatin1String("pgssub") || c==QLatin1String("pgs") || c==QLatin1String("hdmv_pgs_subtitle");
 }
+// The title re-opens with a different server audio stream (a transcode carries one, so the server picks it), at the
+// same position; the choice is remembered for the title.
+void Shell::chooseJellyfinAudio(int streamIndex) {
+    if(!jellyfinQueue_ || !mediaOpen_ || !mediaQueue_.current() || streamIndex<0)return;
+    const QString item=mediaQueue_.current()->path;
+    if(streamIndex==jellyfinPlayback_.audioStreamIndex){resetOptions();emit changed();return;}
+    jellyfinAudioReopen_.insert(item,streamIndex);
+    rememberChoice(streamIndex,-2);
+    qInfo().noquote()<<"jellyfin: audio stream"<<streamIndex<<"chosen; re-opening as a server stream";
+    jellyfinResume_[item]=player_->position();
+    resetOptions();
+    notify(QStringLiteral("Jellyfin"),tr("Audio track changed by the server"));
+    interactionAudio_.play(InteractionAudio::Cue::Confirm);
+    startJellyfinMedia();
+}
+// A direct play carries every audio stream: once the player has loaded and reports the tracks, the remembered one is
+// switched to locally (a few tries, because a backend may report its tracks a moment after LoadedMedia).
+void Shell::applyRememberedJellyfinAudio() {
+    if(!jellyfinQueue_ || !mediaOpen_ || jellyfinPlayback_.audio || jellyfinPlayback_.playMethod!=QLatin1String("DirectPlay") || jellyfinAudioApplyTries_>=3)return;
+    const auto remembered=recallChoice();
+    if(remembered.audio<0){jellyfinAudioApplyTries_=3;return;}
+    const int ordinal=jfplayer::audioOrdinal(jellyfinPlayback_.streams,remembered.audio);
+    if(ordinal<0){jellyfinAudioApplyTries_=3;return;}
+    ++jellyfinAudioApplyTries_;
+    refreshAudioTracks();
+    if(ordinal>=audioTracks_.size())return;
+    jellyfinAudioApplyTries_=3;
+    if(ordinal!=activeAudioTrack_ && audioTracks_[ordinal].switchable)chooseAudioTrack(ordinal);
+}
+void Shell::openChapterList() {
+    optionsParent_=options_;optionsNested_=true;optionsTitle_=tr("Chapters");
+    options_.clear();optionsSelection_=0;
+    const int at=jfplayer::chapterIndexAt(mediaChapters_,player_->position());
+    for(int i=0;i<mediaChapters_.size() && i<100;++i) {
+        MenuOption row{jfplayer::chapterLabel(mediaChapters_[i],i),OptionCommand::PlayerChapterTarget};
+        row.index=i;row.active=i==at;row.note=MediaControls::formatTime(mediaChapters_[i].startMs);
+        if(row.active)optionsSelection_=i;
+        options_.push_back(row);
+    }
+    interactionAudio_.play(InteractionAudio::Cue::Options);
+    emit changed();
+}
+void Shell::chooseChapter(int index) {
+    if(index<0 || index>=mediaChapters_.size() || !mediaOpen_ || !player_->isSeekable())return;
+    const qint64 target=mediaChapters_[index].startMs;
+    const QString label=jfplayer::chapterLabel(mediaChapters_[index],index);
+    resetOptions();
+    qInfo().noquote()<<"media: chapter jump to"<<label<<"at"<<target<<"ms";
+    player_->setPosition(target);
+    interactionAudio_.play(InteractionAudio::Cue::Confirm);
+    emit changed();
+}
 // Burn-in: the title re-opens at the same position with the chosen image stream rendered into a server
 // transcode (JellyfinClient::playback), or, with -1, back on the original stream without it.
 void Shell::chooseJellyfinBurnIn(int streamIndex) {
@@ -604,6 +738,7 @@ void Shell::chooseJellyfinBurnIn(int streamIndex) {
         QString codec;
         for(const auto& stream:jellyfinPlayback_.streams)if(stream.index==streamIndex)codec=stream.codec;
         jellyfinBurnIn_.insert(item,{streamIndex,codec});
+        rememberChoice(-2,streamIndex);
         subtitleChoice_.insert(subtitleMediaPath_,QString{});   // the client draws nothing over a burned-in stream
     }
     qInfo().noquote()<<(streamIndex<0?QStringLiteral("jellyfin: burn-in off; re-opening the original stream")

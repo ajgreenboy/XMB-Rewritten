@@ -139,6 +139,8 @@ native diff.
 | [JELLYFIN-NATIVE.md](JELLYFIN-NATIVE.md) | Native Jellyfin playback |
 | [JELLYFIN-SETUP.md](JELLYFIN-SETUP.md) | Setting Jellyfin up from inside the XMB: setup row, address page, server check, network discovery |
 | [JELLYFIN-PLAYBACK.md](JELLYFIN-PLAYBACK.md) | Jellyfin transcode (HLS) failures, the PGS subtitle deadline, the stale folder backdrop, stream diagnostics, stand-in server and tests |
+| [JELLYFIN-PLAYER.md](JELLYFIN-PLAYER.md) | Jellyfin player phase 1: Continue Watching and Next Up rows from the server, played at 90 percent, audio choice on transcodes, remembered audio and subtitle per title, chapters; what is unverified on a real server |
+| [MEDIA-PLAN-2026-11-15.md](MEDIA-PLAN-2026-11-15.md) | Audit of the video, music and Jellyfin player (present / partial / missing) and the ranked gaps |
 | [JELLYFIN-MUSIC.md](JELLYFIN-MUSIC.md) | Jellyfin music in the Music column: one shared session, artists / albums / playlists / songs / search, paging, covers, Now Playing, the music stand-in and tests |
 | [JELLYFIN-ICON.md](JELLYFIN-ICON.md) | The embedded official Jellyfin icon and its CC BY-SA 4.0 licence finding |
 | [SPOTIFY.md](SPOTIFY.md) | Spotify in the Music column |

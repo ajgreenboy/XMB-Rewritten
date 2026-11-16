@@ -267,6 +267,15 @@ redirect URI `http://127.0.0.1:8888/callback`, and put the client id in `<native
 with these steps. Code: `src/spotify_client.*`, `src/spotify_shell.cpp`; details, limits and the real-account run:
 [audit/SPOTIFY.md](audit/SPOTIFY.md).
 
+### Jellyfin player (Continue Watching, Next Up, chapters)
+
+The Jellyfin libraries page starts with `Continue Watching` and `Next Up`, read from the server, so a title started on another
+Jellyfin client resumes here at the server's position. Playback reports start, progress and stop, and marks a title watched at 90
+percent. The Playback (Triangle) panel picks the audio track (on a transcode the server re-opens the title with that stream), lists
+chapters and jumps; L1/R1 skip chapters, then items. Audio and subtitle choices are remembered per title. Details and what is not
+yet verified on a real server: [audit/JELLYFIN-PLAYER.md](audit/JELLYFIN-PLAYER.md); the audit behind it:
+[audit/MEDIA-PLAN-2026-11-15.md](audit/MEDIA-PLAN-2026-11-15.md).
+
 ### Jellyfin Music (Music column)
 
 With a Jellyfin server registered, the Music column ends with a `Jellyfin Music` row under Spotify. It uses the one

@@ -1,4 +1,5 @@
 #include "preferences.h"
+#include "jellyfin_player.h"
 #include <QDebug>
 #include <QDir>
 #include <QFile>
@@ -107,7 +108,7 @@ QVariant Preferences::defaultValue(const QString& key) {
     if(key=="system/name")return QSysInfo::machineHostName().left(64);
     if(key=="clock/timeZone")return QString("System");
     if(key=="appearance/wallpaper" || key=="appearance/theme" || key.startsWith("library/") ||
-       key=="media/resume")return QString{};
+       key=="media/resume" || key=="media/choices")return QString{};
     return {};
 }
 bool Preferences::validBare(const QString& key,const QVariant& value) {
@@ -157,6 +158,13 @@ bool Preferences::validBare(const QString& key,const QVariant& value) {
     // Bounded in size *and* shape: an unbounded document, an over-long key, a non-finite or absurd
     // timestamp and an over-long path all fail rather than reaching the shell. 64 records of at most
     // 512 (path) + 200 (title) + 80 (numbers and keys) bytes stay below the 65536-byte string bound.
+    // The per-title audio and subtitle choice (jellyfin_player.h): {"<key>": {"a": n, "s": n, "at": n}}, bounded.
+    if(key=="media/choices") {
+        if(text.size()>16384)return false;
+        if(text.trimmed().isEmpty())return true;
+        const auto document=QJsonDocument::fromJson(text.toUtf8());
+        return document.isObject() && jfplayer::choiceMapValid(document.object());
+    }
     if(key=="media/resume") {
         if(text.size()>65536)return false;
         if(text.trimmed().isEmpty())return true;    // no entries yet: the empty value is a valid map

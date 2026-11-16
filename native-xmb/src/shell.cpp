@@ -1917,6 +1917,12 @@ Shell::Shell(QString dataDirectory,Assets& assets,QObject* parent):QObject(paren
                 if(path!=subtitleMediaPath_) {
                     prepareSubtitles(path);
                     refreshAudioTracks();
+                    // The audio track this file was last played with (media/choices) comes back.
+                    if(local) {
+                        const auto remembered=recallChoice();
+                        if(remembered.audio>=0 && remembered.audio<audioTracks_.size() && remembered.audio!=activeAudioTrack_ && audioTracks_[remembered.audio].switchable)
+                            chooseAudioTrack(remembered.audio);
+                    }
                 }
             }
             if(state==QMediaPlayer::EndOfMedia) {
@@ -2619,7 +2625,10 @@ void Shell::activate() {
     case Action::JellyfinSetup:case Action::JellyfinSetupField:case Action::JellyfinSetupCheck:case Action::JellyfinSetupSave:
     case Action::JellyfinSetupFind:case Action::JellyfinSetupPick:
         activateJellyfinSetup(entry);break;
-    case Action::JellyfinFolder:loadJellyfinPage(entry.value,entry.title);break;
+    case Action::JellyfinFolder:
+        if(entry.value.startsWith(QLatin1String("home:")))loadJellyfinHomePage(entry.value.mid(5),entry.title);
+        else loadJellyfinPage(entry.value,entry.title);
+        break;
     case Action::JellyfinPlay:openJellyfinMedia(entry);break;
     case Action::JellyfinMusicApp:openJellyfinMusic(entry);break;
     case Action::JellyfinMusicNode:openJellyfinMusicNode(entry);break;
@@ -3671,6 +3680,9 @@ void Shell::optionsActivate() {
     }
     case OptionCommand::JellyfinQuality:openJellyfinQualityList();break;
     case OptionCommand::JellyfinQualityTarget:chooseJellyfinQuality(option.index);break;
+    case OptionCommand::JellyfinAudioStream:chooseJellyfinAudio(option.index);break;
+    case OptionCommand::PlayerChapters:openChapterList();break;
+    case OptionCommand::PlayerChapterTarget:chooseChapter(option.index);break;
     case OptionCommand::SpotifyPlayAll:case OptionCommand::SpotifyShuffleAll: {
         const Entry row=entry;
         resetOptions();
@@ -4134,13 +4146,22 @@ void Shell::buildPlayerOptions() {
     // What the player itself reports, never a list this build invents.
     refreshAudioTracks();
     if(streamed) {
-        int seen=0;
+        int seen=0,audioCount=0;
+        for(const auto& stream:jellyfinPlayback_.streams)if(stream.type=="Audio")++audioCount;
+        // A transcode carries one audio stream, and a player may report fewer tracks than the server lists: in both
+        // cases the server, not the player, switches (it re-opens the title with that stream at the same point).
+        const bool serverAudio=audioCount>1 && (jellyfinPlayback_.playMethod!="DirectPlay" || audioCount>audioTracks_.size());
+        const int activeServerAudio=jellyfinPlayback_.audioStreamIndex>=0?jellyfinPlayback_.audioStreamIndex
+            :jfplayer::pickAudioStream(jellyfinPlayback_.streams,-1);
         for(const auto& stream:jellyfinPlayback_.streams) {
             if(stream.type!="Audio")continue;
             ++seen;
             MenuOption row{QObject::tr("Audio %1: %2").arg(seen).arg(stream.title),OptionCommand::AudioTrack};
             row.index=seen-1;row.active=(seen-1)==activeAudioTrack_;
-            if(seen-1>=audioTracks_.size()) {
+            if(serverAudio) {
+                row.command=OptionCommand::JellyfinAudioStream;row.index=stream.index;row.active=stream.index==activeServerAudio;
+                row.note=QObject::tr("The server re-opens this title with this audio track, at the same point.");
+            } else if(seen-1>=audioTracks_.size()) {
                 row.enabled=false;
                 row.note=QObject::tr("The player reports %1 audio track(s) for this stream, so the server's track %2 cannot be selected.")
                     .arg(audioTracks_.size()).arg(seen);
@@ -4176,6 +4197,12 @@ void Shell::buildPlayerOptions() {
         MenuOption quality{QObject::tr("Quality: %1").arg(jellyfinQualityText()),OptionCommand::JellyfinQuality};
         quality.note=QObject::tr("Choosing another re-opens this title at the same point.");
         options_.push_back(quality);
+    }
+    if(mediaChapters_.size()>1) {
+        const int at=jfplayer::chapterIndexAt(mediaChapters_,player_->position());
+        MenuOption chapters{QObject::tr("Chapters: %1 of %2").arg(std::max(at,0)+1).arg(mediaChapters_.size()),OptionCommand::PlayerChapters};
+        chapters.note=QObject::tr("Jump to a chapter. Next and Previous skip chapters too.");
+        options_.push_back(chapters);
     }
     // Repeat and Shuffle live here now, which is what frees Triangle for this panel.
     static const char* const repeatNames[]={"Off","One","All"};
@@ -4220,6 +4247,11 @@ void Shell::prepareSubtitles(const QString& path) {
     // The same file plays again: its own choice comes back. A file this session has not seen starts on
     // the default sidecar (the untagged one, or the first), which is what a player does with one
     // matching subtitle file, and never on nothing at all.
+    if(!subtitleChoice_.contains(path)) {   // the choice this file was last played with (media/choices)
+        const auto remembered=recallChoice();
+        if(remembered.subtitle==-1)subtitleChoice_.insert(path,QString{});
+        else if(remembered.subtitle>=0 && remembered.subtitle<subtitleTracks_.size())subtitleChoice_.insert(path,subtitleTracks_[remembered.subtitle].path);
+    }
     QString chosen;
     if(subtitleChoice_.contains(path)) {
         chosen=subtitleChoice_.value(path);
@@ -4355,11 +4387,13 @@ void Shell::chooseSubtitleTrack(int index) {
     // the choice is recorded first so the re-opened title comes back on it.
     if(jellyfinQueue_ && jellyfinPlayback_.burnSubtitleIndex>=0) {
         subtitleChoice_.insert(subtitleMediaPath_,index<0?QString{}:subtitleTracks_[index].path);
+        noteSubtitleChoice(index);
         chooseJellyfinBurnIn(-1);
         return;
     }
     if(index==subtitleTrackIndex_)return; // already the choice: nothing to do, nothing to claim
     applySubtitleTrack(index);
+    noteSubtitleChoice(index);
     interactionAudio_.play(index<0?InteractionAudio::Cue::Back:InteractionAudio::Cue::Confirm);
 }
 // Audio tracks. QMediaPlayer reports them and takes setActiveAudioTrack(); whether the backend honours
@@ -4397,7 +4431,7 @@ void Shell::chooseAudioTrack(int index) {
     if(!audioTracks_[index].switchable)return;
     player_->setActiveAudioTrack(index);
     if(player_->activeAudioTrack()==index) {
-        activeAudioTrack_=index;
+        activeAudioTrack_=index;noteAudioChoice(index);
         if(subtitleLog_)qInfo().noquote()<<"audio: switched to track"<<index+1<<audioTracks_[index].label;
         interactionAudio_.play(InteractionAudio::Cue::Confirm);
         refreshPlayerOptions();
@@ -4411,7 +4445,7 @@ void Shell::chooseAudioTrack(int index) {
         if(!mediaOpen_ || file!=subtitleMediaPath_ || index>=audioTracks_.size())return;
         const int after=player_->activeAudioTrack();
         if(after==index) {
-            activeAudioTrack_=index;
+            activeAudioTrack_=index;noteAudioChoice(index);
             if(subtitleLog_)qInfo().noquote()<<"audio: switched to track"<<index+1<<audioTracks_[index].label;
         } else {
             const QString reason=QObject::tr("This media backend did not switch: it still reports track %1.").arg(after+1);
@@ -4669,7 +4703,7 @@ void Shell::back() {
         // Nothing is playing, so no subtitle file or audio track is current. The per-file choice stays in
         // subtitleChoice_, which is what makes reopening the same file come back on the same track.
         subtitleTracks_.clear();subtitleTrackIndex_=-1;subtitleCueNumber_=0;subtitleMediaPath_.clear();++subtitleGeneration_;
-        audioTracks_.clear();audioRejected_.clear();activeAudioTrack_=-1;}
+        audioTracks_.clear();audioRejected_.clear();activeAudioTrack_=-1;mediaChapters_.clear();}
     // Circle on a sign-in page is the page's Cancel row: it leaves the page and aborts a request still in
     // flight, so Back can never strand an authentication the user has walked away from.
     else if(setupHandleBack());   // D8: Circle on the setup Welcome page asks before leaving
@@ -4837,6 +4871,41 @@ void Shell::migrateResumePoints() {
         qInfo().noquote()<<QString("continue: resume points migrated - %1 resolved, %2 dropped, %3 remembered%4")
             .arg(kept).arg(dropped).arg(next.size())
             .arg(legacy?QString(" (%1 of them came from the old format)").arg(legacy):QString{});
+}
+// ---- The per-title audio and subtitle choice (preference media/choices, jellyfin_player.h) ----------------------
+// A Jellyfin title is keyed by its item id, a local file by the same truncated path hash the resume points use.
+// Jellyfin stores server stream indexes; a local file stores the player's track ordinals. -2 = nothing remembered.
+QString Shell::choiceKey() const {
+    if(jellyfinQueue_)return jellyfinPlayback_.itemId.isEmpty()?QString{}:QStringLiteral("jf")+jellyfinPlayback_.itemId;
+    if(subtitleMediaPath_.isEmpty() || subtitleMediaPath_.startsWith(QLatin1String("jellyfin:")))return {};
+    return resumeIdFor(subtitleMediaPath_);
+}
+jfplayer::Choice Shell::recallChoice() const {
+    const QString key=choiceKey();
+    if(key.isEmpty())return {};
+    return jfplayer::choiceFor(QJsonDocument::fromJson(preferences_.value("media/choices").toString().toUtf8()).object(),key);
+}
+void Shell::rememberChoice(int audio,int subtitle) {
+    const QString key=choiceKey();
+    if(key.isEmpty())return;
+    const auto map=jfplayer::withChoice(QJsonDocument::fromJson(preferences_.value("media/choices").toString().toUtf8()).object(),
+        key,audio,subtitle,QDateTime::currentSecsSinceEpoch());
+    preferences_.setValue("media/choices",QString::fromUtf8(QJsonDocument(map).toJson(QJsonDocument::Compact)));
+}
+void Shell::noteAudioChoice(int ordinal) {
+    if(!jellyfinQueue_){rememberChoice(ordinal,-2);return;}
+    int n=0;
+    for(const auto& stream:jellyfinPlayback_.streams) {
+        if(stream.type!="Audio")continue;
+        if(n++==ordinal){rememberChoice(stream.index,-2);return;}
+    }
+}
+void Shell::noteSubtitleChoice(int index) {
+    if(!jellyfinQueue_){rememberChoice(-2,index<0?-1:index);return;}
+    if(index<0 || index>=subtitleTracks_.size()){rememberChoice(-2,-1);return;}
+    bool ok=false;
+    const int stream=subtitleTracks_[index].path.section('#',-1).toInt(&ok);
+    if(ok)rememberChoice(-2,stream);
 }
 int Shell::rememberedResumeCount() const {
     int count=0;
@@ -5232,7 +5301,7 @@ void Shell::abandonFailedMedia() {
     mediaOpen_=false;mediaQueue_.clear();mediaFailures_=0;mediaDisplayPinned_=false;resumePath_.clear();resumePending_=0;
     status_.clear();player_->setSource({});emit mediaFrame({});
     subtitleTracks_.clear();subtitleTrackIndex_=-1;subtitleCueNumber_=0;subtitleMediaPath_.clear();++subtitleGeneration_;
-    audioTracks_.clear();audioRejected_.clear();activeAudioTrack_=-1;
+    audioTracks_.clear();audioRejected_.clear();activeAudioTrack_=-1;mediaChapters_.clear();
 }
 void Shell::advanceMedia(bool failed,const QString& error) {
     if(jellyfinQueue_) {
@@ -5264,6 +5333,14 @@ void Shell::skipMedia(int direction) {
     touch();
     touch();if(!mediaOpen_ || !message_.isEmpty() || !direction)return;
     if(photoOpen()){stepPhoto(direction<0?-1:1);return;}
+    // A title with chapter marks skips by chapter first; with none left in that direction it moves in the queue.
+    if(mediaChapters_.size()>1 && player_->isSeekable()) {
+        const qint64 target=jfplayer::chapterSkipTarget(mediaChapters_,player_->position(),direction);
+        if(target>=0) {
+            qInfo().noquote()<<"media: chapter skip"<<direction<<"from"<<player_->position()<<"to"<<target;
+            player_->setPosition(target);emit changed();return;
+        }
+    }
     const int next=direction<0?mediaQueue_.previous():mediaQueue_.next(false);
     if(next>=0){mediaFailures_=0;startQueuedMedia();}
 }
