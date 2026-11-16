@@ -166,6 +166,17 @@ int main(int argc, char** argv) {
         check(audioNeedsPlayedMark(book, true) && !audioNeedsPlayedMark(song, true) && !audioNeedsPlayedMark(book, false), "audio: only a played long item gets the explicit mark");
     }
 
+    // ---- lyrics: which line the position is on ----------------------------------------------------------------------------------
+    {
+        const QVector<JellyfinLyricLine> lines{{0, QStringLiteral("a")}, {5000, QStringLiteral("b")}, {5000, QStringLiteral("c")}, {12000, QString{}}};
+        check(lyricIndexAt({}, 1000) == -1, "lyrics: no lines, no index");
+        check(lyricIndexAt(lines, -1) == -1 && lyricIndexAt(lines, 0) == 0 && lyricIndexAt(lines, 4999) == 0, "lyrics: the first line holds until the second starts");
+        check(lyricIndexAt(lines, 5000) == 2 && lyricIndexAt(lines, 11999) == 2, "lyrics: of two lines starting together the later one is current");
+        check(lyricIndexAt(lines, 12000) == 3 && lyricIndexAt(lines, 9999999) == 3, "lyrics: the last line stays to the end, an empty gap included");
+        const QVector<JellyfinLyricLine> late{{3000, QStringLiteral("late")}};
+        check(lyricIndexAt(late, 2999) == -1 && lyricIndexAt(late, 3000) == 0, "lyrics: before the first line nothing is current");
+    }
+
     // ---- Play All windows ---------------------------------------------------------------------------------------------------
     {
         check(nextPlayAllWindow(200, 450) == 200 && nextPlayAllWindow(400, 450) == 400, "play all: the next window starts where the rows read end");

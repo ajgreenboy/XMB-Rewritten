@@ -735,6 +735,15 @@ void JellyfinClient::markPlayed(QString itemId) {
     });
 }
 
+quint64 JellyfinClient::lyrics(QString itemId) {
+    if (!signedIn() || !validId(itemId)) {
+        const quint64 request = ++nextRequest_;
+        QTimer::singleShot(0, this, [this, request, itemId] { emit lyricsReady(request, itemId, {}, false); });
+        return request;
+    }
+    return send(Operation::Lyrics, get(apiUrl(QStringLiteral("Audio/") + itemId + QStringLiteral("/Lyrics"))), itemId);
+}
+
 quint64 JellyfinClient::chapters(QString itemId) {
     if (!signedIn() || !validId(itemId)) {
         const quint64 request = ++nextRequest_;
@@ -1019,6 +1028,28 @@ void JellyfinClient::finish(QNetworkReply* reply, Operation operation, quint64 r
             if (!image.isNull()) writeImageCache(cachedImagePath(itemId, tag, backdrop), bytes);
         }
         emit artworkReady(request, itemId, backdrop, image);
+        return;
+    }
+    if (operation == Operation::Lyrics) {
+        // {"Metadata":{...},"Lyrics":[{"Text":"...","Start":ticks},...]}. Synced only when every line has a Start; the lines are
+        // kept in start order, at most 2000 of 300 characters, so a runaway answer cannot grow the page.
+        QVector<JellyfinLyricLine> lines;
+        bool synced = false;
+        if (ok) {
+            const QJsonArray values = QJsonDocument::fromJson(bytes).object().value(QStringLiteral("Lyrics")).toArray();
+            synced = !values.isEmpty();
+            for (const auto& value : values) {
+                if (!value.isObject() || lines.size() >= 2000) continue;
+                const QJsonObject line = value.toObject();
+                JellyfinLyricLine out;
+                out.text = line.value(QStringLiteral("Text")).toString().section(QChar(10), 0, 0).trimmed().left(300);
+                if (line.contains(QStringLiteral("Start"))) out.startMs = millisecondsFromTicks(line.value(QStringLiteral("Start")));
+                else synced = false;
+                lines.push_back(std::move(out));
+            }
+            if (synced) std::stable_sort(lines.begin(), lines.end(), [](const JellyfinLyricLine& a, const JellyfinLyricLine& b) { return a.startMs < b.startMs; });
+        }
+        emit lyricsReady(request, context, lines, synced);
         return;
     }
     if (operation == Operation::Chapters) {

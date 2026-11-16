@@ -43,6 +43,15 @@ qint64 audioRowResumeMs(qint64 serverResumeMs, qint64 durationMs) {
 
 bool audioNeedsPlayedMark(qint64 durationMs, bool played) { return played && audioResumable(durationMs); }
 
+int lyricIndexAt(const QVector<JellyfinLyricLine>& lines, qint64 positionMs) {
+    int found = -1;
+    for (int i = 0; i < lines.size(); ++i) {
+        if (lines[i].startMs > positionMs) break;
+        found = i;
+    }
+    return found;
+}
+
 int nextPlayAllWindow(int fetched, int total, int cap) {
     if (fetched <= 0 || total <= fetched || fetched >= cap) return -1;
     return fetched;

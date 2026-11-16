@@ -148,6 +148,7 @@ QJsonObject trackJson(int n, const QString& id = {}) {
 }
 
 int audioFetches = 0;
+int lyricsMode = 0;   // 0 = timed lyrics, 1 = untimed, 2 = none (404), 3 = a hostile answer (huge, out of order)
 Resp serve(const Req& r) {
     const QString path = QString::fromLatin1(r.path);
     if (r.method == "POST" && path == QLatin1String("/Users/AuthenticateByName"))
@@ -198,6 +199,21 @@ Resp serve(const Req& r) {
         const QJsonObject source{{"Id", kTrack}, {"SupportsDirectPlay", true}, {"SupportsDirectStream", true}, {"SupportsTranscoding", true}, {"Container", "wav"},
             {"MediaStreams", QJsonArray{QJsonObject{{"Index", 0}, {"Type", "Audio"}, {"Codec", "pcm_s16le"}, {"DisplayTitle", "WAV"}}}}};
         return json(QJsonObject{{"MediaSources", QJsonArray{source}}, {"PlaySessionId", "ps0123456789abcdef"}});
+    }
+    if (path == QStringLiteral("/Audio/%1/Lyrics").arg(kTrack)) {
+        if (lyricsMode == 2) return json(QJsonObject{{"Message", "no lyrics"}}, 404);
+        QJsonArray lines;
+        if (lyricsMode == 3) {
+            for (int i = 0; i < 2500; ++i) lines.push_back(QJsonObject{{"Text", QString(500, QLatin1Char('x')) + QStringLiteral("\nsecond")}, {"Start", qint64(2500 - i) * 10000000}});
+        } else {
+            const QStringList words{"Hello", "", "World"};
+            for (int i = 0; i < words.size(); ++i) {
+                QJsonObject line{{"Text", words[i]}};
+                if (lyricsMode == 0) line.insert("Start", qint64(i) * 50000000);
+                lines.push_back(line);
+            }
+        }
+        return json(QJsonObject{{"Metadata", QJsonObject{{"IsSynced", lyricsMode == 0}}}, {"Lyrics", lines}});
     }
     if (path == QStringLiteral("/Audio/%1/stream").arg(kTrack)) {
         ++audioFetches;
@@ -440,6 +456,41 @@ int main(int argc, char** argv) {
         for (int i = before; i < fake.log.size(); ++i) if (fake.log[i].rawQuery.contains(kToken) || fake.log[i].body.contains(kToken)) leaked = true;
         check(!leaked, "audio reports: no credential in a url or a body");
         check(tokenOf(fake.last("/Sessions/Playing/Stopped")) == kToken, "audio reports: authorised by header");
+    }
+    // ---- lyrics: only timed lines are kept; nothing, an error or garbage never fails a page ---------------------------------------------------
+    {
+        struct Got { quint64 request; QString item; QVector<JellyfinLyricLine> lines; bool synced; };
+        QList<Got> got;
+        QObject::connect(&client, &JellyfinClient::lyricsReady, [&](quint64 request, const QString& item, const QVector<JellyfinLyricLine>& lines, bool synced) { got.push_back({request, item, lines, synced}); });
+        const auto askLyrics = [&](int mode, const QString& id) {
+            lyricsMode = mode;
+            got.clear();
+            client.lyrics(id);
+            waitFor([&] { return !got.isEmpty(); });
+            return got.isEmpty() ? Got{0, {}, {}, false} : got.first();
+        };
+        auto g = askLyrics(0, kTrack);
+        const Req r = fake.last(QStringLiteral("/Audio/%1/Lyrics").arg(kTrack).toLatin1());
+        check(r.method == "GET" && tokenOf(r) == kToken && !r.rawQuery.contains(kToken), "lyrics: GET /Audio/{id}/Lyrics, authorised by header, no credential in the url");
+        check(g.item == kTrack && g.synced && g.lines.size() == 3 && g.lines[0].text == QLatin1String("Hello") && g.lines[1].text.isEmpty() && g.lines[2].startMs == 10000, "lyrics: timed lines parsed (ticks to ms, the empty line kept as a gap)");
+        g = askLyrics(1, kTrack);
+        check(!g.synced && g.lines.size() == 3, "lyrics: lines without a Start are not synced");
+        g = askLyrics(2, kTrack);
+        check(g.request != 0 && g.lines.isEmpty() && !g.synced, "lyrics: a 404 answers empty, silently");
+        const int errorsBefore = int(errors.size());
+        g = askLyrics(3, kTrack);
+        check(g.synced && g.lines.size() == 2000, "lyrics: at most 2000 lines are kept");
+        bool bounded = true, sorted = true;
+        for (int i = 0; i < g.lines.size(); ++i) {
+            if (g.lines[i].text.size() > 300 || g.lines[i].text.contains(QLatin1Char(10))) bounded = false;
+            if (i > 0 && g.lines[i].startMs < g.lines[i - 1].startMs) sorted = false;
+        }
+        check(bounded && sorted, "lyrics: a line is one line of at most 300 characters, and the lines are in start order");
+        const int before = int(fake.log.size());
+        g = askLyrics(0, QStringLiteral("../x"));
+        check(g.lines.isEmpty() && int(fake.log.size()) == before, "lyrics: an invalid item id is answered empty without a request");
+        check(int(errors.size()) == errorsBefore, "lyrics: none of the above raised a visible error");
+        lyricsMode = 0;
     }
     // ---- the reason an error carries --------------------------------------------------------------------------------------------------
     {

@@ -465,6 +465,10 @@ public:
     QString mediaTrackTitle() const;
     QString mediaArtist() const { return mediaArtist_; }
     QString mediaAlbum() const { return mediaAlbum_; }
+    // Synced lyrics of the playing Jellyfin song (audit/MUSIC-PLAN-2026-11-16.md): the line the position is on, and the one after it.
+    // Empty when the server has none, they are not timed, or the line is an instrumental gap.
+    QString mediaLyricCurrent() const;
+    QString mediaLyricNext() const;
     const QImage& mediaCoverArt() const { return mediaCover_; }
     // PCM tap behind the Visual Player (audit/MUSIC-PLAYER.md): levels of the music QMediaPlayer's own decoded audio.
     MusicTap* musicTap() const { return musicTap_.get(); }
@@ -980,6 +984,8 @@ private:
     void appendEmbeddedSubtitles();
     void applyEmbeddedSubtitleChoice();
     quint64 jellyfinChapterRequest_=0;
+    quint64 jellyfinLyricsRequest_=0;
+    QVector<JellyfinLyricLine> mediaLyrics_;   // synced lines of the playing song, in start order
     QHash<QString,int> jellyfinAudioReopen_;
     int jellyfinAudioApplyTries_=0;
     void loadJellyfinHomePage(const QString& kind,const QString& title);

@@ -134,3 +134,72 @@ See the end of this file (appended after the run).
   transcode; that was exercised with the stand-in's `--music-transcode`, not with a real transcoding server.
 - Real audio output: the runs played the 30 s test tone through this PC's output for a few seconds each (no volume or mute
   change was made; `XMB_AUDIO_DRY_RUN=1` does not silence playback).
+
+# Phase 2 (2026-11-16, branch `wt/jfmusic2`)
+
+Plan and the present / partial / missing audit: `MUSIC-PLAN-2026-11-16.md`. Same constraints as phase 1: the existing sign-in, every
+run against `work/jellyfin-standin.ts` (extended) or the in-process fake servers of the unit tests, nothing sent to a real server.
+
+## What was built
+
+- **Audio reports and resume.** Start, progress (10 s) and stop reports for audio already existed (they share the video path). What
+  was wrong: `finishJellyfinPlayback` kept a local resume point for any stop 10 s or more in, so a song left at 1:10 resumed at 1:10
+  and its row said "Resume at". Now `jfplayer::audioStopOutcome` / `audioRowResumeMs` (`jellyfin_player.*`): a song never keeps a
+  resume point; audio of 20 minutes or longer (`kAudioResumeMinMs`: audiobook, podcast) follows the video rule (position kept,
+  played at 90 percent, no resume under 10 s in) and is also marked played explicitly when finished, which clears its server
+  position. A song's play count stays the server's own rule on the stop report (a finished song is reported at its end position);
+  no explicit mark is sent for songs so it cannot be counted twice.
+- **Play and Shuffle Play** in the Triangle menu of an album, artist or playlist row (`Shell::startJellyfinPlayAll`): the tracks are
+  read window by window (200 a request, at most `kPlayAllCap` = 1000) from the same lists the pages use (an artist: the new
+  `MusicList::ArtistTracks`, `Items?IncludeItemTypes=Audio&ArtistIds=<id>&SortBy=Album,ParentIndexNumber,IndexNumber,SortName`),
+  then queued like Cross on a track (`playJellyfinQueue`, shared with `openJellyfinMedia`). Shuffle Play turns the Shuffle setting
+  on (`media/shuffle`, the panel's own preference) and starts at a random track. Next, Previous, Shuffle and Repeat already worked
+  on the Jellyfin queue and were not changed.
+- **Favourites, Recently Played, Most Played** rows in the music root (`MusicList::Favorites` = songs and albums with
+  `Filters=IsFavorite`; `RecentlyPlayed` = `Filters=IsPlayed&SortBy=DatePlayed&SortOrder=Descending`; `MostPlayed` =
+  `SortBy=PlayCount&SortOrder=Descending`, the row detail reads "N plays"). Rows show "Favourite". The Triangle menu of a song and
+  of an album has Add to / Remove from Favourites (phase 2's `/UserFavoriteItems/{id}` through `setUserFlag`; the row changes only
+  after the server answered). Artists and playlists are not offered the flag, and artists are not in the Favourites list: I am not
+  sure of the server's route for favourite artists and did not guess.
+- **Lyrics.** `JellyfinClient::lyrics` asks `/Audio/{id}/Lyrics` when an audio item starts; Now Playing shows the current line (40 px)
+  and the next (28 px, dimmer) under the cover. Only timed lyrics (every line has a `Start`) are shown: untimed text has nothing to
+  follow the song with and the page has no scrolling area, so it is not displayed (it is read and dropped, logged as "not timed").
+  A server or song without lyrics (404, an old server, any failure) shows nothing and raises no error. Not offered: a Favourite
+  toggle on the Now Playing page itself (Triangle there opens the console's control bar, not an options list, so there is no row to
+  add it to without new artwork).
+- **Skipped on purpose:** gapless playback (one `QMediaPlayer` source per track, the next stream is requested only when the previous
+  one ends; avoiding the gap needs a second player or a prefetched source, which is large and risky) and a `RepeatMode` that follows
+  the player in the report body (cosmetic).
+
+## Stand-in and tests
+
+- `work/jellyfin-standin.ts`: audio reports are now accepted in strict mode (the music PlaybackInfo did not register its
+  PlaySessionId, so every audio report was answered 400 before), tracks carry `UserData` (Played, PlayCount, IsFavorite,
+  LastPlayedDate, position for long audio), flag routes accept tracks and albums, `Filters=IsFavorite` / `IsPlayed` lists, an artist's
+  songs by `ArtistIds`, `/Audio/{id}/Lyrics` (the first track of every album, timed; `--plain-lyrics`, `--no-lyrics`) and `--audiobook`
+  (one 25 minute item "The Long Story" that keeps a position). Its stand-in assumption that only long audio keeps a position is
+  a guess about the real server, see below.
+- Tests (no new target, so CMake and `.github/workflows/tests.yml` are unchanged): `xmb-jellyfin-player-tests` 70 -> 100 checks
+  (audio stop rules, the 20 minute line, row resume, played mark, Play All windows, lyric index) and `xmb-jellyfin-music-tests`
+  65 -> 100 (audio start / progress / stop bodies, ArtistTracks request, Favourites / Recently Played / Most Played requests and parse,
+  play count, lyrics timed / untimed / 404 / oversized / invalid id). `xmb-jellyfin-playback-tests` (132) and setup (81) unchanged.
+
+## Scripted verification (stand-in, this PC, 1920x1080, build `C:\dev\out\jfmusic2`, MSVC /W4: 0 warnings)
+
+Frames in `C:\dev\out\jfmusic2-run\`: `b1` the Triangle menu of an album row (Play, Shuffle Play, Open); `b2`/`b3` Now Playing after
+Play, then Next ("Foghorn", Track 2 of 3 Tracks); `c1`..`c3` Favourites ("Coffee Hum - Favourite"), Recently Played (the song played
+last first) and Most Played ("Signal Fade - 3 plays") after the seed script played them against the stand-in; `d2`/`e1` the album and
+the song rows reading "Favourite" after the server accepted the flag (log: `favourite set for ...`), `d3` the song's Triangle menu
+(Play, Add to Favourites, Information); `f1`/`f2` Now Playing with the timed lyric line and the next one; `g`/`h` the audiobook
+left at 14.4 s is resumed by a new app run at 14.4 s (log: `resume applied at 14396 ms`).
+
+## Unverified
+
+- Everything against a real Jellyfin server. The routes (`/Audio/{id}/Lyrics`, `Filters=IsPlayed` with `SortBy=DatePlayed` and
+  `PlayCount`, `Filters=IsFavorite` on `Audio,MusicAlbum`, `ArtistIds` with `IncludeItemTypes=Audio`) are from the Jellyfin API as I
+  know it; the stand-in shares those assumptions.
+- That the real server keeps a position only for long audio and counts a play from the stop report alone (the stand-in does; the
+  client does not depend on it: a position a server did keep for a song is ignored by the row).
+- That `/Audio/{id}/Lyrics` timed lines use `Start` in 100 ns ticks (that is the documented `LyricLine` shape); how the lyric lines
+  look from the couch (40 px over the visualizer bars) and what a long audiobook does on the TV.
+- Real audio output: the runs used `XMB_AUDIO_DRY_RUN=1` plus the stand-in's 30 s test tone.

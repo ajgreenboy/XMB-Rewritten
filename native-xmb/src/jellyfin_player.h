@@ -70,6 +70,11 @@ constexpr int kPlayAllCap = 1000;
 // complete, the cap is reached, or nothing came back (a server that answers an empty window must not loop the client).
 int nextPlayAllWindow(int fetched, int total, int cap = kPlayAllCap);
 
+// ---- Lyrics (audit/MUSIC-PLAN-2026-11-16.md) ----------------------------------------------------------------------
+// The line a synced lyric is on at positionMs: the last line that starts at or before it, or -1 before the first line / with none.
+// `lines` must be in start order (the client sorts them).
+int lyricIndexAt(const QVector<JellyfinLyricLine>& lines, qint64 positionMs);
+
 // ---- Streams and the per-title choice --------------------------------------------------------------------
 // The server stream index to ask for: the remembered one when this item still has that audio stream, else the
 // stream the server marks default, else the first audio stream, else -1.

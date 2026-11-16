@@ -41,3 +41,9 @@ local files. Sources read: `JELLYFIN-MUSIC.md`, `JELLYFIN-PLAYER.md`, `MEDIA-PLA
 3. Favourites, Recently Played and Most Played rows in the music root; favourite toggle in the Triangle menu of every music row and
    in the Now Playing panel.
 4. Lyrics: decided after 1 to 3, see `JELLYFIN-MUSIC.md`.
+
+## Result
+
+All four built; gapless skipped. See `JELLYFIN-MUSIC.md` "Phase 2" for what each does, the tests, the scripted runs and what is
+unverified on a real server or the TV. Not built: untimed lyrics, a favourite toggle on the Now Playing page, favourite artists,
+gapless.

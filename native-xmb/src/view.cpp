@@ -4564,6 +4564,15 @@ void View::drawMusicPage(QPainter& p) {
     if(!shell_.mediaAlbum().isEmpty())
         mediaPanelText(p,QRectF(textLeft,top+174.,textWidth,32.),elided(shell_.mediaAlbum(),24,textWidth),24,
             QColor(220,220,220),Qt::AlignLeft|Qt::AlignVCenter);
+    // Synced lyrics of a Jellyfin song (only drawn when the server sent timed lines): the current line, the next one dimmer below it.
+    {
+        const QString lyricLine=shell_.mediaLyricCurrent(),lyricAfter=shell_.mediaLyricNext();
+        constexpr qreal lyricLeft=360.,lyricWidth=1200.;
+        if(!lyricLine.isEmpty())
+            mediaPanelText(p,QRectF(lyricLeft,640.,lyricWidth,52.),elided(lyricLine,40,lyricWidth),40,Qt::white,Qt::AlignLeft|Qt::AlignVCenter);
+        if(!lyricAfter.isEmpty())
+            mediaPanelText(p,QRectF(lyricLeft,696.,lyricWidth,38.),elided(lyricAfter,28,lyricWidth),28,QColor(255,255,255,150),Qt::AlignLeft|Qt::AlignVCenter);
+    }
     // plane_codec: the container's codec labels, chosen by file suffix (wav/aiff are linear PCM here).
     const QString codec=shell_.mediaCodec();
     const char* codecTexture=codec==QLatin1String("mp3")?"tex_codec_mp3":

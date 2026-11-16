@@ -279,6 +279,7 @@ void Shell::initJellyfin() {
         jellyfinChapterRequest_=0;
         if(mediaChapters_.size()<2 && !playback.audio)jellyfinChapterRequest_=jellyfin_.chapters(playback.itemId);
         else qInfo().noquote()<<"jellyfin:"<<mediaChapters_.size()<<"chapter mark(s) from PlaybackInfo";
+        mediaLyrics_.clear();jellyfinLyricsRequest_=playback.audio?jellyfin_.lyrics(playback.itemId):0;   // silently none when the server has no lyrics
         requestJellyfinSubtitles();
         const auto local=jellyfinStream_.open(playback.url,jellyfin_.authorizationHeader());
         if(!local.isValid() || local.isEmpty()){advanceMedia(true,{});return;}
@@ -292,6 +293,15 @@ void Shell::initJellyfin() {
         mediaChapters_=jfplayer::normalizedChapters(marks);
         qInfo().noquote()<<"jellyfin:"<<mediaChapters_.size()<<"chapter mark(s) from the item";
         refreshPlayerOptions();emit changed();
+    });
+    // Lyrics: only timed lines are kept, and only for the song that is still playing.
+    connect(&jellyfin_,&JellyfinClient::lyricsReady,this,[this](quint64 request,const QString& itemId,const QVector<JellyfinLyricLine>& lines,bool synced){
+        if(request!=jellyfinLyricsRequest_ || itemId!=jellyfinPlayback_.itemId || !mediaOpen_ || !jellyfinQueue_)return;
+        jellyfinLyricsRequest_=0;
+        if(lines.isEmpty() || !synced){qInfo().noquote()<<"jellyfin: no timed lyrics for"<<itemId<<(lines.isEmpty()?"(none)":"(not timed, not shown)");return;}
+        mediaLyrics_=lines;
+        qInfo().noquote()<<"jellyfin:"<<lines.size()<<"timed lyric line(s)";
+        emit changed();
     });
     // The answer to a watched or favourite toggle: the row changes only when the server agreed (never before).
     connect(&jellyfin_,&JellyfinClient::userFlagChanged,this,[this](quint64 request,const QString& itemId,int flag,bool value,bool ok){
@@ -515,6 +525,15 @@ void Shell::playJellyfinQueue(const QVector<Entry>& rows,int selected,bool fromB
     jellyfinQueue_=true;mediaQueue_.clear();mediaQueue_.setRepeat(static_cast<PlaybackQueue::Repeat>(mediaRepeatMode()));
     mediaQueue_.setShuffle(preferences_.value("media/shuffle").toBool());mediaQueue_.reset(std::move(queue),selected);mediaFailures_=0;startJellyfinMedia();
 }
+QString Shell::mediaLyricCurrent() const {
+    const int at=jfplayer::lyricIndexAt(mediaLyrics_,player_->position());
+    return at<0?QString{}:mediaLyrics_.at(at).text;
+}
+QString Shell::mediaLyricNext() const {
+    if(mediaLyrics_.isEmpty())return {};
+    const int at=jfplayer::lyricIndexAt(mediaLyrics_,player_->position())+1;
+    return at<mediaLyrics_.size()?mediaLyrics_.at(at).text:QString{};
+}
 // The streaming ceilings offered for Jellyfin, in kbit/s, with their labels.
 const QVector<QPair<int,QString>>& Shell::jellyfinQualities() {
     static const QVector<QPair<int,QString>> list{
@@ -631,6 +650,7 @@ void Shell::finishJellyfinPlayback(bool completed) {
         }
     }
     jellyfinPlayback_={};jellyfinStarted_=false;jellyfinResumePending_=0;jellyfinStream_.close();mediaChapters_.clear();jellyfinChapterRequest_=0;
+    mediaLyrics_.clear();jellyfinLyricsRequest_=0;
     jellyfinSubtitleRequests_.clear();jellyfinSubtitleErrors_.clear();
 }
 // The screen text for a stream that would not open: what the server (or the XMB's own relay) actually said, in one

@@ -54,6 +54,11 @@ struct JellyfinChapter {
     qint64 startMs = 0;
     QString name;
 };
+// One line of a song's lyrics: when it starts (ms from the beginning of the track) and its text (empty for an instrumental gap).
+struct JellyfinLyricLine {
+    qint64 startMs = 0;
+    QString text;
+};
 struct JellyfinPlayback {
     QUrl url;
     QString itemId, mediaSourceId, playSessionId, playMethod;
@@ -130,6 +135,10 @@ public:
     // The item's chapter marks, for a server whose PlaybackInfo did not carry them. Answers through chaptersReady with
     // an empty list when there are none or the request fails.
     quint64 chapters(QString itemId);
+    // A song's lyrics: GET /Audio/{itemId}/Lyrics (Jellyfin 10.9+). Answers through lyricsReady; a server without the route, a
+    // track without lyrics or any failure answers an empty list (nothing is shown, no error). `synced` is true only when every
+    // line carries a start time: unsynced text is returned as read but the Now Playing page shows synced lyrics only.
+    quint64 lyrics(QString itemId);
     // The URL a home list is asked from; exposed so the tests can pin the route and its query.
     QUrl homeUrl(HomeList kind, bool legacyRoute = false, const QString& libraryId = {}) const;
     // Primary (poster) or Backdrop art for one item, authenticated, bounded, and cached under
@@ -170,10 +179,11 @@ signals:
     void subtitleReady(quint64 request, int streamIndex, QByteArray bytes);
     void probeFinished(quint64 request, int status, QString detail);
     void chaptersReady(quint64 request, QString itemId, QVector<xmb::JellyfinChapter> chapters);
+    void lyricsReady(quint64 request, QString itemId, QVector<xmb::JellyfinLyricLine> lines, bool synced);
     void userFlagChanged(quint64 request, QString itemId, int flag, bool value, bool ok);
     void nextEpisodeReady(quint64 request, xmb::JellyfinItem item, bool found);
 private:
-    enum class Operation { SignIn, Views, Items, Search, Playback, Artwork, Report, Subtitle, SubtitleImage, Probe, Home, Chapters, UserFlag, NextEpisode };
+    enum class Operation { SignIn, Views, Items, Search, Playback, Artwork, Report, Subtitle, SubtitleImage, Probe, Home, Chapters, UserFlag, NextEpisode, Lyrics };
     quint64 send(Operation operation, QNetworkReply* reply, QString context = {}, bool audio = false);
     void finish(QNetworkReply* reply, Operation operation, quint64 request,
                 quint64 generation, QString context = {}, bool audio = false);
@@ -211,6 +221,7 @@ private:
 };
 } // namespace xmb
 Q_DECLARE_METATYPE(xmb::JellyfinChapter)
+Q_DECLARE_METATYPE(xmb::JellyfinLyricLine)
 Q_DECLARE_METATYPE(xmb::JellyfinItem)
 Q_DECLARE_METATYPE(xmb::JellyfinPage)
 Q_DECLARE_METATYPE(xmb::JellyfinPlayback)
