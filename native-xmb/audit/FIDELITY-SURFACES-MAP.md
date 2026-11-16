@@ -172,7 +172,7 @@ at the console's exact sizes and are all dead.
 
 | Surface | Firmware source | Console frame | Native | Gap note |
 |---|---|---|---|---|
-| Video column (depth 0) | `category_video.xml#root` (8 views) + `category_video_bdu.xml` (7) + `category_video_bdponly.xml` | `captured` `AG/col2-video-r00..r03.png` | **P** `src\shell.cpp:1026-1036` | Console: BD Data Utility / Search for Media Servers / Video Editor & Uploader (**3**). Build: Continue Watching / Video Library / Video Settings / Choose Media Folder (**4**). **No row is shared by label.** The build substitutes a filesystem library browser for the MMS-driven console rows (`MENUS-XMBML.md` 4.1; `REFERENCE-GAPS.md` correction). |
+| Video column (depth 0) | `category_video.xml#root` (8 views) + `category_video_bdu.xml` (7) + `category_video_bdponly.xml` | `captured` `AG/col2-video-r00..r03.png` | **P** `src\shell.cpp:1026-1036` | Console: BD Data Utility / Search for Media Servers / Video Editor & Uploader (**3**). Build: Continue Watching / Video Library / Video Settings (**3**; Choose Media Folder is Video Library's first row). **No row is shared by label.** The build substitutes a filesystem library browser for the MMS-driven console rows (`MENUS-XMBML.md` 4.1; `REFERENCE-GAPS.md` correction). |
 | BD Data Utility | `#seg_bddatamgmt`, `#seg_bddatacommon` | `captured` as a **negative**: `AG/page3-video-row0.png` - activating it draws no page (empty VFS) | **A** | Console behaviour is "inert with nothing to manage"; the build has no row for it at all, so the state cannot even be reproduced. |
 | Search for Media Servers | `#seg_dlna_scan` (`xcb` DLNA query); `dlna_plugin` | `captured` `AG/page3-video-row0..1`, `AG/page2-video-item1` (empty body) | **A** | Skipped by policy (`MENUS-XMBML.md` 4.1 "skip(reason)"), logged not drawn. |
 | Video Editor & Uploader | `sel://localhost/videoedit` `#seg_editingvideo_mgmt`; `videoeditor_plugin` (**35 pages**) | uncaptured | **A** | The largest single unimplemented plugin in the Video column: trim, add-video, BGM, captions, save menu, upload service select/login/title/uploading/complete. |
@@ -186,7 +186,7 @@ at the console's exact sizes and are all dead.
 
 | Surface | Firmware source | Console frame | Native | Gap note |
 |---|---|---|---|---|
-| Music column (depth 0) | `category_music.xml#root` (7 views) | `captured` `AG/col-music-r00..r01.png` | **P** `src\shell.cpp:1025` | Console: Search for Media Servers / Playlists (**2**). Build: Music Library / Music Settings / Choose Media Folder (**3**). No row shared. |
+| Music column (depth 0) | `category_music.xml#root` (7 views) | `captured` `AG/col-music-r00..r01.png` | **P** `src\shell.cpp:1025` | Console: Search for Media Servers / Playlists (**2**). Build: Music Library / Music Settings (**2**; Choose Media Folder is Music Library's first row). No row shared. |
 | Search for Media Servers | `#seg_dlna_scan` | `captured` `AG/page3-music-row0`, `AG/page2-music-item0` (empty body) | **A** | |
 | Playlists | `#seg_playlist_mgmt` (4 views across music/photo) + `playlist.xml` + `playlist_plugin` (5 pages: select, edit, create-new, msg) | `captured` **by class**, from the Photo column: `AG/page2-photo-item1.png` (artwork + `Create New Playlist`) | **A** | The page class is captured, the Music instance is not. The build has no playlist model at all - `playback_queue` is a session queue, not a stored playlist. |
 | Now Playing / music mini-player | `#seg_now` (`now://localhost/q?id=XMB_MODULE_MUSIC`); `audioplayer_plugin` (11 pages: full-screen, back screen, control panel, title info, progress, play status, volume, 3 dialogs) | uncaptured | **R** | The full-screen music page is drawn (`drawMusicPage`, `audit/MUSIC-PLAYER.md`); the control panel is the XMB panel (B2) stand-in, and the title-info/progress/play-status sub-pages are folded into the one page. |
@@ -199,7 +199,7 @@ at the console's exact sizes and are all dead.
 
 | Surface | Firmware source | Console frame | Native | Gap note |
 |---|---|---|---|---|
-| Photo column (depth 0) | `category_photo.xml#root` (11 views) | `captured` `AG/col-photo-r00..r02.png` | **P** `src\shell.cpp:1024` | Console: Search for Media Servers / Photo Gallery / Playlists (**3**). Build: Photo Library / Photo Settings / Choose Media Folder (**3**, none shared, and Photo Settings is a native-only page). |
+| Photo column (depth 0) | `category_photo.xml#root` (11 views) | `captured` `AG/col-photo-r00..r02.png` | **P** `src\shell.cpp:1024` | Console: Search for Media Servers / Photo Gallery / Playlists (**3**). Build: Photo Library / Photo Settings (**2**; Choose Media Folder is Photo Library's first row, none shared, and Photo Settings is a native-only page). |
 | Search for Media Servers | `#seg_dlna_scan` | `captured` `AG/page3-photo-row0`, `AG/page2-photo-item0` | **A** | |
 | Photo Gallery | `sel://localhost/hakoniwa` `#seg_hakoniwa` (+ `#seg_hakoniwa_dummy`) | uncaptured | **P** | Recreated as the hakoniwa library area, scope (b) (see `audit/PHOTO-GALLERY.md`): piles on a floor, focus/zoom, a grid per pile, viewer hand-off. The Playlist/Network areas, the 15 package floors and face groupings are not built. |
 | Playlists | `#seg_playlist_mgmt` | `captured` `AG/page2-photo-item1.png` | **A** | See 2.4. |

@@ -280,12 +280,12 @@
       "waits": 10,
       "settleWaits": 3,
       "path": [{ "categoryId": "video", "catalogueId": "library" }],
-      "preGrab": ["TRIANGLE", "wait", "wait", "wait"],
+      "preGrab": ["DOWN", "wait", "TRIANGLE", "wait", "wait", "wait"],
       "expect": {
         "category": "video",
         "depth": 1,
         "entryTitle": "Movies",
-        "entryCount": 3,
+        "entryCount": 4,
         "pageKind": "folder",
         "log": [{ "pattern": "shell: options opened category= video depth= 1 .*rows= 5 Sort By\\|Open\\|Copy\\|Delete\\|Information" }]
       },
@@ -350,13 +350,13 @@
       "waits": 10,
       "settleWaits": 2,
       "env": { "XMB_SUBTITLE_LOG": "1" },
-      "path": [{ "categoryId": "video", "catalogueId": "library" }, { "rowIndex": 0 }],
+      "path": [{ "categoryId": "video", "catalogueId": "library" }, { "rowIndex": 1 }],
       "preGrab": ["wait", "wait", "wait", "wait", "ENTER", "wait", "LEFT", "wait", "wait"],
       "expect": {
         "category": "video",
         "depth": 1,
         "entryTitle": "Cue Test.mp4",
-        "entryCount": 1,
+        "entryCount": 2,
         "sidecar": {
           "mediaOpen": true,
           "mediaPaused": true,
@@ -458,7 +458,7 @@
           "catalogueId": "library"
         },
         {
-          "rowIndex": 0
+          "rowIndex": 1
         }
       ],
       "preGrab": [
@@ -475,7 +475,7 @@
       "expect": {
         "category": "music",
         "depth": 1,
-        "entryCount": 1,
+        "entryCount": 2,
         "entryTitle": "Gate Tone.wav",
         "sidecar": {
           "mediaOpen": true,
@@ -537,7 +537,7 @@
           "catalogueId": "library"
         },
         {
-          "rowIndex": 0
+          "rowIndex": 1
         }
       ],
       "preGrab": [
@@ -613,7 +613,7 @@
           "catalogueId": "library"
         },
         {
-          "rowIndex": 0
+          "rowIndex": 1
         }
       ],
       "preGrab": [

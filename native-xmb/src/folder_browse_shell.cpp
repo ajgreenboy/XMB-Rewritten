@@ -140,6 +140,8 @@ bool Shell::activateBrowse(const Entry& entry) {
     const QString chosen=entry.value;
     qInfo().noquote()<<QStringLiteral("folder browser: chose \"%1\"").arg(QDir::toNativeSeparators(chosen));
     pages_.removeLast();
+    // Opened from a library page: that page is replaced by the reloaded one for the new folder.
+    if(!pages_.isEmpty() && pages_.last().libraryRoot){library_.cancel();scanRequest_=0;loading_=false;pages_.removeLast();}
     chooseLibrary(chosen);
     return true;
 }
