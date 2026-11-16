@@ -492,7 +492,7 @@ int main(int argc,char** argv) {
     parser.addOption({"dump-cg","Translate the original qgl/lines Cg programs to GLSL into a local folder and exit","directory"});
     parser.addOption({"measure-reference","Render the background offscreen, write statistics comparable to audit/VIDEO-REFERENCES.md and exit","text-file"});
     parser.addOption({"p3t-dump","List a PS3 theme's elements and write its decoded pictures and sounds to a local folder (theme.p3t@directory) and exit","spec"});
-    parser.addOption({"raf-report","Write a PS3 theme's (or .raf's) animated-scene graph as JSON (theme.p3t@report.json) and exit; nothing is drawn","spec"});
+    parser.addOption({"raf-report","Write a PS3 theme's (or .raf's) animated-scene graph, decode checks and script disassembly as JSON (theme.p3t@report.json) and exit","spec"});
     parser.addOption({"vsmx-eval","Evaluate a RAF script to JSON (file.raf@report.json)","spec"});
     parser.addOption({"gtf-decode","Decode RAF or GTF textures to PNG (file@directory) and exit","spec"});
     parser.addOption({"edge-decode","Decode the first RAF model or an Edge file to JSON (file@report.json) and exit","spec"});
@@ -1334,13 +1334,16 @@ int main(int argc,char** argv) {
     if(parser.isSet("dump-cg")) {
         // Local analysis only: the folder receives firmware-derived shader text and must stay out of Git.
         int failures=0;
-        for(const QString entry:{"moyou/background","moyou/back_colours0","moyou/back_colours1","moyou/back_colours2","moyou/LinesController","moyou/LinesControllerQuin",
+        QStringList entries{"moyou/background","moyou/back_colours0","moyou/back_colours1","moyou/back_colours2","moyou/LinesController","moyou/LinesControllerQuin",
                                 "moyou/LinesEdge","moyou/lines0","moyou/lines1","moyou/lines2","moyou/ffd_shader0","moyou/ffd_shader1","moyou/ffd_shader2","moyou/ffd_shader3",
                                 "moyou/ffd_alpha_blend","glutils/Copy","glutils/GlareSource","glutils/GlareSourcePre","glutils/GlareSourceNoTone","glutils/Gaussian",
                                 "glutils/ApplyDisplay","glutils/ToneApplyDisplay","glutils/AccGlare","glutils/DoubleGaussian","glutils/GaussBloomAndBlur","glutils/BlurAcc",
                                 "glutils/BloomCone","glutils/ToneMap","glutils/ApplyGlare","particles/particles_quads","particles/particles_second",
                                 "icons:icons/quad","icons:icons/mask","icons:icons/icons_full_ss","icons:icons/icons_full_ss_no_shad","icons:icons/icons_cheap_ss",
-                                "icons:icons/icons_cheap_ss_no_shad","icons:icons/icons_no_ss","icons:icons/icons_no_ss_no_shad","raf:raf/vert0","raf:raf/sce01"})
+                                "icons:icons/icons_cheap_ss_no_shad","icons:icons/icons_no_ss","icons:icons/icons_no_ss_no_shad","raf:raf/vert0","raf:raf/sce01"};
+        // raf.qrc's sixteen generated effect programs (raf.prx names them "_gen_ubber1" + four flag digits).
+        for(int flags=0;flags<16;++flags)entries<<QStringLiteral("raf:raf/_gen_ubber1_%1%2%3%4").arg(flags&1).arg((flags>>1)&1).arg((flags>>2)&1).arg((flags>>3)&1);
+        for(const QString& entry:entries)
             for(const QString ext:{"vpo","fpo"}) {
                 QByteArray bytes;
                 const QString archive=entry.contains(':')?entry.section(':',0,0):QString("lines"),name=entry.section(':',-1);

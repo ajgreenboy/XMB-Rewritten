@@ -434,12 +434,22 @@ of your own brings the original background back. The preference stores only the 
 
 The theme's sound effects (`setable`, VAG to WAV) replace cursor/decide/cancel/option-menu/message-accept cues;
 missing or invalid cues fall back to the system's, and Original restores system sounds. Volume, mute and Key Tone
-apply to theme sounds too. Dynamic themes' animated scenes (RAF) are listed, not drawn; their still background is used when there
-is one. The firmware's own theme (`dev_flash/vsh/resource/theme/01.p3t`, "Air Paint") is a full example. To see
-what a theme holds, write its element tree and decoded pictures and sounds to a local folder:
+apply to theme sounds too.
+
+Dynamic themes are **not animated**. A dynamic theme's scene (`bgimage/anim`, a RAF) is drawn once as a **still frame**
+at the initial pose its file declares, with approximate lighting; its script never runs, so nothing moves and the
+time of day is ignored. When that frame cannot be drawn (an unsupported mesh, texture or effect), the theme's own still
+background is shown, exactly as for a static theme; `XMB_RAF_THEMES=0` always shows the still background. Status,
+evidence and the remaining work are in `audit/RAF-THEMES.md`.
+
+The firmware's own theme (`dev_flash/vsh/resource/theme/01.p3t`, "Air Paint") is a full example of a **static**
+theme: measured, it carries two still backgrounds and no animated scene, so it looks the same with or without the
+RAF work. To see what a theme holds, write its element tree and decoded pictures and sounds to a local folder, or
+its animated scene (when it has one) as JSON:
 
 ```powershell
 & .\out\integration\re-ps3-native.exe --p3t-dump <theme.p3t>@<local-folder>
+& .\out\integration\re-ps3-native.exe --raf-report <theme.p3t>@<local-report.json>
 ```
 
 ## Cold-boot intro

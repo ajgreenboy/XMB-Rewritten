@@ -691,8 +691,10 @@ void View::syncFocusedBackground() {
 }
 void View::loadWallpaper() {
     if(shell_.backgroundMode()!=2)return;
-    // A theme scene is a static frame for now; on failure retain its still picture like any other theme.
-    const auto& scene=shell_.themeSceneBytes();
+    // A theme scene is drawn as one STILL frame (renderRafStill: initial pose, no script); on failure, or with
+    // XMB_RAF_THEMES=0, the theme keeps its still bgimage like any other theme.
+    static const QByteArray none;
+    const auto& scene=rafThemesEnabled()?shell_.themeSceneBytes():none;
     if(!scene.isEmpty() || !shell_.themeBackground().isNull()) {
         const QSize pixels=(QSizeF(size())*devicePixelRatioF()).toSize();
         if(!scene.isEmpty() && (pixels.width()<=0 || pixels.height()<=0))return;
@@ -705,7 +707,7 @@ void View::loadWallpaper() {
             QString error;const auto rendered=renderRafStill(scene,QString{},pixels.width(),pixels.height(),&error);
             if(previous && surface)previous->makeCurrent(surface);
             if(rendered.isNull())qInfo().noquote()<<"theme: scene render failed; using still background:"<<error;
-            else wallpaperImage_=rendered;
+            else {wallpaperImage_=rendered;qInfo().noquote()<<"theme: animated scene shown as a still frame (initial pose; script not run)";}
         }
         return;
     }

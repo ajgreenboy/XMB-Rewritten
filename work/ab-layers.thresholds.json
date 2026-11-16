@@ -1095,7 +1095,7 @@
     },
     {
       "name": "raf-static-scene",
-      "description": "The offscreen RAF still (--raf-render): the firmware's coldboot.raf scene drawn once, with no window and no clock, from the read-only dev_flash. The command prints its actor / model / texture / triangle counts, which are the state oracle. No XMB surface shows it yet (audit/RAF-THEMES.md: nothing is drawn behind the XMB), so this gates the renderer itself.",
+      "description": "The offscreen RAF still (--raf-render): the firmware's coldboot.raf scene drawn once, with no window and no clock, from the read-only dev_flash. The command prints its actor / model / texture / triangle counts, which are the state oracle. The same renderer draws a selected dynamic theme's scene as a still behind the XMB (audit/RAF-THEMES.md; no gated state selects such a theme), so this gates the renderer itself.",
       "reference": "out/native-reference/layers/raf-static-scene.png",
       "dataSeed": "out/native-reference/v2/music",
       "seedPaths": [

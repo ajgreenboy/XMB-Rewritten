@@ -68,7 +68,7 @@ slice changed.
 | `icon` | 63 | `id`, `size`, `src` | Consumed | Consumed | `icons()` -> `Shell::Theme::icons` -> `View` theme-icon lookup; all 63 GIM pictures are 65,664 bytes inflated |
 | `bgimagetable` | 1 | none | Partial | Partial | container |
 | `bgimage` | 2 | `hd`, `sd` | Partial: the first `hd` (else `sd`) is the still wallpaper; the second is ignored | Partial plus `backgrounds()` exposes all of them; `background()` still returns the first | `View::loadWallpaper()`; the rule that chooses between two bgimages is open (F) |
-| `bgimage` + `anim` | 0 | - | Ignored: `dynamic()` only answered yes/no | Parsed by `scene()`; still not drawn | RAF section 3 |
+| `bgimage` + `anim` | 0 | - | Ignored: `dynamic()` only answered yes/no | Parsed by `scene()`; since 2026-11 drawn as one still frame (no animation) | RAF section 3, audit/RAF-THEMES.md |
 | `font` | 1 | `selection=0` | Ignored by the UI (generic tree only) | Exposed as `fontSelection()` / `fontSelectionName()` | wiring hunk 4.1 |
 | `color` | 1 | `selection=8` | Ignored by the UI (generic tree only) | Exposed as `colorSelection()` / `colorSelectionName()` | wiring hunk 4.2 |
 | `setable` | 0 | - | Consumed when present | Consumed | `sounds()` |
@@ -175,7 +175,8 @@ keyframes, interpret the script or upload anything.
   role-to-action mapping in `InteractionAudio`; Air Paint has none and no theme with extra roles is local.
 - **`backgrounds()`**: a future time/variant rule could choose among the two Air Paint pictures. No consumer
   yet; using the second without that rule would be a guess.
-- **`scene()`**: the RAF verdict in section 3. Parsing it changes no pixels.
+- **`scene()`**: the RAF verdict in section 3. Status 2026-11-16 (audit/RAF-THEMES.md): a scene is drawn as one still
+  frame at its initial pose, with the still background as fallback; nothing animates. Air Paint has no scene.
 
 ## 3. RAF scenes
 
@@ -226,6 +227,9 @@ Finished 10 s), which `src/coldboot.cpp` already hardcodes. The synthetic RAFO f
 path with one EA03 header: `animations 1 [anim[0..2 30fps 75fr]] timeline 0..2` (section 5).
 
 ### 3.3 Can `src/coldboot.cpp` be reused?
+
+Current status and measurements (still frame, decoders, raf.prx/raf.qrc findings) are in `audit/RAF-THEMES.md`;
+this section is the original 2026-10-27 analysis.
 
 **Verdict: not as a renderer. It is a one-scene port, and its reusable parts are already represented in the new
 `P3t::Raf` reader.** Concretely:
