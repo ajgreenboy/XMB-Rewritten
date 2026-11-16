@@ -70,7 +70,8 @@ Entry makeRow(const QString& id, const QString& title, const QString& detail, co
     Entry e;
     e.id = id; e.title = title; e.detail = detail;
     e.action = value.isEmpty() ? Action::Information : Action::SteamCmd;
-    e.value = value;
+    // An Information row with no text would open System Information; its own sentence is shown instead.
+    e.value = value.isEmpty() ? (detail.isEmpty() ? title : detail) : value;
     e.container = QStringLiteral("explore_plugin_full");
     e.texture = QStringLiteral("item_tex_plain_folder");
     e.source = QStringLiteral("native");
@@ -179,7 +180,7 @@ static QVector<Entry> steamCmdBrowseRows(const QString& here) {
                                        : QObject::tr("Uses %1.").arg(nativePath(exe)),
         QStringLiteral("use|") + here);
     use.disabled = exe.isEmpty();
-    if (here.isEmpty()) { use.action = Action::Information; use.value.clear(); }
+    if (here.isEmpty()) { use.action = Action::Information; use.value = use.detail; }
     use.fieldValue = here.isEmpty() ? QString() : nativePath(here);
     rows.push_back(std::move(use));
     if (!here.isEmpty())
