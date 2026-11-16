@@ -170,6 +170,21 @@ qint64 millisecondsFromTicks(const QJsonValue& value) {
     return static_cast<qint64>(ticks / 10000.0);
 }
 
+// MediaSources[].Chapters or an item's Chapters: [{"StartPositionTicks": n, "Name": "..."}]. Bounded; an unnamed mark
+// keeps an empty name (the UI numbers it).
+QVector<JellyfinChapter> parseChapters(const QJsonArray& values) {
+    QVector<JellyfinChapter> out;
+    for (const auto& value : values) {
+        if (!value.isObject() || out.size() >= 200) continue;
+        const QJsonObject chapter = value.toObject();
+        JellyfinChapter parsed;
+        parsed.startMs = millisecondsFromTicks(chapter.value(QStringLiteral("StartPositionTicks")));
+        parsed.name = chapter.value(QStringLiteral("Name")).toString().trimmed().left(80);
+        out.push_back(parsed);
+    }
+    return out;
+}
+
 JellyfinItem parseItem(const QJsonObject& json) {
     JellyfinItem result;
     result.id = json.value(QStringLiteral("Id")).toString();
@@ -209,6 +224,11 @@ JellyfinItem parseItem(const QJsonObject& json) {
     result.trackNumber = std::clamp(json.value(QStringLiteral("IndexNumber")).toInt(0), 0, 9999);
     result.discNumber = std::clamp(json.value(QStringLiteral("ParentIndexNumber")).toInt(0), 0, 999);
     result.year = std::clamp(json.value(QStringLiteral("ProductionYear")).toInt(0), 0, 9999);
+    if (result.type == QLatin1String("Episode")) {
+        result.seriesName = json.value(QStringLiteral("SeriesName")).toString().left(200);
+        result.seasonNumber = std::clamp(json.value(QStringLiteral("ParentIndexNumber")).toInt(0), 0, 999);
+        result.episodeNumber = std::clamp(json.value(QStringLiteral("IndexNumber")).toInt(0), 0, 9999);
+    }
     return result;
 }
 }
@@ -525,7 +545,8 @@ quint64 JellyfinClient::music(MusicList kind, QString libraryId, QString id, int
     return send(Operation::Items, get(url), QString::number(startIndex));
 }
 
-quint64 JellyfinClient::playback(QString itemId, bool audio, int maxBitrateKbps, int burnSubtitleIndex, QString burnCodec) {
+quint64 JellyfinClient::playback(QString itemId, bool audio, int maxBitrateKbps, int burnSubtitleIndex, QString burnCodec,
+                                 int audioStreamIndex) {
     if (!signedIn()) { const quint64 request = ++nextRequest_; fail(request, QStringLiteral("Sign in to Jellyfin first.")); return request; }
     if (!validId(itemId)) { const quint64 request = ++nextRequest_; fail(request, QStringLiteral("Choose a valid Jellyfin item.")); return request; }
     const QJsonObject videoDirect{{QStringLiteral("Container"), QStringLiteral("mp4,mkv,webm")},
@@ -562,18 +583,83 @@ quint64 JellyfinClient::playback(QString itemId, bool audio, int maxBitrateKbps,
             {QStringLiteral("Method"), QStringLiteral("Encode")}}});
         qInfo().noquote() << "jellyfin: PlaybackInfo burns in subtitle stream" << burnSubtitleIndex << codec;
     }
+    // An audio stream the player cannot switch to by itself is the server's to select: that cannot be a static direct
+    // play, which carries every stream and leaves the choice to the player.
+    const bool pickAudio = !audio && audioStreamIndex >= 0;
     QJsonObject bodyObject{{QStringLiteral("DeviceId"), deviceId_},
         {QStringLiteral("DeviceProfile"), profile},
-        {QStringLiteral("UserId"), userId_}, {QStringLiteral("EnableDirectPlay"), !burn},
+        {QStringLiteral("UserId"), userId_}, {QStringLiteral("EnableDirectPlay"), !burn && !pickAudio},
         {QStringLiteral("EnableDirectStream"), !burn}, {QStringLiteral("EnableTranscoding"), true},
         {QStringLiteral("IsPlayback"), true}, {QStringLiteral("AutoOpenLiveStream"), true},
         {QStringLiteral("MaxStreamingBitrate"), maxBitrate},
         {QStringLiteral("StartTimeTicks"), 0}};
     if (burn) bodyObject.insert(QStringLiteral("SubtitleStreamIndex"), burnSubtitleIndex);
+    if (pickAudio) bodyObject.insert(QStringLiteral("AudioStreamIndex"), audioStreamIndex);
     QByteArray body = QJsonDocument(bodyObject).toJson(QJsonDocument::Compact);
     auto* reply = post(apiUrl(QStringLiteral("Items/") + itemId + QStringLiteral("/PlaybackInfo")), body);
     body.fill('\0');
-    return send(Operation::Playback, reply, burn ? itemId + QLatin1Char('#') + QString::number(burnSubtitleIndex) : itemId, audio);
+    // The context carries what the answer needs: "<item>#<burn stream>#<audio stream>" (-1 = none).
+    return send(Operation::Playback, reply,
+                itemId + QLatin1Char('#') + QString::number(burn ? burnSubtitleIndex : -1) + QLatin1Char('#') +
+                    QString::number(pickAudio ? audioStreamIndex : -1), audio);
+}
+
+QUrl JellyfinClient::homeUrl(HomeList kind, bool legacyRoute) const {
+    QUrl url;
+    QUrlQuery query;
+    query.addQueryItem(QStringLiteral("userId"), userId_);
+    query.addQueryItem(QStringLiteral("Limit"), kind == HomeList::Resume ? QStringLiteral("50") : QStringLiteral("40"));
+    query.addQueryItem(QStringLiteral("EnableUserData"), QStringLiteral("true"));
+    query.addQueryItem(QStringLiteral("Fields"), QStringLiteral("Overview"));
+    query.addQueryItem(QStringLiteral("EnableImageTypes"), QStringLiteral("Primary,Backdrop"));
+    if (kind == HomeList::Resume) {
+        // Jellyfin 10.9+: /UserItems/Resume. Before that: /Users/{id}/Items/Resume (removed in 12).
+        url = apiUrl(legacyRoute ? QStringLiteral("Users/") + userId_ + QStringLiteral("/Items/Resume") : QStringLiteral("UserItems/Resume"));
+        query.addQueryItem(QStringLiteral("MediaTypes"), QStringLiteral("Video"));
+        query.addQueryItem(QStringLiteral("Recursive"), QStringLiteral("true"));
+    } else {
+        if (legacyRoute) return QUrl();   // /Shows/NextUp has no older route
+        url = apiUrl(QStringLiteral("Shows/NextUp"));
+        query.addQueryItem(QStringLiteral("DisableFirstEpisode"), QStringLiteral("false"));
+    }
+    url.setQuery(query);
+    return url;
+}
+
+quint64 JellyfinClient::home(HomeList kind) {
+    if (!signedIn()) { const quint64 request = ++nextRequest_; fail(request, QStringLiteral("Sign in to Jellyfin first.")); return request; }
+    return send(Operation::Home, get(homeUrl(kind)), QString::number(kind == HomeList::NextUp ? 1 : 0) + QLatin1String(":0"));
+}
+
+void JellyfinClient::markPlayed(QString itemId) {
+    if (!signedIn() || !validId(itemId)) return;
+    QUrl url = apiUrl(QStringLiteral("UserPlayedItems/") + itemId);
+    QUrlQuery query;
+    query.addQueryItem(QStringLiteral("userId"), userId_);
+    url.setQuery(query);
+    auto* reply = post(url, QByteArray());
+    send(Operation::Report, reply);
+    // Before Jellyfin 10.9 the route was /Users/{id}/PlayedItems/{item}; a 404 retries it once, anything else is final.
+    const QUrl legacy = apiUrl(QStringLiteral("Users/") + userId_ + QStringLiteral("/PlayedItems/") + itemId);
+    connect(reply, &QNetworkReply::finished, this, [this, reply, legacy] {
+        if (reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt() == 404 && signedIn())
+            send(Operation::Report, post(legacy, QByteArray()));
+    });
+}
+
+quint64 JellyfinClient::chapters(QString itemId) {
+    if (!signedIn() || !validId(itemId)) {
+        const quint64 request = ++nextRequest_;
+        QTimer::singleShot(0, this, [this, request, itemId] { emit chaptersReady(request, itemId, {}); });
+        return request;
+    }
+    QUrl url = apiUrl(QStringLiteral("Items"));
+    QUrlQuery query;
+    query.addQueryItem(QStringLiteral("userId"), userId_);
+    query.addQueryItem(QStringLiteral("ids"), itemId);
+    query.addQueryItem(QStringLiteral("fields"), QStringLiteral("Chapters"));
+    url.setQuery(query);
+    return send(Operation::Chapters, get(url), itemId);
 }
 
 void JellyfinClient::reportPlayback(const JellyfinPlayback& playbackInfo, qint64 positionMs,
@@ -596,6 +682,8 @@ void JellyfinClient::reportPlayback(const JellyfinPlayback& playbackInfo, qint64
         {QStringLiteral("CanSeek"), true}, {QStringLiteral("IsMuted"), false},
         {QStringLiteral("VolumeLevel"), 100}, {QStringLiteral("PlaybackRate"), 1},
         {QStringLiteral("RepeatMode"), QStringLiteral("RepeatNone")}};
+    if (playbackInfo.audioStreamIndex >= 0) body.insert(QStringLiteral("AudioStreamIndex"), playbackInfo.audioStreamIndex);
+    if (playbackInfo.burnSubtitleIndex >= 0) body.insert(QStringLiteral("SubtitleStreamIndex"), playbackInfo.burnSubtitleIndex);
     QByteArray bytes = QJsonDocument(body).toJson(QJsonDocument::Compact);
     auto* reply = post(apiUrl(endpoint), bytes);
     bytes.fill('\0');
@@ -845,6 +933,34 @@ void JellyfinClient::finish(QNetworkReply* reply, Operation operation, quint64 r
         emit artworkReady(request, itemId, backdrop, image);
         return;
     }
+    if (operation == Operation::Chapters) {
+        QVector<JellyfinChapter> list;
+        if (ok) {
+            const QJsonArray values = QJsonDocument::fromJson(bytes).object().value(QStringLiteral("Items")).toArray();
+            if (!values.isEmpty() && values.first().isObject())
+                list = parseChapters(values.first().toObject().value(QStringLiteral("Chapters")).toArray());
+        }
+        emit chaptersReady(request, context, list);
+        return;
+    }
+    if (operation == Operation::Home) {
+        // context = "<list>:<attempt>". The current route is tried first; a 404/405 retries the older user-scoped
+        // route once (its answer is delivered under the original request id), and a server with neither answers an
+        // empty list: having no Continue Watching route is not an error the viewer needs.
+        const QStringList parts = context.split(QLatin1Char(':'));
+        if (homeAlias_.contains(request)) request = homeAlias_.take(request);
+        if (!ok && (status == 404 || status == 405 || status == 501)) {
+            const auto kind = parts.value(0) == QLatin1String("1") ? HomeList::NextUp : HomeList::Resume;
+            const QUrl legacy = homeUrl(kind, true);
+            if (parts.value(1) == QLatin1String("0") && legacy.isValid() && !legacy.isEmpty()) {
+                const quint64 retry = send(Operation::Home, get(legacy), parts.value(0) + QLatin1String(":1"));
+                homeAlias_.insert(retry, request);
+                return;
+            }
+            emit pageReady(request, JellyfinPage{});
+            return;
+        }
+    }
     // A subtitle stream is text, not JSON: the bytes go to the parser as they are, or empty on failure.
     if (operation == Operation::Subtitle || operation == Operation::SubtitleImage) {
         emit subtitleReady(request, context.toInt(), ok ? bytes : QByteArray{});
@@ -879,7 +995,7 @@ void JellyfinClient::finish(QNetworkReply* reply, Operation operation, quint64 r
     if (parse.error != QJsonParseError::NoError) {
         fail(request, QStringLiteral("Jellyfin returned an unexpected response.")); return;
     }
-    if (operation == Operation::Views || operation == Operation::Items || operation == Operation::Search) {
+    if (operation == Operation::Views || operation == Operation::Items || operation == Operation::Search || operation == Operation::Home) {
         JellyfinPage page;
         page.startIndex = operation == Operation::Items || operation == Operation::Search ? context.toInt() : 0;
         QJsonArray values;
@@ -901,10 +1017,12 @@ void JellyfinClient::finish(QNetworkReply* reply, Operation operation, quint64 r
         return;
     }
     if (operation == Operation::Playback) {
-        // "<item>" or "<item>#<subtitle stream index>" when that stream is to be burned in (playback()).
-        int burn = -1;
+        // "<item>#<subtitle stream to burn in>#<audio stream asked for>" (playback()); -1 = none.
+        int burn = -1, wantedAudio = -1;
         if (const int hash = context.indexOf(QLatin1Char('#')); hash > 0) {
-            burn = context.mid(hash + 1).toInt();
+            const QStringList parts = context.mid(hash + 1).split(QLatin1Char('#'));
+            burn = parts.value(0, QStringLiteral("-1")).toInt();
+            wantedAudio = parts.value(1, QStringLiteral("-1")).toInt();
             context.truncate(hash);
         }
         const auto root = document.object();
@@ -916,8 +1034,8 @@ void JellyfinClient::finish(QNetworkReply* reply, Operation operation, quint64 r
             const QString sourceId = source.value(QStringLiteral("Id")).toString();
             // A burned-in subtitle exists only in the server's transcode, so a burn request never takes
             // the static file even when the server would allow it.
-            const bool directPlay = burn < 0 && source.value(QStringLiteral("SupportsDirectPlay")).toBool();
-            const bool directStream = burn < 0 && source.value(QStringLiteral("SupportsDirectStream")).toBool();
+            const bool directPlay = burn < 0 && wantedAudio < 0 && source.value(QStringLiteral("SupportsDirectPlay")).toBool();
+            const bool directStream = burn < 0 && wantedAudio < 0 && source.value(QStringLiteral("SupportsDirectStream")).toBool();
             QString method;
             QUrl stream;
             if (directPlay) {
@@ -960,6 +1078,12 @@ void JellyfinClient::finish(QNetworkReply* reply, Operation operation, quint64 r
                         query.addQueryItem(QStringLiteral("SubtitleMethod"), QStringLiteral("Encode"));
                     stream.setQuery(query);
                 }
+                if (wantedAudio >= 0) {
+                    QUrlQuery query(stream);
+                    if (!query.hasQueryItem(QStringLiteral("AudioStreamIndex")))
+                        query.addQueryItem(QStringLiteral("AudioStreamIndex"), QString::number(wantedAudio));
+                    stream.setQuery(query);
+                }
             }
             stream = withoutSecrets(stream);
             if (!trustedServerUrl(stream)) continue;
@@ -971,6 +1095,9 @@ void JellyfinClient::finish(QNetworkReply* reply, Operation operation, quint64 r
             result.playMethod = method;
             result.audio = audio;
             result.burnSubtitleIndex = burn;
+            result.audioStreamIndex = wantedAudio;
+            result.durationMs = millisecondsFromTicks(source.value(QStringLiteral("RunTimeTicks")));
+            result.chapters = parseChapters(source.value(QStringLiteral("Chapters")).toArray());
             // The server's own stream list. What the player can actually switch to is decided
             // later against QMediaPlayer::audioTracks(), so this is a catalogue, not a promise.
             const QJsonArray streams = source.value(QStringLiteral("MediaStreams")).toArray();

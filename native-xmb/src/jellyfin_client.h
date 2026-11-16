@@ -7,6 +7,7 @@
 #include <QByteArray>
 #include <QImage>
 #include <QSet>
+#include <QHash>
 #include <QtGlobal>
 
 class QNetworkAccessManager;
@@ -26,6 +27,10 @@ struct JellyfinItem {
     // belongs to and that album's picture tag (a track has no cover of its own), its place on the disc.
     QString artist, album, albumId, albumTag;
     int trackNumber = 0, discNumber = 0, year = 0;
+    // Episodes: the show, and the season and episode numbers (0 when the server sent none), for the Continue
+    // Watching and Next Up rows, which mix shows.
+    QString seriesName;
+    int seasonNumber = 0, episodeNumber = 0;
 };
 struct JellyfinPage { QVector<JellyfinItem> items; int startIndex = 0, total = 0; };
 // One MediaStream from PlaybackInfo. The player cannot necessarily switch to it; the shell asks
@@ -40,11 +45,19 @@ struct JellyfinTrack {
     bool text = false;      // IsTextSubtitleStream: the server can deliver it as SRT (subtitle())
     bool isDefault = false;
 };
+// One chapter mark of an item: where it starts and its name (empty when the server has none).
+struct JellyfinChapter {
+    qint64 startMs = 0;
+    QString name;
+};
 struct JellyfinPlayback {
     QUrl url;
     QString itemId, mediaSourceId, playSessionId, playMethod;
     bool audio = false;
     int burnSubtitleIndex = -1;   // the subtitle stream the server burns into this transcode, -1 = none
+    int audioStreamIndex = -1;    // the audio stream asked for (AudioStreamIndex), -1 = the server's default
+    qint64 durationMs = 0;        // the source's RunTimeTicks, 0 when the server did not say
+    QVector<JellyfinChapter> chapters;   // MediaSources[].Chapters when PlaybackInfo carries them (else chapters())
     QVector<JellyfinTrack> streams;
 };
 // Whether a subtitle stream is English. The language field is Jellyfin's ISO 639-2 code (usually
@@ -86,7 +99,19 @@ public:
     // burnSubtitleIndex >= 0 asks for that subtitle stream burned into a server transcode
     // (SubtitleStreamIndex + a SubtitleProfile whose method is Encode; direct play is switched off).
     quint64 playback(QString itemId, bool audio = false, int maxBitrateKbps = 20000,
-                     int burnSubtitleIndex = -1, QString burnCodec = {});
+                     int burnSubtitleIndex = -1, QString burnCodec = {}, int audioStreamIndex = -1);
+    // The server-side lists behind the Jellyfin home rows (audit/JELLYFIN-PLAYER.md). Resume = Continue Watching
+    // (items with a saved position, newest first), NextUp = the next unwatched episode of every show being watched.
+    // Answered through pageReady like items(); a server without the route answers an empty page, not an error.
+    enum class HomeList { Resume, NextUp };
+    quint64 home(HomeList kind);
+    // Mark an item watched (clears its resume point server-side). Best effort, no answer is surfaced.
+    void markPlayed(QString itemId);
+    // The item's chapter marks, for a server whose PlaybackInfo did not carry them. Answers through chaptersReady with
+    // an empty list when there are none or the request fails.
+    quint64 chapters(QString itemId);
+    // The URL a home list is asked from; exposed so the tests can pin the route and its query.
+    QUrl homeUrl(HomeList kind, bool legacyRoute = false) const;
     // Primary (poster) or Backdrop art for one item, authenticated, bounded, and cached under
     // the directory set by setImageCache(). A failure emits artworkReady with a null image:
     // missing art is not an error the user needs to see.
@@ -124,8 +149,9 @@ signals:
     void artworkReady(quint64 request, QString itemId, bool backdrop, QImage image);
     void subtitleReady(quint64 request, int streamIndex, QByteArray bytes);
     void probeFinished(quint64 request, int status, QString detail);
+    void chaptersReady(quint64 request, QString itemId, QVector<xmb::JellyfinChapter> chapters);
 private:
-    enum class Operation { SignIn, Views, Items, Search, Playback, Artwork, Report, Subtitle, SubtitleImage, Probe };
+    enum class Operation { SignIn, Views, Items, Search, Playback, Artwork, Report, Subtitle, SubtitleImage, Probe, Home, Chapters };
     quint64 send(Operation operation, QNetworkReply* reply, QString context = {}, bool audio = false);
     void finish(QNetworkReply* reply, Operation operation, quint64 request,
                 quint64 generation, QString context = {}, bool audio = false);
@@ -153,10 +179,12 @@ private:
     QString deviceId_;
     QString imageCache_;
     QString sessionPath_;
+    QHash<quint64, quint64> homeAlias_;   // a retried home list request -> the id the shell is waiting on
     quint64 generation_ = 0;
     quint64 nextRequest_ = 0;
 };
 } // namespace xmb
+Q_DECLARE_METATYPE(xmb::JellyfinChapter)
 Q_DECLARE_METATYPE(xmb::JellyfinItem)
 Q_DECLARE_METATYPE(xmb::JellyfinPage)
 Q_DECLARE_METATYPE(xmb::JellyfinPlayback)

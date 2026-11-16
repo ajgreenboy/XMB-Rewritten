@@ -68,7 +68,7 @@ qt_add_executable(re-ps3-native
     src/subtitles.cpp src/subtitles.h
     src/image_subtitles.cpp src/image_subtitles.h
     src/jellyfin_client.cpp src/jellyfin_client.h src/jellyfin_stream.cpp src/jellyfin_stream.h
-    src/jellyfin_shell.cpp src/jellyfin_music_shell.cpp src/jellyfin_setup.cpp src/jellyfin_setup.h src/jellyfin_setup_shell.cpp
+    src/jellyfin_player.cpp src/jellyfin_player.h src/jellyfin_shell.cpp src/jellyfin_music_shell.cpp src/jellyfin_setup.cpp src/jellyfin_setup.h src/jellyfin_setup_shell.cpp
     src/rsx_program.cpp src/rsx_program.h src/ribbon.cpp src/ribbon.h src/uniform_cache.cpp src/uniform_cache.h src/render_gate.cpp src/render_gate.h src/idle_profile.h src/frame_trace.h src/hdr.cpp src/hdr.h src/icons.cpp src/icons.h src/particles.cpp src/particles.h src/coldboot.cpp src/coldboot.h
     src/setup.cpp src/setup.h src/setup_shell.cpp src/release_shell.cpp
     src/autostart.cpp src/autostart.h src/autologon.cpp src/autologon.h src/cec.cpp src/cec.h src/display_mode.cpp src/display_mode.h src/display_spec.h src/diagnostics.cpp src/diagnostics.h src/game_capture.cpp src/game_capture.h src/elevation.cpp src/elevation.h src/text_entry.cpp src/text_entry.h src/shell.cpp src/shell.h src/host.cpp src/host.h src/pad.cpp src/pad.h src/ps_watcher.cpp src/ps_watcher.h src/web_adopt.cpp src/web_adopt.h src/desktop_mode.cpp src/desktop_mode.h src/desktop_pad.cpp src/desktop_pad_win.cpp src/desktop_pad.h src/view.cpp src/view.h src/dialogs.cpp)
@@ -185,6 +185,19 @@ if(XMB_JELLYFIN_PLAYBACK_BUILD_TESTS)
     endif()
     if(MSVC)
         target_compile_options(xmb-jellyfin-playback-tests PRIVATE /W4 /permissive- /utf-8)
+    endif()
+endif()
+option(XMB_JELLYFIN_PLAYER_BUILD_TESTS "Build the Jellyfin player state-logic (position ticks, played rule, chapters, per-title choice) tests" OFF)
+if(XMB_JELLYFIN_PLAYER_BUILD_TESTS)
+    qt_add_executable(xmb-jellyfin-player-tests tests/jellyfin_player_tests.cpp
+        src/jellyfin_player.cpp src/jellyfin_player.h src/jellyfin_client.cpp src/jellyfin_client.h src/jellyfin_stream.cpp src/jellyfin_stream.h)
+    target_include_directories(xmb-jellyfin-player-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(xmb-jellyfin-player-tests PRIVATE Qt6::Core Qt6::Gui Qt6::Network)
+    if(WIN32)
+        target_link_libraries(xmb-jellyfin-player-tests PRIVATE crypt32)
+    endif()
+    if(MSVC)
+        target_compile_options(xmb-jellyfin-player-tests PRIVATE /W4 /permissive- /utf-8)
     endif()
 endif()
 option(XMB_STEAM_QUIT_BUILD_TESTS "Build the Steam Quit Game process-selection and three-stage tests (and the stand-in game they close)" OFF)

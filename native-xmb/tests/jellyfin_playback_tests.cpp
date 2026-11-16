@@ -37,6 +37,7 @@ void check(bool condition, const char* label) {
 }
 
 constexpr const char* kItem = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbb02";
+bool g_fakeOmitsAudioIndex = false;   // the fake's TranscodingUrl leaves AudioStreamIndex out, so the client has to add it
 constexpr const char* kUser = "0123456789abcdef0123456789abcdef";
 const QByteArray kToken = "standin-token-for-tests-only";
 
@@ -155,13 +156,13 @@ Resp error(int status, const QString& message) { return json({{"Message", messag
 
 // What 10.9+ builds in StreamInfo.ToUrl: a relative path, the query beginning with DeviceId, ApiKey appended,
 // and values that need their percent-encoding kept (a comma list, a plus, an ampersand inside a value).
-QString transcodeUrl(const QString& deviceId, int burn) {
+QString transcodeUrl(const QString& deviceId, int burn, int audio = 1) {
     QString url = QStringLiteral("/videos/@ITEM@/master.m3u8?DeviceId=@DEVICE@&MediaSourceId=@ITEM@&VideoCodec=h264&AudioCodec=aac,ac3"
-        "&AudioStreamIndex=1&VideoBitrate=19808000&AudioBitrate=192000&MaxFramerate=23.976025&PlaySessionId=ps0123456789abcdef"
+        "&AudioStreamIndex=@AUDIO@&VideoBitrate=19808000&AudioBitrate=192000&MaxFramerate=23.976025&PlaySessionId=ps0123456789abcdef"
         "&ApiKey=@KEY@&TranscodingMaxAudioChannels=2&RequireAvc=false&EnableAudioVbrEncoding=true&Tag=a%2Bb%26c%20d"
         "&SegmentContainer=ts&MinSegments=1&BreakOnNonKeyFrames=True&TranscodeReasons=AudioCodecNotSupported,VideoCodecNotSupported");
     url.replace(QStringLiteral("@ITEM@"), QString::fromLatin1(kItem)).replace(QStringLiteral("@DEVICE@"), deviceId)
-        .replace(QStringLiteral("@KEY@"), QString::fromLatin1(kToken));
+        .replace(QStringLiteral("@KEY@"), QString::fromLatin1(kToken)).replace(QStringLiteral("@AUDIO@"), QString::number(audio));
     if (burn >= 0) url += QStringLiteral("&SubtitleStreamIndex=") + QString::number(burn) + QStringLiteral("&SubtitleMethod=Encode");
     return url;
 }
@@ -192,9 +193,17 @@ Resp serve(const Req& r, FakeServer& fake, bool& transcodeRequested) {
             if (subs.isEmpty() || subs.first().toObject().value("Method") != "Encode" || body.value("EnableDirectPlay").toBool())
                 return error(400, "burn-in needs an Encode subtitle profile and no direct play");
         }
+        const int audio = body.contains("AudioStreamIndex") ? body.value("AudioStreamIndex").toInt() : -1;
+        if (audio >= 0 && body.value("EnableDirectPlay").toBool()) return error(400, "a chosen audio stream cannot be a static direct play");
         QJsonObject source{{"Id", QString::fromLatin1(kItem)}, {"SupportsDirectPlay", false}, {"SupportsDirectStream", false},
-                           {"SupportsTranscoding", true}, {"TranscodingUrl", transcodeUrl(deviceId, burn)},
-                           {"MediaStreams", QJsonArray{QJsonObject{{"Index", 0}, {"Type", "Video"}, {"Codec", "hevc"}, {"DisplayTitle", "1080p"}}}}};
+                           {"SupportsTranscoding", true}, {"TranscodingUrl", g_fakeOmitsAudioIndex ? transcodeUrl(deviceId, burn, audio >= 0 ? audio : 1).remove(QStringLiteral("&AudioStreamIndex=%1").arg(audio >= 0 ? audio : 1)) : transcodeUrl(deviceId, burn, audio >= 0 ? audio : 1)},
+                           {"RunTimeTicks", 72000000000LL},
+                           {"Chapters", QJsonArray{QJsonObject{{"StartPositionTicks", 0}, {"Name", "Opening"}},
+                                                   QJsonObject{{"StartPositionTicks", 6000000000LL}, {"Name", ""}},
+                                                   QJsonObject{{"StartPositionTicks", 18000000000LL}, {"Name", "Finale"}}}},
+                           {"MediaStreams", QJsonArray{QJsonObject{{"Index", 0}, {"Type", "Video"}, {"Codec", "hevc"}, {"DisplayTitle", "1080p"}},
+                               QJsonObject{{"Index", 1}, {"Type", "Audio"}, {"Codec", "dts"}, {"DisplayTitle", "English DTS 5.1"}, {"IsDefault", true}},
+                               QJsonObject{{"Index", 2}, {"Type", "Audio"}, {"Codec", "ac3"}, {"DisplayTitle", "Commentary"}}}}};
         return json({{"MediaSources", QJsonArray{source}}, {"PlaySessionId", "ps0123456789abcdef"}});
     }
     if (path.startsWith(QLatin1String("/videos/"))) {
@@ -402,6 +411,180 @@ int main(int argc, char** argv) {
         client.subtitleImage(QString::fromLatin1(kItem), QString::fromLatin1(kItem), 3);
         check(waitFor([&] { return sub.count() > 0; }, 40000), "subtitle: answered");
         check(sub.count() > 0 && sub.first().at(2).toByteArray().size() == 32, "subtitle: a stream the server takes 16.5 s to extract is delivered, not abandoned at 15 s");
+    }
+
+    // ---- the player's server calls (audit/JELLYFIN-PLAYER.md) ---------------------------------------------------------
+    // A fake with a mutable state: home lists, played marks, session reports, chapter lookups. Every route is the one a
+    // Jellyfin 10.9+ server answers; a flag turns routes off to test the silent fallbacks.
+    struct Home { bool resumeNew = true, resumeLegacy = false, nextUp = true; int resumeStatus = 0; } home;
+    QList<Req> reportsSeen, playedSeen;
+    bool playedNewRoute = true;
+    bool chaptersFail = false;
+    const QString user = QString::fromLatin1(kUser);
+    const QJsonObject resumeItem{{"Id", "dddddddddddddddddddddddddddddd01"}, {"Name", "Half Watched"}, {"Type", "Episode"}, {"IsFolder", false},
+        {"SeriesName", "Test Show"}, {"ParentIndexNumber", 2}, {"IndexNumber", 5}, {"RunTimeTicks", 36000000000LL},
+        {"UserData", QJsonObject{{"Played", false}, {"PlaybackPositionTicks", 6000000000LL}}}};
+    fake.handler = [&](const Req& r) -> Resp {
+        const QString path = QString::fromLatin1(r.path);
+        if (authToken(r) == kToken || r.query().queryItemValue("ApiKey").toLatin1() == kToken) {
+            const QUrlQuery q = r.query();
+            if (home.resumeStatus && (path == QLatin1String("/UserItems/Resume") || path == QStringLiteral("/Users/%1/Items/Resume").arg(user))) return error(home.resumeStatus, "boom");
+            if (r.method == "GET" && path == QLatin1String("/UserItems/Resume"))
+                return home.resumeNew ? json({{"Items", QJsonArray{resumeItem}}, {"TotalRecordCount", 1}}) : error(404, "Not found");
+            if (r.method == "GET" && path == QStringLiteral("/Users/%1/Items/Resume").arg(user))
+                return home.resumeLegacy ? json({{"Items", QJsonArray{resumeItem}}, {"TotalRecordCount", 1}}) : error(404, "Not found");
+            if (r.method == "GET" && path == QLatin1String("/Shows/NextUp"))
+                return home.nextUp ? json({{"Items", QJsonArray{resumeItem}}, {"TotalRecordCount", 1}}) : error(404, "Not found");
+            if (r.method == "POST" && path.startsWith(QLatin1String("/Sessions/Playing"))) { reportsSeen.push_back(r); return {204, {}, "application/json", 0}; }
+            if (r.method == "POST" && path.startsWith(QLatin1String("/UserPlayedItems/"))) {
+                playedSeen.push_back(r);
+                return playedNewRoute ? Resp{200, "{}", "application/json", 0} : error(404, "Not found");
+            }
+            if (r.method == "POST" && path.contains(QLatin1String("/PlayedItems/"))) { playedSeen.push_back(r); return {200, "{}", "application/json", 0}; }
+            if (r.method == "GET" && path == QLatin1String("/Items") && q.hasQueryItem("ids")) {
+                if (chaptersFail) return error(500, "boom");
+                return json({{"Items", QJsonArray{QJsonObject{{"Id", q.queryItemValue("ids")},
+                    {"Chapters", QJsonArray{QJsonObject{{"StartPositionTicks", 0}, {"Name", "One"}}, QJsonObject{{"StartPositionTicks", 30000000000LL}, {"Name", "Two"}}}}}}}});
+            }
+        }
+        return serve(r, fake, transcodeRequested);
+    };
+    {
+        // The home routes pin: 10.9+ path, user id and the video media type; NextUp has no older route.
+        const QUrl resumeUrl = client.homeUrl(JellyfinClient::HomeList::Resume);
+        check(resumeUrl.path() == QLatin1String("/UserItems/Resume"), "home: Continue Watching uses /UserItems/Resume");
+        check(QUrlQuery(resumeUrl).queryItemValue("userId") == user && QUrlQuery(resumeUrl).queryItemValue("MediaTypes") == QLatin1String("Video") &&
+              QUrlQuery(resumeUrl).queryItemValue("EnableUserData") == QLatin1String("true"), "home: the user, the video media type and the user data are requested");
+        check(client.homeUrl(JellyfinClient::HomeList::Resume, true).path() == QStringLiteral("/Users/%1/Items/Resume").arg(user), "home: the older route is user-scoped");
+        check(client.homeUrl(JellyfinClient::HomeList::NextUp).path() == QLatin1String("/Shows/NextUp") && QUrlQuery(client.homeUrl(JellyfinClient::HomeList::NextUp)).queryItemValue("userId") == user,
+              "home: Next Up is /Shows/NextUp with the user id");
+        check(client.homeUrl(JellyfinClient::HomeList::NextUp, true).isEmpty(), "home: Next Up has no older route");
+
+        Collector pages, failures2;
+        const auto pageConnection = QObject::connect(&client, &JellyfinClient::pageReady, [&](quint64 request, const JellyfinPage& page) { pages.v.push_back({QVariant::fromValue(request), QVariant::fromValue(page)}); });
+        const auto failConnection = QObject::connect(&client, &JellyfinClient::failed, [&](quint64 request, const QString& message) { failures2.v.push_back({QVariant::fromValue(request), message}); });
+        const auto firstPage = [&]() { return qvariant_cast<JellyfinPage>(pages.first().at(1)); };
+
+        quint64 id = client.home(JellyfinClient::HomeList::Resume);
+        check(waitFor([&] { return pages.count() > 0; }) && pages.first().at(0).toULongLong() == id, "home: Continue Watching answered under its own request id");
+        if (pages.count() > 0 && !firstPage().items.isEmpty()) {
+            const auto item = firstPage().items.first();
+            check(item.resumeMs == 600000 && item.durationMs == 3600000 && !item.played, "home: the server's PlaybackPositionTicks is the resume point (100 ns ticks to ms)");
+            check(item.seriesName == QLatin1String("Test Show") && item.seasonNumber == 2 && item.episodeNumber == 5, "home: an episode names its show, season and number");
+        } else check(false, "home: the page carries the resume item");
+
+        // 10.9+ route missing, older route present: the page arrives under the original request id.
+        pages.clear(); home.resumeNew = false; home.resumeLegacy = true;
+        id = client.home(JellyfinClient::HomeList::Resume);
+        check(waitFor([&] { return pages.count() > 0; }) && pages.first().at(0).toULongLong() == id && firstPage().items.size() == 1, "home: a 404 on the new route falls back to the older one, same request id");
+        // Neither route: an empty page, not an error.
+        pages.clear(); failures2.clear(); home.resumeLegacy = false;
+        id = client.home(JellyfinClient::HomeList::Resume);
+        check(waitFor([&] { return pages.count() > 0 || failures2.count() > 0; }) && pages.count() == 1 && firstPage().items.isEmpty() && failures2.count() == 0,
+              "home: a server without the route answers an empty list silently");
+        pages.clear(); home.nextUp = false;
+        client.home(JellyfinClient::HomeList::NextUp);
+        check(waitFor([&] { return pages.count() > 0 || failures2.count() > 0; }) && pages.count() == 1 && firstPage().items.isEmpty() && failures2.count() == 0, "home: Next Up without the route is an empty list too");
+        // A real server error is still an error the viewer can read.
+        pages.clear(); failures2.clear(); home.resumeNew = true; home.resumeStatus = 500;
+        client.home(JellyfinClient::HomeList::Resume);
+        check(waitFor([&] { return pages.count() > 0 || failures2.count() > 0; }) && failures2.count() == 1 && pages.count() == 0, "home: an HTTP 500 is reported, not swallowed");
+        home.resumeStatus = 0;
+        QObject::disconnect(pageConnection); QObject::disconnect(failConnection);
+    }
+    {
+        // Session reports: start, progress, stop; ticks are milliseconds times 10000 and the stream choice rides along.
+        JellyfinPlayback p;
+        p.itemId = QString::fromLatin1(kItem); p.mediaSourceId = p.itemId; p.playSessionId = QStringLiteral("ps0123456789abcdef"); p.playMethod = QStringLiteral("DirectPlay");
+        p.audioStreamIndex = 2;
+        reportsSeen.clear();
+        client.reportPlayback(p, 61000, false, QStringLiteral("start"));
+        client.reportPlayback(p, 71500, true, QStringLiteral("progress"));
+        client.reportPlayback(p, 3600000, false, QStringLiteral("stop"));
+        client.reportPlayback(p, 5, false, QStringLiteral("bogus"));
+        check(waitFor([&] { return reportsSeen.size() >= 3; }), "report: start, progress and stop reach the server");
+        if (reportsSeen.size() >= 3) {
+            check(reportsSeen[0].path == "/Sessions/Playing" && reportsSeen[1].path == "/Sessions/Playing/Progress" && reportsSeen[2].path == "/Sessions/Playing/Stopped", "report: the three session routes");
+            const QJsonObject start = QJsonDocument::fromJson(reportsSeen[0].body).object();
+            const QJsonObject progress = QJsonDocument::fromJson(reportsSeen[1].body).object();
+            const QJsonObject stopped = QJsonDocument::fromJson(reportsSeen[2].body).object();
+            check(start.value("PositionTicks").toDouble() == 610000000.0 && progress.value("PositionTicks").toDouble() == 715000000.0 && stopped.value("PositionTicks").toDouble() == 36000000000.0,
+                  "report: PositionTicks is the position in milliseconds times 10000");
+            check(start.value("ItemId") == p.itemId && start.value("PlaySessionId") == p.playSessionId && start.value("PlayMethod") == QLatin1String("DirectPlay") && start.value("MediaSourceId") == p.itemId,
+                  "report: the item, session, method and media source");
+            check(!start.value("IsPaused").toBool() && progress.value("IsPaused").toBool(), "report: the paused flag follows the player");
+            check(start.value("AudioStreamIndex").toInt() == 2 && !start.contains("SubtitleStreamIndex"), "report: the chosen audio stream is reported, no subtitle stream unless burned in");
+        }
+        check(reportsSeen.size() == 3, "report: an unknown event sends nothing");
+        QUrlQuery cleanup;
+        for (const Req& r : fake.log) if (r.method == "DELETE") cleanup = r.query();
+        check(cleanup.queryItemValue("playSessionId") == QLatin1String("ps0123456789abcdef"), "report: the stop also releases the transcode");
+    }
+    {
+        // Marking watched: the 10.9+ route with the user id; a 404 retries the older user-scoped route once.
+        playedSeen.clear();
+        client.markPlayed(QString::fromLatin1(kItem));
+        check(waitFor([&] { return !playedSeen.isEmpty(); }), "played: the mark reaches the server");
+        check(playedSeen.size() == 1 && playedSeen[0].method == "POST" && playedSeen[0].path == QByteArray("/UserPlayedItems/") + kItem &&
+              playedSeen[0].query().queryItemValue("userId") == user, "played: POST /UserPlayedItems/{id}?userId=");
+        playedSeen.clear(); playedNewRoute = false;
+        client.markPlayed(QString::fromLatin1(kItem));
+        check(waitFor([&] { return playedSeen.size() >= 2; }), "played: a 404 retries the older route");
+        check(playedSeen.size() == 2 && playedSeen[1].path == QByteArray("/Users/") + kUser + "/PlayedItems/" + kItem, "played: the older route is /Users/{user}/PlayedItems/{id}");
+        playedSeen.clear();
+        client.markPlayed(QStringLiteral("../x"));
+        waitFor([&] { return false; }, 150);
+        check(playedSeen.isEmpty(), "played: an invalid item id is never sent");
+        playedNewRoute = true;
+    }
+    {
+        // An audio stream the player cannot switch to is the server's to select; chapters ride on PlaybackInfo.
+        ready.clear(); failed.clear();
+        client.playback(QString::fromLatin1(kItem), false, 20000, -1, {}, 2);
+        check(waitFor([&] { return ready.count() + failed.count() > 0; }) && ready.count() == 1, "audio: PlaybackInfo with AudioStreamIndex accepted (direct play off)");
+        if (ready.count() == 1) {
+            const auto p = qvariant_cast<JellyfinPlayback>(ready.first().at(1));
+            const QJsonObject body = QJsonDocument::fromJson(fake.log.last().body).object();
+            check(body.value("AudioStreamIndex").toInt() == 2 && !body.value("EnableDirectPlay").toBool(), "audio: the request names stream 2 and disables direct play");
+            check(p.audioStreamIndex == 2 && p.url.query(QUrl::FullyEncoded).count("AudioStreamIndex=2") == 1, "audio: the stream url carries AudioStreamIndex=2 once");
+            check(p.durationMs == 7200000, "playback: the source's RunTimeTicks is the duration");
+            check(p.chapters.size() == 3 && p.chapters[1].startMs == 600000 && p.chapters[0].name == QLatin1String("Opening") && p.chapters[1].name.isEmpty() && p.chapters[2].startMs == 1800000,
+                  "playback: Chapters of the media source are parsed (ticks to ms, an unnamed mark stays unnamed)");
+            int audioStreams = 0;
+            for (const auto& s : p.streams) if (s.type == QLatin1String("Audio")) ++audioStreams;
+            check(audioStreams == 2, "playback: both audio streams are listed");
+        }
+        // A server whose TranscodingUrl leaves the key out: the client adds it, once.
+        g_fakeOmitsAudioIndex = true; ready.clear();
+        client.playback(QString::fromLatin1(kItem), false, 20000, -1, {}, 2);
+        check(waitFor([&] { return ready.count() > 0; }), "audio: answered when the url has no AudioStreamIndex");
+        if (ready.count() > 0) check(qvariant_cast<JellyfinPlayback>(ready.first().at(1)).url.query(QUrl::FullyEncoded).count("AudioStreamIndex=2") == 1, "audio: the client adds the missing AudioStreamIndex, once");
+        g_fakeOmitsAudioIndex = false;
+        ready.clear();
+        client.playback(QString::fromLatin1(kItem), false, 20000, -1);
+        check(waitFor([&] { return ready.count() > 0; }), "audio: no stream chosen is still a plain request");
+        if (ready.count() > 0) {
+            const QJsonObject body = QJsonDocument::fromJson(fake.log.last().body).object();
+            check(!body.contains("AudioStreamIndex") && body.value("EnableDirectPlay").toBool(), "audio: without a choice nothing is forced and direct play stays on");
+            check(qvariant_cast<JellyfinPlayback>(ready.first().at(1)).audioStreamIndex == -1, "audio: no stream chosen reads -1");
+        }
+    }
+    {
+        // Chapters for a server whose PlaybackInfo had none.
+        struct Got { quint64 request = 0; QString item; QVector<JellyfinChapter> list; bool done = false; } got;
+        const auto chapterConnection = QObject::connect(&client, &JellyfinClient::chaptersReady, [&](quint64 request, const QString& item, const QVector<JellyfinChapter>& list) { got = {request, item, list, true}; });
+        const quint64 id = client.chapters(QString::fromLatin1(kItem));
+        check(waitFor([&] { return got.done; }) && got.request == id && got.item == QLatin1String(kItem) && got.list.size() == 2 && got.list[1].startMs == 3000000 && got.list[1].name == QLatin1String("Two"),
+              "chapters: /Items?ids=&fields=Chapters is parsed");
+        const auto& last = fake.log.last();
+        check(last.path == "/Items" && last.query().queryItemValue("fields") == QLatin1String("Chapters") && last.query().queryItemValue("userId") == user, "chapters: the request asks for the Chapters field as the signed-in user");
+        got = {}; chaptersFail = true;
+        client.chapters(QString::fromLatin1(kItem));
+        check(waitFor([&] { return got.done; }) && got.list.isEmpty(), "chapters: a failing server answers an empty list, silently");
+        got = {}; chaptersFail = false;
+        client.chapters(QStringLiteral("a/b"));
+        check(waitFor([&] { return got.done; }) && got.list.isEmpty(), "chapters: an invalid id answers an empty list without a request");
+        QObject::disconnect(chapterConnection);
     }
 
     std::printf("%d checks, %d failures\n", checks, failures);

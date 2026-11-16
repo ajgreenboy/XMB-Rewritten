@@ -54,7 +54,7 @@ jobs:
             -DCMAKE_PREFIX_PATH="$env:QT_ROOT_DIR" `
             -DXMB_STEAM_VDF_BUILD_TESTS=ON -DXMB_STEAM_SWITCH_BUILD_TESTS=ON -DXMB_SETUP_BUILD_TESTS=ON -DXMB_AUTOLOGON_BUILD_TESTS=ON `
             -DXMB_UPDATER_BUILD_TESTS=ON -DXMB_FIRMWARE_BUILD_TESTS=ON -DXMB_RELEASE_BUILD_TESTS=ON `
-            -DXMB_MANAGER_BUILD_TESTS=ON -DXMB_FILE_OPS_BUILD_TESTS=ON -DXMB_DISCORD_BUILD_TESTS=ON -DXMB_FOLDER_BROWSER_BUILD_TESTS=ON -DXMB_OSK_PASTE_BUILD_TESTS=ON -DXMB_JELLYFIN_SETUP_BUILD_TESTS=ON -DXMB_JELLYFIN_PLAYBACK_BUILD_TESTS=ON -DXMB_STEAM_QUIT_BUILD_TESTS=ON -DXMB_JELLYFIN_MUSIC_BUILD_TESTS=ON -DXMB_FRAME_PACER_BUILD_TESTS=ON
+            -DXMB_MANAGER_BUILD_TESTS=ON -DXMB_FILE_OPS_BUILD_TESTS=ON -DXMB_DISCORD_BUILD_TESTS=ON -DXMB_FOLDER_BROWSER_BUILD_TESTS=ON -DXMB_OSK_PASTE_BUILD_TESTS=ON -DXMB_JELLYFIN_SETUP_BUILD_TESTS=ON -DXMB_JELLYFIN_PLAYBACK_BUILD_TESTS=ON -DXMB_JELLYFIN_PLAYER_BUILD_TESTS=ON -DXMB_STEAM_QUIT_BUILD_TESTS=ON -DXMB_JELLYFIN_MUSIC_BUILD_TESTS=ON -DXMB_FRAME_PACER_BUILD_TESTS=ON
           if ($LASTEXITCODE) { throw 'CMake configuration failed.' }
 
       - name: Build the test runners (and xmb-manager, which the manager tests drive)
@@ -62,7 +62,7 @@ jobs:
         run: |
           cmake --build "$env:BUILD_DIR" --parallel --target `
             xmb-steam-vdf-tests xmb-steam-switch-tests xmb-setup-tests xmb-autologon-tests xmb-updater-tests `
-            xmb-firmware-tests xmb-release-tests xmb-file-ops-tests xmb-folder-browser-tests xmb-osk-paste-tests xmb-discord-tests xmb-jellyfin-setup-tests xmb-jellyfin-playback-tests xmb-jellyfin-music-tests xmb-frame-pacer-tests xmb-steam-quit-tests xmb-steam-quit-standin xmb-manager-tests xmb-manager
+            xmb-firmware-tests xmb-release-tests xmb-file-ops-tests xmb-folder-browser-tests xmb-osk-paste-tests xmb-discord-tests xmb-jellyfin-setup-tests xmb-jellyfin-playback-tests xmb-jellyfin-player-tests xmb-jellyfin-music-tests xmb-frame-pacer-tests xmb-steam-quit-tests xmb-steam-quit-standin xmb-manager-tests xmb-manager
           if ($LASTEXITCODE) { throw 'Test build failed.' }
 
       - name: Run the test runners
@@ -85,6 +85,7 @@ jobs:
             @{ Name = 'discord';   Exe = 'xmb-discord-tests.exe';   Args = @() },
             @{ Name = 'jellyfin-setup'; Exe = 'xmb-jellyfin-setup-tests.exe'; Args = @((Join-Path $scratch 'jellyfin-setup')) },
             @{ Name = 'jellyfin-playback'; Exe = 'xmb-jellyfin-playback-tests.exe'; Args = @() },
+            @{ Name = 'jellyfin-player'; Exe = 'xmb-jellyfin-player-tests.exe'; Args = @() },
             @{ Name = 'steam-quit'; Exe = 'xmb-steam-quit-tests.exe'; Args = @((Join-Path $b 'xmb-steam-quit-standin.exe'), (Join-Path $scratch 'steam-quit')) },
             @{ Name = 'jellyfin-music'; Exe = 'xmb-jellyfin-music-tests.exe'; Args = @() },
             @{ Name = 'frame-pacer'; Exe = 'xmb-frame-pacer-tests.exe'; Args = @() },

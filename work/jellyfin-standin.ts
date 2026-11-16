@@ -29,6 +29,9 @@ const secondLibrary = args.includes("--second-library");       // a second music
 const musicTranscode = args.includes("--music-transcode");     // audio is served through a Transcode answer (/Audio/{id}/universal)
 const extraSongs = Number(opt("extra-songs", "0"));            // filler songs, to page through a large library
 const musicStatus = Number(opt("music-status", "0"));          // force every music list to answer this status (error text test)
+const noHome = args.includes("--no-home");                     // the server has no Resume / NextUp routes at all (they answer 404)
+const legacyHome = args.includes("--legacy-home");             // only the pre-10.9 user-scoped Resume route exists
+const noChapters = args.includes("--no-chapters");             // neither PlaybackInfo nor /Items carries chapter marks
 
 const TOKEN = "standin-" + Math.random().toString(16).slice(2) + Math.random().toString(16).slice(2);
 const USER = "0123456789abcdef0123456789abcdef";
@@ -50,10 +53,28 @@ const movies: Movie[] = [
   { id: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbb05", name: "Echo", color: [200, 40, 200], backdrop: true, method: "direct", ticks: 200000000 },
 ];
 
-function itemJson(m: Movie) {
+// Episodes for the Next Up row (a second, unrelated show is not needed: one show with two unwatched episodes is enough).
+const episodes: Movie[] = [
+  { id: "cccccccccccccccccccccccccccccc01", name: "Pilot", color: [90, 160, 220], backdrop: true, method: "direct", ticks: 300000000 },
+  { id: "cccccccccccccccccccccccccccccc02", name: "The Second One", color: [220, 160, 90], backdrop: true, method: "transcode", ticks: 300000000 },
+];
+const isEpisode = (m: Movie) => m.id.startsWith("cccc");
+const everything = [...movies, ...episodes];
+// What the server remembers about this user's progress. Reports from the XMB change it, exactly as the real
+// server's UserDataManager would: a stop beyond 90 percent is "played" with no resume point.
+const userData = new Map<string, { ticks: number; played: boolean }>();
+const reports: Array<{ kind: string; item: string; ticks: number | null; paused: unknown; session: string }> = [];
+const dataOf = (m: Movie) => userData.get(m.id) ?? { ticks: 0, played: false };
+// Chapters of a title: four marks, the second one unnamed.
+const chaptersOf = (m: Movie) => noChapters ? [] : [0, 1, 2, 3].map((i) => ({ StartPositionTicks: Math.floor(m.ticks / 4) * i, Name: i === 1 ? "" : "Chapter mark " + (i + 1) }));
+
+function itemJson(m: Movie, withChapters = false) {
+  const ud = dataOf(m);
   return {
-    Id: m.id, Name: m.name, Type: "Movie", IsFolder: false, MediaType: "Video", RunTimeTicks: m.ticks,
-    UserData: { Played: false, PlaybackPositionTicks: 0 },
+    Id: m.id, Name: m.name, Type: isEpisode(m) ? "Episode" : "Movie", IsFolder: false, MediaType: "Video", RunTimeTicks: m.ticks,
+    ...(isEpisode(m) ? { SeriesName: "The Stand-in Show", ParentIndexNumber: 1, IndexNumber: Number(m.id.slice(-2)) } : {}),
+    ...(withChapters ? { Chapters: chaptersOf(m) } : {}),
+    UserData: { Played: ud.played, PlaybackPositionTicks: ud.ticks },
     ImageTags: { Primary: "p" + m.id.slice(-2) },
     BackdropImageTags: m.backdrop ? ["b" + m.id.slice(-2)] : [],
   };
@@ -303,11 +324,38 @@ createServer(async (req, res) => {
     return send(res, 200, JSON.stringify({ Items: views, TotalRecordCount: views.length, StartIndex: 0 }));
   }
   if (req.method === "GET" && path === "/Items") {
-    return send(res, 200, JSON.stringify({ Items: movies.map(itemJson), TotalRecordCount: movies.length, StartIndex: 0 }));
+    const ids = q.get("ids");
+    if (ids) {
+      const found = everything.filter((x) => ids.split(",").includes(x.id));
+      return send(res, 200, JSON.stringify({ Items: found.map((x) => itemJson(x, (q.get("fields") ?? "").includes("Chapters"))), TotalRecordCount: found.length, StartIndex: 0 }));
+    }
+    return send(res, 200, JSON.stringify({ Items: movies.map((x) => itemJson(x)), TotalRecordCount: movies.length, StartIndex: 0 }));
   }
   let m: RegExpExecArray | null;
+  // Continue Watching and Next Up (audit/JELLYFIN-PLAYER.md). /UserItems/Resume is the 10.9+ route; --legacy-home
+  // keeps only /Users/{id}/Items/Resume; --no-home answers 404 to all of them.
+  if (req.method === "GET" && (path === "/UserItems/Resume" || path === "/Shows/NextUp" || path === "/Users/" + USER + "/Items/Resume")) {
+    if (noHome || (legacyHome && path === "/UserItems/Resume") || (path === "/Users/" + USER + "/Items/Resume" && !legacyHome)) return fail(404, "Not found: " + path);
+    if (strict && q.get("userId") !== USER) return fail(400, "userId is required");
+    if (path === "/Shows/NextUp") {
+      const next = episodes.filter((x) => !dataOf(x).played).slice(0, 1);
+      return send(res, 200, JSON.stringify({ Items: next.map((x) => itemJson(x)), TotalRecordCount: next.length, StartIndex: 0 }));
+    }
+    const started = everything.filter((x) => dataOf(x).ticks > 0 && !dataOf(x).played);
+    return send(res, 200, JSON.stringify({ Items: started.map((x) => itemJson(x)), TotalRecordCount: started.length, StartIndex: 0 }));
+  }
+  // Marking an item watched (10.9+ route, and the older user-scoped one).
+  if (req.method === "POST" && ((m = /^\/UserPlayedItems\/([0-9a-f]{32})$/.exec(path)) || (m = /^\/Users\/[0-9a-f]{32}\/PlayedItems\/([0-9a-f]{32})$/.exec(path)))) {
+    const target = everything.find((x) => x.id === m![1]);
+    if (!target) return fail(404, "no item");
+    userData.set(target.id, { ticks: 0, played: true });
+    reports.push({ kind: "played", item: target.id, ticks: null, paused: null, session: "" });
+    return send(res, 200, JSON.stringify({ Played: true, PlaybackPositionTicks: 0 }));
+  }
+  // The test harness reads what the server was told (no credentials in it).
+  if (req.method === "GET" && path === "/__reports") return send(res, 200, JSON.stringify({ reports, userData: Object.fromEntries(userData) }));
   if ((m = /^\/Items\/([0-9a-f]{32})\/Images\/(Primary|Backdrop)$/.exec(path))) {
-    const movie = movies.find((x) => x.id === m![1]);
+    const movie = everything.find((x) => x.id === m![1]);
     if (!movie || (m[2] === "Backdrop" && !movie.backdrop)) return fail(404, "no image");
     // A short artificial delay for backdrops, longer for the first item, so a stale completion can arrive late.
     const delay = m[2] === "Backdrop" ? (movie === movies[0] ? 700 : 150) : 0;
@@ -316,7 +364,7 @@ createServer(async (req, res) => {
     return;
   }
   if (req.method === "POST" && (m = /^\/Items\/([0-9a-f]{32})\/PlaybackInfo$/.exec(path))) {
-    const movie = movies.find((x) => x.id === m![1]);
+    const movie = everything.find((x) => x.id === m![1]);
     if (!movie) return fail(404, "no item");
     let info: any = {};
     try { info = JSON.parse(body.toString("utf8")); } catch { return fail(400, "bad json"); }
@@ -325,13 +373,19 @@ createServer(async (req, res) => {
     const deviceId = String(info.DeviceId ?? "");
     if (strict && !deviceId) return fail(400, "DeviceId missing");
     const playSessionId = "ps" + Math.random().toString(16).slice(2, 18);
-    const direct = movie.method === "direct" && burn < 0 && info.EnableDirectPlay !== false;
+    // AudioStreamIndex in the request selects that stream and cannot be a static direct play (as on a real server).
+    const wantAudio = typeof info.AudioStreamIndex === "number" ? info.AudioStreamIndex : -1;
+    const direct = movie.method === "direct" && burn < 0 && wantAudio < 0 && info.EnableDirectPlay !== false;
     const streams = [
       { Index: 0, Type: "Video", Codec: "hevc", DisplayTitle: "1080p HEVC" },
       { Index: 1, Type: "Audio", Codec: "dts", Language: "eng", Channels: 6, DisplayTitle: "English DTS-HD MA 5.1", IsDefault: true },
+      { Index: 2, Type: "Audio", Codec: "ac3", Language: "eng", Channels: 2, DisplayTitle: "English Commentary Stereo", IsDefault: false },
       { Index: 3, Type: "Subtitle", Codec: "pgssub", Language: "eng", DisplayTitle: "English PGS", IsTextSubtitleStream: false },
+      { Index: 4, Type: "Subtitle", Codec: "subrip", Language: "eng", DisplayTitle: "English SRT", IsTextSubtitleStream: true },
     ];
-    const source: any = { Id: movie.id, Protocol: "File", Container: "mkv", MediaStreams: streams, SupportsDirectPlay: direct, SupportsDirectStream: false, SupportsTranscoding: true };
+    if (strict && wantAudio >= 0 && !streams.some((s) => s.Index === wantAudio && s.Type === "Audio")) return fail(400, "AudioStreamIndex " + wantAudio + " is not an audio stream of this item");
+    const source: any = { Id: movie.id, Protocol: "File", Container: "mkv", RunTimeTicks: movie.ticks, MediaStreams: streams, SupportsDirectPlay: direct, SupportsDirectStream: false, SupportsTranscoding: true };
+    if (!noChapters && movie.id.endsWith("01")) source.Chapters = chaptersOf(movie);   // the first title of each list carries them in PlaybackInfo; the others only via /Items?fields=Chapters
     if (!direct) {
       // The shape 10.9+ builds in StreamInfo.ToUrl: relative path, query beginning with DeviceId, ApiKey appended.
       const tq = new URLSearchParams();
@@ -339,7 +393,7 @@ createServer(async (req, res) => {
       tq.set("MediaSourceId", movie.id);
       tq.set("VideoCodec", "h264");
       tq.set("AudioCodec", "aac");
-      tq.set("AudioStreamIndex", "1");
+      tq.set("AudioStreamIndex", String(wantAudio >= 0 ? wantAudio : 1));
       tq.set("VideoBitrate", String(Math.min(Number(info.MaxStreamingBitrate ?? 20000000), 20000000) - 192000));
       tq.set("AudioBitrate", "192000");
       tq.set("MaxFramerate", "23.976025");
@@ -390,7 +444,25 @@ createServer(async (req, res) => {
     setTimeout(() => send(res, 200, m![4] === "srt" ? "1\n00:00:01,000 --> 00:00:02,000\nHello\n" : Buffer.alloc(64, 0), "application/octet-stream"), delay);
     return;
   }
-  if (req.method === "POST" && path.startsWith("/Sessions/Playing")) return send(res, 204, "");
+  if (req.method === "POST" && path.startsWith("/Sessions/Playing")) {
+    // Playing = start, Playing/Progress, Playing/Stopped. Strict: the body must name the item, a PlaySessionId and
+    // integer PositionTicks, as the real server's PlaybackStartInfo / PlaybackProgressInfo / PlaybackStopInfo do.
+    let info: any = {};
+    try { info = JSON.parse(body.toString("utf8")); } catch { return fail(400, "bad json"); }
+    const kind = path === "/Sessions/Playing" ? "start" : path === "/Sessions/Playing/Progress" ? "progress" : path === "/Sessions/Playing/Stopped" ? "stopped" : "";
+    if (!kind) return fail(404, "Not found: " + path);
+    const target = everything.find((x) => x.id === info.ItemId);
+    if (strict && !target) return fail(400, "ItemId missing or unknown");
+    if (strict && !sessions.has(String(info.PlaySessionId ?? ""))) return fail(400, "PlaySessionId is not a session this server opened");
+    if (strict && !Number.isInteger(info.PositionTicks)) return fail(400, "PositionTicks must be an integer");
+    reports.push({ kind, item: String(info.ItemId ?? ""), ticks: info.PositionTicks ?? null, paused: info.IsPaused ?? null, session: String(info.PlaySessionId ?? "") });
+    if (target && kind !== "start") {
+      const played = dataOf(target).played;
+      if (kind === "stopped" && info.PositionTicks >= target.ticks * 0.9) userData.set(target.id, { ticks: 0, played: true });   // MaxResumePct
+      else if (info.PositionTicks > 0) userData.set(target.id, { ticks: info.PositionTicks, played: kind === "progress" ? played : false });
+    }
+    return send(res, 204, "");
+  }
   if (path === "/Videos/ActiveEncodings" || path === "/Sessions/Logout") return send(res, 204, "");
   return fail(404, "Not found: " + path);
 }).listen(port, "127.0.0.1", () => {

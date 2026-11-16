@@ -1,0 +1,75 @@
+#pragma once
+
+// Pure state logic for the Jellyfin player (audit/JELLYFIN-PLAYER.md): position ticks, the played rule, chapter
+// navigation, the per-title audio/subtitle choice and which server stream to ask for. No Qt Multimedia, no
+// network and no shell: everything here is a function of its arguments, so the unit tests cover it directly.
+
+#include "jellyfin_client.h"
+
+#include <QJsonObject>
+#include <QString>
+#include <QVector>
+#include <QtGlobal>
+
+namespace xmb::jfplayer {
+
+// ---- Positions -------------------------------------------------------------------------------------------
+constexpr qint64 kTicksPerMs = 10000;
+// A title counts as watched from this share of its runtime on; the server's own default (MaxResumePct) is also 90.
+constexpr int kPlayedPercent = 90;
+// A position nearer the start than this is not worth remembering (the local Continue Watching rule is the same).
+constexpr qint64 kMinResumeMs = 10000;
+
+// Milliseconds to the server's 100 ns ticks. Negative input is 0; a value that would overflow saturates.
+qint64 ticksFromMs(qint64 ms);
+// True once the position is at least kPlayedPercent of a known duration. An unknown duration is never "played".
+bool reachedPlayed(qint64 positionMs, qint64 durationMs);
+
+struct StopOutcome {
+    qint64 resumeMs = 0;   // what the row should remember (0: nothing to resume)
+    bool played = false;   // mark the title watched (and clear its resume point)
+};
+// What a stop means for the row and the server: reaching the end, or 90 percent, is "played" with no resume
+// point; a position nearer the start than kMinResumeMs is no resume point; anything else resumes where it stopped.
+StopOutcome stopOutcome(qint64 positionMs, qint64 durationMs, bool completed);
+
+// ---- Chapters --------------------------------------------------------------------------------------------
+struct Chapter {
+    qint64 startMs = 0;
+    QString name;
+};
+// Chapters sorted by start with duplicates and negative starts dropped, at most 200 (a runaway server list).
+QVector<Chapter> normalizedChapters(QVector<Chapter> chapters);
+// The chapter the position is in: the last one that starts at or before it, or -1 before the first / with none.
+int chapterIndexAt(const QVector<Chapter>& chapters, qint64 positionMs);
+// Where a chapter skip goes, or -1 when there is no chapter in that direction (the caller then falls through to
+// the next or previous item). Forward: the next chapter's start. Back: the start of the current chapter, unless
+// the position is within restartWindowMs of it, then the previous chapter's start.
+qint64 chapterSkipTarget(const QVector<Chapter>& chapters, qint64 positionMs, int direction,
+                         qint64 restartWindowMs = 3000);
+// "1. Opening  00:00", or "3. Chapter 3" for an unnamed one.
+QString chapterLabel(const Chapter& chapter, int index);
+
+// ---- Streams and the per-title choice --------------------------------------------------------------------
+// The server stream index to ask for: the remembered one when this item still has that audio stream, else the
+// stream the server marks default, else the first audio stream, else -1.
+int pickAudioStream(const QVector<JellyfinTrack>& streams, int remembered);
+// The ordinal (0-based, among the Audio streams only) of a server stream index, or -1.
+int audioOrdinal(const QVector<JellyfinTrack>& streams, int streamIndex);
+
+struct Choice {
+    int audio = -2;      // server stream index; -2 = nothing remembered
+    int subtitle = -2;   // server stream index; -1 = subtitles off; -2 = nothing remembered
+    qint64 at = 0;       // unix seconds of the last change
+    bool any() const { return audio != -2 || subtitle != -2; }
+};
+constexpr int kChoiceLimit = 64;
+Choice choiceFor(const QJsonObject& map, const QString& key);
+// The map with this key's choice replaced (a field left at -2 keeps its stored value) and bounded to kChoiceLimit
+// entries, the least recently changed going first.
+QJsonObject withChoice(QJsonObject map, const QString& key, int audio, int subtitle, qint64 nowSeconds);
+// Shape check for the stored value (used by the preferences validator): an object of at most kChoiceLimit entries
+// whose keys are 1-64 letters, digits or underscores and whose values carry only a, s (integers) and at.
+bool choiceMapValid(const QJsonObject& map);
+
+}   // namespace xmb::jfplayer
