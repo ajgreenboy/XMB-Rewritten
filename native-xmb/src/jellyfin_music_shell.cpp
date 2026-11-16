@@ -46,13 +46,21 @@ bool musicKind(const QString& kind,JellyfinClient::MusicList& out) {
         {"artists",JellyfinClient::MusicList::Artists},{"albums",JellyfinClient::MusicList::Albums},{"songs",JellyfinClient::MusicList::Songs},
         {"playlists",JellyfinClient::MusicList::Playlists},{"recent",JellyfinClient::MusicList::Recent},{"random",JellyfinClient::MusicList::Random},
         {"artist",JellyfinClient::MusicList::ArtistAlbums},{"album",JellyfinClient::MusicList::AlbumTracks},
-        {"playlist",JellyfinClient::MusicList::PlaylistTracks},{"search",JellyfinClient::MusicList::Search}};
+        {"playlist",JellyfinClient::MusicList::PlaylistTracks},{"search",JellyfinClient::MusicList::Search},
+        {"favorites",JellyfinClient::MusicList::Favorites},{"played",JellyfinClient::MusicList::RecentlyPlayed},{"mostplayed",JellyfinClient::MusicList::MostPlayed}};
     const auto it=kinds.constFind(kind);if(it==kinds.constEnd())return false;
     out=it.value();return true;
 }
 QString joinDetail(const QStringList& parts){return parts.join(QStringLiteral(" - "));}
 }
 
+// An album row's detail line: "artist - year", then Favourite when it is flagged.
+QString Shell::jellyfinMusicNodeDetail(const Entry& entry) {
+    QStringList parts;
+    if(entry.music && !entry.music->info.isEmpty())parts<<entry.music->info;
+    if(entry.favorite)parts<<QObject::tr("Favourite");
+    return joinDetail(parts);
+}
 // One track as a row: what Cross plays and what Now Playing shows. Covers are asked for by the page, not here.
 Entry Shell::jellyfinTrackEntry(const JellyfinItem& media,bool albumPage) {
     Entry e=musicRow(QStringLiteral("jellyfin:")+media.id,media.title,Action::JellyfinPlay,media.id);
@@ -131,6 +139,9 @@ QVector<Entry> Shell::jellyfinMusicRootRows(const QString& library) {
     node(QStringLiteral("albums"),tr("Albums"),QStringLiteral("albums"),tr("Every album, A to Z"),glyphs::library(QStringLiteral("music")));
     node(QStringLiteral("playlists"),tr("Playlists"),QStringLiteral("playlists"),tr("Your audio playlists"),glyphs::library(QStringLiteral("playlists")));
     node(QStringLiteral("songs"),tr("Songs"),QStringLiteral("songs"),tr("Every song, A to Z"),glyphs::library(QStringLiteral("music")));
+    node(QStringLiteral("favorites"),tr("Favourites"),QStringLiteral("favorites"),tr("Songs and albums you flagged"),glyphs::likedSongs());
+    node(QStringLiteral("played"),tr("Recently Played"),QStringLiteral("played"),tr("Songs you played last, newest first"),glyphs::library(QStringLiteral("music")));
+    node(QStringLiteral("mostplayed"),tr("Most Played"),QStringLiteral("mostplayed"),tr("Songs by how often you played them"),glyphs::library(QStringLiteral("music")));
     node(QStringLiteral("recent"),tr("Recently Added"),QStringLiteral("recent"),tr("Newest albums first"),glyphs::library(QStringLiteral("music")));
     node(QStringLiteral("random"),tr("Random Albums"),QStringLiteral("random"),tr("Fifty albums, drawn fresh each time"),glyphs::library(QStringLiteral("music")));
     node(QStringLiteral("search"),tr("Search Music"),QStringLiteral("searchbox"),tr("Type an artist, an album or a song"),glyphs::search());
@@ -145,7 +156,7 @@ void Shell::openJellyfinMusicNode(const Entry& entry) {
         return;
     }
     if(kind==QLatin1String("lib")){loadJellyfinMusicPage(kind,{},entry.value,entry.title);return;}
-    const bool listOnly=kind=="artists"||kind=="albums"||kind=="playlists"||kind=="songs"||kind=="recent"||kind=="random";
+    const bool listOnly=kind=="artists"||kind=="albums"||kind=="playlists"||kind=="songs"||kind=="recent"||kind=="random"||kind=="favorites"||kind=="played"||kind=="mostplayed";
     loadJellyfinMusicPage(kind,listOnly?QString{}:entry.value,library,entry.title);
 }
 void Shell::openJellyfinMusicSearch(const QString& term) {
@@ -195,6 +206,11 @@ void Shell::buildJellyfinMusicPage(const JellyfinPage& result) {
             auto e=musicRow(QStringLiteral("jellyfin:")+media.id,media.title,Action::JellyfinMusicNode,media.id,
                 artist?QStringLiteral("artist"):album?QStringLiteral("album"):QStringLiteral("playlist"),page.jellyfinLibrary,joinDetail(parts));
             e.texture=QStringLiteral("music_tex_album_pic");e.iconSized=true;
+            if(album) {   // an album can be flagged favourite; its detail line keeps "artist - year" and gains the flag
+                e.favorite=media.favorite;
+                auto meta=std::make_shared<Entry::MusicMeta>();meta->info=joinDetail(parts);e.music=std::move(meta);
+                e.detail=jellyfinMusicNodeDetail(e);
+            }
             if(const auto cached=jellyfinAlbumArt_.constFind(media.id);cached!=jellyfinAlbumArt_.constEnd())e.artwork=squareCover(cached.value());
             else if(!media.primaryTag.isEmpty() && covers<CoversPerPage){++covers;jellyfin_.artwork(media.id,media.primaryTag,false);}
             page.entries.push_back(std::move(e));
@@ -202,6 +218,11 @@ void Shell::buildJellyfinMusicPage(const JellyfinPage& result) {
         }
         if(media.type!="Audio")continue;
         Entry e=jellyfinTrackEntry(media,albumPage);
+        if(kind==QLatin1String("mostplayed") && media.playCount>0 && e.music) {
+            QStringList info;if(!e.music->info.isEmpty())info<<e.music->info;
+            info<<tr("%1 plays").arg(media.playCount);
+            auto meta=std::make_shared<Entry::MusicMeta>(*e.music);meta->info=joinDetail(info);e.music=std::move(meta);
+        }
         // The cover is the album's (a track rarely has its own); one request per album per page, and none for one already held.
         const QString coverId=!media.albumId.isEmpty() && !media.albumTag.isEmpty()?media.albumId:media.id;
         const QString coverTag=!media.albumId.isEmpty() && !media.albumTag.isEmpty()?media.albumTag:media.primaryTag;
@@ -224,6 +245,9 @@ void Shell::buildJellyfinMusicPage(const JellyfinPage& result) {
     if(page.entries.isEmpty()) {
         status_=kind==QLatin1String("search")?tr("No Jellyfin music matches that search."):
             kind==QLatin1String("playlists")?tr("This server has no audio playlists."):
+            kind==QLatin1String("favorites")?tr("No favourite songs or albums yet. Add one from its Triangle menu."):
+            kind==QLatin1String("played")?tr("Nothing has been played from this server yet."):
+            kind==QLatin1String("mostplayed")?tr("Nothing has been played from this server yet."):
             kind==QLatin1String("album") || kind==QLatin1String("playlist")?tr("This list has no tracks the server can play."):
             kind==QLatin1String("artist")?tr("This artist has no albums here."):tr("Nothing to show in this library.");
     }

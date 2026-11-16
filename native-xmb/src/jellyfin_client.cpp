@@ -197,6 +197,7 @@ JellyfinItem parseItem(const QJsonObject& json) {
     const QJsonObject userData = json.value(QStringLiteral("UserData")).toObject();
     result.played = userData.value(QStringLiteral("Played")).toBool(false);
     result.favorite = userData.value(QStringLiteral("IsFavorite")).toBool(false);
+    result.playCount = std::clamp(userData.value(QStringLiteral("PlayCount")).toInt(0), 0, 1000000);
     const QString seriesId = json.value(QStringLiteral("SeriesId")).toString();
     if (validId(seriesId)) result.seriesId = seriesId;
     result.resumeMs = millisecondsFromTicks(userData.value(QStringLiteral("PlaybackPositionTicks")));
@@ -531,6 +532,18 @@ quint64 JellyfinClient::music(MusicList kind, QString libraryId, QString id, int
     case MusicList::ArtistAlbums:
         items(QStringLiteral("MusicAlbum"), QStringLiteral("ProductionYear,SortName"), QStringLiteral("Ascending"));
         query.addQueryItem(QStringLiteral("ArtistIds"), id);
+        break;
+    case MusicList::Favorites:
+        items(QStringLiteral("Audio,MusicAlbum"), QStringLiteral("SortName"), QStringLiteral("Ascending"));
+        query.addQueryItem(QStringLiteral("Filters"), QStringLiteral("IsFavorite"));
+        break;
+    case MusicList::RecentlyPlayed:
+        items(QStringLiteral("Audio"), QStringLiteral("DatePlayed"), QStringLiteral("Descending"));
+        query.addQueryItem(QStringLiteral("Filters"), QStringLiteral("IsPlayed"));
+        break;
+    case MusicList::MostPlayed:
+        items(QStringLiteral("Audio"), QStringLiteral("PlayCount"), QStringLiteral("Descending"));
+        query.addQueryItem(QStringLiteral("Filters"), QStringLiteral("IsPlayed"));
         break;
     case MusicList::ArtistTracks:
         items(QStringLiteral("Audio"), QStringLiteral("Album,ParentIndexNumber,IndexNumber,SortName"), QStringLiteral("Ascending"));

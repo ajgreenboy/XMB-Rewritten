@@ -27,6 +27,8 @@ const logFile = opt("log", "");
 const strict = opt("mode", "strict") === "strict";
 const hlsStatus = Number(opt("hls-status", "0")); // force master.m3u8 to answer this status (diagnostics test)
 const hlsBody = opt("hls-body", "Error processing request.");
+const noLyrics = args.includes("--no-lyrics");                 // /Audio/{id}/Lyrics answers 404 (a server or track without lyrics)
+const plainLyrics = args.includes("--plain-lyrics");           // lyrics without timestamps (the XMB shows only synced lyrics)
 const noMusic = args.includes("--no-music");                 // the server has no music library (the Music column says so)
 const secondLibrary = args.includes("--second-library");       // a second music library (the Music page lists the libraries first)
 const audiobook = args.includes("--audiobook");                 // one 25 minute audio item ("The Long Story") that keeps a resume position
@@ -188,7 +190,9 @@ for (const p of playlists) musicIds.set(p.id, { hue: 300 });
 
 const imageTag = (id: string) => "t" + id.slice(-3);
 const artistJson = (a: Artist) => ({ Id: a.id, Name: a.name, SortName: a.name.toLowerCase(), Type: "MusicArtist", IsFolder: true, ImageTags: { Primary: imageTag(a.id) } });
-const albumJson = (a: Album) => ({ Id: a.id, Name: a.name, SortName: a.name.toLowerCase(), Type: "MusicAlbum", IsFolder: true, AlbumArtist: a.artist.name, ProductionYear: a.year, ImageTags: { Primary: imageTag(a.id) } });
+const albumJson = (a: Album) => ({ Id: a.id, Name: a.name, SortName: a.name.toLowerCase(), Type: "MusicAlbum", IsFolder: true, AlbumArtist: a.artist.name, ProductionYear: a.year, ImageTags: { Primary: imageTag(a.id) }, UserData: { IsFavorite: favorites.has(a.id) } });
+// Any item a flag route can name: a video, a track, an album or an artist.
+const lookup = (id: string): { id: string } | undefined => everything.find((x) => x.id === id) ?? tracks.find((x) => x.id === id) ?? albums.find((x) => x.id === id) ?? artists.find((x) => x.id === id);
 const trackJson = (t: Track) => {
   const ud = dataOf(t);
   return {
@@ -250,6 +254,22 @@ function musicRoutes(req: any, res: any, path: string, q: URLSearchParams, body:
   if (req.method === "GET" && path === "/Items") {
     const types = (q.get("IncludeItemTypes") ?? "").split(",");
     const term = q.get("SearchTerm");
+    const filters = (q.get("Filters") ?? "").split(",");
+    if (filters.includes("IsFavorite") && (types.includes("Audio") || types.includes("MusicAlbum"))) {   // flagged songs and albums, by name
+      if (noFavorites) return fail(404, "Not found: favourites");
+      const list: Array<{ name: string; json: unknown }> = [
+        ...albums.filter((a) => favorites.has(a.id)).map((a) => ({ name: a.name, json: albumJson(a) })),
+        ...tracks.filter((t) => favorites.has(t.id)).map((t) => ({ name: t.name, json: trackJson(t) })),
+      ].sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
+      return reply(windowOf(list, q, (x) => x.json));
+    }
+    if (filters.includes("IsPlayed") && types.includes("Audio")) {   // Recently Played (DatePlayed) and Most Played (PlayCount)
+      const list = tracks.filter((t) => dataOf(t).played);
+      const sort = q.get("SortBy") ?? "";
+      if (sort.startsWith("PlayCount")) list.sort((a, b) => (dataOf(b).count ?? 0) - (dataOf(a).count ?? 0) || byName(a, b));
+      else list.sort((a, b) => (dataOf(b).last ?? 0) - (dataOf(a).last ?? 0));
+      return reply(windowOf(list, q, trackJson));
+    }
     if (term && types.includes("MusicArtist")) {
       const found: unknown[] = [
         ...artists.filter((a) => likes(a.name, term)).map(artistJson),
@@ -307,6 +327,14 @@ function musicRoutes(req: any, res: any, path: string, q: URLSearchParams, body:
       source.TranscodingContainer = "wav";
     }
     return reply({ MediaSources: [source], PlaySessionId: playSessionId });
+  }
+  // Lyrics (Jellyfin 10.9+): {Metadata, Lyrics:[{Text, Start(ticks)}]}; Start is absent on unsynced lyrics. The first track of every album has lyrics.
+  if (req.method === "GET" && (m = /^\/Audio\/([0-9a-f]{32})\/Lyrics$/.exec(path)) && tracks.some((t) => t.id === m![1])) {
+    const t = tracks.find((x) => x.id === m![1])!;
+    if (noLyrics || t.no !== 1) return fail(404, "no lyrics");
+    const words = ["Wake up, the signal fades", "", "Coffee hum in the morning light", "Late bus on a quiet street", "Sunrise loops again"];
+    const lines = words.map((text, i) => ({ Text: text, ...(plainLyrics ? {} : { Start: i * 50000000 }) }));   // one line every 5 s
+    return reply({ Metadata: { Title: t.name, Artist: t.artist.name, IsSynced: !plainLyrics }, Lyrics: lines });
   }
   if ((m = /^\/Audio\/([0-9a-f]{32})\/(stream|universal)$/.exec(path)) && tracks.some((t) => t.id === m![1])) {
     const t = tracks.find((x) => x.id === m![1])!;
@@ -396,7 +424,7 @@ createServer(async (req, res) => {
   if ((req.method === "POST" || req.method === "DELETE") && ((m = /^\/UserFavoriteItems\/([0-9a-f]{32})$/.exec(path)) || (m = /^\/Users\/[0-9a-f]{32}\/FavoriteItems\/([0-9a-f]{32})$/.exec(path)))) {
     if (noFlags || noFavorites || (path.startsWith("/UserFavoriteItems/") && legacyFlags)) return fail(404, "Not found: " + path);
     if (strict && path.startsWith("/UserFavoriteItems/") && q.get("userId") !== USER) return fail(400, "userId is required");
-    const target = everything.find((x) => x.id === m![1]);
+    const target = lookup(m![1]);
     if (!target) return fail(404, "no item");
     if (req.method === "POST") favorites.add(target.id); else favorites.delete(target.id);
     reports.push({ kind: req.method === "POST" ? "favorite" : "unfavorite", item: target.id, ticks: null, paused: null, session: "" });
@@ -404,7 +432,7 @@ createServer(async (req, res) => {
   }
   if (req.method === "DELETE" && ((m = /^\/UserPlayedItems\/([0-9a-f]{32})$/.exec(path)) || (m = /^\/Users\/[0-9a-f]{32}\/PlayedItems\/([0-9a-f]{32})$/.exec(path)))) {
     if (noFlags || (path.startsWith("/UserPlayedItems/") && legacyFlags)) return fail(404, "Not found: " + path);
-    const target = everything.find((x) => x.id === m![1]);
+    const target = lookup(m![1]);
     if (!target) return fail(404, "no item");
     setData(target.id, { ticks: 0, played: false });
     reports.push({ kind: "unplayed", item: target.id, ticks: null, paused: null, session: "" });
@@ -413,7 +441,7 @@ createServer(async (req, res) => {
   // Marking an item watched (10.9+ route, and the older user-scoped one).
   if (req.method === "POST" && ((m = /^\/UserPlayedItems\/([0-9a-f]{32})$/.exec(path)) || (m = /^\/Users\/[0-9a-f]{32}\/PlayedItems\/([0-9a-f]{32})$/.exec(path)))) {
     if (noFlags || (path.startsWith("/UserPlayedItems/") && legacyFlags)) return fail(404, "Not found: " + path);
-    const target = everything.find((x) => x.id === m![1]);
+    const target = lookup(m![1]);
     if (!target) return fail(404, "no item");
     setData(target.id, { ticks: 0, played: true });
     reports.push({ kind: "played", item: target.id, ticks: null, paused: null, session: "" });

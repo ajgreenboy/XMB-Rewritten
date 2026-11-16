@@ -1030,6 +1030,7 @@ private:
     void showJellyfinTrack(const QString& itemId);
     bool applyJellyfinMusicArt(const QString& itemId,const QImage& image);
     static QString jellyfinRowDetail(const Entry& entry);
+    static QString jellyfinMusicNodeDetail(const Entry& entry);
     bool jellyfinMusicWanted_=false;          // the sign-in page in front of the user was reached from the Music column
     int jellyfinMusicLibraries_=-1;           // music libraries the server listed last time, -1 until it has
     QString jellyfinMusicApp_,jellyfinMusicSearchLibrary_;

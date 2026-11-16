@@ -36,7 +36,7 @@ QString Shell::jellyfinRowDetail(const Entry& entry) {
     else if(!entry.mediaKind.isEmpty())parts<<entry.mediaKind;
     if(entry.resumeMs>0)parts<<QObject::tr("Resume at %1").arg(MediaControls::formatTime(entry.resumeMs));
     else if(entry.played && !music)parts<<QObject::tr("Watched");
-    if(entry.favorite && !music)parts<<QObject::tr("Favourite");
+    if(entry.favorite)parts<<QObject::tr("Favourite");
     if(entry.durationMs>0)parts<<MediaControls::formatTime(entry.durationMs);
     return parts.join(QStringLiteral(" - "));
 }
@@ -882,7 +882,9 @@ void Shell::applyJellyfinFlag(const QString& itemId,int flag,bool value) {
     const bool favorite=flag==int(JellyfinClient::UserFlag::Favorite);
     if(!favorite && value)jellyfinResume_.insert(itemId,0);   // watched clears the server's resume point
     for(auto& page:pages_)if(page.jellyfin)for(auto& row:page.entries) {
-        if(row.value!=itemId || (row.action!=Action::JellyfinPlay && row.action!=Action::JellyfinFolder))continue;
+        if(row.value!=itemId)continue;
+        if(row.action==Action::JellyfinMusicNode){if(favorite && row.setting==QLatin1String("album")){row.favorite=value;row.detail=jellyfinMusicNodeDetail(row);}continue;}
+        if(row.action!=Action::JellyfinPlay && row.action!=Action::JellyfinFolder)continue;
         if(favorite)row.favorite=value;
         else{row.played=value;if(value)row.resumeMs=0;}
         if(row.action==Action::JellyfinPlay || row.played || row.favorite)row.detail=jellyfinRowDetail(row);

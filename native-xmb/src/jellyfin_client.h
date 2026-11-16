@@ -34,6 +34,7 @@ struct JellyfinItem {
     // The episode's series (SeriesId), for the Play Next Episode prompt, and the user's favourite flag (UserData.IsFavorite).
     QString seriesId;
     bool favorite = false;
+    int playCount = 0;   // UserData.PlayCount (the Most Played list)
 };
 struct JellyfinPage { QVector<JellyfinItem> items; int startIndex = 0, total = 0; };
 // One MediaStream from PlaybackInfo. The player cannot necessarily switch to it; the shell asks
@@ -95,8 +96,10 @@ public:
     // Recent = albums by date added, Random = a random page of albums, ArtistAlbums (id = the artist),
     // AlbumTracks (id = the album, disc and track order), PlaylistTracks (id = the playlist, its own order), Search
     // (id = the term), ArtistTracks (id = the artist: every song they perform, album by album, for "Play All"). libraryId, when
-    // given, limits a list to that music library.
-    enum class MusicList { Artists, Albums, Songs, Playlists, Recent, Random, ArtistAlbums, AlbumTracks, PlaylistTracks, Search, ArtistTracks };
+    // given, limits a list to that music library. Favorites = songs and albums flagged favourite (Filters=IsFavorite), RecentlyPlayed =
+    // songs by DatePlayed (Filters=IsPlayed), MostPlayed = songs by PlayCount (Filters=IsPlayed).
+    enum class MusicList { Artists, Albums, Songs, Playlists, Recent, Random, ArtistAlbums, AlbumTracks, PlaylistTracks, Search, ArtistTracks,
+                          Favorites, RecentlyPlayed, MostPlayed };
     quint64 music(MusicList kind, QString libraryId = {}, QString id = {}, int startIndex = 0);
     // maxBitrateKbps caps what the server may send: above the file's bitrate it direct-plays, below it the
     // server transcodes down (HLS) to fit.

@@ -160,6 +160,14 @@ Resp serve(const Req& r) {
     if (path == QLatin1String("/Artists/AlbumArtists"))
         return page(QJsonArray{QJsonObject{{"Id", kArtist}, {"Name", "Alpha Artist"}, {"Type", "MusicArtist"}, {"IsFolder", true},
                                            {"ImageTags", QJsonObject{{"Primary", "arttag"}}}}}, 1);
+    if (path == QLatin1String("/Items") && q.hasQueryItem("Filters")) {   // Favorites / RecentlyPlayed / MostPlayed: one flagged, played song
+        QJsonObject song = trackJson(3);
+        song.insert("UserData", QJsonObject{{"Played", true}, {"PlaybackPositionTicks", 0}, {"PlayCount", 7}, {"IsFavorite", true}});
+        QJsonArray rows{song};
+        if (q.queryItemValue("Filters") == QLatin1String("IsFavorite"))
+            rows.push_back(QJsonObject{{"Id", kAlbum}, {"Name", "First Album"}, {"Type", "MusicAlbum"}, {"IsFolder", true}, {"UserData", QJsonObject{{"IsFavorite", true}}}});
+        return page(rows, int(rows.size()));
+    }
     if (path == QLatin1String("/Items") && q.queryItemValue("IncludeItemTypes") == QLatin1String("MusicAlbum"))
         return page(QJsonArray{QJsonObject{{"Id", kAlbum}, {"Name", "First Album"}, {"Type", "MusicAlbum"}, {"IsFolder", true}, {"AlbumArtist", "Alpha Artist"},
                                            {"ProductionYear", 2019}, {"ImageTags", QJsonObject{{"Primary", "albumtag1"}}}}}, 1);
@@ -309,6 +317,26 @@ int main(int argc, char** argv) {
         client.music(ML::ArtistTracks, kLib, QStringLiteral("../x"));
         check(waitFor([&] { return errors.size() >= 2; }) && int(fake.log.size()) == before, "artist tracks: a missing or invalid artist id is refused before anything is sent");
         errors.clear();
+    }
+    // ---- Favourites, Recently Played, Most Played (and what a row keeps of the user's flags) ---------------------------------------------
+    {
+        const auto fav = ask(ML::Favorites, kLib, {}, 0, "favourites answered");
+        Req r = fake.last("/Items");
+        check(r.query().queryItemValue("Filters") == QLatin1String("IsFavorite") && r.query().queryItemValue("IncludeItemTypes") == QLatin1String("Audio,MusicAlbum") &&
+              r.query().queryItemValue("UserId") == kUser && r.query().queryItemValue("Recursive") == QLatin1String("true") && r.query().queryItemValue("ParentId") == kLib, "favourites: flagged songs and albums, user scoped, in the library");
+        check(r.query().queryItemValue("SortBy") == QLatin1String("SortName") && r.query().queryItemValue("EnableUserData") == QLatin1String("true"), "favourites: by name, with the user's data");
+        check(fav.items.size() == 2 && fav.items[0].favorite && fav.items[0].playCount == 7 && fav.items[1].type == QLatin1String("MusicAlbum") && fav.items[1].favorite, "favourites: the flag is parsed on a song and on an album");
+        const auto played = ask(ML::RecentlyPlayed, kLib, {}, 0, "recently played answered");
+        r = fake.last("/Items");
+        check(r.query().queryItemValue("Filters") == QLatin1String("IsPlayed") && r.query().queryItemValue("SortBy") == QLatin1String("DatePlayed") &&
+              r.query().queryItemValue("SortOrder") == QLatin1String("Descending") && r.query().queryItemValue("IncludeItemTypes") == QLatin1String("Audio"), "recently played: played songs, newest play first");
+        check(played.items.size() == 1 && played.items[0].played && played.items[0].resumeMs == 0, "recently played: parsed as played");
+        const auto most = ask(ML::MostPlayed, {}, {}, 0, "most played answered");
+        r = fake.last("/Items");
+        check(r.query().queryItemValue("SortBy") == QLatin1String("PlayCount") && r.query().queryItemValue("SortOrder") == QLatin1String("Descending") &&
+              r.query().queryItemValue("Filters") == QLatin1String("IsPlayed") && !r.query().hasQueryItem("ParentId"), "most played: by play count, most first, server wide when no library is given");
+        check(most.items.size() == 1 && most.items[0].playCount == 7, "most played: the play count is parsed");
+        check(!r.rawQuery.contains(kToken), "favourites and played lists: no credential in the url");
     }
     // ---- a very large library is paged, never read whole -----------------------------------------------------------------
     {
