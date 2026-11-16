@@ -33,6 +33,19 @@ struct StopOutcome {
 // point; a position nearer the start than kMinResumeMs is no resume point; anything else resumes where it stopped.
 StopOutcome stopOutcome(qint64 positionMs, qint64 durationMs, bool completed);
 
+// ---- Audio (audit/MUSIC-PLAN-2026-11-16.md) ----------------------------------------------------------------
+// Only long audio (an audiobook, a podcast episode) keeps a resume point; a song always starts from the top.
+constexpr qint64 kAudioResumeMinMs = 20LL * 60 * 1000;
+bool audioResumable(qint64 durationMs);
+// The same as stopOutcome for audio: a song reaching its end (or 90 percent) is played with no resume point, and a song
+// left earlier keeps nothing; long audio follows stopOutcome exactly.
+StopOutcome audioStopOutcome(qint64 positionMs, qint64 durationMs, bool completed);
+// The resume position a music row may carry: the server's value for long audio, 0 for a song.
+qint64 audioRowResumeMs(qint64 serverResumeMs, qint64 durationMs);
+// Whether a finished audio item is also marked played explicitly. A song's play count belongs to the server's own rule on the
+// stop report, so only long audio (which keeps a resume point to clear) gets the explicit mark.
+bool audioNeedsPlayedMark(qint64 durationMs, bool played);
+
 // ---- Chapters --------------------------------------------------------------------------------------------
 struct Chapter {
     qint64 startMs = 0;
@@ -49,6 +62,18 @@ qint64 chapterSkipTarget(const QVector<Chapter>& chapters, qint64 positionMs, in
                          qint64 restartWindowMs = 3000);
 // "1. Opening  00:00", or "3. Chapter 3" for an unnamed one.
 QString chapterLabel(const Chapter& chapter, int index);
+
+// ---- Play All (audit/MUSIC-PLAN-2026-11-16.md) ------------------------------------------------------------------
+// "Play All" on an album, an artist or a playlist reads the tracks window by window (200 a request) up to this many.
+constexpr int kPlayAllCap = 1000;
+// The StartIndex of the next window to read after `fetched` rows of `total`, or -1 when nothing more is wanted: the list is
+// complete, the cap is reached, or nothing came back (a server that answers an empty window must not loop the client).
+int nextPlayAllWindow(int fetched, int total, int cap = kPlayAllCap);
+
+// ---- Lyrics (audit/MUSIC-PLAN-2026-11-16.md) ----------------------------------------------------------------------
+// The line a synced lyric is on at positionMs: the last line that starts at or before it, or -1 before the first line / with none.
+// `lines` must be in start order (the client sorts them).
+int lyricIndexAt(const QVector<JellyfinLyricLine>& lines, qint64 positionMs);
 
 // ---- Streams and the per-title choice --------------------------------------------------------------------
 // The server stream index to ask for: the remembered one when this item still has that audio stream, else the

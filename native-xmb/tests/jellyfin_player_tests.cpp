@@ -147,6 +147,45 @@ int main(int argc, char** argv) {
         check(speedLabel(1.0) == QLatin1String("1x") && speedLabel(1.25) == QLatin1String("1.25x") && speedLabel(0.5) == QLatin1String("0.5x") && speedLabel(2.0) == QLatin1String("2x") && speedLabel(1.5) == QLatin1String("1.5x"), "speed: labels without trailing zeros");
     }
 
+    // ---- audio: songs never resume, long audio does (audit/MUSIC-PLAN-2026-11-16.md) ------------------------------
+    {
+        constexpr qint64 song = 240000, book = 3600000;
+        check(!audioResumable(song) && !audioResumable(0) && !audioResumable(kAudioResumeMinMs - 1) && audioResumable(kAudioResumeMinMs) && audioResumable(book), "audio: 20 minutes is the line between a song and an audiobook");
+        const auto abandoned = audioStopOutcome(70000, song, false);
+        check(!abandoned.played && abandoned.resumeMs == 0, "audio: a song left at 1:10 keeps no resume point");
+        const auto finished = audioStopOutcome(0, song, true);
+        check(finished.played && finished.resumeMs == 0, "audio: a finished song is played with no resume point");
+        check(audioStopOutcome(216000, song, false).played, "audio: a song stopped at 90 percent counts as played");
+        check(!audioStopOutcome(215999, song, false).played, "audio: a song just under 90 percent does not");
+        const auto mid = audioStopOutcome(1800000, book, false);
+        check(!mid.played && mid.resumeMs == 1800000, "audio: an audiobook halfway keeps its position");
+        check(audioStopOutcome(5000, book, false).resumeMs == 0, "audio: an audiobook stopped under 10 s in keeps nothing");
+        check(audioStopOutcome(3500000, book, false).played && audioStopOutcome(3500000, book, false).resumeMs == 0, "audio: an audiobook at its end is played with no resume point");
+        check(!audioStopOutcome(70000, 0, false).played && audioStopOutcome(70000, 0, false).resumeMs == 0, "audio: an unknown duration is treated as a song");
+        check(audioRowResumeMs(90000, song) == 0 && audioRowResumeMs(90000, 0) == 0 && audioRowResumeMs(90000, book) == 90000 && audioRowResumeMs(-5, book) == 0, "audio: the row carries the server's position only for long audio");
+        check(audioNeedsPlayedMark(book, true) && !audioNeedsPlayedMark(song, true) && !audioNeedsPlayedMark(book, false), "audio: only a played long item gets the explicit mark");
+    }
+
+    // ---- lyrics: which line the position is on ----------------------------------------------------------------------------------
+    {
+        const QVector<JellyfinLyricLine> lines{{0, QStringLiteral("a")}, {5000, QStringLiteral("b")}, {5000, QStringLiteral("c")}, {12000, QString{}}};
+        check(lyricIndexAt({}, 1000) == -1, "lyrics: no lines, no index");
+        check(lyricIndexAt(lines, -1) == -1 && lyricIndexAt(lines, 0) == 0 && lyricIndexAt(lines, 4999) == 0, "lyrics: the first line holds until the second starts");
+        check(lyricIndexAt(lines, 5000) == 2 && lyricIndexAt(lines, 11999) == 2, "lyrics: of two lines starting together the later one is current");
+        check(lyricIndexAt(lines, 12000) == 3 && lyricIndexAt(lines, 9999999) == 3, "lyrics: the last line stays to the end, an empty gap included");
+        const QVector<JellyfinLyricLine> late{{3000, QStringLiteral("late")}};
+        check(lyricIndexAt(late, 2999) == -1 && lyricIndexAt(late, 3000) == 0, "lyrics: before the first line nothing is current");
+    }
+
+    // ---- Play All windows ---------------------------------------------------------------------------------------------------
+    {
+        check(nextPlayAllWindow(200, 450) == 200 && nextPlayAllWindow(400, 450) == 400, "play all: the next window starts where the rows read end");
+        check(nextPlayAllWindow(450, 450) == -1 && nextPlayAllWindow(10, 10) == -1 && nextPlayAllWindow(10, 5) == -1, "play all: a complete list stops");
+        check(nextPlayAllWindow(0, 450) == -1, "play all: an empty window never loops the client");
+        check(nextPlayAllWindow(kPlayAllCap, 25000) == -1 && nextPlayAllWindow(kPlayAllCap - 200, 25000) == kPlayAllCap - 200, "play all: at most kPlayAllCap rows are read");
+        check(nextPlayAllWindow(200, 25000, 200) == -1 && nextPlayAllWindow(-5, 100) == -1, "play all: a custom cap and a negative count stop");
+    }
+
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

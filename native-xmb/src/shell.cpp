@@ -3190,6 +3190,19 @@ void Shell::buildOptions() {
         addOption({"msg_prev","Previous"},OptionCommand::SpotifyPrevious,"spotify-now");
         return;
     }
+    // ---- A Jellyfin album, artist or playlist row: start it from its row, in order or shuffled (audit/MUSIC-PLAN-2026-11-16.md) ----
+    if(entry.action==Action::JellyfinMusicNode && jellyfin_.signedIn() &&
+       (entry.setting==QLatin1String("album") || entry.setting==QLatin1String("artist") || entry.setting==QLatin1String("playlist"))) {
+        const bool artist=entry.setting==QLatin1String("artist");
+        addOption({"msg_play","Play"},OptionCommand::JellyfinPlayAll,"jellyfin-music",true,
+                  artist?tr("Every song by this artist, album by album."):tr("Every track, in order."));
+        addOption({"","Shuffle Play"},OptionCommand::JellyfinShuffleAll,"jellyfin-music",true,tr("Turns Shuffle on and starts at a random track."));
+        addOption({"msg_open","Open"},OptionCommand::Activate,"jellyfin-music");
+        if(entry.setting==QLatin1String("album"))   // an album can be flagged; an artist or a playlist is not offered it
+            addOption({"",jfplayer::favoriteToggleLabel(entry.favorite)},OptionCommand::JellyfinToggleFavorite,"jellyfin-flag",true,
+                      tr("Tells the Jellyfin server; the row changes once it has answered."));
+        return;
+    }
     // ---- A Spotify playlist row: start the whole playlist without opening it ---------------------------------
     if(entry.action==Action::SpotifyPlaylist) {
         addOption({"msg_play","Play"},OptionCommand::SpotifyPlayAll,"spotify-playlist");
@@ -3298,6 +3311,11 @@ void Shell::buildOptions() {
         addOption({"",jfplayer::favoriteToggleLabel(entry.favorite)},OptionCommand::JellyfinToggleFavorite,"jellyfin-flag",true,
                   tr("Tells the Jellyfin server; the row changes once it has answered."));
     }
+    // A Jellyfin song: the favourite flag (a song has no watched flag; its play count is the server's).
+    if(jellyfin_.signedIn() && entry.action==Action::JellyfinPlay && entry.mediaKind==QLatin1String("Music") && !entry.value.isEmpty() &&
+       !pages_.isEmpty() && !pages_.last().jellyfinMusic.isEmpty())
+        addOption({"",jfplayer::favoriteToggleLabel(entry.favorite)},OptionCommand::JellyfinToggleFavorite,"jellyfin-flag",true,
+                  tr("Tells the Jellyfin server; the row changes once it has answered."));
     // A registered Jellyfin server's row: the address can be changed without editing apps.json (jellyfin_setup_shell.cpp).
     if(entry.action==Action::JellyfinApp)
         addOption({"","Change Server Address"},OptionCommand::JellyfinChangeAddress,"jellyfin-app",true,
@@ -3711,6 +3729,14 @@ void Shell::optionsActivate() {
         const Entry row=entry;
         resetOptions();
         toggleJellyfinFlag(row,option.command==OptionCommand::JellyfinToggleFavorite);
+        interactionAudio_.play(InteractionAudio::Cue::Confirm);
+        emit changed();
+        break;
+    }
+    case OptionCommand::JellyfinPlayAll:case OptionCommand::JellyfinShuffleAll: {
+        const Entry row=entry;
+        resetOptions();
+        startJellyfinPlayAll(row,option.command==OptionCommand::JellyfinShuffleAll);
         interactionAudio_.play(InteractionAudio::Cue::Confirm);
         emit changed();
         break;

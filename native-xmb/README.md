@@ -306,6 +306,14 @@ time with a `More...` row, covers are the server's own pictures cached on disk. 
 TV > Jellyfin, and TV search no longer returns songs. Details, stand-in runs and what is unverified:
 [audit/JELLYFIN-MUSIC.md](audit/JELLYFIN-MUSIC.md).
 
+Music phase 2 ([audit/MUSIC-PLAN-2026-11-16.md](audit/MUSIC-PLAN-2026-11-16.md)): the music root also has `Favourites` (songs and
+albums you flagged), `Recently Played` and `Most Played` (with the play count on each row), read from the server. The Triangle menu
+of an album, artist or playlist row has `Play` and `Shuffle Play` (the whole thing, queued without opening it; Shuffle Play turns
+the Shuffle setting on), and a song or album can be added to or removed from the server's favourites there. A song never resumes
+mid-song; an audiobook or podcast (20 minutes or longer) resumes from the server's position and is marked played when finished.
+When the server has timed lyrics for the playing song, Now Playing shows the current line and the next one; a server or song
+without them shows nothing.
+
 ### Discord friends (Friends column)
 
 Friends > **Sign In to Discord** signs in through the browser (PKCE, no client secret; the refresh token is sealed with

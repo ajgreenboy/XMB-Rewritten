@@ -148,6 +148,7 @@ QJsonObject trackJson(int n, const QString& id = {}) {
 }
 
 int audioFetches = 0;
+int lyricsMode = 0;   // 0 = timed lyrics, 1 = untimed, 2 = none (404), 3 = a hostile answer (huge, out of order)
 Resp serve(const Req& r) {
     const QString path = QString::fromLatin1(r.path);
     if (r.method == "POST" && path == QLatin1String("/Users/AuthenticateByName"))
@@ -160,6 +161,14 @@ Resp serve(const Req& r) {
     if (path == QLatin1String("/Artists/AlbumArtists"))
         return page(QJsonArray{QJsonObject{{"Id", kArtist}, {"Name", "Alpha Artist"}, {"Type", "MusicArtist"}, {"IsFolder", true},
                                            {"ImageTags", QJsonObject{{"Primary", "arttag"}}}}}, 1);
+    if (path == QLatin1String("/Items") && q.hasQueryItem("Filters")) {   // Favorites / RecentlyPlayed / MostPlayed: one flagged, played song
+        QJsonObject song = trackJson(3);
+        song.insert("UserData", QJsonObject{{"Played", true}, {"PlaybackPositionTicks", 0}, {"PlayCount", 7}, {"IsFavorite", true}});
+        QJsonArray rows{song};
+        if (q.queryItemValue("Filters") == QLatin1String("IsFavorite"))
+            rows.push_back(QJsonObject{{"Id", kAlbum}, {"Name", "First Album"}, {"Type", "MusicAlbum"}, {"IsFolder", true}, {"UserData", QJsonObject{{"IsFavorite", true}}}});
+        return page(rows, int(rows.size()));
+    }
     if (path == QLatin1String("/Items") && q.queryItemValue("IncludeItemTypes") == QLatin1String("MusicAlbum"))
         return page(QJsonArray{QJsonObject{{"Id", kAlbum}, {"Name", "First Album"}, {"Type", "MusicAlbum"}, {"IsFolder", true}, {"AlbumArtist", "Alpha Artist"},
                                            {"ProductionYear", 2019}, {"ImageTags", QJsonObject{{"Primary", "albumtag1"}}}}}, 1);
@@ -190,6 +199,21 @@ Resp serve(const Req& r) {
         const QJsonObject source{{"Id", kTrack}, {"SupportsDirectPlay", true}, {"SupportsDirectStream", true}, {"SupportsTranscoding", true}, {"Container", "wav"},
             {"MediaStreams", QJsonArray{QJsonObject{{"Index", 0}, {"Type", "Audio"}, {"Codec", "pcm_s16le"}, {"DisplayTitle", "WAV"}}}}};
         return json(QJsonObject{{"MediaSources", QJsonArray{source}}, {"PlaySessionId", "ps0123456789abcdef"}});
+    }
+    if (path == QStringLiteral("/Audio/%1/Lyrics").arg(kTrack)) {
+        if (lyricsMode == 2) return json(QJsonObject{{"Message", "no lyrics"}}, 404);
+        QJsonArray lines;
+        if (lyricsMode == 3) {
+            for (int i = 0; i < 2500; ++i) lines.push_back(QJsonObject{{"Text", QString(500, QLatin1Char('x')) + QStringLiteral("\nsecond")}, {"Start", qint64(2500 - i) * 10000000}});
+        } else {
+            const QStringList words{"Hello", "", "World"};
+            for (int i = 0; i < words.size(); ++i) {
+                QJsonObject line{{"Text", words[i]}};
+                if (lyricsMode == 0) line.insert("Start", qint64(i) * 50000000);
+                lines.push_back(line);
+            }
+        }
+        return json(QJsonObject{{"Metadata", QJsonObject{{"IsSynced", lyricsMode == 0}}}, {"Lyrics", lines}});
     }
     if (path == QStringLiteral("/Audio/%1/stream").arg(kTrack)) {
         ++audioFetches;
@@ -293,6 +317,43 @@ int main(int argc, char** argv) {
             check(t.durationMs == 240000 && t.resumeMs == 0, "track: 4:00 and no resume point");
         }
     }
+    // ---- Play All: an artist's songs, album by album; an album's and a playlist's tracks are the lists above --------------------------
+    {
+        const auto p = ask(ML::ArtistTracks, kLib, kArtist, 0, "artist tracks answered");
+        const Req r = fake.last("/Items");
+        check(r.query().queryItemValue("ArtistIds") == kArtist && r.query().queryItemValue("IncludeItemTypes") == QLatin1String("Audio") && r.query().queryItemValue("Recursive") == QLatin1String("true"), "artist tracks: songs by ArtistIds, recursive");
+        check(r.query().queryItemValue("SortBy") == QLatin1String("Album,ParentIndexNumber,IndexNumber,SortName") && r.query().queryItemValue("SortOrder") == QLatin1String("Ascending"), "artist tracks: album by album, disc and track order");
+        check(r.query().queryItemValue("UserId") == kUser && r.query().queryItemValue("Limit") == QLatin1String("200") && !r.rawQuery.contains(kToken), "artist tracks: user scoped, a 200-row window, no credential in the url");
+        check(!p.items.isEmpty() && p.items[0].type == QLatin1String("Audio"), "artist tracks: tracks parsed");
+        ask(ML::ArtistTracks, kLib, kArtist, 200, "artist tracks window 2 answered");
+        check(fake.last("/Items").query().queryItemValue("StartIndex") == QLatin1String("200"), "artist tracks: the next window asks StartIndex=200");
+        errors.clear();
+        const int before = int(fake.log.size());
+        client.music(ML::ArtistTracks, kLib, {});
+        client.music(ML::ArtistTracks, kLib, QStringLiteral("../x"));
+        check(waitFor([&] { return errors.size() >= 2; }) && int(fake.log.size()) == before, "artist tracks: a missing or invalid artist id is refused before anything is sent");
+        errors.clear();
+    }
+    // ---- Favourites, Recently Played, Most Played (and what a row keeps of the user's flags) ---------------------------------------------
+    {
+        const auto fav = ask(ML::Favorites, kLib, {}, 0, "favourites answered");
+        Req r = fake.last("/Items");
+        check(r.query().queryItemValue("Filters") == QLatin1String("IsFavorite") && r.query().queryItemValue("IncludeItemTypes") == QLatin1String("Audio,MusicAlbum") &&
+              r.query().queryItemValue("UserId") == kUser && r.query().queryItemValue("Recursive") == QLatin1String("true") && r.query().queryItemValue("ParentId") == kLib, "favourites: flagged songs and albums, user scoped, in the library");
+        check(r.query().queryItemValue("SortBy") == QLatin1String("SortName") && r.query().queryItemValue("EnableUserData") == QLatin1String("true"), "favourites: by name, with the user's data");
+        check(fav.items.size() == 2 && fav.items[0].favorite && fav.items[0].playCount == 7 && fav.items[1].type == QLatin1String("MusicAlbum") && fav.items[1].favorite, "favourites: the flag is parsed on a song and on an album");
+        const auto played = ask(ML::RecentlyPlayed, kLib, {}, 0, "recently played answered");
+        r = fake.last("/Items");
+        check(r.query().queryItemValue("Filters") == QLatin1String("IsPlayed") && r.query().queryItemValue("SortBy") == QLatin1String("DatePlayed") &&
+              r.query().queryItemValue("SortOrder") == QLatin1String("Descending") && r.query().queryItemValue("IncludeItemTypes") == QLatin1String("Audio"), "recently played: played songs, newest play first");
+        check(played.items.size() == 1 && played.items[0].played && played.items[0].resumeMs == 0, "recently played: parsed as played");
+        const auto most = ask(ML::MostPlayed, {}, {}, 0, "most played answered");
+        r = fake.last("/Items");
+        check(r.query().queryItemValue("SortBy") == QLatin1String("PlayCount") && r.query().queryItemValue("SortOrder") == QLatin1String("Descending") &&
+              r.query().queryItemValue("Filters") == QLatin1String("IsPlayed") && !r.query().hasQueryItem("ParentId"), "most played: by play count, most first, server wide when no library is given");
+        check(most.items.size() == 1 && most.items[0].playCount == 7, "most played: the play count is parsed");
+        check(!r.rawQuery.contains(kToken), "favourites and played lists: no credential in the url");
+    }
     // ---- a very large library is paged, never read whole -----------------------------------------------------------------
     {
         QElapsedTimer timer; timer.start();
@@ -368,6 +429,68 @@ int main(int argc, char** argv) {
             reply->deleteLater();
             stream.close();
         }
+    }
+    // ---- audio reports: start, progress, stopped (what keeps "recently played" and play counts right) ---------------------------------
+    {
+        JellyfinPlayback audio;
+        audio.audio = true; audio.itemId = kTrack; audio.mediaSourceId = kTrack; audio.playSessionId = QStringLiteral("ps0123456789abcdef");
+        audio.playMethod = QStringLiteral("DirectPlay");
+        const int before = int(fake.log.size());
+        client.reportPlayback(audio, 0, false, QStringLiteral("start"));
+        client.reportPlayback(audio, 10000, false, QStringLiteral("progress"));
+        client.reportPlayback(audio, 10000, true, QStringLiteral("progress"));
+        client.reportPlayback(audio, 240000, false, QStringLiteral("stop"));   // a finished 4:00 song is reported at its end
+        check(waitFor([&] { return fake.count("/Sessions/Playing") >= 4; }), "audio reports: four requests reach the server");
+        const auto body = [&](const char* path, int nth) {
+            int seen = 0;
+            for (int i = before; i < fake.log.size(); ++i) if (fake.log[i].path == path && seen++ == nth) return QJsonDocument::fromJson(fake.log[i].body).object();
+            return QJsonObject{};
+        };
+        const auto start = body("/Sessions/Playing", 0), progress = body("/Sessions/Playing/Progress", 0), paused = body("/Sessions/Playing/Progress", 1), stop = body("/Sessions/Playing/Stopped", 0);
+        check(start.value("ItemId").toString() == kTrack && start.value("PositionTicks").toInteger() == 0 && start.value("PlayMethod").toString() == QLatin1String("DirectPlay"), "audio reports: start names the item, position 0 and the play method");
+        check(progress.value("PositionTicks").toInteger() == 100000000 && !progress.value("IsPaused").toBool(), "audio reports: progress carries the position in ticks");
+        check(paused.value("IsPaused").toBool(), "audio reports: a pause is a progress report with IsPaused");
+        check(stop.value("PositionTicks").toInteger() == 2400000000LL && !stop.value("IsPaused").toBool(), "audio reports: a finished song stops at its end (so the server counts it played)");
+        check(start.value("PlaySessionId").toString() == QLatin1String("ps0123456789abcdef") && stop.value("MediaSourceId").toString() == kTrack, "audio reports: the play session and media source ride along");
+        bool leaked = false;
+        for (int i = before; i < fake.log.size(); ++i) if (fake.log[i].rawQuery.contains(kToken) || fake.log[i].body.contains(kToken)) leaked = true;
+        check(!leaked, "audio reports: no credential in a url or a body");
+        check(tokenOf(fake.last("/Sessions/Playing/Stopped")) == kToken, "audio reports: authorised by header");
+    }
+    // ---- lyrics: only timed lines are kept; nothing, an error or garbage never fails a page ---------------------------------------------------
+    {
+        struct Got { quint64 request; QString item; QVector<JellyfinLyricLine> lines; bool synced; };
+        QList<Got> got;
+        QObject::connect(&client, &JellyfinClient::lyricsReady, [&](quint64 request, const QString& item, const QVector<JellyfinLyricLine>& lines, bool synced) { got.push_back({request, item, lines, synced}); });
+        const auto askLyrics = [&](int mode, const QString& id) {
+            lyricsMode = mode;
+            got.clear();
+            client.lyrics(id);
+            waitFor([&] { return !got.isEmpty(); });
+            return got.isEmpty() ? Got{0, {}, {}, false} : got.first();
+        };
+        auto g = askLyrics(0, kTrack);
+        const Req r = fake.last(QStringLiteral("/Audio/%1/Lyrics").arg(kTrack).toLatin1());
+        check(r.method == "GET" && tokenOf(r) == kToken && !r.rawQuery.contains(kToken), "lyrics: GET /Audio/{id}/Lyrics, authorised by header, no credential in the url");
+        check(g.item == kTrack && g.synced && g.lines.size() == 3 && g.lines[0].text == QLatin1String("Hello") && g.lines[1].text.isEmpty() && g.lines[2].startMs == 10000, "lyrics: timed lines parsed (ticks to ms, the empty line kept as a gap)");
+        g = askLyrics(1, kTrack);
+        check(!g.synced && g.lines.size() == 3, "lyrics: lines without a Start are not synced");
+        g = askLyrics(2, kTrack);
+        check(g.request != 0 && g.lines.isEmpty() && !g.synced, "lyrics: a 404 answers empty, silently");
+        const int errorsBefore = int(errors.size());
+        g = askLyrics(3, kTrack);
+        check(g.synced && g.lines.size() == 2000, "lyrics: at most 2000 lines are kept");
+        bool bounded = true, sorted = true;
+        for (int i = 0; i < g.lines.size(); ++i) {
+            if (g.lines[i].text.size() > 300 || g.lines[i].text.contains(QLatin1Char(10))) bounded = false;
+            if (i > 0 && g.lines[i].startMs < g.lines[i - 1].startMs) sorted = false;
+        }
+        check(bounded && sorted, "lyrics: a line is one line of at most 300 characters, and the lines are in start order");
+        const int before = int(fake.log.size());
+        g = askLyrics(0, QStringLiteral("../x"));
+        check(g.lines.isEmpty() && int(fake.log.size()) == before, "lyrics: an invalid item id is answered empty without a request");
+        check(int(errors.size()) == errorsBefore, "lyrics: none of the above raised a visible error");
+        lyricsMode = 0;
     }
     // ---- the reason an error carries --------------------------------------------------------------------------------------------------
     {
