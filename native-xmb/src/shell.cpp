@@ -1644,7 +1644,7 @@ Shell::Shell(QString dataDirectory,Assets& assets,QObject* parent):QObject(paren
     // keep their named RCO artwork rather than guessing a numeric ID.
     const QMap<QString,int> normalMaps{{"update",9},{"game",14},{"video",10},{"music",12},
         {"system",13},{"theme",24},{"date",15},{"power",57},{"device",16},{"display",17},
-        {"sound",18},{"security",19},{"remote",21},{"network",20}};
+        {"sound",18},{"security",19},{"remote",21},{"network",20},{"chat",43},{"print",11}};
     for(auto& entry:categories_[1].entries)if(normalMaps.contains(entry.id)) {
         entry.container="qgl/icontex";entry.texture=QString::number(normalMaps[entry.id])+"n";
     }

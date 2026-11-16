@@ -1133,7 +1133,7 @@
     },
     {
       "name": "settings-autologon-info",
-      "description": "Settings > System Settings > Windows automatic sign-in, the information page Cross opens on that row (row 30 of the 34-row page): the status line and the netplwiz / Sysinternals Autologon steps. XMB_AUTOLOGON_FAKE=\"1|gate-user|gate-user\" replaces the Winlogon read, so the status is \"On for gate-user\" on every PC and the registry is never read for the capture; XMB_AUTOSTART_TASK names a task that does not exist, so nothing can touch the real logon task. The page is a message page over the list, so the sidecar still says depth 1 on that row; the boot log line `autologon: on for gate-user` is the oracle that the faked state was used (audit/AUTOLOGON.md).",
+      "description": "Settings > System Settings > Windows automatic sign-in, the information page Cross opens on that row (row 29 of the 33-row page): the status line and the netplwiz / Sysinternals Autologon steps. XMB_AUTOLOGON_FAKE=\"1|gate-user|gate-user\" replaces the Winlogon read, so the status is \"On for gate-user\" on every PC and the registry is never read for the capture; XMB_AUTOSTART_TASK names a task that does not exist, so nothing can touch the real logon task. The page is a message page over the list, so the sidecar still says depth 1 on that row; the boot log line `autologon: on for gate-user` is the oracle that the faked state was used (audit/AUTOLOGON.md).",
       "reference": "out/native-reference/layers/settings-autologon-info.png",
       "dataSeed": "out/native-reference/v2/plain",
       "seedPaths": [
@@ -1155,7 +1155,7 @@
           "catalogueId": "system"
         },
         {
-          "rowIndex": 30
+          "rowIndex": 29
         }
       ],
       "expect": {
@@ -1228,7 +1228,7 @@
       "expect": {
         "category": "settings",
         "depth": 1,
-        "entryCount": 34,
+        "entryCount": 33,
         "entryId": "windows_autologon",
         "entryTitle": "Windows automatic sign-in",
         "pageKind": "page",
@@ -1260,7 +1260,6 @@
         }
       ],
       "preGrab": [
-        "DOWN",
         "DOWN",
         "DOWN",
         "DOWN",
