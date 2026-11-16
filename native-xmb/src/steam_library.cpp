@@ -663,7 +663,18 @@ SteamAppState steamAppState(const QString& appId) {
     // Steam keeps these live while it runs: RunningAppID names the title in the foreground of its
     // lifecycle, Apps\<id>\Running stays 1 from launch (including any launcher) until the last
     // process exits, and Apps\<id>\Updating is 1 while a pre-launch update downloads.
-    const QString base = QStringLiteral("HKEY_CURRENT_USER\\Software\\Valve\\Steam");
+    // Same test seam as steamRegistryKeyPath() (steam_accounts.cpp, which this file does not link): a scripted run may name
+    // a scratch key under HKEY_CURRENT_USER\Software\XmbTest\; a value that is set but not acceptable reads a dead
+    // scratch key, never the real one. Read only.
+    QString base = QStringLiteral("HKEY_CURRENT_USER\\Software\\Valve\\Steam");
+    {
+        const QString seam = qEnvironmentVariable("XMB_STEAM_REGISTRY_KEY").trimmed();
+        const QString allowed = QStringLiteral("HKEY_CURRENT_USER\\Software\\XmbTest\\");
+        if (seam.size() > allowed.size() && seam.startsWith(allowed, Qt::CaseInsensitive) && !seam.contains(QStringLiteral("..")) && !seam.contains(QLatin1Char('/')))
+            base = seam;
+        else if (!seam.isEmpty())
+            base = allowed + QStringLiteral("RejectedOverride");
+    }
     const QSettings steam(base, QSettings::NativeFormat);
     const QSettings app(base + QStringLiteral("\\Apps\\") + appId, QSettings::NativeFormat);
     state.running = steam.value(QStringLiteral("RunningAppID")).toString() == appId ||

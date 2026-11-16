@@ -742,6 +742,14 @@ bool Shell::titleRunning() const {
 // Steam launches itself, so the only honest lifecycle signal is Steam's own registry state. The
 // handoff records the app id, watches Apps\<id>\Running, and reports the return when it clears.
 bool Shell::startSteamTracked(const QString& appId,const QString& title) {
+    // Steam background mode: the client must be up (hidden) before it is asked to launch anything. When it already is,
+    // the launch runs at once; otherwise the XMB starts it, shows what it is waiting for, and launches when it is ready.
+    if(steamLaunchPending_){qInfo().noquote()<<"steam hide: a launch is already waiting for the Steam client; ignored"<<title;return true;}
+    steamLaunchPending_=true;
+    ensureSteamClient(title,[this,appId,title]{steamLaunchPending_=false;startSteamNow(appId,title);});
+    return true;
+}
+bool Shell::startSteamNow(const QString& appId,const QString& title) {
     QString exe=QDir(steamRoot_).filePath("steam.exe");
     QStringList launchArguments{"-applaunch",appId};
     QString launchDirectory=steamRoot_;
@@ -761,8 +769,102 @@ bool Shell::startSteamTracked(const QString& appId,const QString& title) {
     steamWatchAge_.start();steamWatch_.start();
     activity_.start();
     qInfo().noquote()<<"launch: steam -applaunch"<<appId<<"(watched through Steam's registry)";
+    armSteamSweep(120000);   // keeps a Steam window (Big Picture, News, an update dialog) off the screen while the title starts
     emit changed();
     return true;
+}
+// ---- Steam background mode (steam_hidden.h, audit/STEAM-HIDDEN.md) -------------------------------------------
+bool Shell::steamHideActive(QString* why) const {
+    const auto no=[&](const QString& reason){if(why)*why=reason;return false;};
+    if(steamhide::killSwitchEngaged())return no(QStringLiteral("XMB_STEAM_HIDE=0"));
+    if(!preferences_.value("steam/background").toBool())return no(QStringLiteral("Steam Background Mode is off"));
+    if(steamFake())return no(QStringLiteral("XMB_STEAM_FAKE test seam"));
+    if(steamRoot_.isEmpty() || !QFileInfo(QDir(steamRoot_).filePath("steam.exe")).isFile())return no(QStringLiteral("Steam is not installed"));
+    if(steamhide::processIsElevated())return no(QStringLiteral("the XMB runs as administrator and Steam would inherit that"));
+    return true;
+}
+void Shell::steamStartShow(const QString& text) {
+    if(steamStartTitle_.isEmpty()) {
+        steamStartStatus_=text;status_=text;
+    } else {
+        showMessage(steamStartTitle_,text,MessageKind::Page);
+        steamStartText_=message_;
+    }
+    qInfo().noquote()<<"steam hide: status:"<<text;
+    emit changed();
+}
+void Shell::steamStartClear() {
+    if(!steamStartText_.isEmpty() && message_==steamStartText_)clearMessage();
+    steamStartText_.clear();
+    if(!steamStartStatus_.isEmpty() && status_==steamStartStatus_)status_.clear();
+    steamStartStatus_.clear();
+}
+void Shell::ensureSteamClient(const QString& title,std::function<void()> then) {
+    QString why;
+    if(!steamHideActive(&why)) {
+        qInfo().noquote()<<"steam hide: not used ("+why+"); Steam starts and shows itself as it always did";
+        if(then)then();
+        return;
+    }
+    const QString key=steamRegistryKeyPath();
+    const auto state=steamhide::readClientState(key);
+    if(state.signedIn()){if(then)then();return;}
+    steamStartWaiter_=std::move(then);
+    steamStartTitle_=title;
+    if(steamStarter_.running()){if(!title.isEmpty())steamStartShow(QObject::tr("Starting Steam..."));return;}   // an earlier (kiosk) start is still going
+    steamhide::StartOptions options;
+    options.steamExe=QDir(steamRoot_).filePath("steam.exe");
+    options.hidden=true;
+    options.registryKey=key;
+    if(state.alive)options.timing.signInAfterMs=1500;   // already up and waiting: say so at once
+    bool numeric=false;
+    const int timeoutMs=qEnvironmentVariable("XMB_STEAM_HIDE_TIMEOUT_MS").toInt(&numeric);   // scripted-run seam
+    if(numeric && timeoutMs>=500 && timeoutMs<=600000)options.timing.timeoutMs=timeoutMs;
+    steamStarter_.begin(options);
+}
+void Shell::armSteamSweep(int milliseconds) {
+    if(!steamHideActive())return;
+    steamSweepUntil_=std::max(steamSweepUntil_,steamSweepClock_.elapsed()+milliseconds);
+    if(!steamSweep_.isActive()){steamSweep_.start();QTimer::singleShot(0,this,&Shell::sweepSteamWindows);}
+}
+void Shell::sweepSteamWindows() {
+    const qint64 now=steamSweepClock_.elapsed();
+    // Once the title is running the overlay and Steam Input are in use, so the sweep ends shortly after.
+    if(titleRunning() && steamSweepUntil_>now+10000)steamSweepUntil_=now+10000;
+    if(now>=steamSweepUntil_ || !steamHideActive()){steamSweep_.stop();return;}
+    const QString key=steamRegistryKeyPath();
+    const auto state=steamhide::readClientState(key);
+    if(!state.alive)return;
+    const auto result=steamhide::sweepWindows(steamhide::clientProcesses(key),state.activeUser!=0,true);
+    if(result.hidden>0) {
+        qInfo().noquote()<<QStringLiteral("steam hide: hid %1 Steam window(s): %2").arg(result.hidden).arg(result.hiddenTitles.join(QStringLiteral("; ")));
+        steamReturnFocus();
+    }
+    if(result.keepWindow && now-steamRaisedAt_>15000) {
+        steamRaisedAt_=now;
+        steamhide::raiseWindow(result.keepWindow);
+        qInfo().noquote()<<QStringLiteral("steam hide: left \"%1\" on screen and brought it forward (%2)").arg(result.keepTitle,result.keepIsSignIn?QStringLiteral("sign-in"):QStringLiteral("message"));
+        notify(QObject::tr("Steam"),result.keepIsSignIn?QObject::tr("Steam needs you to sign in"):QObject::tr("Steam is showing a message"));
+    }
+}
+// A hidden Steam window had been in front: the game's window (when the title is already running) or the XMB goes back.
+void Shell::steamReturnFocus() {
+    if(titleRunning()) {
+        QString dir;for(const auto& g:steamInstalled_.games)if(g.appId==steamGameId_){dir=g.installDirectory;break;}
+        for(const auto& p:steamquit::selectGameProcesses(steamquit::snapshotProcesses(),dir,{quint32(QCoreApplication::applicationPid())}))
+            if(const auto window=findMainWindow(p.pid)){steamhide::raiseWindow(window);qInfo().noquote()<<"steam hide: focus returned to the game window";return;}
+        return;
+    }
+    emit foregroundRequested(QStringLiteral("a Steam window was hidden"));
+}
+void Shell::startSteamClientInBackground() {
+    if(!contentLoaded_){steamBackgroundStartPending_=true;return;}
+    steamBackgroundStartPending_=false;
+    QString why;
+    if(!steamHideActive(&why)){qInfo().noquote()<<"steam hide: kiosk start skipped ("+why+")";return;}
+    if(steamhide::readClientState(steamRegistryKeyPath()).signedIn()){qInfo()<<"steam hide: kiosk start: the Steam client is already running";armSteamSweep(8000);return;}
+    qInfo()<<"steam hide: kiosk start: bringing up the hidden Steam client";
+    ensureSteamClient(QString(),std::function<void()>());
 }
 void Shell::pollSteamGame() {
     if(steamGameId_.isEmpty()) { steamWatch_.stop(); return; }
@@ -1254,6 +1356,7 @@ void Shell::refreshContent() {
         auto result=watcher->result();watcher->deleteLater();contentScanning_=false;
         steamRoot_=result.steam.root;
         steamInstalled_=result.steam;
+        if(steamBackgroundStartPending_)QTimer::singleShot(0,this,[this]{startSteamClientInBackground();});
         rawgArtworkPaths_=result.rawgPaths;
         family_=scanSteamFamily(steamInstalled_.steamId);
         { QString familyError; familyGames_=scanFamilySharedGames(dataDirectory_,&familyError);
@@ -1808,6 +1911,29 @@ Shell::Shell(QString dataDirectory,Assets& assets,QObject* parent):QObject(paren
     adoptedWatch_.setInterval(250);
     connect(&adoptedWatch_,&QTimer::timeout,this,&Shell::pollAdopted);
     connect(&steamWatch_,&QTimer::timeout,this,&Shell::pollSteamGame);
+    steamSweepClock_.start();
+    steamSweep_.setInterval(400);
+    connect(&steamSweep_,&QTimer::timeout,this,&Shell::sweepSteamWindows);
+    connect(&steamStarter_,&steamhide::ClientStarter::status,this,[this](const QString& text){steamStartShow(text);});
+    connect(&steamStarter_,&steamhide::ClientStarter::needsSignIn,this,[this](const QString& text){
+        steamStartShow(text);
+        armSteamSweep(10*60*1000);   // the sweep brings Steam's sign-in window forward; it never hides it
+    });
+    connect(&steamStarter_,&steamhide::ClientStarter::ready,this,[this]{
+        steamStartClear();
+        armSteamSweep(10000);
+        auto waiter=std::move(steamStartWaiter_);steamStartWaiter_=nullptr;
+        if(waiter)waiter();
+        emit changed();
+    });
+    connect(&steamStarter_,&steamhide::ClientStarter::failed,this,[this](const QString& text){
+        const QString title=steamStartTitle_;
+        steamStartClear();
+        steamStartWaiter_=nullptr;steamLaunchPending_=false;
+        if(title.isEmpty())notify(QObject::tr("Steam"),text);
+        else showMessage(title,text,MessageKind::Page);
+        emit changed();
+    });
     connect(&steamQuitter_,&steamquit::Quitter::finished,this,[this](int stage,const QString& survivors){
         const QString appId=steamGameId_;
         if(stage>0) {
@@ -6205,7 +6331,7 @@ void Shell::steamSwitchRun() {
     const int verifyMs=qEnvironmentVariable("XMB_STEAM_SWITCH_VERIFY_MS").toInt(&numeric);
     if(numeric && verifyMs>=500 && verifyMs<=300000)options.verifyTimeoutMs=verifyMs;
     const bool noProcesses=qEnvironmentVariableIsSet("XMB_STEAM_SWITCH_NOPROC");
-    steamSwitcher_=new SteamAccountSwitcher(options,noProcesses?makeNullSteamProcessControl():makeSystemSteamProcessControl(),this);
+    steamSwitcher_=new SteamAccountSwitcher(options,noProcesses?makeNullSteamProcessControl():makeSystemSteamProcessControl(steamHideActive()?steamhide::startArguments(true):QStringList()),this);
     connect(steamSwitcher_,&SteamAccountSwitcher::progress,this,[this](const QString& text){steamSwitchStatus(text);});
     connect(steamSwitcher_,&SteamAccountSwitcher::finished,this,[this](const SteamSwitchResult& result){steamSwitchFinished(result);});
     steamSwitchStatus(steamSwitch_.automatic?QObject::tr("Switching to %1").arg(steamSwitch_.accountLabel)
@@ -6241,6 +6367,7 @@ void Shell::steamSwitchFinished(const SteamSwitchResult& result) {
         notify(title,result.message);
     }
     steamAccounts_=scanSteamAccounts(steamRoot_);   // the next selection sees Steam's new record
+    if(result.outcome!=SteamSwitchResult::Outcome::NotRunning && result.outcome!=SteamSwitchResult::Outcome::Failed)armSteamSweep(15000);
     if(steamSwitcher_){steamSwitcher_->deleteLater();steamSwitcher_=nullptr;}
     emit changed();
 }

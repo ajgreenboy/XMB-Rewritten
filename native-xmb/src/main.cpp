@@ -1484,6 +1484,10 @@ int main(int argc,char** argv) {
     // flag is the discriminator: a confirmed Turn Off quits, an idle Auto-Off goes dark and the XMB stays
     // running. Once shell.cpp calls host::requestDisplayOff() from the idle timer (the hunk in
     // audit/SESSION-POWER.md), this glue is unnecessary and should be deleted.
+    // Steam background mode (audit/STEAM-HIDDEN.md): a hidden Steam window had been in front, so the XMB goes back on top; and in
+    // kiosk mode the hidden client is brought up once the library scan has found Steam, before a game asks for it.
+    QObject::connect(&shell,&xmb::Shell::foregroundRequested,&window,[&window,view](const QString&){xmb::bringWindowForward(&window,view);});
+    if(kiosk)shell.startSteamClientInBackground();
     QObject::connect(&shell,&xmb::Shell::requestQuit,&app,[&app,&shell,kiosk]{
         if(shell.psMenuConfirmingOff()) {
             // The console's Turn Off powers the machine off. In appliance mode (--kiosk, the HTPC) this PC shuts

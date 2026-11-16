@@ -97,3 +97,11 @@ so a game that runs from a different folder than its manifest says is reported t
 While a Steam game is in front and Steam Input is enabled for the controller, Steam handles the Guide tap (Big Picture
 or the overlay), so turn off Steam's "Guide Button Focuses Steam" and Steam Input for Xbox controllers for the XMB to
 see a tap. The hold already reaches the XMB.
+
+## Steam background mode (2026-11-16)
+
+Quit Game still never touches the Steam client, which is what lets background mode keep it running hidden
+([STEAM-HIDDEN.md](STEAM-HIDDEN.md)): the game's own processes end, Steam clears `RunningAppID`, and the XMB comes back
+with the client still in the tray. The window sweep that hides stray Steam windows after a launch ends 10 s after the
+game is seen running, so it never touches the overlay while playing. The Steam Quit Game path is otherwise unchanged,
+and there is no "Quit Steam" row.

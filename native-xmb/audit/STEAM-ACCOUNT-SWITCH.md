@@ -140,3 +140,15 @@ the real ACLs are not).
    minute. A copy `loginusers.vdf.xmb-backup-<time>` appears next to `loginusers.vdf`.
 4. If it shows the sign-in window result instead, send `XMB_LOG` (the `steam: switch` lines) and the file listing of
    `config`; the backup copy restores the previous state by copying it over `loginusers.vdf` while Steam is closed.
+
+## Start path with Steam background mode (2026-11-16)
+
+Step 6 of the flow (start Steam) now passes `-silent -nofriendsui -nochatui` when Steam background mode is on
+(`makeSystemSteamProcessControl(steamhide::startArguments(true))`, decided in `Shell::steamSwitchRun`); with the mode off,
+the kill switch `XMB_STEAM_HIDE=0`, or an elevated XMB, the start has no arguments, exactly as before. No account
+argument is ever passed (`-login` stays forbidden). Only the arguments changed: what is written to `loginusers.vdf` and
+the registry, the backup, the rollback and the verify step are untouched, and the tests that use the fake process
+control still pass. When the switch ends in any outcome in which Steam is running, the window sweep is armed for 15 s so a
+main window the restarted client shows is hidden; a signed-out client (the "sign-in window" result) is never hidden and
+its window is brought forward. See [STEAM-HIDDEN.md](STEAM-HIDDEN.md) for the switches, sources and rules. Unverified
+against a real client, like the rest of the switch.

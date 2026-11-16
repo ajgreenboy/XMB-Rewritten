@@ -386,6 +386,7 @@ namespace {
 
 class SystemProcessControl : public SteamProcessControl {
 public:
+    explicit SystemProcessControl(QStringList startArguments) : startArguments_(std::move(startArguments)) {}
     bool steamRunning(QString* which) override {
 #ifdef Q_OS_WIN
         const HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
@@ -418,11 +419,14 @@ public:
         return false;
     }
     bool launch(const QString& steamExe, QString* error) override {
-        if (QProcess::startDetached(steamExe, steamRelaunchArguments(), QFileInfo(steamExe).absolutePath()))
+        if (QProcess::startDetached(steamExe, steamRelaunchArguments() + startArguments_, QFileInfo(steamExe).absolutePath()))
             return true;
         if (error) *error = QStringLiteral("steam.exe could not be started");
         return false;
     }
+
+private:
+    QStringList startArguments_;
 };
 
 class NullProcessControl : public SteamProcessControl {
@@ -442,8 +446,8 @@ private:
 
 } // namespace
 
-std::unique_ptr<SteamProcessControl> makeSystemSteamProcessControl() {
-    return std::make_unique<SystemProcessControl>();
+std::unique_ptr<SteamProcessControl> makeSystemSteamProcessControl(const QStringList& startArguments) {
+    return std::make_unique<SystemProcessControl>(startArguments);
 }
 std::unique_ptr<SteamProcessControl> makeNullSteamProcessControl() {
     return std::make_unique<NullProcessControl>();

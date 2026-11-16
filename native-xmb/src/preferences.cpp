@@ -36,7 +36,9 @@ QStringList Preferences::sharedKeys() {
             QStringLiteral("desktop/keepMusic"),QStringLiteral("desktop/hotkey"),
             QStringLiteral("desktop/controllerMouse"),QStringLiteral("desktop/pointerSpeed"),
             // D9: HDMI-CEC TV control belongs to the TV and the machine, not to a profile.
-            QStringLiteral("cec/tvOnAtStart"),QStringLiteral("cec/standbyOnTurnOff")};
+            QStringLiteral("cec/tvOnAtStart"),QStringLiteral("cec/standbyOnTurnOff"),
+            // Steam background mode (audit/STEAM-HIDDEN.md) belongs to the machine the TV is on.
+            QStringLiteral("steam/background")};
 }
 bool Preferences::isSharedKey(const QString& key) {
     return sharedKeys().contains(key);
@@ -100,7 +102,7 @@ QVariant Preferences::defaultValue(const QString& key) {
     // /setting/system/notification and /setting/system/notificationTrophy (vsh.elf): both classes default to shown.
     if(key=="audio/keyTone" || key=="system/notificationMessages" || key=="system/notificationTrophy" || key=="jellyfin/autoplayNext")return true;
     if(key=="power/idleMinutes" || key=="display/screensaverMinutes")return 0;
-    if(key=="desktop/keepMusic" || key=="desktop/controllerMouse")return true;
+    if(key=="desktop/keepMusic" || key=="desktop/controllerMouse" || key=="steam/background")return true;
     if(key=="desktop/pointerSpeed")return 3;
     if(key=="desktop/hotkey")return QString("Ctrl+Alt+Home");
     if(key=="audio/muted" || key=="media/repeat" || key=="media/shuffle" || key=="display/fullscreen" ||
@@ -130,7 +132,7 @@ bool Preferences::validBare(const QString& key,const QVariant& value) {
     if(key=="display/screensaverMinutes")return integer(0,30) && (value.toInt()==0 || value.toInt()==5 || value.toInt()==10 || value.toInt()==20 || value.toInt()==30);
     if(key=="audio/keyTone" || key=="system/notificationMessages" || key=="system/notificationTrophy" ||
        key=="jellyfin/autoplayNext" || key=="audio/muted" || key=="media/repeat" || key=="media/shuffle" || key=="display/fullscreen" || key=="desktop/keepMusic" || key=="desktop/controllerMouse" ||
-       key=="cec/tvOnAtStart" || key=="cec/standbyOnTurnOff")return value.metaType().id()==QMetaType::Bool;
+       key=="cec/tvOnAtStart" || key=="cec/standbyOnTurnOff" || key=="steam/background")return value.metaType().id()==QMetaType::Bool;
     if(value.metaType().id()!=QMetaType::QString)return false;
     const auto text=value.toString();
     if(text.contains(QChar(0)))return false;

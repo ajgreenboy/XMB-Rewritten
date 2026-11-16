@@ -63,7 +63,9 @@ public:
     virtual bool launch(const QString& steamExe, QString* error) = 0;
 };
 // The real one: a process snapshot plus QProcess::startDetached.
-std::unique_ptr<SteamProcessControl> makeSystemSteamProcessControl();
+// `startArguments` are added to the relaunch command (Steam background mode passes -silent and friends so the
+// restarted client stays in the tray, audit/STEAM-HIDDEN.md); empty keeps the start exactly as it was.
+std::unique_ptr<SteamProcessControl> makeSystemSteamProcessControl(const QStringList& startArguments = {});
 // XMB_STEAM_SWITCH_NOPROC=1: Steam is never running, nothing is started or stopped, and the launch is only
 // logged. A scripted-run seam like XMB_POWER_DRY_RUN; it lets a run exercise the file and registry writes
 // against a scratch Steam root without touching any real Steam process.

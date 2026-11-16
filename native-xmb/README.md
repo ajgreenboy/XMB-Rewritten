@@ -37,7 +37,7 @@ XInput D-pad and A/B share the same actions.
 
 ### Tests and the verification gate
 
-The test runners are off by default; each has a CMake option (`XMB_STEAM_VDF_BUILD_TESTS`,
+The test runners are off by default; each has a CMake option (`XMB_STEAM_VDF_BUILD_TESTS`, `XMB_STEAM_HIDE_BUILD_TESTS`,
 `XMB_SETUP_BUILD_TESTS`, `XMB_AUTOLOGON_BUILD_TESTS`, `XMB_UPDATER_BUILD_TESTS`, `XMB_FIRMWARE_BUILD_TESTS`,
 `XMB_RELEASE_BUILD_TESTS`, `XMB_MANAGER_BUILD_TESTS`, `XMB_DISCORD_BUILD_TESTS`, `XMB_FOLDER_BROWSER_BUILD_TESTS`). From a Visual Studio developer prompt, configure with the option on (`cmake -S native-xmb -B out/tests -G Ninja -DCMAKE_PREFIX_PATH=<Qt kit> -DXMB_STEAM_VDF_BUILD_TESTS=ON`), build the matching
 `xmb-*-tests` target and run the executable.
@@ -360,6 +360,13 @@ are ordered by last played. Triangle on a Steam title adds Open in Steam Library
 Screenshots, Verify Game Files and Delete; each is a `steam://` hand-off, so Steam performs (and for Delete, confirms) the
 action. Row icons for the Steam, Jellyfin, Tailscale and Spotify services come from `src/service_icons.*` (the installed
 client's own icon, or a drawn mark). See [audit/STEAM-INTEGRATION.md](audit/STEAM-INTEGRATION.md).
+
+**Steam background mode.** The XMB runs the full Steam client hidden behind itself (Game Settings > Steam Background Mode, default On
+when Steam is installed; `XMB_STEAM_HIDE=0` turns it off for a run): before a Steam game launches, and at start in kiosk mode,
+it starts `steam.exe -silent -nofriendsui -nochatui` when no client is running, shows "Starting Steam...", waits for Steam's own
+`ActiveProcess` record, and keeps stray Steam windows (main window, Big Picture, News, update dialogs) off the screen. A Steam
+sign-in, Steam Guard or error window is never hidden: it is brought forward and the XMB says "Steam needs you to sign in".
+Sources, rules and everything not yet verified against a real Steam: [audit/STEAM-HIDDEN.md](audit/STEAM-HIDDEN.md).
 
 **Quit Game and the Guide button.** Quit Game (PS menu or the in-game row) closes a Steam title by ending the game's own processes, never Steam itself ([audit/STEAM-QUIT.md](audit/STEAM-QUIT.md)). While a Steam game is in front and Steam Input is enabled for the controller, Steam handles the Guide tap (Big Picture or the overlay), so turn off Steam's "Guide Button Focuses Steam" and Steam Input for Xbox controllers for the XMB to see a tap; the hold already reaches the XMB.
 

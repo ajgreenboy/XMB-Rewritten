@@ -30,6 +30,7 @@
 #include "steam_store.h"
 #include "steam_library.h"
 #include "steam_quit.h"
+#include "steam_hidden.h"
 #include "subtitles.h"
 #include "release_source.h"
 #include "hydra_library.h"
@@ -613,6 +614,9 @@ public:
     // then calls beginSetup() when no <data>/setup.json says completed (or --first-run). The sequence is a stack of ordinary
     // pages, so the pad reaches it through the same horizontal/vertical/activate/back path as every other page.
     void setSetupContext(const QString& devFlashRoot,int kioskDisplay);
+    // Steam background mode (audit/STEAM-HIDDEN.md): in kiosk mode main.cpp asks for the hidden Steam client to be up
+    // before the first game needs it. Runs once the library scan has found Steam; does nothing when the mode is off.
+    void startSteamClientInBackground();
     void beginSetup(bool forced);
     QString desktopHotkey() const { return preferences_.value("desktop/hotkey").toString(); }
     bool keepMusicInDesktop() const { return preferences_.value("desktop/keepMusic").toBool(); }
@@ -720,6 +724,8 @@ signals:
     void requestSystemName(const QString& value);
     void requestTitleText();   // ZF2: open the OSK for text to type into the running title
     void requestQuit();
+    // The XMB window should be put back in front (a hidden Steam window had been on top).
+    void foregroundRequested(const QString& reason);
     void requestUpdateRestart();
     // Desktop Mode (INFERRED rows; audit/DESKTOP-MODE.md): main.cpp owns the window, the tray and the ways back.
     void requestDesktop();
@@ -1157,6 +1163,26 @@ private:
     void syncInGameRows();
     void clearInGame();
     bool startSteamTracked(const QString& appId,const QString& title);
+    bool startSteamNow(const QString& appId,const QString& title);
+    // ---- Steam background mode (steam_hidden.h, audit/STEAM-HIDDEN.md) ----
+    bool steamHideActive(QString* why=nullptr) const;
+    void ensureSteamClient(const QString& title,std::function<void()> then);
+    void steamStartShow(const QString& text);
+    void steamStartClear();
+    void armSteamSweep(int milliseconds);
+    void sweepSteamWindows();
+    void steamReturnFocus();
+    steamhide::ClientStarter steamStarter_;
+    std::function<void()> steamStartWaiter_;   // what to do once the client is up (the launch that asked for it)
+    QString steamStartTitle_;                  // page title for the start status; empty = status line only (kiosk start)
+    QString steamStartText_;                   // the status page's text; the page is ours while message_ equals it
+    QString steamStartStatus_;                 // the status line's text, to clear only our own
+    bool steamLaunchPending_=false;            // a launch is waiting for the client; a second press is ignored
+    bool steamBackgroundStartPending_=false;   // kiosk start asked for before the library scan found Steam
+    QTimer steamSweep_;                        // hides stray Steam windows while armed
+    QElapsedTimer steamSweepClock_;
+    qint64 steamSweepUntil_=0;
+    qint64 steamRaisedAt_=-100000;
     void pollSteamGame();
     void restoreFocus();
     int steamTitleCount() const;

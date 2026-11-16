@@ -655,6 +655,16 @@ PageRows segmentRows(const QString& id,Assets& assets) {
         "(groups %4, sha256 %5): listed %6, left out %7, rco titles %8")
         .arg(id).arg(int(data.entries.size())).arg(QFileInfo(column.path).fileName()).arg(column.queries)
         .arg(column.sha256.left(12)).arg(int(data.entries.size())).arg(data.notes.size()).arg(column.rcoRows);
+    if(id==QStringLiteral("game")) {
+        // Native-only: Steam background mode (audit/STEAM-HIDDEN.md). The console has no Steam client to hide; here the
+        // XMB runs the full client in the tray behind itself so a game gets Steamworks, saves and Steam Input.
+        Entry background=option(QStringLiteral("steam_background"),QObject::tr("Steam Background Mode"),
+            QObject::tr("Runs the Steam client hidden behind the XMB: the XMB starts it when a game needs it, keeps its windows off the screen, and still shows Steam's sign-in window if you must sign in. Off leaves Steam to start and show itself as usual. XMB_STEAM_HIDE=0 turns it off for a run."),
+            QStringLiteral("steam/background"),Action::SettingChoices,QString{});
+        background.settingsPage=id;background.source=QStringLiteral("native");
+        data.nativeOnly<<background.id;
+        data.entries.push_back(std::move(background));
+    }
     if(id==QStringLiteral("device")) {
         // Native-only (D10): this build's own Bluetooth list/pair; the console's accessory page binds its pad to
         // PSN through the PS3's own controller stack, which a PC has no analogue for.
