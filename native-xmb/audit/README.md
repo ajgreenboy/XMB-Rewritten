@@ -134,6 +134,7 @@ native diff.
 | [STEAM-CLIENT-FRIENDS.md](STEAM-CLIENT-FRIENDS.md) | Friends through the signed-in Steam client |
 | [STEAM-DOWNLOADS.md](STEAM-DOWNLOADS.md) | Steam download state for the XMB download page |
 | [STEAM-CLI.md](STEAM-CLI.md) | What the Steam client accepts headless |
+| [STEAMCMD.md](STEAMCMD.md) | Installing, updating and validating Steam games with Valve's SteamCMD: the XMB's sign-in pages (password and Steam Guard on the XMB keyboard), how credentials are handled and tested, what is sourced and what is unverified |
 | [STEAM-QUIT.md](STEAM-QUIT.md) | Quit Game for a Steam title: closing the game's own processes in three stages |
 | [SERVICES-BREADTH.md](SERVICES-BREADTH.md) | Account switch, launch/quit, avatars, trophies and honest rows |
 | [JELLYFIN-NATIVE.md](JELLYFIN-NATIVE.md) | Native Jellyfin playback |

@@ -2,7 +2,8 @@
 
 Scope: the native XMB's account list and account switch handoff, built from the
 Steam client's own local files. The XMB never asks for, reads or stores a
-password, token, cookie, SSFN file or session cache, and it never signs in.
+password, token, cookie, SSFN file or session cache, and it never signs in. (That is the account list and switch. The
+separate, optional SteamCMD sign-in does take a password on the XMB keyboard, for SteamCMD only: see STEAMCMD.md.)
 
 Module: `src/steam_accounts.h`, `src/steam_accounts.cpp` (new; not yet wired into
 the shell or the build by this document's author, who owns no other files).
