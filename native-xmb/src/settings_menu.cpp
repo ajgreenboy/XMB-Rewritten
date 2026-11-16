@@ -2427,6 +2427,17 @@ void Shell::openSettings(const QString& id) {
     }
     pages_.push_back(std::move(page));
 }
+QVector<Entry> Shell::settingsPageRowsForWarm() {
+    QVector<Entry> rows;
+    QSet<QString> seen;
+    for(const auto& category:categories_)for(const auto& entry:category.entries) {
+        if(entry.action!=Action::SettingsPage || entry.value.isEmpty() || seen.contains(entry.value))continue;
+        seen.insert(entry.value);
+        if(entry.value==QLatin1String("update") || entry.value==QLatin1String("photo") || entry.value==QLatin1String("messages"))continue;
+        rows+=pageRows(entry.value,assets_,QString{}).entries;
+    }
+    return rows;
+}
 void Shell::openChoices(const QString& key,const QString& title) {
     if(pages_.size()>=32)return;
     Page page;page.title=title;

@@ -39,6 +39,10 @@
 #include <cmath>
 #include <numbers>
 #include <QSet>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QSaveFile>
 #include <QScopedValueRollback>
 #include <QWindow>
 #include "idle_profile.h"
@@ -312,6 +316,30 @@ void View::traceSurfaceTransitions() {
     edge(shell_.optionsOpen(),frameLogOptions_,"options-panel");
     edge(!shell_.message().isEmpty(),frameLogMessage_,"message");
     edge(osk_.open,frameLogOsk_,"osk");
+    edge(shell_.jellyfinSignInOpen(),frameLogJfSignIn_,"jellyfin-signin");
+    edge(shell_.steamAccountsOpen(),frameLogAccounts_,"steam-accounts");
+    // A page opened with Cross (a Settings sub-page, a library folder, the folder browser...): the stack grew or the top
+    // page changed. Keyed by title, so the first open of each distinct page is marked.
+    const int depth=shell_.depth();
+    const QString page=depth>0?shell_.pageTitle():QString{};
+    {   // where the focus is (a scripted run's navigation can then be checked from the log): logged on every change
+        const auto& rows=shell_.entries();
+        const QString focus=QStringLiteral("%1/%2 depth %3").arg(shell_.categories().value(shell_.category()).id,
+            rows.isEmpty()?QString{}:rows.value(shell_.selection()).title).arg(depth);
+        if(focus!=frameLogFocus_){frameLogFocus_=focus;qInfo().noquote()<<"frame-trace: focus"<<focus;}
+    }
+    if(depth!=frameLogDepth_ || page!=frameLogPage_) {
+        const bool deeper=depth>frameLogDepth_ || (depth==frameLogDepth_ && depth>0);
+        frameLogDepth_=depth;frameLogPage_=page;
+        if(depth>0 && deeper) {
+            const QString key=QStringLiteral("page:")+page;
+            const bool first=!frameLogSeen_.contains(key);
+            frameLogSeen_.insert(key);
+            const QString what=QStringLiteral("page \"%1\" depth %2 opened%3").arg(page).arg(depth).arg(first?QStringLiteral(" (FIRST)"):QString{});
+            xmb::frametrace::note(what);
+            qInfo().noquote()<<"frame-trace: surface"<<what;
+        }
+    }
 }
 // ---- Idle prewarm (audit/PS-MENU-HITCH.md) -----------------------------------------------------------------
 // What the system menu needed on its first frames, measured on this build at 3840x2160: a 49 ms RCO name index
@@ -368,6 +396,97 @@ void View::buildColumnWarmJobs() {
         }
     }
 }
+bool View::warmSlice(QVector<ColumnWarmJob>& jobs,int& next,int& cursor,qint64 sliceNs) {
+    QElapsedTimer slice;slice.start();
+    while(next<jobs.size() && slice.nsecsElapsed()<sliceNs) {
+        const auto& job=jobs[next];
+        QFont font(shell_.fontFamily());font.setPixelSize(job.size);
+        if(job.weight!=QFont::Normal)font.setWeight(QFont::Weight(job.weight));
+        if(textRenderer_.warmGlyphs(*this,job.text,font,job.flags,job.width,cursor,sliceNs-slice.nsecsElapsed())){++next;cursor=0;}
+    }
+    return next>=jobs.size();
+}
+// ---- Page text prewarm (audit/FRAME-PACING.md, "First-open page hitch") --------------------------------------------
+// A page opened with Cross has no rows until it is opened, so the column prewarm cannot see its text. Three sources, in
+// this order, all queued as the same glyph-tile jobs (every pen phase of every glyph, one 1.2 ms slice per quiet frame,
+// stopped by the atlas guard): (1) the characters the previous sessions had to rasterise, per text style, from
+// <data>/cache/text-warm.json (what this user's pages really needed); (2) the title, second line and help text of every
+// Settings sub-page row; (3) the digits and punctuation values are made of, which no row list holds.
+void View::buildPageWarmJobs() {
+    auto& w=pageWarm_;
+    w.jobs.clear();w.next=0;w.cursor=0;
+    QSet<QString> seen;
+    const auto add=[&](const QString& text,int size,int flags,qreal width,int weight=QFont::Normal) {
+        if(text.isEmpty())return;
+        const QString key=QString::number(size)+QLatin1Char('|')+QString::number(flags)+QLatin1Char('|')+QString::number(weight)+QLatin1Char('|')+text;
+        if(seen.contains(key))return;
+        seen.insert(key);
+        w.jobs.push_back({text,size,flags,width,weight});
+    };
+    constexpr int row=Qt::AlignLeft|Qt::AlignVCenter,help=Qt::AlignLeft|Qt::AlignTop;
+    int learned=0;
+    if(const QString dir=shell_.dataDirectory();!dir.isEmpty()) {
+        QFile file(QDir(dir).filePath(QStringLiteral("cache/text-warm.json")));
+        if(file.open(QIODevice::ReadOnly)) {
+            const auto styles=QJsonDocument::fromJson(file.readAll()).object().value(QStringLiteral("styles")).toArray();
+            for(const auto& value:styles) {
+                const auto style=value.toObject();
+                const int px=style.value(QStringLiteral("px")).toInt();
+                const QString chars=style.value(QStringLiteral("chars")).toString();
+                if(px<8 || px>120 || chars.isEmpty())continue;
+                add(chars,px,row,8000,style.value(QStringLiteral("bold")).toBool()?int(QFont::Bold):int(QFont::Normal));
+                ++learned;
+            }
+        }
+    }
+    for(const auto& entry:shell_.settingsPageRowsForWarm()) {
+        add(entry.title,32,row,1100);
+        add(shell_.subtitleText(entry),17,help,1100);
+        add(entry.detail,19,help,1182);
+    }
+    for(const int size:{21,32,17,19})add(QStringLiteral("0123456789:.,-+/%()&'!?")+QChar(0x2026),size,row,8000);
+    // (4) the letters of the text styles pages put values, choice lists, dialogs and the keyboard's field in (a value such as a
+    // device name or a date is the machine's own and no row list holds it): most used style first, so the atlas guard cuts the tail.
+    add(QStringLiteral("System Name"),27,row,1100);
+    for(const int size:{21,23,24,22,26,27,20})
+        add(QStringLiteral("etaoinshrdlucmfwypvbgkjqxzETAOINSHRDLUCMFWYPVBGKJQXZ0123456789.,:;'\"!?-()/%&"),size,row,8000);
+    qInfo().noquote()<<QString("prewarm: page text queued, %1 strings (%2 learned styles)").arg(w.jobs.size()).arg(learned);
+}
+bool View::prewarmPageText() {
+    static const bool off=qEnvironmentVariable("XMB_PAGE_PREWARM")==QLatin1String("0");
+    if(off)return false;
+    auto& w=pageWarm_;
+    if(const quint32 generation=textRenderer_.atlasGeneration();generation!=w.generation){w=PageWarm{};w.generation=generation;}
+    if(!w.built){buildPageWarmJobs();w.built=true;}
+    if(w.next>=w.jobs.size()) {
+        if(!w.announced){w.announced=true;qInfo().noquote()<<QString("prewarm: page text done, %1 strings, %2 atlas pages in use").arg(w.jobs.size()).arg(textRenderer_.atlasPagesInUse());}
+        return false;
+    }
+    warmRender([this,&w](QPainter& p){
+        p.beginNativePainting();
+        warmSlice(w.jobs,w.next,w.cursor,2'400'000);   // the queue is long (the alphabets), the slice still far under a frame
+        glBindTexture(GL_TEXTURE_2D,0);
+        p.endNativePainting();
+    });
+    if(xmb::frametrace::on())xmb::frametrace::note(QString("page prewarm %1/%2").arg(w.next).arg(w.jobs.size()));
+    return true;
+}
+// The session's glyph demand, for the next start (see buildPageWarmJobs). Never from a pinned capture, and only when the
+// set changed, so a quiet run writes nothing.
+void View::saveTextDemand() {
+    if(secondsOverride_>=0 || !textRenderer_.glyphDemandChanged() || qEnvironmentVariable("XMB_PAGE_PREWARM")==QLatin1String("0"))return;
+    const QString dir=shell_.dataDirectory();
+    if(dir.isEmpty())return;
+    QJsonArray styles;
+    const auto& demand=textRenderer_.glyphDemand();
+    for(auto it=demand.cbegin();it!=demand.cend();++it)
+        styles.push_back(QJsonObject{{QStringLiteral("px"),int(it.key()&0xffff)},{QStringLiteral("bold"),(it.key()&0x10000u)!=0},{QStringLiteral("chars"),it.value()}});
+    QDir().mkpath(QDir(dir).filePath(QStringLiteral("cache")));
+    QSaveFile file(QDir(dir).filePath(QStringLiteral("cache/text-warm.json")));
+    if(!file.open(QIODevice::WriteOnly))return;
+    file.write(QJsonDocument(QJsonObject{{QStringLiteral("version"),1},{QStringLiteral("styles"),styles}}).toJson(QJsonDocument::Compact));
+    file.commit();
+}
 bool View::prewarmColumnText() {
     static const bool off=qEnvironmentVariable("XMB_COLUMN_PREWARM")==QLatin1String("0");
     if(off)return false;
@@ -380,14 +499,8 @@ bool View::prewarmColumnText() {
         if(w.next>=w.jobs.size())return false;
     }
     warmRender([this,&w](QPainter& p){
-        QElapsedTimer slice;slice.start();
-        constexpr qint64 sliceNs=1'200'000;
         p.beginNativePainting();
-        while(w.next<w.jobs.size() && slice.nsecsElapsed()<sliceNs) {
-            const auto& job=w.jobs[w.next];
-            QFont font(shell_.fontFamily());font.setPixelSize(job.size);
-            if(textRenderer_.warmGlyphs(*this,job.text,font,job.flags,job.width,w.cursor,sliceNs-slice.nsecsElapsed())){++w.next;w.cursor=0;}
-        }
+        warmSlice(w.jobs,w.next,w.cursor);
         glBindTexture(GL_TEXTURE_2D,0);
         p.endNativePainting();
     });
@@ -413,8 +526,9 @@ void View::prewarmOverlays() {
     if(!glReady_ || !uiMsaa_ || !textRenderer_.ready() || introRunning() || galleryDrawing() || shell_.inGame())return;
     if(clock_.elapsed()<(prewarmStage_>=7?lateAfterMs:startAfterMs) || clock_.elapsed()<prewarmNextMs_ || shell_.idleMilliseconds()<idleForMs)return;
     if(shell_.psMenuOpen() || shell_.optionsOpen() || !shell_.message().isEmpty() || osk_.open || shell_.mediaOpen() || depthPosition_>0.001)return;
-    if(prewarmStage_==10) { // the column labels: never "done", it looks again for rows that arrive later
-        prewarmNextMs_=clock_.elapsed()+(prewarmColumnText()?30:500);
+    if(prewarmStage_==10) { // the column labels: never "done", it looks again for rows that arrive later; with none queued, the pages' text
+        const bool column=prewarmColumnText(),pageWork=!column && prewarmPageText();
+        prewarmNextMs_=clock_.elapsed()+(column?30:pageWork?20:500);
         return;
     }
     QElapsedTimer cost;cost.start();
@@ -642,7 +756,7 @@ View::~View(){
 #ifdef Q_OS_WIN
     if(volumeKeys_ && qApp)qApp->removeNativeEventFilter(volumeKeys_.get());
 #endif
-    saveFrameTrace();if(context()){makeCurrent();liveBridgeRelease();gallery_.reset();textRenderer_.release(*this);monthTexture_.reset();for(auto& texture:monthTextures_)texture.reset();ribbon_.releaseTextures();particles_.releaseTextures();bloomCache_=BloomCache{};uiMsaa_.reset();uiResolved_.reset();inGameTexture_.reset();inGameProgram_.removeAllShaders();if(vao_)glDeleteVertexArrays(1,&vao_);background_.removeAllShaders();doneCurrent();}}
+    saveTextDemand();saveFrameTrace();if(context()){makeCurrent();liveBridgeRelease();gallery_.reset();textRenderer_.release(*this);monthTexture_.reset();for(auto& texture:monthTextures_)texture.reset();ribbon_.releaseTextures();particles_.releaseTextures();bloomCache_=BloomCache{};uiMsaa_.reset();uiResolved_.reset();inGameTexture_.reset();inGameProgram_.removeAllShaders();if(vao_)glDeleteVertexArrays(1,&vao_);background_.removeAllShaders();doneCurrent();}}
 void View::initializeGL() {
     xmb::bootprof::mark("before initializeGL");
     uniformcache::invalidate();
@@ -1501,6 +1615,10 @@ void View::paintGL() {
         if(misses>frameLogMisses_)xmb::frametrace::note(QString("%1 glyph tiles rasterised (%2 ms)")
             .arg(misses-frameLogMisses_).arg(double(missNs-frameLogMissNs_)/1e6,0,'f',1));
         frameLogMisses_=misses;frameLogMissNs_=missNs;
+        const auto [layouts,layoutNs]=textRenderer_.totalLayoutCost();
+        if(layouts>frameLogLayouts_ && layoutNs-frameLogLayoutNs_>500'000)xmb::frametrace::note(QString("%1 text layouts built (%2 ms)")
+            .arg(layouts-frameLogLayouts_).arg(double(layoutNs-frameLogLayoutNs_)/1e6,0,'f',1));
+        frameLogLayouts_=layouts;frameLogLayoutNs_=layoutNs;
         if(iconNs_>2'000'000)xmb::frametrace::note(QString("glass icons %1 ms").arg(iconNs_/1e6,0,'f',1));
     }
     if(!frameTracePath_.isEmpty() && frameTrace_.size()<20000) {

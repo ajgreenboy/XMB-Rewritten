@@ -138,3 +138,73 @@ Unverified on the real TV: the 60 Hz frames (these are 239 Hz-display measuremen
 slice cost on the HTPC's slower CPU (about 1.2 ms budget per slice, so a slice there may take up to the same plus one
 tile); the size of the real library columns (125 strings here, a large Game or Photo library queues more, spread over
 more slices, still capped at half the atlas).
+
+## First-open page hitch (pages opened with Cross; 2026-11-16)
+
+Question: do pages whose rows exist only once opened (Settings sub-pages, message boxes, the on-screen keyboard, the folder
+browser, library pages, Users pages) hitch on their first open the way columns did, and why.
+
+Measure: `bun work/page-hitch.ts --exe <exe> --size 1920x1080|3840x2160 [--pages a,b] [--misses] [--env XMB_PAGE_PREWARM=0]
+--lock --json out.json`. One live-clock session per run (`XMB_FRAME_TRACE=1`, fresh data dir seeded with one Jellyfin
+registration), idle prewarm allowed to finish, then each page is opened once with Cross, scrolled, closed with Circle;
+each page is bracketed by two `pause=` script markers so every slow frame is attributed to the page that was opening.
+The trace gained labels: `page "<title>" depth N opened (FIRST)`, `focus <category>/<row> depth N` (navigation check),
+`N text layouts built (ms)`, and a `glyph miss px=<size> tiles=<n> text=<string>` line for every string whose draw rasterised
+tiles (what the prewarm missed). 41 pages were scripted; the table lists the 17 that cost anything. "over" = frames with paint
+CPU over 8 ms inside the page's window, then the worst paint CPU in ms. Same PC (239 Hz panel, RTX 3070), one run each, 60 Hz
+not measured; "before" = same exe with `XMB_PAGE_PREWARM=0`.
+
+Ranking by first-open cost (1080p before): message pages with long text (30 ms, 73 glyph tiles), the first inline message
+(17 ms, 20 tiles), the on-screen keyboard (14 ms at 1080p, 118 ms at 4K), Tailscale (13.5 ms plus a 107 ms key handler),
+Accessory/Date/Display/Music/Sound Settings (9 to 12 ms, 4 to 40 tiles each), Users/Steam accounts (11 ms, 61 tiles),
+Choose Media Folder (12 ms), the rest under 8 ms.
+
+What the cost was: for most pages it was glyph tiles (0.3 ms each at 4 pen phases per glyph) for text no column holds: help
+text, values (dates, device names, "87%"), choice-list items, message bodies, the keyboard's title and field. Not glyphs:
+(1) `glass icons` 8 to 10 ms on the first open of some Settings pages (the category icon GPU pass, as in the column section;
+untouched), (2) key-handler stalls when the page is built: Tailscale 47 to 107 ms (starts the `tailscale` CLI process on the GUI
+thread), Display Settings 33 to 74 ms (display mode and HDR query), Choose Media Folder 7 to 28 ms (directory scan). They are
+data scans / process starts, not drawing, and not small to move off the GUI thread, so they are listed, not fixed.
+
+Fix: stage 10 of the idle prewarm (`View::prewarmOverlays`) now also runs `View::prewarmPageText` whenever the column queue is
+empty: same quiet gate (XMB shown, 800 ms without input, nothing open, never under a pinned clock), same glyph-tile jobs
+through `TextRenderer::warmGlyphs`, one 2.4 ms slice per 20 ms, never while a frame is late (the gate), stopped by the
+atlas guard at 8 of 16 pages, restarted when the atlas is dropped. Queue order: (1) characters the previous sessions had to
+rasterise per text style, saved at exit to `<data>/cache/text-warm.json` (never from a pinned capture); (2) title, second
+line and help text of every Settings sub-page row (`Shell::settingsPageRowsForWarm`, built the way `openSettings` does,
+pushed nowhere); (3) digits and punctuation; (4) a letters+digits+punctuation alphabet for the sizes that values, choice
+lists, dialogs and the keyboard use (21, 23, 24, 22, 26, 27, 20 design px; most used first so the guard cuts the tail),
+and "System Name". `XMB_PAGE_PREWARM=0` restores the old behaviour. The queue is 259 strings and ends with 9 atlas pages in
+use at both sizes (the guard stops at the first page over 8). Rendered output is unchanged: the prewarm only fills the
+atlas earlier, and pinned captures never run it.
+
+| page | 1080p before (over / worst ms) | 1080p after | 4K before | 4K after |
+|---|---|---|---|---|
+| friends/discord-setup (message) | 1 / 30.3 | 0 / under 8 | 1 / 32.8 | 0 / under 8 |
+| video/continue (message) | 5 / 16.6 | 1 / 8.2 | 1 / 8.9 | 1 / 8.0 |
+| settings/system/osk | 3 / 14.3 | 0 / under 8 | 19 / 118.5 | 0 / 3.1 |
+| network/tailscale | 2 / 13.5 | 0 / 7.6 | 0 / 6.7 | 0 / 5.0 |
+| settings/device | 3 / 12.6 | 1 / 12.1 | 0 / 7.5 | 0 / 3.5 |
+| tv/jellyfin-setup (message) | 1 / 12.4 | 0 / under 8 | 1 / 9.7 | 0 / under 8 |
+| settings/date | 2 / 12.3 | 1 / 12.3 | 2 / 12.4 | 0 / 3.6 |
+| settings/display | 4 / 12.3 | 0 / 3.3 | 0 / 3.4 | 0 / 4.0 |
+| photo/library (Choose Media Folder) | 3 / 12.2 | 0 / 2.8 | 1 / 8.2 | 0 / 3.2 |
+| users/new-user (accounts) | 3 / 11.4 | 0 / 7.0 | 3 / 12.5 | 0 / 7.1 |
+| settings/music | 2 / 10.4 | 0 / under 8 | 0 / 7.9 | 0 / 3.3 |
+| network/wifi (message) | 1 / 10.0 | 0 / under 8 | 0 / 7.7 | 0 / under 8 |
+| settings/sound | 3 / 9.1 | 0 / under 8 | 0 / 3.0 | 0 / 3.3 |
+| game/store-message | 1 / 9.1 | 0 / under 8 | 0 / 3.3 | 0 / under 8 |
+| all 17 pages, total frames over 8 ms | 34 | 5 | 110 | 1 |
+| worst frame of the set | 30.3 | 12.3 | 118.5 | 8.0 |
+
+The 1080p frames still over 8 ms are `glass icons` (9.5 to 9.7 ms, the icon GPU pass on first open of System, Accessory and
+Date Settings; the same pass costs nothing on 4K here, so it is a GPU wait, not text) and the "There are no content items."
+message at 26 px (the alphabet for that size falls past the atlas guard). The 4K "before" 118 ms frames on System and the
+keyboard did not recur after the change and were not reproduced separately, so their cause is not isolated (the glyph
+labels there were 20 tiles; the rest was not labelled). Notes: the learned list (1) is empty in these runs (fresh data dir),
+so the numbers are the cold-install path; a machine that has opened a page before warms its own characters too.
+
+Unverified on the real 60 Hz TV: all numbers are CPU paint time on the 239 Hz dev display; the HTPC's slower CPU makes a tile
+cost more, so the queue (about 2100 tiles for the alphabets, finished well inside the first minute here) takes longer there;
+the GPU-side `glass icons` stall; Jellyfin library pages and the Steam store (need a server / account, only the sign-in and
+setup pages were opened).

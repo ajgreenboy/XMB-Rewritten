@@ -402,6 +402,9 @@ public:
     // viewer over one pile's files. galleryIndex() is the file the viewer is on (kept after it closes).
     QStringList photoLibraryRoots() const;
     QString dataDirectory() const { return dataDirectory_; }
+    // The rows of every Settings sub-page, built the way openSettings builds them but pushed nowhere: the idle text prewarm
+    // reads their titles and help text so the first open of a page finds its glyph tiles already in the atlas.
+    QVector<Entry> settingsPageRowsForWarm();
     void openGalleryPhotos(const QStringList& paths,int index,bool slideshow);
     QVector<Playlist> photoPlaylists() const { return playlists_.list(QStringLiteral("photo")); }
     int galleryIndex() const { return galleryIndex_; }

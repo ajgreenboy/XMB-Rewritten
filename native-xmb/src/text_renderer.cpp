@@ -1,5 +1,6 @@
 #include "text_renderer.h"
 #include "frame_trace.h"
+#include <QSet>
 #include <QElapsedTimer>
 #include <QDir>
 #include <QGlyphRun>
@@ -372,6 +373,14 @@ void TextRenderer::beginFrame(QOpenGLFunctions_3_3_Core& gl,const QSize& target,
         pages_.clear();faces_.clear();layouts_.clear();rasterScale_=rasterScale;++generation_;
     }
 }
+void TextRenderer::noteDemand(quint32 style,const QString& text) {
+    auto& chars=demand_[style];
+    for(const QChar ch:text) {
+        if(ch.isSpace() || ch.isNonCharacter() || ch.isSurrogate() || ch.category()==QChar::Other_Control)continue;
+        if(chars.size()>=600 || chars.contains(ch))continue;
+        chars.append(ch);demandChanged_=true;
+    }
+}
 bool TextRenderer::warmGlyphs(QOpenGLFunctions_3_3_Core& gl,const QString& text,const QFont& requested,int flags,qreal width,int& cursor,qint64 budgetNs) {
     if(!ready_ || text.isEmpty() || int(pages_.size())>maxPages/2)return true;
     QFont font=requested;   // the same font drawImpl builds, so the tiles land on the same faces
@@ -487,6 +496,7 @@ TextRenderer::Layout& TextRenderer::layout(const QString& text,const QFont& font
         layouts_.erase(oldest);
     }
     Layout value;value.used=++serial_;
+    QElapsedTimer layoutClock;layoutClock.start();
     // QTextLayout shapes complex scripts and chooses registered firmware fallback
     // faces. Do not index UTF-16 code units as if each were a glyph.
     const auto paragraphs=display.split('\n');
@@ -506,6 +516,7 @@ TextRenderer::Layout& TextRenderer::layout(const QString& text,const QFont& font
             for(int i=0;i<indices.size();++i)value.glyphs.push_back({f,indices[i],positions[i]});
         }
     }
+    ++totalLayouts_;totalLayoutNs_+=layoutClock.nsecsElapsed();
     return layouts_.insert(key,std::move(value)).value();
 }
 void TextRenderer::drawImpl(QOpenGLFunctions_3_3_Core& gl,QPainter& painter,const QRectF& rect,
@@ -513,6 +524,15 @@ void TextRenderer::drawImpl(QOpenGLFunctions_3_3_Core& gl,QPainter& painter,cons
                             const Materials::TextMaterial& material,const char* labelClass,
                             qreal glow,bool shadow,bool ink) {
     if(!ready_ || text.isEmpty() || colour.alpha()==0 || painter.opacity()<=0)return;
+    // XMB_FRAME_TRACE=1: name every string whose draw had to rasterise glyph tiles (a first-use cost the idle prewarm
+    // should have paid), so a page's first open can be checked for text the prewarm missed.
+    const struct MissLog { TextRenderer* self;const QString& text;int px;bool bold;quint64 before;
+        ~MissLog(){
+            if(self->totalMisses_==before)return;
+            self->noteDemand(quint32(px)|(bold?0x10000u:0u),text);
+            if(xmb::frametrace::on())
+                qInfo().noquote()<<QString("frame-trace: glyph miss px=%1 tiles=%2 text=%3").arg(px).arg(self->totalMisses_-before).arg(text.left(60)); } }
+        missLog{this,text,requested.pixelSize(),requested.weight()>=QFont::DemiBold,totalMisses_};
     // The material this string actually draws with, and the shadow it reduces to. The material is
     // traced once per surface before any GL state changes, so the log's first line is a complete
     // description of the shadow the following draw applies.
@@ -528,6 +548,11 @@ void TextRenderer::drawImpl(QOpenGLFunctions_3_3_Core& gl,QPainter& painter,cons
     // The firmware never hints: libfontFT loads glyphs with FT_LOAD_NO_HINTING (audit/TEXT-RASTER.md), so both
     // rasteriser paths must stay unhinted or stems snap differently from the reference.
     font.setHintingPreference(QFont::PreferNoHinting);
+    if(xmb::frametrace::on()) {   // XMB_FRAME_TRACE=1: every distinct text style (design size, weight) the first time it is drawn, for the page prewarm's size list
+        static QSet<quint32> styles;
+        const quint32 key=quint32(requested.pixelSize())<<8|quint32(requested.weight()/10)<<1|(requested.italic()?1u:0u);
+        if(!styles.contains(key)){styles.insert(key);qInfo().noquote()<<QString("frame-trace: text style px=%1 weight=%2 italic=%3 family=%4").arg(requested.pixelSize()).arg(requested.weight()).arg(requested.italic()?1:0).arg(requested.family());}
+    }
     auto& shaped=layout(text,font,rect.width()*rasterScale_,flags);
     qreal offset=0;if(flags&Qt::AlignVCenter)offset=(rect.height()*rasterScale_-shaped.height)/2;
     else if(flags&Qt::AlignBottom)offset=rect.height()*rasterScale_-shaped.height;
