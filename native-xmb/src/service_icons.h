@@ -16,7 +16,7 @@ class QNetworkAccessManager;
 namespace xmb::serviceIcons {
 const QImage& spotify();
 const QImage& steam(const QString& steamRoot);
-const QImage& jellyfin();
+const QImage& jellyfin();   // the user's own server's icon once fetched, else the embedded official icon (jellyfin_icon_data.cpp)
 const QImage& tailscale();
 const QImage& homeAssistant();   // the user's own HA server's icon once fetched, else the embedded official icon (ha_icon_data.cpp)
 // A web app's own icon (the site's apple-touch-icon or largest declared icon, else /favicon.ico), cached per host

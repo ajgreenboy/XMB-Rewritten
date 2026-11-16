@@ -241,7 +241,15 @@ void loadHomeAssistant(QNetworkAccessManager* network, const QUrl& server, const
     });
 }
 
-const QImage& jellyfin() { return jellyfinIcon.isNull() ? glyphs::jellyfinLogo() : jellyfinIcon; }
+extern const unsigned char jellyfinPng[];extern const unsigned int jellyfinPngSize;   // jellyfin_icon_data.cpp
+const QImage& jellyfin() {
+    // The user's own server's icon once fetched, else Jellyfin's embedded official icon, else the drawn mark.
+    static const QImage embedded = [] {
+        QImage image;image.loadFromData(jellyfinPng, jellyfinPngSize, "PNG");
+        return image.isNull() ? QImage() : squared(image);
+    }();
+    return !jellyfinIcon.isNull() ? jellyfinIcon : !embedded.isNull() ? embedded : glyphs::jellyfinLogo();
+}
 
 void loadJellyfin(QNetworkAccessManager* network, const QUrl& server, const QString& cacheFile, std::function<void()> done) {
     if (jellyfinIcon.isNull() && QFileInfo(cacheFile).size() > 0 && QFileInfo(cacheFile).size() <= MaxIconBytes) {

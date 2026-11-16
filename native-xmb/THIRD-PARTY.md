@@ -116,3 +116,10 @@ SOFTWARE.
 ## Optional Steam client interface headers
 
 The read-only client helper compiles against external Valve Steamworks public headers and loads the user's installed Steam client DLL. Neither the headers nor Steam DLLs are bundled in this repository. The verified local build used the SDK 1.54 interface declarations published in [ValveSoftware/Proton](https://github.com/ValveSoftware/Proton/tree/proton_10.0/lsteamclient/steamworks_sdk_154). The headers retain Valve's copyright and applicable SDK terms; use an appropriately obtained SDK for distribution builds.
+
+## Jellyfin icon
+
+`src/jellyfin_icon_data.cpp` embeds a 256x256 PNG rendering of `branding/SVG/icon-transparent.svg` from
+https://github.com/jellyfin/jellyfin-ux, © Jellyfin contributors, licensed under Creative Commons Attribution-ShareAlike
+4.0 International (https://creativecommons.org/licenses/by-sa/4.0/). Changes: rasterised to PNG at 256 px; nothing else.
+See `audit/JELLYFIN-ICON.md`.
