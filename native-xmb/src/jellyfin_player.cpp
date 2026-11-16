@@ -2,6 +2,7 @@
 
 #include <QJsonValue>
 #include <algorithm>
+#include <cmath>
 #include <limits>
 
 namespace xmb::jfplayer {
@@ -139,6 +140,63 @@ bool choiceMapValid(const QJsonObject& map) {
         }
     }
     return true;
+}
+
+int autoplaySecondsLeft(qint64 elapsedMs, int totalSeconds) {
+    if (totalSeconds <= 0) return 0;
+    if (elapsedMs < 0) elapsedMs = 0;
+    const qint64 left = static_cast<qint64>(totalSeconds) * 1000 - elapsedMs;
+    if (left <= 0) return 0;
+    return static_cast<int>((left + 999) / 1000);
+}
+
+bool offersNextEpisode(const QString& type, const QString& seriesId, bool audio, bool enabled) {
+    return enabled && !audio && type == QLatin1String("Episode") && !seriesId.isEmpty();
+}
+
+QString episodeLabel(const JellyfinItem& item) {
+    if (item.seasonNumber > 0 && item.episodeNumber > 0)
+        return QStringLiteral("S%1E%2 - %3").arg(item.seasonNumber).arg(item.episodeNumber).arg(item.title);
+    return item.title;
+}
+
+QString autoplayPromptText(const QString& label, int secondsLeft) {
+    return QStringLiteral("Play Next Episode: %1 in %2 s. Cross plays now, Circle cancels.").arg(label).arg(std::max(secondsLeft, 0));
+}
+
+bool latestEligible(const QString& collectionType) {
+    const QString type = collectionType.trimmed().toLower();
+    return type.isEmpty() || type == QLatin1String("movies") || type == QLatin1String("tvshows") ||
+           type == QLatin1String("homevideos") || type == QLatin1String("musicvideos") || type == QLatin1String("mixed");
+}
+
+QString watchedToggleLabel(bool played) {
+    return played ? QStringLiteral("Mark as Unwatched") : QStringLiteral("Mark as Watched");
+}
+
+QString favoriteToggleLabel(bool favorite) {
+    return favorite ? QStringLiteral("Remove from Favourites") : QStringLiteral("Add to Favourites");
+}
+
+const QVector<double>& speedSteps() {
+    static const QVector<double> steps{0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0};
+    return steps;
+}
+
+double nearestSpeed(double value) {
+    const auto& steps = speedSteps();
+    if (!(value > 0)) return 1.0;   // also catches NaN
+    double best = steps.first();
+    for (const double step : steps)
+        if (std::abs(step - value) < std::abs(best - value)) best = step;
+    return best;
+}
+
+QString speedLabel(double value) {
+    QString text = QString::number(value, 'f', 2);
+    while (text.endsWith(QLatin1Char('0'))) text.chop(1);
+    if (text.endsWith(QLatin1Char('.'))) text.chop(1);
+    return text + QLatin1Char('x');
 }
 
 }   // namespace xmb::jfplayer

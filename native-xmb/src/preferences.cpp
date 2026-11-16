@@ -98,7 +98,7 @@ QVariant Preferences::defaultValue(const QString& key) {
     if(key=="photo/interval")return 5000;
     if(key=="media/repeatMode")return 0;
     // /setting/system/notification and /setting/system/notificationTrophy (vsh.elf): both classes default to shown.
-    if(key=="audio/keyTone" || key=="system/notificationMessages" || key=="system/notificationTrophy")return true;
+    if(key=="audio/keyTone" || key=="system/notificationMessages" || key=="system/notificationTrophy" || key=="jellyfin/autoplayNext")return true;
     if(key=="power/idleMinutes" || key=="display/screensaverMinutes")return 0;
     if(key=="desktop/keepMusic" || key=="desktop/controllerMouse")return true;
     if(key=="desktop/pointerSpeed")return 3;
@@ -129,7 +129,7 @@ bool Preferences::validBare(const QString& key,const QVariant& value) {
     if(key=="desktop/pointerSpeed")return integer(1,5);
     if(key=="display/screensaverMinutes")return integer(0,30) && (value.toInt()==0 || value.toInt()==5 || value.toInt()==10 || value.toInt()==20 || value.toInt()==30);
     if(key=="audio/keyTone" || key=="system/notificationMessages" || key=="system/notificationTrophy" ||
-       key=="audio/muted" || key=="media/repeat" || key=="media/shuffle" || key=="display/fullscreen" || key=="desktop/keepMusic" || key=="desktop/controllerMouse" ||
+       key=="jellyfin/autoplayNext" || key=="audio/muted" || key=="media/repeat" || key=="media/shuffle" || key=="display/fullscreen" || key=="desktop/keepMusic" || key=="desktop/controllerMouse" ||
        key=="cec/tvOnAtStart" || key=="cec/standbyOnTurnOff")return value.metaType().id()==QMetaType::Bool;
     if(value.metaType().id()!=QMetaType::QString)return false;
     const auto text=value.toString();

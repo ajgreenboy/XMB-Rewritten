@@ -36,6 +36,7 @@ QString Shell::jellyfinRowDetail(const Entry& entry) {
     else if(!entry.mediaKind.isEmpty())parts<<entry.mediaKind;
     if(entry.resumeMs>0)parts<<QObject::tr("Resume at %1").arg(MediaControls::formatTime(entry.resumeMs));
     else if(entry.played && !music)parts<<QObject::tr("Watched");
+    if(entry.favorite && !music)parts<<QObject::tr("Favourite");
     if(entry.durationMs>0)parts<<MediaControls::formatTime(entry.durationMs);
     return parts.join(QStringLiteral(" - "));
 }
@@ -145,6 +146,18 @@ void Shell::initJellyfin() {
             next.detail=tr("The next episode of every show you are watching.");
             if(next.id==selected)page.selection=int(page.entries.size());
             page.entries.push_back(std::move(next));
+            auto favorites=withGlyph(jfEntry("jellyfin:home-favorites",tr("Favourites"),Action::JellyfinFolder,"home:favorites",true),glyphs::likedSongs());
+            favorites.detail=tr("Titles you flagged as favourites on the server.");
+            if(favorites.id==selected)page.selection=int(page.entries.size());
+            page.entries.push_back(std::move(favorites));
+            // One Latest row per video library: its newest additions, from the server's own list.
+            for(const auto& view:result.items) {
+                if(!jfplayer::latestEligible(view.collectionType) || view.collectionType==QLatin1String("music"))continue;
+                auto latest=withGlyph(jfEntry("jellyfin:home-latest:"+view.id,tr("Latest in %1").arg(view.title),Action::JellyfinFolder,"home:latest:"+view.id,true),glyphs::library(view.collectionType));
+                latest.detail=tr("The newest additions to %1.").arg(view.title);
+                if(latest.id==selected)page.selection=int(page.entries.size());
+                page.entries.push_back(std::move(latest));
+            }
         }
         for(const auto& media:result.items) {
             // Music libraries live in the Music column (jellyfin_music_shell.cpp); the TV page keeps the video ones.
@@ -155,7 +168,9 @@ void Shell::initJellyfin() {
             const bool folder=page.jellyfinViews || media.folder;
             auto e=jfEntry("jellyfin:"+media.id,media.title,folder?Action::JellyfinFolder:playable(media.type)?Action::JellyfinPlay:Action::Unavailable,media.id,folder);
             e.mediaKind=folder?QString{}:media.type=="Audio"?QString("Music"):media.type=="Movie"?QString("Movie"):media.type=="Episode"?QString("Episode"):QString("Video");e.option=media.type=="Audio";
-            if(!folder){e.resumeMs=media.resumeMs;e.durationMs=media.durationMs;e.played=media.played;e.detail=jellyfinRowDetail(e);}
+            if(!folder){e.resumeMs=media.resumeMs;e.durationMs=media.durationMs;e.played=media.played;e.favorite=media.favorite;e.seriesId=media.seriesId;e.detail=jellyfinRowDetail(e);}
+            // A series, season or collection carries its own flags; a library (the root page) does not.
+            else if(!page.jellyfinViews){e.played=media.played;e.favorite=media.favorite;if(e.played||e.favorite)e.detail=jellyfinRowDetail(e);}
             if(media.type=="Audio")e.texture="tex_music";
             // The home lists mix shows, so an episode names its show and its place in it.
             if(!page.jellyfinHome.isEmpty() && media.type=="Episode" && !media.seriesName.isEmpty()) {
@@ -193,7 +208,9 @@ void Shell::initJellyfin() {
         }
         if(page.entries.empty())status_=page.jellyfinSearch?"No Jellyfin items match that search.":
             page.jellyfinHome==QLatin1String("resume")?"Nothing to continue watching on Jellyfin.":
-            page.jellyfinHome==QLatin1String("nextup")?"No next episodes to watch on Jellyfin.":"There are no supported items in this library.";
+            page.jellyfinHome==QLatin1String("nextup")?"No next episodes to watch on Jellyfin.":
+            page.jellyfinHome==QLatin1String("favorites")?"No favourites on Jellyfin yet.":
+            page.jellyfinHome.startsWith(QLatin1String("latest"))?"Nothing new in this Jellyfin library.":"There are no supported items in this library.";
         qInfo().noquote()<<QString("jellyfin: %1 page with %2 row(s); %3 poster request(s)%4")
             .arg(page.jellyfinViews?QStringLiteral("library"):page.jellyfinSearch?QStringLiteral("search"):QStringLiteral("folder"))
             .arg(page.entries.size()).arg(posters)
@@ -273,6 +290,40 @@ void Shell::initJellyfin() {
         mediaChapters_=jfplayer::normalizedChapters(marks);
         qInfo().noquote()<<"jellyfin:"<<mediaChapters_.size()<<"chapter mark(s) from the item";
         refreshPlayerOptions();emit changed();
+    });
+    // The answer to a watched or favourite toggle: the row changes only when the server agreed (never before).
+    connect(&jellyfin_,&JellyfinClient::userFlagChanged,this,[this](quint64 request,const QString& itemId,int flag,bool value,bool ok){
+        if(!userFlagRequests_.contains(request))return;   // not a toggle of ours
+        userFlagRequests_.remove(request);
+        const bool favorite=flag==int(JellyfinClient::UserFlag::Favorite);
+        if(!ok) {
+            qWarning().noquote()<<"jellyfin:"<<(favorite?"favourite":"watched")<<"change for"<<itemId<<"was not accepted by the server; the row is unchanged";
+            notify(QStringLiteral("Jellyfin"),favorite?tr("The server did not accept the favourite change."):tr("The server did not accept the watched change."));
+            emit changed();
+            return;
+        }
+        qInfo().noquote()<<"jellyfin:"<<(favorite?"favourite":"watched")<<(value?"set":"cleared")<<"for"<<itemId;
+        applyJellyfinFlag(itemId,flag,value);
+        notify(QStringLiteral("Jellyfin"),favorite?(value?tr("Added to favourites"):tr("Removed from favourites")):(value?tr("Marked as watched"):tr("Marked as unwatched")));
+        emit changed();
+    });
+    // The server named the episode that follows the one that just ended: count down to it (Circle cancels), or, when it
+    // named none (or could not be asked), carry on exactly as before - the next row of the page, or the end of the queue.
+    connect(&jellyfin_,&JellyfinClient::nextEpisodeReady,this,[this](quint64 request,const JellyfinItem& item,bool found){
+        if(request!=nextLookup_)return;
+        nextLookup_=0;
+        if(nextLookupMedia_!=mediaRequest_ || !mediaOpen_ || !jellyfinQueue_)return;   // the viewer has left or started something else
+        status_.clear();
+        if(found){startNextOffer(item);return;}
+        qInfo().noquote()<<"jellyfin: no next episode offered by the server";
+        advanceMediaQueue(false,{});
+    });
+    nextOfferTimer_.setInterval(250);
+    connect(&nextOfferTimer_,&QTimer::timeout,this,[this]{
+        if(!nextOffer_.active || !mediaOpen_ || !jellyfinQueue_){cancelNextOffer();return;}
+        const int left=jfplayer::autoplaySecondsLeft(nextOfferClock_.elapsed());
+        if(left<=0){playNextOffer();return;}
+        if(left!=nextOffer_.left){nextOffer_.left=left;emit changed();}
     });
     // A server subtitle stream arrived: parse it with the sidecar parser, fill its track, and select it when
     // the server marks it default and this item has no session choice yet.
@@ -404,15 +455,18 @@ void Shell::loadJellyfinPage(const QString& parent,const QString& title,int star
 // The server's own lists behind the root page's Continue Watching and Next Up rows (audit/JELLYFIN-PLAYER.md). The rows
 // of the answer carry the server's UserData, so a position saved by another Jellyfin client resumes here.
 void Shell::loadJellyfinHomePage(const QString& kind,const QString& title) {
-    if(kind!=QLatin1String("resume") && kind!=QLatin1String("nextup"))return;
+    // "resume", "nextup", "favorites", or "latest:<library id>".
+    const QString listKind=kind.section(QLatin1Char(':'),0,0),library=kind.section(QLatin1Char(':'),1);
+    if(listKind!=QLatin1String("resume") && listKind!=QLatin1String("nextup") && listKind!=QLatin1String("favorites") && listKind!=QLatin1String("latest"))return;
     if(!jellyfin_.signedIn()){showMessage(QStringLiteral("Jellyfin"),QStringLiteral("Sign out and reopen the app to sign in again."),MessageKind::Page);emit changed();return;}
     if(pages_.size()>=32){showMessage(QStringLiteral("The maximum folder depth has been reached."),MessageKind::Page);emit changed();return;}
-    Page page;page.title=title;page.jellyfin=true;page.jellyfinHome=kind;page.jellyfinParent=QStringLiteral("home:")+kind;
+    Page page;page.title=title;page.jellyfin=true;page.jellyfinHome=listKind;page.jellyfinParent=QStringLiteral("home:")+kind;
     pages_.push_back(std::move(page));
     jellyfinBackdrop_={};jellyfinBackdropId_.clear();jellyfinBackdropWanted_.clear();jellyfinBackdropDebounce_.stop();
     loading_=true;status_=tr("Loading Jellyfin...");jellyfinRequestDepth_=int(pages_.size());
     qInfo().noquote()<<"jellyfin: home list"<<kind;
-    jellyfinRequest_=jellyfin_.home(kind==QLatin1String("nextup")?JellyfinClient::HomeList::NextUp:JellyfinClient::HomeList::Resume);
+    jellyfinRequest_=jellyfin_.home(listKind==QLatin1String("nextup")?JellyfinClient::HomeList::NextUp:listKind==QLatin1String("favorites")?JellyfinClient::HomeList::Favorites:
+        listKind==QLatin1String("latest")?JellyfinClient::HomeList::Latest:JellyfinClient::HomeList::Resume,library);
     emit changed();
 }
 void Shell::openJellyfinSearch(const QString& term) {
@@ -439,9 +493,9 @@ void Shell::loadJellyfinSearchPage(const QString& term,const QString& title,int 
     jellyfinRequest_=jellyfin_.search(term,start);emit changed();
 }
 void Shell::openJellyfinMedia(const Entry& entry,bool fromBeginning) {
-    QVector<PlaybackQueue::Item> queue;int selected=-1;jellyfinAudio_.clear();jellyfinResume_.clear();
+    QVector<PlaybackQueue::Item> queue;int selected=-1;jellyfinAudio_.clear();jellyfinResume_.clear();jellyfinSeries_.clear();jellyfinKinds_.clear();
     const bool homePage=!pages_.isEmpty() && !pages_.last().jellyfinHome.isEmpty();
-    for(const auto& row:entries())if(row.action==Action::JellyfinPlay && (!homePage || row.id==entry.id)){if(row.id==entry.id)selected=int(queue.size());queue.push_back({row.value,row.title});jellyfinAudio_.insert(row.value,row.option.toBool());jellyfinResume_.insert(row.value,row.resumeMs);}
+    for(const auto& row:entries())if(row.action==Action::JellyfinPlay && (!homePage || row.id==entry.id)){if(row.id==entry.id)selected=int(queue.size());queue.push_back({row.value,row.title});jellyfinAudio_.insert(row.value,row.option.toBool());jellyfinResume_.insert(row.value,row.resumeMs);jellyfinSeries_.insert(row.value,row.seriesId);jellyfinKinds_.insert(row.value,row.mediaKind);}
     if(selected<0)return;
     if(fromBeginning)jellyfinResume_.insert(entry.value,0);
     rememberJellyfinTracks(entries());
@@ -496,6 +550,7 @@ void Shell::chooseJellyfinQuality(int index) {
 }
 void Shell::startJellyfinMedia() {
     const auto* current=mediaQueue_.current();if(!current)return;const auto media=*current;
+    cancelNextOffer();nextLookup_=0;
     ++mediaRequest_;jellyfinRequest_=0;finishJellyfinPlayback();player_->stop();player_->setSource({});
     resumePath_.clear();resumePending_=0;
     jellyfinResumePending_=jellyfinResume_.value(media.path);
@@ -748,6 +803,79 @@ void Shell::chooseJellyfinBurnIn(int streamIndex) {
     notify(QStringLiteral("Jellyfin"),streamIndex<0?tr("Subtitles: original stream"):tr("Subtitles burned in by the server (transcode)"));
     interactionAudio_.play(InteractionAudio::Cue::Confirm);
     startJellyfinMedia();
+}
+bool Shell::autoplayNextEnabled() const {
+    return preferences_.value("jellyfin/autoplayNext").toBool();
+}
+QString Shell::nextEpisodePrompt() const {
+    if(!nextOffer_.active)return {};
+    return jfplayer::autoplayPromptText(nextOffer_.title,std::max(nextOffer_.left,1));
+}
+// An episode just ended: ask the server for the next one (the watched mark first, then Next Up for the series). True when a
+// lookup is under way and the queue must wait for it. Nothing is asked for a movie, a series-less item, music, Repeat One or
+// when the preference is off; those carry on to the queue exactly as before.
+bool Shell::beginNextEpisodeLookup(const QString& finishedId) {
+    if(finishedId.isEmpty() || !jellyfin_.signedIn() || mediaRepeatMode()==1)return false;
+    const QString series=jellyfinSeries_.value(finishedId);
+    if(!jfplayer::offersNextEpisode(jellyfinKinds_.value(finishedId),series,jellyfinAudio_.value(finishedId),autoplayNextEnabled()))return false;
+    nextLookupMedia_=mediaRequest_;
+    nextLookup_=jellyfin_.nextEpisode(series,finishedId);
+    status_=tr("Looking for the next episode...");
+    qInfo().noquote()<<"jellyfin: episode"<<finishedId<<"ended; asking the server for the next one in its series";
+    emit changed();
+    return true;
+}
+void Shell::startNextOffer(const JellyfinItem& item) {
+    const QString label=jfplayer::episodeLabel(item);
+    nextOffer_=NextOffer{};
+    nextOffer_.active=true;nextOffer_.id=item.id;nextOffer_.seriesId=item.seriesId.isEmpty()?jellyfinSeries_.value(item.id):item.seriesId;
+    nextOffer_.kind=QStringLiteral("Episode");nextOffer_.resumeMs=item.resumeMs;
+    nextOffer_.title=item.seriesName.isEmpty()?label:QStringLiteral("%1 %2").arg(item.seriesName,label);
+    nextOffer_.left=jfplayer::kAutoplaySeconds;
+    nextOfferClock_.start();nextOfferTimer_.start();
+    qInfo().noquote()<<"jellyfin: Play Next Episode offered:"<<nextOffer_.title<<"in"<<jfplayer::kAutoplaySeconds<<"s";
+    interactionAudio_.play(InteractionAudio::Cue::Options);
+    emit changed();
+}
+void Shell::cancelNextOffer() {
+    nextOfferTimer_.stop();
+    if(nextOffer_.active)qInfo().noquote()<<"jellyfin: Play Next Episode countdown ended without playing";
+    nextOffer_=NextOffer{};
+}
+// Cross, or the countdown reaching zero: the offered episode joins the queue (when its page does not already hold it) and plays.
+void Shell::playNextOffer() {
+    if(!nextOffer_.active)return;
+    const NextOffer offer=nextOffer_;
+    nextOfferTimer_.stop();nextOffer_=NextOffer{};
+    if(!mediaOpen_ || !jellyfinQueue_)return;
+    auto items=mediaQueue_.items();
+    int index=-1;
+    for(int i=0;i<items.size();++i)if(items[i].path==offer.id){index=i;break;}
+    if(index<0){items.push_back({offer.id,offer.title});index=int(items.size())-1;}
+    jellyfinAudio_.insert(offer.id,false);jellyfinResume_.insert(offer.id,offer.resumeMs);
+    jellyfinSeries_.insert(offer.id,offer.seriesId);jellyfinKinds_.insert(offer.id,offer.kind);
+    qInfo().noquote()<<"jellyfin: playing the next episode"<<offer.title;
+    mediaQueue_.reset(std::move(items),index);mediaFailures_=0;
+    startJellyfinMedia();
+}
+// The Triangle menu's watched and favourite rows: ask the server, and let the answer (applyJellyfinFlag) change the row.
+void Shell::toggleJellyfinFlag(const Entry& entry,bool favorite) {
+    if(entry.value.isEmpty() || !jellyfin_.signedIn())return;
+    const bool value=favorite?!entry.favorite:!entry.played;
+    const quint64 request=jellyfin_.setUserFlag(entry.value,favorite?JellyfinClient::UserFlag::Favorite:JellyfinClient::UserFlag::Played,value);
+    userFlagRequests_.insert(request,entry.value);
+    qInfo().noquote()<<"jellyfin: asking the server to"<<(favorite?(value?"add a favourite":"remove a favourite"):(value?"mark watched":"mark unwatched"))<<"for"<<entry.title;
+}
+void Shell::applyJellyfinFlag(const QString& itemId,int flag,bool value) {
+    const bool favorite=flag==int(JellyfinClient::UserFlag::Favorite);
+    if(!favorite && value)jellyfinResume_.insert(itemId,0);   // watched clears the server's resume point
+    for(auto& page:pages_)if(page.jellyfin)for(auto& row:page.entries) {
+        if(row.value!=itemId || (row.action!=Action::JellyfinPlay && row.action!=Action::JellyfinFolder))continue;
+        if(favorite)row.favorite=value;
+        else{row.played=value;if(value)row.resumeMs=0;}
+        if(row.action==Action::JellyfinPlay || row.played || row.favorite)row.detail=jellyfinRowDetail(row);
+        else row.detail.clear();
+    }
 }
 void Shell::signOutJellyfin() {
     jellyfinRequest_=0;finishJellyfinPlayback();jellyfin_.signOut();jellyfin_.forgetSession();

@@ -420,14 +420,62 @@ int main(int argc, char** argv) {
     QList<Req> reportsSeen, playedSeen;
     bool playedNewRoute = true;
     bool chaptersFail = false;
+    QList<Req> flagsSeen;
+    int flagStatus = 0;
+    bool flagLegacyOnly = false;
+    struct Latest { int status = 0; bool legacyOnly = false, noFavorites = false; } latest;
+    struct NextUp { int status = 0; QStringList items; } nextUp;
     const QString user = QString::fromLatin1(kUser);
     const QJsonObject resumeItem{{"Id", "dddddddddddddddddddddddddddddd01"}, {"Name", "Half Watched"}, {"Type", "Episode"}, {"IsFolder", false},
         {"SeriesName", "Test Show"}, {"ParentIndexNumber", 2}, {"IndexNumber", 5}, {"RunTimeTicks", 36000000000LL},
         {"UserData", QJsonObject{{"Played", false}, {"PlaybackPositionTicks", 6000000000LL}}}};
+    const QJsonObject latestItem{{"Id", "dddddddddddddddddddddddddddddd03"}, {"Name", "Fresh Episode"}, {"Type", "Episode"}, {"IsFolder", false}, {"SeriesId", "eeeeeeeeeeeeeeeeeeeeeeeeeeeeee01"},
+        {"SeriesName", "Test Show"}, {"ParentIndexNumber", 2}, {"IndexNumber", 6}, {"RunTimeTicks", 36000000000LL}, {"UserData", QJsonObject{{"Played", true}, {"IsFavorite", true}, {"PlaybackPositionTicks", 0}}}};
     fake.handler = [&](const Req& r) -> Resp {
         const QString path = QString::fromLatin1(r.path);
         if (authToken(r) == kToken || r.query().queryItemValue("ApiKey").toLatin1() == kToken) {
             const QUrlQuery q = r.query();
+            // Phase 2: Latest, Favourites and the user's flags.
+            if (r.method == "GET" && path == QLatin1String("/Items/Latest")) {
+                if (latest.status) return error(latest.status, "no");
+                return latest.legacyOnly ? error(404, "Not found") : Resp{200, QJsonDocument(QJsonArray{latestItem}).toJson(QJsonDocument::Compact), "application/json", 0};
+            }
+            if (r.method == "GET" && path == QStringLiteral("/Users/%1/Items/Latest").arg(user))
+                return latest.legacyOnly ? Resp{200, QJsonDocument(QJsonArray{latestItem}).toJson(QJsonDocument::Compact), "application/json", 0} : error(404, "Not found");
+            if (r.method == "GET" && path == QLatin1String("/Items") && q.queryItemValue("Filters") == QLatin1String("IsFavorite"))
+                return latest.noFavorites ? error(404, "Not found") : json({{"Items", QJsonArray{latestItem}}, {"TotalRecordCount", 1}});
+            if ((r.method == "POST" || r.method == "DELETE") && (path.startsWith(QLatin1String("/UserFavoriteItems/")) || path.contains(QLatin1String("/FavoriteItems/")))) {
+                flagsSeen.push_back(r);
+                const bool legacy = path.startsWith(QLatin1String("/Users/"));
+                if (flagStatus) return error(flagStatus, "boom");
+                return (legacy != flagLegacyOnly) ? error(404, "Not found") : Resp{200, "{}", "application/json", 0};
+            }
+            if (r.method == "DELETE" && (path.startsWith(QLatin1String("/UserPlayedItems/")) || path.contains(QLatin1String("/PlayedItems/")))) {
+                flagsSeen.push_back(r);
+                const bool legacy = path.startsWith(QLatin1String("/Users/"));
+                if (flagStatus) return error(flagStatus, "boom");
+                return (legacy != flagLegacyOnly) ? error(404, "Not found") : Resp{200, "{}", "application/json", 0};
+            }
+            if (r.method == "POST" && flagStatus && (path.startsWith(QLatin1String("/UserPlayedItems/")) || path.contains(QLatin1String("/PlayedItems/")))) {
+                flagsSeen.push_back(r);
+                return error(flagStatus, "boom");
+            }
+            if (r.method == "POST" && flagLegacyOnly && path.startsWith(QLatin1String("/UserPlayedItems/"))) {
+                flagsSeen.push_back(r);
+                return error(404, "Not found");
+            }
+            if (r.method == "POST" && flagLegacyOnly && path.contains(QLatin1String("/PlayedItems/"))) {
+                flagsSeen.push_back(r);
+                return Resp{200, "{}", "application/json", 0};
+            }
+            if (r.method == "GET" && path == QLatin1String("/Shows/NextUp") && q.hasQueryItem("seriesId")) {
+                if (nextUp.status) return error(nextUp.status, "no");
+                QJsonArray list;
+                for (const QString& itemId : nextUp.items)
+                    list.push_back(QJsonObject{{"Id", itemId}, {"Name", "Next One"}, {"Type", "Episode"}, {"IsFolder", false}, {"SeriesId", q.queryItemValue("seriesId")},
+                        {"SeriesName", "Test Show"}, {"ParentIndexNumber", 2}, {"IndexNumber", 6}, {"RunTimeTicks", 36000000000LL}, {"UserData", QJsonObject{{"Played", false}, {"PlaybackPositionTicks", 0}}}});
+                return json({{"Items", list}, {"TotalRecordCount", int(list.size())}});
+            }
             if (home.resumeStatus && (path == QLatin1String("/UserItems/Resume") || path == QStringLiteral("/Users/%1/Items/Resume").arg(user))) return error(home.resumeStatus, "boom");
             if (r.method == "GET" && path == QLatin1String("/UserItems/Resume"))
                 return home.resumeNew ? json({{"Items", QJsonArray{resumeItem}}, {"TotalRecordCount", 1}}) : error(404, "Not found");
@@ -585,6 +633,118 @@ int main(int argc, char** argv) {
         client.chapters(QStringLiteral("a/b"));
         check(waitFor([&] { return got.done; }) && got.list.isEmpty(), "chapters: an invalid id answers an empty list without a request");
         QObject::disconnect(chapterConnection);
+    }
+
+    {
+        // Latest (per library, a bare JSON array) and Favourites.
+        const QString library = QStringLiteral("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa01");
+        const QUrl latestUrl = client.homeUrl(JellyfinClient::HomeList::Latest, false, library);
+        check(latestUrl.path() == QLatin1String("/Items/Latest") && QUrlQuery(latestUrl).queryItemValue("ParentId") == library && QUrlQuery(latestUrl).queryItemValue("userId") == user,
+              "latest: /Items/Latest for one library as the signed-in user");
+        check(client.homeUrl(JellyfinClient::HomeList::Latest, true, library).path() == QStringLiteral("/Users/%1/Items/Latest").arg(user), "latest: the older route is user-scoped");
+        check(!QUrlQuery(client.homeUrl(JellyfinClient::HomeList::Latest)).hasQueryItem("ParentId"), "latest: no library means no ParentId");
+        check(!QUrlQuery(client.homeUrl(JellyfinClient::HomeList::Latest, false, QStringLiteral("a/b"))).hasQueryItem("ParentId"), "latest: an invalid library id is never sent");
+        const QUrl favoriteUrl = client.homeUrl(JellyfinClient::HomeList::Favorites);
+        check(favoriteUrl.path() == QLatin1String("/Items") && QUrlQuery(favoriteUrl).queryItemValue("Filters") == QLatin1String("IsFavorite") &&
+              QUrlQuery(favoriteUrl).queryItemValue("Recursive") == QLatin1String("true") && QUrlQuery(favoriteUrl).queryItemValue("UserId") == user, "favourites: /Items with Filters=IsFavorite, recursive, as the user");
+        check(client.homeUrl(JellyfinClient::HomeList::Favorites, true).isEmpty(), "favourites: no older route");
+
+        Collector pages, failures2;
+        const auto pageConnection = QObject::connect(&client, &JellyfinClient::pageReady, [&](quint64 request, const JellyfinPage& page) { pages.v.push_back({QVariant::fromValue(request), QVariant::fromValue(page)}); });
+        const auto failConnection = QObject::connect(&client, &JellyfinClient::failed, [&](quint64 request, const QString& message) { failures2.v.push_back({QVariant::fromValue(request), message}); });
+        const auto firstPage = [&]() { return qvariant_cast<JellyfinPage>(pages.first().at(1)); };
+
+        quint64 id = client.home(JellyfinClient::HomeList::Latest, library);
+        check(waitFor([&] { return pages.count() > 0; }) && pages.first().at(0).toULongLong() == id && firstPage().items.size() == 1, "latest: the array answer becomes a page under the request id");
+        if (pages.count() > 0 && !firstPage().items.isEmpty()) {
+            const auto item = firstPage().items.first();
+            check(item.favorite && item.seriesId == QLatin1String("eeeeeeeeeeeeeeeeeeeeeeeeeeeeee01") && item.played, "latest: UserData.IsFavorite, Played and SeriesId are read");
+        }
+        check(fake.log.last().query().queryItemValue("ParentId") == library, "latest: the library id reached the server");
+        pages.clear(); latest.legacyOnly = true;
+        id = client.home(JellyfinClient::HomeList::Latest, library);
+        check(waitFor([&] { return pages.count() > 0; }) && pages.first().at(0).toULongLong() == id && firstPage().items.size() == 1, "latest: a 404 falls back to the older route, same request id");
+        check(fake.log.last().path == QByteArray("/Users/") + kUser + "/Items/Latest" && fake.log.last().query().queryItemValue("ParentId") == library, "latest: the retry keeps the library");
+        latest.legacyOnly = false;
+        pages.clear(); failures2.clear(); latest.status = 500;
+        client.home(JellyfinClient::HomeList::Latest, library);
+        check(waitFor([&] { return pages.count() > 0 || failures2.count() > 0; }) && failures2.count() == 1 && pages.count() == 0, "latest: an HTTP 500 is reported");
+        latest.status = 0;
+        pages.clear(); failures2.clear();
+        client.home(JellyfinClient::HomeList::Favorites);
+        check(waitFor([&] { return pages.count() > 0 || failures2.count() > 0; }) && pages.count() == 1 && firstPage().items.size() == 1 && firstPage().items.first().favorite, "favourites: the flagged items arrive with the favourite flag");
+        pages.clear(); failures2.clear(); latest.noFavorites = true;
+        client.home(JellyfinClient::HomeList::Favorites);
+        check(waitFor([&] { return pages.count() > 0 || failures2.count() > 0; }) && pages.count() == 1 && firstPage().items.isEmpty() && failures2.count() == 0, "favourites: a server that cannot filter answers an empty list silently");
+        latest.noFavorites = false;
+        QObject::disconnect(pageConnection); QObject::disconnect(failConnection);
+    }
+    {
+        // Watched and favourite toggles: POST sets, DELETE clears, the older route is tried once on a 404, the answer is surfaced.
+        struct Got { quint64 request = 0; QString item; int flag = -1; bool value = false, ok = false; };
+        QList<Got> got;
+        const auto flagConnection = QObject::connect(&client, &JellyfinClient::userFlagChanged, [&](quint64 request, const QString& item, int flag, bool value, bool ok) { got.push_back({request, item, flag, value, ok}); });
+        const QString item = QString::fromLatin1(kItem);
+        flagsSeen.clear();
+        quint64 id = client.setUserFlag(item, JellyfinClient::UserFlag::Favorite, true);
+        check(waitFor([&] { return !got.isEmpty(); }) && got[0].request == id && got[0].ok && got[0].value && got[0].flag == int(JellyfinClient::UserFlag::Favorite) && got[0].item == item, "flag: a favourite mark is answered ok under its request id");
+        check(flagsSeen.size() == 1 && flagsSeen[0].method == "POST" && flagsSeen[0].path == QByteArray("/UserFavoriteItems/") + kItem && flagsSeen[0].query().queryItemValue("userId") == user, "flag: POST /UserFavoriteItems/{id}?userId=");
+        got.clear(); flagsSeen.clear();
+        id = client.setUserFlag(item, JellyfinClient::UserFlag::Favorite, false);
+        check(waitFor([&] { return !got.isEmpty(); }) && got[0].ok && !got[0].value && flagsSeen.size() == 1 && flagsSeen[0].method == "DELETE" && flagsSeen[0].path == QByteArray("/UserFavoriteItems/") + kItem, "flag: clearing a favourite is DELETE on the same route");
+        got.clear(); flagsSeen.clear();
+        id = client.setUserFlag(item, JellyfinClient::UserFlag::Played, false);
+        check(waitFor([&] { return !got.isEmpty(); }) && got[0].ok && !got[0].value && got[0].flag == int(JellyfinClient::UserFlag::Played) && flagsSeen.size() == 1 && flagsSeen[0].method == "DELETE" &&
+              flagsSeen[0].path == QByteArray("/UserPlayedItems/") + kItem && flagsSeen[0].query().queryItemValue("userId") == user, "flag: marking unwatched is DELETE /UserPlayedItems/{id}?userId=");
+        got.clear(); flagsSeen.clear(); flagLegacyOnly = true;
+        id = client.setUserFlag(item, JellyfinClient::UserFlag::Played, false);
+        check(waitFor([&] { return !got.isEmpty(); }) && got.size() == 1 && got[0].request == id && got[0].ok && flagsSeen.size() == 2 && flagsSeen[1].method == "DELETE" &&
+              flagsSeen[1].path == QByteArray("/Users/") + kUser + "/PlayedItems/" + kItem, "flag: a 404 retries the older user-scoped route once; one answer, the original request id");
+        got.clear(); flagsSeen.clear();
+        client.setUserFlag(item, JellyfinClient::UserFlag::Favorite, true);
+        check(waitFor([&] { return !got.isEmpty(); }) && got[0].ok && flagsSeen.size() == 2 && flagsSeen[1].path == QByteArray("/Users/") + kUser + "/FavoriteItems/" + kItem, "flag: the favourite older route is /Users/{user}/FavoriteItems/{id}");
+        flagLegacyOnly = false;
+        got.clear(); flagsSeen.clear(); flagStatus = 500;
+        client.setUserFlag(item, JellyfinClient::UserFlag::Played, true);
+        check(waitFor([&] { return !got.isEmpty(); }) && got.size() == 1 && !got[0].ok && flagsSeen.size() == 1, "flag: an HTTP 500 is a failed answer with no retry (the row must not claim a change)");
+        flagStatus = 0;
+        got.clear(); flagsSeen.clear();
+        client.setUserFlag(QStringLiteral("../x"), JellyfinClient::UserFlag::Played, true);
+        check(waitFor([&] { return !got.isEmpty(); }) && !got[0].ok && flagsSeen.isEmpty(), "flag: an invalid id fails without sending anything");
+        QObject::disconnect(flagConnection);
+    }
+    {
+        // Play Next Episode: the watched mark first, then /Shows/NextUp?seriesId=, skipping the finished episode itself.
+        struct Got { quint64 request = 0; JellyfinItem item; bool found = false, done = false; } got;
+        const auto nextConnection = QObject::connect(&client, &JellyfinClient::nextEpisodeReady, [&](quint64 request, const JellyfinItem& item, bool found) { got = {request, item, found, true}; });
+        const QString series = QStringLiteral("eeeeeeeeeeeeeeeeeeeeeeeeeeeeee01");
+        const QUrl nextUrl = client.nextUpUrl(series);
+        check(nextUrl.path() == QLatin1String("/Shows/NextUp") && QUrlQuery(nextUrl).queryItemValue("seriesId") == series && QUrlQuery(nextUrl).queryItemValue("userId") == user, "next: /Shows/NextUp scoped to the series and the user");
+        flagsSeen.clear(); playedSeen.clear(); nextUp.items = {QStringLiteral("dddddddddddddddddddddddddddddd02")};
+        const quint64 id = client.nextEpisode(series, QString::fromLatin1(kItem));
+        check(waitFor([&] { return got.done; }) && got.request == id && got.found && got.item.id == QLatin1String("dddddddddddddddddddddddddddddd02") && got.item.seasonNumber == 2, "next: the server's next-up episode comes back under the request id");
+        check(playedSeen.size() == 1 && playedSeen[0].path == QByteArray("/UserPlayedItems/") + kItem && playedSeen[0].method == "POST", "next: the finished episode is marked watched first");
+        int markAt = -1, nextAt = -1;
+        for (int i = 0; i < fake.log.size(); ++i) {
+            if (fake.log[i].path == QByteArray("/UserPlayedItems/") + kItem) markAt = i;
+            if (fake.log[i].path == "/Shows/NextUp" && fake.log[i].query().hasQueryItem("seriesId")) nextAt = i;
+        }
+        check(markAt >= 0 && nextAt > markAt, "next: NextUp is asked only after the watched mark was sent");
+        // The server still returns the finished episode (its list not yet updated): not offered as its own successor.
+        got = {}; nextUp.items = {QString::fromLatin1(kItem)};
+        client.nextEpisode(series, QString::fromLatin1(kItem));
+        check(waitFor([&] { return got.done; }) && !got.found, "next: the finished episode is never its own next episode");
+        got = {}; nextUp.items = {};
+        client.nextEpisode(series, QString::fromLatin1(kItem));
+        check(waitFor([&] { return got.done; }) && !got.found, "next: a finished series offers nothing");
+        got = {}; nextUp.status = 404; nextUp.items = {QStringLiteral("dddddddddddddddddddddddddddddd02")};
+        client.nextEpisode(series, QString::fromLatin1(kItem));
+        check(waitFor([&] { return got.done; }) && !got.found, "next: a server without the route offers nothing, silently");
+        nextUp.status = 0;
+        got = {};
+        client.nextEpisode(QStringLiteral("a/b"), QString::fromLatin1(kItem));
+        check(waitFor([&] { return got.done; }) && !got.found, "next: an invalid series id offers nothing without a request");
+        QObject::disconnect(nextConnection);
     }
 
     std::printf("%d checks, %d failures\n", checks, failures);

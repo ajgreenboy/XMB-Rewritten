@@ -31,6 +31,9 @@ struct JellyfinItem {
     // Watching and Next Up rows, which mix shows.
     QString seriesName;
     int seasonNumber = 0, episodeNumber = 0;
+    // The episode's series (SeriesId), for the Play Next Episode prompt, and the user's favourite flag (UserData.IsFavorite).
+    QString seriesId;
+    bool favorite = false;
 };
 struct JellyfinPage { QVector<JellyfinItem> items; int startIndex = 0, total = 0; };
 // One MediaStream from PlaybackInfo. The player cannot necessarily switch to it; the shell asks
@@ -103,15 +106,28 @@ public:
     // The server-side lists behind the Jellyfin home rows (audit/JELLYFIN-PLAYER.md). Resume = Continue Watching
     // (items with a saved position, newest first), NextUp = the next unwatched episode of every show being watched.
     // Answered through pageReady like items(); a server without the route answers an empty page, not an error.
-    enum class HomeList { Resume, NextUp };
-    quint64 home(HomeList kind);
+    // Latest = /Items/Latest (the newest additions; libraryId limits it to one library), Favorites = the items flagged
+    // favourite (Filters=IsFavorite). The numbers are the request's context codes, so the order is fixed.
+    enum class HomeList { Resume, NextUp, Latest, Favorites };
+    quint64 home(HomeList kind, QString libraryId = {});
     // Mark an item watched (clears its resume point server-side). Best effort, no answer is surfaced.
     void markPlayed(QString itemId);
+    // The user's own flags on an item: watched (POST/DELETE /UserPlayedItems/{id}) and favourite
+    // (POST/DELETE /UserFavoriteItems/{id}), each with the pre-10.9 /Users/{user}/... route retried once on a 404. Unlike
+    // markPlayed the answer is surfaced (userFlagChanged), so the row only changes when the server agreed.
+    enum class UserFlag { Played, Favorite };
+    quint64 setUserFlag(QString itemId, UserFlag flag, bool value);
+    QUrl userFlagUrl(UserFlag flag, const QString& itemId, bool legacyRoute = false) const;
+    // The episode that follows `currentId` in its series: the watched mark for currentId is sent first and, once the server
+    // has answered it, /Shows/NextUp?seriesId= is asked, so the server's own "next unwatched" rule decides. Answers through
+    // nextEpisodeReady; found=false (nothing next, no route, any failure) is silent and means "do not prompt".
+    quint64 nextEpisode(QString seriesId, QString currentId);
+    QUrl nextUpUrl(const QString& seriesId) const;
     // The item's chapter marks, for a server whose PlaybackInfo did not carry them. Answers through chaptersReady with
     // an empty list when there are none or the request fails.
     quint64 chapters(QString itemId);
     // The URL a home list is asked from; exposed so the tests can pin the route and its query.
-    QUrl homeUrl(HomeList kind, bool legacyRoute = false) const;
+    QUrl homeUrl(HomeList kind, bool legacyRoute = false, const QString& libraryId = {}) const;
     // Primary (poster) or Backdrop art for one item, authenticated, bounded, and cached under
     // the directory set by setImageCache(). A failure emits artworkReady with a null image:
     // missing art is not an error the user needs to see.
@@ -150,8 +166,10 @@ signals:
     void subtitleReady(quint64 request, int streamIndex, QByteArray bytes);
     void probeFinished(quint64 request, int status, QString detail);
     void chaptersReady(quint64 request, QString itemId, QVector<xmb::JellyfinChapter> chapters);
+    void userFlagChanged(quint64 request, QString itemId, int flag, bool value, bool ok);
+    void nextEpisodeReady(quint64 request, xmb::JellyfinItem item, bool found);
 private:
-    enum class Operation { SignIn, Views, Items, Search, Playback, Artwork, Report, Subtitle, SubtitleImage, Probe, Home, Chapters };
+    enum class Operation { SignIn, Views, Items, Search, Playback, Artwork, Report, Subtitle, SubtitleImage, Probe, Home, Chapters, UserFlag, NextEpisode };
     quint64 send(Operation operation, QNetworkReply* reply, QString context = {}, bool audio = false);
     void finish(QNetworkReply* reply, Operation operation, quint64 request,
                 quint64 generation, QString context = {}, bool audio = false);
@@ -180,6 +198,10 @@ private:
     QString imageCache_;
     QString sessionPath_;
     QHash<quint64, quint64> homeAlias_;   // a retried home list request -> the id the shell is waiting on
+    QHash<quint64, quint64> flagAlias_;   // a retried user flag request -> the id the caller is waiting on
+    struct NextWait { quint64 request = 0; QString seriesId, currentId; };
+    QHash<quint64, NextWait> nextWait_;   // the watched mark in flight -> the next-episode request waiting behind it
+    QHash<quint64, quint64> nextAlias_;   // the NextUp request -> the id the caller is waiting on
     quint64 generation_ = 0;
     quint64 nextRequest_ = 0;
 };

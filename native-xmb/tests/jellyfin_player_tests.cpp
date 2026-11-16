@@ -108,6 +108,45 @@ int main(int argc, char** argv) {
         check(choiceMapValid(QJsonObject{}), "choice: the empty map is valid");
     }
 
+    // ---- phase 2: Play Next Episode, Latest eligibility, toggle labels, playback speed ------------------------------
+    {
+        check(autoplaySecondsLeft(0) == kAutoplaySeconds && autoplaySecondsLeft(1) == kAutoplaySeconds, "autoplay: a fresh countdown shows the full ten seconds");
+        check(autoplaySecondsLeft(1000) == 9 && autoplaySecondsLeft(1001) == 9 && autoplaySecondsLeft(9000) == 1 && autoplaySecondsLeft(9999) == 1, "autoplay: whole seconds, rounded up");
+        check(autoplaySecondsLeft(10000) == 0 && autoplaySecondsLeft(999999) == 0, "autoplay: over at ten seconds and stays over");
+        check(autoplaySecondsLeft(-500) == kAutoplaySeconds && autoplaySecondsLeft(0, 0) == 0 && autoplaySecondsLeft(0, -3) == 0, "autoplay: a negative elapsed time is none, a zero length is already over");
+        check(autoplaySecondsLeft(2500, 5) == 3, "autoplay: another length works");
+
+        check(offersNextEpisode(QStringLiteral("Episode"), QStringLiteral("abc"), false, true), "next: an episode of a known series offers the next one");
+        check(!offersNextEpisode(QStringLiteral("Movie"), QStringLiteral("abc"), false, true), "next: a movie does not");
+        check(!offersNextEpisode(QStringLiteral("Episode"), QString{}, false, true), "next: an episode with no series id does not");
+        check(!offersNextEpisode(QStringLiteral("Episode"), QStringLiteral("abc"), true, true), "next: audio does not");
+        check(!offersNextEpisode(QStringLiteral("Episode"), QStringLiteral("abc"), false, false), "next: the preference off does not");
+
+        JellyfinItem episode; episode.title = QStringLiteral("The Second One"); episode.seasonNumber = 1; episode.episodeNumber = 2;
+        check(episodeLabel(episode) == QLatin1String("S1E2 - The Second One"), "label: season, episode and title");
+        episode.episodeNumber = 0;
+        check(episodeLabel(episode) == QLatin1String("The Second One"), "label: without both numbers just the title");
+        check(autoplayPromptText(QStringLiteral("S1E2 - X"), 7) == QLatin1String("Play Next Episode: S1E2 - X in 7 s. Cross plays now, Circle cancels."), "prompt: the one line the player shows");
+        check(autoplayPromptText(QStringLiteral("X"), -4).contains(QLatin1String(" in 0 s")), "prompt: never a negative count");
+
+        check(latestEligible(QStringLiteral("movies")) && latestEligible(QStringLiteral("tvshows")) && latestEligible(QStringLiteral("Movies")) && latestEligible(QString{}) &&
+              latestEligible(QStringLiteral("homevideos")) && latestEligible(QStringLiteral("musicvideos")), "latest: video libraries and mixed ones get a Latest row");
+        check(!latestEligible(QStringLiteral("music")) && !latestEligible(QStringLiteral("books")) && !latestEligible(QStringLiteral("playlists")) && !latestEligible(QStringLiteral("livetv")) &&
+              !latestEligible(QStringLiteral("boxsets")) && !latestEligible(QStringLiteral("photos")), "latest: music, books, playlists, live TV, boxsets and photos do not");
+
+        check(watchedToggleLabel(true) == QLatin1String("Mark as Unwatched") && watchedToggleLabel(false) == QLatin1String("Mark as Watched"), "toggle: the watched row offers the opposite state");
+        check(favoriteToggleLabel(true) == QLatin1String("Remove from Favourites") && favoriteToggleLabel(false) == QLatin1String("Add to Favourites"), "toggle: the favourite row offers the opposite state");
+
+        const auto& steps = speedSteps();
+        check(steps.size() == 7 && steps.first() == 0.5 && steps.last() == 2.0 && steps.contains(1.0), "speed: seven steps from 0.5x to 2x including 1x");
+        bool sorted = true;
+        for (int i = 1; i < steps.size(); ++i) if (steps[i] <= steps[i - 1]) sorted = false;
+        check(sorted, "speed: the steps ascend");
+        check(nearestSpeed(1.0) == 1.0 && nearestSpeed(1.1) == 1.0 && nearestSpeed(1.2) == 1.25 && nearestSpeed(0.1) == 0.5 && nearestSpeed(9) == 2.0, "speed: the nearest step, clamped to the ends");
+        check(nearestSpeed(0) == 1.0 && nearestSpeed(-2) == 1.0 && nearestSpeed(std::numeric_limits<double>::quiet_NaN()) == 1.0, "speed: nonsense is 1x");
+        check(speedLabel(1.0) == QLatin1String("1x") && speedLabel(1.25) == QLatin1String("1.25x") && speedLabel(0.5) == QLatin1String("0.5x") && speedLabel(2.0) == QLatin1String("2x") && speedLabel(1.5) == QLatin1String("1.5x"), "speed: labels without trailing zeros");
+    }
+
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

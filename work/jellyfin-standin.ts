@@ -2,6 +2,9 @@
 //
 //   bun work/jellyfin-standin.ts [--port 8099] [--log <file>] [--mode strict|lenient] [--hls-status <n>]
 //
+// Phase 2 (audit/JELLYFIN-PLAYER.md) adds /Items/Latest, favourites (Filters=IsFavorite and POST/DELETE /UserFavoriteItems), DELETE
+// /UserPlayedItems, SeriesId on episodes, a real video on the direct-play stream (--clip <file>) and the flags --no-latest --no-favorites
+// --no-flags --legacy-flags --episodes-direct --series-done.
 // It answers the routes the XMB's Jellyfin client uses: sign-in (any user name and password), views, a
 // folder of movies with a distinct backdrop each, PlaybackInfo (DirectPlay, and Transcode with a
 // TranscodingUrl in the shape Jellyfin 12 returns: relative, ApiKey in the query), the HLS endpoints
@@ -12,7 +15,7 @@
 // (method, path, query KEYS only, whether auth was present, user agent). Tokens and values never are.
 import { createServer } from "node:http";
 import { deflateSync } from "node:zlib";
-import { appendFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 
 const args = process.argv.slice(2);
 const opt = (name: string, dflt: string) => {
@@ -32,8 +35,16 @@ const musicStatus = Number(opt("music-status", "0"));          // force every mu
 const noHome = args.includes("--no-home");                     // the server has no Resume / NextUp routes at all (they answer 404)
 const legacyHome = args.includes("--legacy-home");             // only the pre-10.9 user-scoped Resume route exists
 const noChapters = args.includes("--no-chapters");             // neither PlaybackInfo nor /Items carries chapter marks
+const clipFile = opt("clip", "");                              // a real video file served (with Range) on the direct-play stream route instead of garbage bytes
+const episodesDirect = args.includes("--episodes-direct");     // every episode direct-plays (with --clip, the whole Play Next Episode chain plays real video)
+const seriesDone = args.includes("--series-done");             // /Shows/NextUp?seriesId= answers an empty list (the series has nothing left)
+const noLatest = args.includes("--no-latest");                 // the server has no /Items/Latest routes (they answer 404)
+const noFavorites = args.includes("--no-favorites");           // the server answers the Filters=IsFavorite list and the favourite routes with 404
+const noFlags = args.includes("--no-flags");                   // the watched and favourite write routes answer 404 (a server that refuses them)
+const legacyFlags = args.includes("--legacy-flags");           // only the pre-10.9 /Users/{id}/PlayedItems and /FavoriteItems routes exist
 
-const TOKEN = "standin-" + Math.random().toString(16).slice(2) + Math.random().toString(16).slice(2);
+// A fixed token (STANDIN_TOKEN) lets a scripted run restore a stored sign-in instead of typing credentials through the keyboard.
+const TOKEN = process.env.STANDIN_TOKEN || "standin-" + Math.random().toString(16).slice(2) + Math.random().toString(16).slice(2);
 const USER = "0123456789abcdef0123456789abcdef";
 const VIEW = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa01";
 
@@ -63,6 +74,8 @@ const everything = [...movies, ...episodes];
 // What the server remembers about this user's progress. Reports from the XMB change it, exactly as the real
 // server's UserDataManager would: a stop beyond 90 percent is "played" with no resume point.
 const userData = new Map<string, { ticks: number; played: boolean }>();
+const favorites = new Set<string>();   // items this user flagged as favourite
+const SERIES = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeee01";
 const reports: Array<{ kind: string; item: string; ticks: number | null; paused: unknown; session: string }> = [];
 const dataOf = (m: Movie) => userData.get(m.id) ?? { ticks: 0, played: false };
 // Chapters of a title: four marks, the second one unnamed.
@@ -72,9 +85,9 @@ function itemJson(m: Movie, withChapters = false) {
   const ud = dataOf(m);
   return {
     Id: m.id, Name: m.name, Type: isEpisode(m) ? "Episode" : "Movie", IsFolder: false, MediaType: "Video", RunTimeTicks: m.ticks,
-    ...(isEpisode(m) ? { SeriesName: "The Stand-in Show", ParentIndexNumber: 1, IndexNumber: Number(m.id.slice(-2)) } : {}),
+    ...(isEpisode(m) ? { SeriesName: "The Stand-in Show", SeriesId: SERIES, ParentIndexNumber: 1, IndexNumber: Number(m.id.slice(-2)) } : {}),
     ...(withChapters ? { Chapters: chaptersOf(m) } : {}),
-    UserData: { Played: ud.played, PlaybackPositionTicks: ud.ticks },
+    UserData: { Played: ud.played, PlaybackPositionTicks: ud.ticks, IsFavorite: favorites.has(m.id) },
     ImageTags: { Primary: "p" + m.id.slice(-2) },
     BackdropImageTags: m.backdrop ? ["b" + m.id.slice(-2)] : [],
   };
@@ -324,6 +337,11 @@ createServer(async (req, res) => {
     return send(res, 200, JSON.stringify({ Items: views, TotalRecordCount: views.length, StartIndex: 0 }));
   }
   if (req.method === "GET" && path === "/Items") {
+    if (q.get("Filters") === "IsFavorite") {
+      if (noFavorites) return fail(404, "Not found: favourites");
+      const flagged = everything.filter((x) => favorites.has(x.id));
+      return send(res, 200, JSON.stringify({ Items: flagged.map((x) => itemJson(x)), TotalRecordCount: flagged.length, StartIndex: 0 }));
+    }
     const ids = q.get("ids");
     if (ids) {
       const found = everything.filter((x) => ids.split(",").includes(x.id));
@@ -337,6 +355,7 @@ createServer(async (req, res) => {
   if (req.method === "GET" && (path === "/UserItems/Resume" || path === "/Shows/NextUp" || path === "/Users/" + USER + "/Items/Resume")) {
     if (noHome || (legacyHome && path === "/UserItems/Resume") || (path === "/Users/" + USER + "/Items/Resume" && !legacyHome)) return fail(404, "Not found: " + path);
     if (strict && q.get("userId") !== USER) return fail(400, "userId is required");
+    if (path === "/Shows/NextUp" && seriesDone && q.get("seriesId")) return send(res, 200, JSON.stringify({ Items: [], TotalRecordCount: 0, StartIndex: 0 }));
     if (path === "/Shows/NextUp") {
       const next = episodes.filter((x) => !dataOf(x).played).slice(0, 1);
       return send(res, 200, JSON.stringify({ Items: next.map((x) => itemJson(x)), TotalRecordCount: next.length, StartIndex: 0 }));
@@ -344,8 +363,36 @@ createServer(async (req, res) => {
     const started = everything.filter((x) => dataOf(x).ticks > 0 && !dataOf(x).played);
     return send(res, 200, JSON.stringify({ Items: started.map((x) => itemJson(x)), TotalRecordCount: started.length, StartIndex: 0 }));
   }
+  // The newest additions: a bare JSON array, as the real route answers (10.9+: /Items/Latest, older: /Users/{id}/Items/Latest).
+  if (req.method === "GET" && (path === "/Items/Latest" || path === "/Users/" + USER + "/Items/Latest")) {
+    if (noLatest || (path === "/Items/Latest") === legacyHome) return fail(404, "Not found: " + path);
+    if (strict && q.get("userId") !== USER && q.get("UserId") !== USER) return fail(400, "userId is required");
+    const parent = q.get("ParentId");
+    const pool = parent && parent !== VIEW ? [] : [...movies].reverse();
+    return send(res, 200, JSON.stringify(pool.slice(0, Number(q.get("Limit") ?? 20)).map((x) => itemJson(x))));
+  }
+  // The user's own flags. Favourite: POST sets, DELETE clears (10.9+: /UserFavoriteItems/{id}, older: /Users/{id}/FavoriteItems/{id}).
+  // Played: POST marks watched, DELETE marks unwatched. --no-flags answers 404 to every one of them; --legacy-flags keeps only the older routes.
+  if ((req.method === "POST" || req.method === "DELETE") && ((m = /^\/UserFavoriteItems\/([0-9a-f]{32})$/.exec(path)) || (m = /^\/Users\/[0-9a-f]{32}\/FavoriteItems\/([0-9a-f]{32})$/.exec(path)))) {
+    if (noFlags || noFavorites || (path.startsWith("/UserFavoriteItems/") && legacyFlags)) return fail(404, "Not found: " + path);
+    if (strict && path.startsWith("/UserFavoriteItems/") && q.get("userId") !== USER) return fail(400, "userId is required");
+    const target = everything.find((x) => x.id === m![1]);
+    if (!target) return fail(404, "no item");
+    if (req.method === "POST") favorites.add(target.id); else favorites.delete(target.id);
+    reports.push({ kind: req.method === "POST" ? "favorite" : "unfavorite", item: target.id, ticks: null, paused: null, session: "" });
+    return send(res, 200, JSON.stringify({ IsFavorite: favorites.has(target.id), Played: dataOf(target).played }));
+  }
+  if (req.method === "DELETE" && ((m = /^\/UserPlayedItems\/([0-9a-f]{32})$/.exec(path)) || (m = /^\/Users\/[0-9a-f]{32}\/PlayedItems\/([0-9a-f]{32})$/.exec(path)))) {
+    if (noFlags || (path.startsWith("/UserPlayedItems/") && legacyFlags)) return fail(404, "Not found: " + path);
+    const target = everything.find((x) => x.id === m![1]);
+    if (!target) return fail(404, "no item");
+    userData.set(target.id, { ticks: 0, played: false });
+    reports.push({ kind: "unplayed", item: target.id, ticks: null, paused: null, session: "" });
+    return send(res, 200, JSON.stringify({ Played: false, PlaybackPositionTicks: 0 }));
+  }
   // Marking an item watched (10.9+ route, and the older user-scoped one).
   if (req.method === "POST" && ((m = /^\/UserPlayedItems\/([0-9a-f]{32})$/.exec(path)) || (m = /^\/Users\/[0-9a-f]{32}\/PlayedItems\/([0-9a-f]{32})$/.exec(path)))) {
+    if (noFlags || (path.startsWith("/UserPlayedItems/") && legacyFlags)) return fail(404, "Not found: " + path);
     const target = everything.find((x) => x.id === m![1]);
     if (!target) return fail(404, "no item");
     userData.set(target.id, { ticks: 0, played: true });
@@ -353,7 +400,7 @@ createServer(async (req, res) => {
     return send(res, 200, JSON.stringify({ Played: true, PlaybackPositionTicks: 0 }));
   }
   // The test harness reads what the server was told (no credentials in it).
-  if (req.method === "GET" && path === "/__reports") return send(res, 200, JSON.stringify({ reports, userData: Object.fromEntries(userData) }));
+  if (req.method === "GET" && path === "/__reports") return send(res, 200, JSON.stringify({ reports, userData: Object.fromEntries(userData), favorites: [...favorites] }));
   if ((m = /^\/Items\/([0-9a-f]{32})\/Images\/(Primary|Backdrop)$/.exec(path))) {
     const movie = everything.find((x) => x.id === m![1]);
     if (!movie || (m[2] === "Backdrop" && !movie.backdrop)) return fail(404, "no image");
@@ -375,7 +422,7 @@ createServer(async (req, res) => {
     const playSessionId = "ps" + Math.random().toString(16).slice(2, 18);
     // AudioStreamIndex in the request selects that stream and cannot be a static direct play (as on a real server).
     const wantAudio = typeof info.AudioStreamIndex === "number" ? info.AudioStreamIndex : -1;
-    const direct = movie.method === "direct" && burn < 0 && wantAudio < 0 && info.EnableDirectPlay !== false;
+    const direct = (movie.method === "direct" || (episodesDirect && isEpisode(movie))) && burn < 0 && wantAudio < 0 && info.EnableDirectPlay !== false;
     const streams = [
       { Index: 0, Type: "Video", Codec: "hevc", DisplayTitle: "1080p HEVC" },
       { Index: 1, Type: "Audio", Codec: "dts", Language: "eng", Channels: 6, DisplayTitle: "English DTS-HD MA 5.1", IsDefault: true },
@@ -418,6 +465,19 @@ createServer(async (req, res) => {
   }
   if ((m = /^\/[Vv]ideos\/([0-9a-f]{32})\/stream$/.exec(path))) {
     if (strict && q.get("static") !== "true") return fail(400, "static required");
+    if (clipFile) {
+      const file = readFileSync(clipFile);
+      const range = /^bytes=(\d*)-(\d*)$/.exec(String(req.headers["range"] ?? ""));
+      if (range) {
+        const from = range[1] ? Number(range[1]) : 0, to = range[2] ? Math.min(Number(range[2]), file.length - 1) : file.length - 1;
+        res.writeHead(206, { "Content-Type": "video/mp4", "Content-Range": `bytes ${from}-${to}/${file.length}`, "Content-Length": to - from + 1, "Accept-Ranges": "bytes" });
+        res.end(file.subarray(from, to + 1));
+      } else {
+        res.writeHead(200, { "Content-Type": "video/mp4", "Content-Length": file.length, "Accept-Ranges": "bytes" });
+        res.end(file);
+      }
+      return;
+    }
     return send(res, 200, Buffer.alloc(2048, 0x47), "video/x-matroska");
   }
   if ((m = /^\/[Vv]ideos\/([0-9a-f]{32})\/(master|main)\.m3u8$/.exec(path))) {

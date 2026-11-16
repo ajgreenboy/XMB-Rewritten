@@ -47,6 +47,7 @@ struct Track {
     // the track's identity (a VobSub language is "<file>.idx#<index>"), `source` the file that is read.
     bool image=false;
     QString source;          // the .sup, or the .idx of a VobSub pair; empty for a server stream
+    int embedded=-1;         // >= 0: a stream embedded in the media file (QMediaPlayer::subtitleTracks() index); path is "embedded#N"
     QString auxPath;         // VobSub: the .sub beside the .idx
     int vobsubIndex=-1;      // VobSub: the .idx "index:" of this language, -1 = the file's default
     bool decoding=false;     // a decode (or a server fetch) is in flight

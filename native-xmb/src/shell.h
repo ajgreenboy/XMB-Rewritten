@@ -194,7 +194,8 @@ struct Entry {
     // Remote media progress supplied by the authenticated provider, never a local file resume key.
     QString mediaKind;
     qint64 resumeMs=0,durationMs=0;
-    bool played=false;
+    bool played=false,favorite=false;   // the server's UserData flags (Jellyfin rows)
+    QString seriesId;                   // a Jellyfin episode's series, for Play Next Episode
     // A Jellyfin music row: the line "artist - album" its detail starts with, and what the player's Now Playing page
     // shows for the track (a server stream carries no usable tags), with the album whose cover it wears.
     struct MusicMeta { QString info, artist, album, albumId, albumTag; };
@@ -237,6 +238,8 @@ enum class OptionCommand { Activate, Information,
     // The player panel (audit/JELLYFIN-PLAYER.md): a server audio stream to re-open the title with, the chapter list and
     // one chapter in it.
     JellyfinAudioStream, PlayerChapters, PlayerChapterTarget,
+    // Phase 2 (audit/JELLYFIN-PLAYER.md): the item menu's watched and favourite toggles, and the player panel's speed list.
+    JellyfinTogglePlayed, JellyfinToggleFavorite, PlayerSpeed, PlayerSpeedTarget, ToggleAutoplayNext,
     // A registered Jellyfin app's own row: reopen the setup page on its address (Change Server Address).
     JellyfinChangeAddress,
     // Edit (explore_plugin msg_edit) on a playlist row or an item inside one opens the two-pane editor
@@ -449,6 +452,9 @@ public:
     int screensaverMinutes() const { return preferences_.value("display/screensaverMinutes").toInt(); }
     bool idleDisplayAllowed() const;
     bool mediaOpen() const { return mediaOpen_; }
+    // The Play Next Episode prompt while its countdown runs (audit/JELLYFIN-PLAYER.md), empty otherwise. Cross plays now, Circle cancels.
+    QString nextEpisodePrompt() const;
+    double mediaSpeed() const { return mediaSpeed_; }
     QString mediaTitle() const { return mediaTitle_; }
     // ---- Music player page (audit/MUSIC-PLAYER.md): the tags the full-screen page draws ----------------
     // Title / artist / album are the loaded track's own tags, each empty when untagged (mediaTitle() keeps
@@ -945,10 +951,37 @@ private:
     // Player state (audit/JELLYFIN-PLAYER.md): the open title's chapter marks, the server audio stream a title is
     // re-opened with, and the per-title audio/subtitle choice kept in the "media/choices" preference.
     QVector<jfplayer::Chapter> mediaChapters_;
+    // Play Next Episode: the lookup in flight after an episode ends, and the countdown once the server named the next one.
+    // Series ids and kinds of the rows a queue was built from, so the finished item can be asked about.
+    QHash<QString,QString> jellyfinSeries_,jellyfinKinds_;
+    struct NextOffer { bool active=false; QString id,title,seriesId,kind; qint64 resumeMs=0; int left=0; } nextOffer_;
+    quint64 nextLookup_=0,nextLookupMedia_=0;
+    QTimer nextOfferTimer_;
+    QElapsedTimer nextOfferClock_;
+    bool beginNextEpisodeLookup(const QString& finishedId);
+    void startNextOffer(const JellyfinItem& item);
+    void playNextOffer();
+    void cancelNextOffer();
+    void advanceMediaQueue(bool failed,const QString& error);
+    // The watched and favourite toggles (rows keep their old state until the server has agreed) and the flag answers.
+    QHash<quint64,QString> userFlagRequests_;
+    void toggleJellyfinFlag(const Entry& entry,bool favorite);
+    void applyJellyfinFlag(const QString& itemId,int flag,bool value);
+    // Playback speed (QMediaPlayer::setPlaybackRate, read back) for the video open now; 1x when nothing is playing.
+    double mediaSpeed_=1.0;
+    void openSpeedList();
+    void chooseSpeed(int index);
+    // Embedded subtitle streams of a local file (QMediaPlayer::subtitleTracks): appended to subtitleTracks_ after the sidecars,
+    // drawn from the text the player hands to the video sink.
+    QString embeddedSubtitleText_;
+    int embeddedCueNumber_=0;
+    void appendEmbeddedSubtitles();
+    void applyEmbeddedSubtitleChoice();
     quint64 jellyfinChapterRequest_=0;
     QHash<QString,int> jellyfinAudioReopen_;
     int jellyfinAudioApplyTries_=0;
     void loadJellyfinHomePage(const QString& kind,const QString& title);
+    bool autoplayNextEnabled() const;
     void chooseJellyfinAudio(int streamIndex);
     void applyRememberedJellyfinAudio();
     void openChapterList();

@@ -72,4 +72,30 @@ QJsonObject withChoice(QJsonObject map, const QString& key, int audio, int subti
 // whose keys are 1-64 letters, digits or underscores and whose values carry only a, s (integers) and at.
 bool choiceMapValid(const QJsonObject& map);
 
+// ---- Phase 2: Play Next Episode, home rows, flags, speed -------------------------------------------------------
+// The countdown on the Play Next Episode prompt. Circle cancels it, Cross plays at once.
+constexpr int kAutoplaySeconds = 10;
+// Whole seconds still to go (rounded up) after elapsedMs, 0 when the countdown is over. A negative elapsed time counts as none.
+int autoplaySecondsLeft(qint64 elapsedMs, int totalSeconds = kAutoplaySeconds);
+// A finished item looks for a next episode only when it is a Jellyfin Episode that knows its series, is not audio, and the
+// preference is on.
+bool offersNextEpisode(const QString& type, const QString& seriesId, bool audio, bool enabled);
+// "S2E5 - Title" for an episode with both numbers, "Title" otherwise. Printable ASCII only is not enforced: the text is the server's.
+QString episodeLabel(const JellyfinItem& item);
+// The prompt's one line: "Play Next Episode: S1E2 - Title in 7 s. Cross plays now, Circle cancels."
+QString autoplayPromptText(const QString& label, int secondsLeft);
+
+// Latest rows are offered for libraries whose items are videos: movies, tv shows, home videos, music videos and mixed
+// libraries (no collection type). Music, books, photos, playlists, live TV and boxsets are not.
+bool latestEligible(const QString& collectionType);
+
+// The watched and favourite toggles of the item menu: the row's label from the state it is in.
+QString watchedToggleLabel(bool played);
+QString favoriteToggleLabel(bool favorite);
+
+// Playback speed: the steps the panel offers (0.5 to 2), the step nearest a value, and the label ("1x", "1.25x").
+const QVector<double>& speedSteps();
+double nearestSpeed(double value);
+QString speedLabel(double value);
+
 }   // namespace xmb::jfplayer

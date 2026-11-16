@@ -1890,6 +1890,7 @@ Shell::Shell(QString dataDirectory,Assets& assets,QObject* parent):QObject(paren
         if(mediaOpen_ && !photoOpen()) {
             loading_=state==QMediaPlayer::LoadingMedia || state==QMediaPlayer::StalledMedia;
             // A saved resume point is applied once the media reports LoadedMedia, not before.
+            if(state==QMediaPlayer::LoadedMedia && std::abs(mediaSpeed_-1.0)>0.001 && std::abs(player_->playbackRate()-mediaSpeed_)>0.001)player_->setPlaybackRate(mediaSpeed_);
             if(state==QMediaPlayer::LoadedMedia && resumePending_>0 && !jellyfinQueue_) {
                 player_->setPosition(resumePending_);
                 qInfo()<<"media: resumed at"<<resumePending_<<"ms";
@@ -1951,6 +1952,18 @@ Shell::Shell(QString dataDirectory,Assets& assets,QObject* parent):QObject(paren
     if(!preferences_.error().isEmpty())showMessage(preferences_.error(),MessageKind::Page);
     if(!profiles_.error().isEmpty())showMessage(profiles_.error(),MessageKind::Page);
     connect(video_.get(),&QVideoSink::videoFrameChanged,this,[this](const QVideoFrame& frame){emit mediaFrame(frame.toImage());});
+    // The text of an embedded subtitle stream, when one is the active choice (appendEmbeddedSubtitles).
+    connect(video_.get(),&QVideoSink::subtitleTextChanged,this,[this](const QString& text){
+        if(subtitleTrackIndex_<0 || subtitleTrackIndex_>=subtitleTracks_.size() || subtitleTracks_[subtitleTrackIndex_].embedded<0)return;
+        embeddedSubtitleText_=text.trimmed();++embeddedCueNumber_;emit changed();
+    });
+    // A backend may report its embedded streams a moment after LoadedMedia.
+    connect(player_.get(),&QMediaPlayer::tracksChanged,this,[this]{
+        if(!mediaOpen_ || photoOpen() || jellyfinQueue_ || subtitleMediaPath_.isEmpty())return;
+        int before=0;for(const auto& track:subtitleTracks_)if(track.embedded>=0)++before;
+        if(player_->subtitleTracks().size()==before)return;
+        appendEmbeddedSubtitles();applyEmbeddedSubtitleChoice();refreshPlayerOptions();emit changed();
+    });
     connect(player_.get(),&QMediaPlayer::positionChanged,this,[this](qint64 at){if(at>0)mediaFailures_=0;});
     // Embedded cover art can arrive after LoadedMedia on some backends; re-read the page's tags then.
     connect(player_.get(),&QMediaPlayer::metaDataChanged,this,[this]{if(mediaOpen_ && !photoOpen()){readMediaTags();emit changed();}});
@@ -2280,7 +2293,7 @@ void Shell::activate() {
         // the write came from is popped here, and the parent page's focused row re-reads its value.
         if(settingsWrite_.stage==WriteStage::FinishOk || settingsWrite_.stage==WriteStage::FinishFailed)finishSettingWrite();
         emit changed();return;}
-    if(mediaOpen_){togglePlayback();return;}
+    if(mediaOpen_){if(nextOffer_.active){playNextOffer();return;}togglePlayback();return;}
     if(entries().isEmpty() || busy()) {
         if(busy())qInfo().noquote()<<"busy: action refused (Cross) while a list loads";
         return;
@@ -3271,6 +3284,16 @@ void Shell::buildOptions() {
         addOption({"","Streaming Quality"},OptionCommand::JellyfinQuality,"jellyfin-video");
         options_.last().note=jellyfinQualityText();
     }
+    // The server's own watched and favourite flags: a video, and a series or season on a page of the library (never a library,
+    // a home row or a music item). The row changes when the server has answered, not before.
+    if(jellyfin_.signedIn() && !pages_.isEmpty() && pages_.last().jellyfin && !pages_.last().jellyfinViews && pages_.last().jellyfinMusic.isEmpty() &&
+       !entry.id.startsWith(QLatin1String("jellyfin:home-")) && !entry.value.isEmpty() && entry.mediaKind!=QLatin1String("Music") &&
+       (entry.action==Action::JellyfinPlay || entry.action==Action::JellyfinFolder)) {
+        addOption({"",jfplayer::watchedToggleLabel(entry.played)},OptionCommand::JellyfinTogglePlayed,"jellyfin-flag",true,
+                  tr("Tells the Jellyfin server; the row changes once it has answered."));
+        addOption({"",jfplayer::favoriteToggleLabel(entry.favorite)},OptionCommand::JellyfinToggleFavorite,"jellyfin-flag",true,
+                  tr("Tells the Jellyfin server; the row changes once it has answered."));
+    }
     // A registered Jellyfin server's row: the address can be changed without editing apps.json (jellyfin_setup_shell.cpp).
     if(entry.action==Action::JellyfinApp)
         addOption({"","Change Server Address"},OptionCommand::JellyfinChangeAddress,"jellyfin-app",true,
@@ -3679,6 +3702,21 @@ void Shell::optionsActivate() {
         break;
     }
     case OptionCommand::JellyfinQuality:openJellyfinQualityList();break;
+    case OptionCommand::JellyfinTogglePlayed:case OptionCommand::JellyfinToggleFavorite: {
+        const Entry row=entry;
+        resetOptions();
+        toggleJellyfinFlag(row,option.command==OptionCommand::JellyfinToggleFavorite);
+        interactionAudio_.play(InteractionAudio::Cue::Confirm);
+        emit changed();
+        break;
+    }
+    case OptionCommand::PlayerSpeed:openSpeedList();break;
+    case OptionCommand::PlayerSpeedTarget:chooseSpeed(option.index);break;
+    case OptionCommand::ToggleAutoplayNext:
+        preferences_.setValue("jellyfin/autoplayNext",!autoplayNextEnabled());
+        interactionAudio_.play(InteractionAudio::Cue::Confirm);
+        refreshPlayerOptions();
+        break;
     case OptionCommand::JellyfinQualityTarget:chooseJellyfinQuality(option.index);break;
     case OptionCommand::JellyfinAudioStream:chooseJellyfinAudio(option.index);break;
     case OptionCommand::PlayerChapters:openChapterList();break;
@@ -4121,14 +4159,16 @@ void Shell::buildPlayerOptions() {
         row.enabled=false;
         row.note=mediaProvider()=="Jellyfin"
             ?QObject::tr("Streamed media: sidecar subtitles are read for local video files only.")
-            :QObject::tr("No .srt, .vtt, .sup or .idx/.sub beside this video. Embedded subtitle streams are not switched yet.");
+            :QObject::tr("No .srt, .vtt, .sup or .idx/.sub beside this video, and the player reports no embedded subtitle stream.");
         options_.push_back(row);
     } else {
         for(int i=0;i<subtitleTracks_.size();++i) {
             const auto& track=subtitleTracks_[i];
             MenuOption row{QObject::tr("Subtitles: %1").arg(track.name),OptionCommand::SubtitleTrack};
             row.index=i;row.active=i==subtitleTrackIndex_;
-            if(track.image) {
+            if(track.embedded>=0) {
+                row.note=QObject::tr("Embedded in the file; the player decodes it and the text is drawn over the video. A picture-based stream may show nothing.");
+            } else if(track.image) {
                 // Pictures are decoded when the track is chosen; the row says which stage it is in.
                 const QString file=QFileInfo(track.source).fileName();
                 if(!track.error.isEmpty()){row.enabled=false;row.active=false;row.note=QObject::tr("%1: %2").arg(file,track.error);}
@@ -4204,6 +4244,17 @@ void Shell::buildPlayerOptions() {
         chapters.note=QObject::tr("Jump to a chapter. Next and Previous skip chapters too.");
         options_.push_back(chapters);
     }
+    // Speed: set on the player and read back. There is no audio delay row: Qt Multimedia has no such setting.
+    if(!photoOpen()) {
+        MenuOption speed{QObject::tr("Speed: %1").arg(jfplayer::speedLabel(mediaSpeed_)),OptionCommand::PlayerSpeed};
+        speed.note=QObject::tr("0.5x to 2x. The player is asked and the panel reads the rate back.");
+        options_.push_back(speed);
+    }
+    if(mediaProvider()=="Jellyfin" && jellyfinKinds_.value(jellyfinPlayback_.itemId)==QLatin1String("Episode") && !jellyfinSeries_.value(jellyfinPlayback_.itemId).isEmpty()) {
+        MenuOption autoplay{QObject::tr("Play Next Episode: %1").arg(autoplayNextEnabled()?QObject::tr("On"):QObject::tr("Off")),OptionCommand::ToggleAutoplayNext};
+        autoplay.note=QObject::tr("When an episode ends, count down to the server's next one. Circle cancels the countdown.");
+        options_.push_back(autoplay);
+    }
     // Repeat and Shuffle live here now, which is what frees Triangle for this panel.
     static const char* const repeatNames[]={"Off","One","All"};
     MenuOption repeat{QObject::tr("Repeat: %1").arg(QString::fromLatin1(repeatNames[std::clamp(mediaRepeatMode(),0,2)])),
@@ -4235,6 +4286,7 @@ void Shell::prepareSubtitles(const QString& path) {
     if(path.isEmpty())return;
     const auto discovery=subtitles::discover(path);
     subtitleTracks_=discovery.tracks;
+    appendEmbeddedSubtitles();   // the streams inside the file follow the sidecars
     for(const auto& reason:discovery.rejected)qWarning().noquote()<<"subtitle: ignored"<<reason;
     if(subtitleLog_) {
         if(subtitleTracks_.isEmpty())qInfo().noquote()<<"subtitle: no sidecar beside"<<QFileInfo(path).fileName();
@@ -4257,7 +4309,7 @@ void Shell::prepareSubtitles(const QString& path) {
         chosen=subtitleChoice_.value(path);
         if(subtitleLog_)qInfo().noquote()<<"subtitle: session choice for this file is"
             <<(chosen.isEmpty()?"Off":QFileInfo(chosen).fileName());
-    } else if(!subtitleTracks_.isEmpty()) {
+    } else if(!subtitleTracks_.isEmpty() && subtitleTracks_.first().embedded<0) {   // a sidecar is the default; an embedded stream never is
         chosen=subtitleTracks_.first().path;
         if(subtitleLog_)qInfo().noquote()<<"subtitle: auto-selected"<<QFileInfo(chosen).fileName()
             <<"(first time this file plays; Subtitles Off is remembered if chosen)";
@@ -4269,6 +4321,12 @@ void Shell::prepareSubtitles(const QString& path) {
 void Shell::applySubtitleTrack(int index) {
     if(index<0 || index>=subtitleTracks_.size())index=-1;
     subtitleTrackIndex_=index;subtitleCueNumber_=0;
+    // An embedded stream is drawn from the text the player decodes; any other choice turns the player's own stream off.
+    if(!jellyfinQueue_ && mediaOpen_) {
+        const int stream=index>=0?subtitleTracks_[index].embedded:-1;
+        embeddedSubtitleText_.clear();embeddedCueNumber_=0;
+        if(stream>=0 || player_->activeSubtitleTrack()>=0)player_->setActiveSubtitleTrack(stream);
+    }
     // Per-file memory for this session: a path, or empty for the explicit Off.
     if(!subtitleMediaPath_.isEmpty())
         subtitleChoice_.insert(subtitleMediaPath_,index<0?QString{}:subtitleTracks_[index].path);
@@ -4356,6 +4414,7 @@ const ImageCue* Shell::subtitleImageCue() {
 }
 QString Shell::subtitleCueText() {
     if(subtitleTrackIndex_<0 || subtitleTrackIndex_>=subtitleTracks_.size()){subtitleCueNumber_=0;return {};}
+    if(subtitleTracks_[subtitleTrackIndex_].embedded>=0){subtitleCueNumber_=embeddedSubtitleText_.isEmpty()?0:embeddedCueNumber_;return embeddedSubtitleText_;}
     if(subtitleTracks_[subtitleTrackIndex_].image){subtitleImageCue();return {};}
     const auto& cues=subtitleTracks_[subtitleTrackIndex_].cues;
     const qint64 at=player_->position();
@@ -4457,6 +4516,71 @@ void Shell::chooseAudioTrack(int index) {
         refreshPlayerOptions();
     });
     emit changed();
+}
+// Playback speed (audit/JELLYFIN-PLAYER.md phase 2). QMediaPlayer::setPlaybackRate takes the rate and the read-back is what the panel
+// shows, so a backend that keeps its old rate is reported as it is. There is no audio delay (A/V sync offset): Qt Multimedia exposes
+// no such setting on QMediaPlayer or QAudioOutput, so no row is offered.
+void Shell::openSpeedList() {
+    optionsParent_=options_;optionsNested_=true;optionsTitle_=tr("Playback Speed");
+    options_.clear();optionsSelection_=0;
+    const auto& steps=jfplayer::speedSteps();
+    for(int i=0;i<steps.size();++i) {
+        MenuOption row{jfplayer::speedLabel(steps[i]),OptionCommand::PlayerSpeedTarget};
+        row.index=i;row.active=std::abs(steps[i]-mediaSpeed_)<0.001;
+        row.note=steps[i]==1.0?tr("Normal speed."):tr("The player is asked for this rate and the panel then reads it back.");
+        if(row.active)optionsSelection_=i;
+        options_.push_back(row);
+    }
+    interactionAudio_.play(InteractionAudio::Cue::Options);
+    emit changed();
+}
+void Shell::chooseSpeed(int index) {
+    const auto& steps=jfplayer::speedSteps();
+    if(index<0 || index>=steps.size() || !mediaOpen_ || photoOpen())return;
+    const double wanted=steps[index];
+    resetOptions();
+    player_->setPlaybackRate(wanted);
+    const double got=player_->playbackRate();
+    mediaSpeed_=got>0?got:1.0;
+    if(std::abs(got-wanted)<0.01) {
+        qInfo().noquote()<<"media: playback speed"<<jfplayer::speedLabel(wanted);
+        notify(QStringLiteral("Playback"),tr("Speed: %1").arg(jfplayer::speedLabel(wanted)));
+    } else {
+        qWarning().noquote()<<"media: playback speed"<<jfplayer::speedLabel(wanted)<<"requested; the player reports"<<got;
+        notify(QStringLiteral("Playback"),tr("This player kept %1 instead of %2.").arg(jfplayer::speedLabel(mediaSpeed_),jfplayer::speedLabel(wanted)));
+    }
+    interactionAudio_.play(InteractionAudio::Cue::Confirm);
+    emit changed();
+}
+// Embedded subtitle streams of a local file. QMediaPlayer reports them (subtitleTracks) and takes setActiveSubtitleTrack; the text of
+// the active one reaches the video sink (subtitleTextChanged) and is drawn like a sidecar cue. They follow the sidecars in
+// subtitleTracks_, so the per-title choice (an index into that list, media/choices) covers both. Called again if the player reports
+// its tracks after the media loaded.
+void Shell::appendEmbeddedSubtitles() {
+    if(jellyfinQueue_ || !mediaOpen_ || photoOpen())return;
+    const QString active=subtitleTrackIndex_>=0 && subtitleTrackIndex_<subtitleTracks_.size()?subtitleTracks_[subtitleTrackIndex_].path:QString{};
+    for(int i=int(subtitleTracks_.size())-1;i>=0;--i)if(subtitleTracks_[i].embedded>=0)subtitleTracks_.remove(i);
+    const auto reported=player_->subtitleTracks();
+    for(int i=0;i<reported.size() && i<16;++i) {
+        QString label=reported[i].value(QMediaMetaData::Language).toString().trimmed();
+        const QString title=reported[i].value(QMediaMetaData::Title).toString().trimmed();
+        if(label.isEmpty())label=title;
+        else if(!title.isEmpty() && title.compare(label,Qt::CaseInsensitive)!=0)label+=" ("+title+")";
+        if(label.isEmpty())label=tr("Track %1").arg(i+1);
+        subtitles::Track track;
+        track.embedded=i;track.path=QStringLiteral("embedded#%1").arg(i);track.name=tr("%1 (embedded)").arg(label);track.format=QStringLiteral("embedded");
+        subtitleTracks_.push_back(track);
+    }
+    subtitleTrackIndex_=-1;
+    for(int i=0;i<subtitleTracks_.size();++i)if(!active.isEmpty() && subtitleTracks_[i].path==active)subtitleTrackIndex_=i;
+    if(subtitleLog_)qInfo().noquote()<<"subtitle: the player reports"<<reported.size()<<"embedded subtitle stream(s)";
+}
+// After a late report of the embedded streams: bring back what this title was last played with when that is one of them.
+void Shell::applyEmbeddedSubtitleChoice() {
+    if(jellyfinQueue_ || subtitleTrackIndex_>=0 || subtitleMediaPath_.isEmpty())return;
+    const auto remembered=recallChoice();
+    if(remembered.subtitle>=0 && remembered.subtitle<subtitleTracks_.size() && subtitleTracks_[remembered.subtitle].embedded>=0)
+        applySubtitleTrack(remembered.subtitle);
 }
 void Shell::showEntryInformation(const Entry& entry) {
     // Empty save-data utility rows are notices/commands, not saves with metadata to inspect.
@@ -4690,6 +4814,8 @@ void Shell::back() {
         clearMessage();
         if(settingsWrite_.stage==WriteStage::FinishOk || settingsWrite_.stage==WriteStage::FinishFailed)finishSettingWrite();
     }
+    // Circle on the Play Next Episode countdown cancels it and stays on the finished episode.
+    else if(mediaOpen_ && nextOffer_.active){cancelNextOffer();status_=tr("Next episode cancelled");emit changed();}
     else if(mediaOpen_){
         // Leaving playback remembers where it was, so reopening resumes there. Ten seconds in and
         // fifteen from the end are not worth remembering on long media; short clips use a tenth.
@@ -4700,6 +4826,7 @@ void Shell::back() {
         else clearResumePosition(resumePath_);
         resumePath_.clear();resumePending_=0;mediaDisplayPinned_=false;
         ++photoRequest_;++mediaRequest_;jellyfinRequest_=0;finishJellyfinPlayback();jellyfinQueue_=false;mediaOpen_=false;galleryPaths_.clear();mediaQueue_.clear();mediaFailures_=0;slideshow_.stop();photo_={};player_->stop();player_->setSource({});loading_=false;status_.clear();emit mediaFrame({});
+        cancelNextOffer();nextLookup_=0;mediaSpeed_=1.0;player_->setPlaybackRate(1.0);embeddedSubtitleText_.clear();
         // Nothing is playing, so no subtitle file or audio track is current. The per-file choice stays in
         // subtitleChoice_, which is what makes reopening the same file come back on the same track.
         subtitleTracks_.clear();subtitleTrackIndex_=-1;subtitleCueNumber_=0;subtitleMediaPath_.clear();++subtitleGeneration_;
@@ -5306,10 +5433,16 @@ void Shell::abandonFailedMedia() {
 void Shell::advanceMedia(bool failed,const QString& error) {
     if(jellyfinQueue_) {
         // The failing stream's own record and URL are read before finishJellyfinPlayback() clears them.
-        const auto issue=jellyfinStreamIssue_;const QUrl streamUrl=jellyfinPlayback_.url;
+        const auto issue=jellyfinStreamIssue_;const QUrl streamUrl=jellyfinPlayback_.url;const QString finishedId=jellyfinPlayback_.itemId;
         finishJellyfinPlayback(!failed);
         if(failed){++mediaRequest_;jellyfinRequest_=0;loading_=false;player_->stop();status_="Playback stopped";beginJellyfinFailureReport(error,issue,streamUrl);emit changed();return;}
+        // An episode that ended asks the server what comes next (Play Next Episode); the queue waits for the answer.
+        if(beginNextEpisodeLookup(finishedId))return;
     }
+    advanceMediaQueue(failed,error);
+}
+// What happens when a title ends or fails and nothing else is offered: the next row of the queue, or the end of it.
+void Shell::advanceMediaQueue(bool failed,const QString& error) {
     if(mediaQueue_.empty())return;
     if(failed) {
         if(qEnvironmentVariableIsSet("XMB_MEDIA_TRACE"))qInfo()<<"media queue: rejected"<<mediaTitle_<<error;

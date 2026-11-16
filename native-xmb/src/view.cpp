@@ -2709,6 +2709,16 @@ void View::drawScene(QPainter& p) {
             if(!cue.isEmpty())drawSubtitle(p,cue);
             else if(const auto* picture=shell_.subtitleImageCue())drawImageSubtitle(p,*picture,videoRect);
         }
+        // Play Next Episode (Jellyfin): the countdown after an episode ends. Cross plays the next one now, Circle cancels.
+        if(shell_.videoOpen() && shell_.message().isEmpty()) {
+            const QString offer=shell_.nextEpisodePrompt();
+            if(!offer.isEmpty()) {
+                p.save();p.setPen(Qt::NoPen);p.setBrush(QColor(0,0,0,210));
+                p.drawRoundedRect(QRectF(260,740,1400,100),14,14);
+                p.restore();
+                text({290,756,1340,68},offer,26,Qt::white,Qt::AlignHCenter|Qt::AlignVCenter);
+            }
+        }
         // Surface B2 owns the bottom band while it is up: the audio player's own chrome (queue line,
         // title, hint sentence, bar, time) fades out with the panel's 150 ms ease, so the panel is not
         // read through a bar that belongs to another surface. Video and photo are untouched (panelDim 1).

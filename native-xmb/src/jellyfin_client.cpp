@@ -196,6 +196,9 @@ JellyfinItem parseItem(const QJsonObject& json) {
     result.durationMs = millisecondsFromTicks(json.value(QStringLiteral("RunTimeTicks")));
     const QJsonObject userData = json.value(QStringLiteral("UserData")).toObject();
     result.played = userData.value(QStringLiteral("Played")).toBool(false);
+    result.favorite = userData.value(QStringLiteral("IsFavorite")).toBool(false);
+    const QString seriesId = json.value(QStringLiteral("SeriesId")).toString();
+    if (validId(seriesId)) result.seriesId = seriesId;
     result.resumeMs = millisecondsFromTicks(userData.value(QStringLiteral("PlaybackPositionTicks")));
     if (result.played || (result.durationMs > 0 && result.resumeMs >= result.durationMs))
         result.resumeMs = 0;
@@ -269,6 +272,7 @@ void JellyfinClient::cancelRequests(bool includeReports) {
     }
     replies_ = std::move(keep);
     if (includeReports) reportReplies_.clear();
+    flagAlias_.clear(); nextWait_.clear(); nextAlias_.clear(); homeAlias_.clear();
 }
 
 QUrl JellyfinClient::apiUrl(const QString& route) const {
@@ -604,11 +608,12 @@ quint64 JellyfinClient::playback(QString itemId, bool audio, int maxBitrateKbps,
                     QString::number(pickAudio ? audioStreamIndex : -1), audio);
 }
 
-QUrl JellyfinClient::homeUrl(HomeList kind, bool legacyRoute) const {
+QUrl JellyfinClient::homeUrl(HomeList kind, bool legacyRoute, const QString& libraryId) const {
     QUrl url;
     QUrlQuery query;
     query.addQueryItem(QStringLiteral("userId"), userId_);
-    query.addQueryItem(QStringLiteral("Limit"), kind == HomeList::Resume ? QStringLiteral("50") : QStringLiteral("40"));
+    query.addQueryItem(QStringLiteral("Limit"), kind == HomeList::Resume ? QStringLiteral("50") : kind == HomeList::Favorites ? QStringLiteral("100") :
+                                                  kind == HomeList::Latest ? QStringLiteral("30") : QStringLiteral("40"));
     query.addQueryItem(QStringLiteral("EnableUserData"), QStringLiteral("true"));
     query.addQueryItem(QStringLiteral("Fields"), QStringLiteral("Overview"));
     query.addQueryItem(QStringLiteral("EnableImageTypes"), QStringLiteral("Primary,Backdrop"));
@@ -617,6 +622,20 @@ QUrl JellyfinClient::homeUrl(HomeList kind, bool legacyRoute) const {
         url = apiUrl(legacyRoute ? QStringLiteral("Users/") + userId_ + QStringLiteral("/Items/Resume") : QStringLiteral("UserItems/Resume"));
         query.addQueryItem(QStringLiteral("MediaTypes"), QStringLiteral("Video"));
         query.addQueryItem(QStringLiteral("Recursive"), QStringLiteral("true"));
+    } else if (kind == HomeList::Latest) {
+        // 10.9+: /Items/Latest. Before that: /Users/{id}/Items/Latest. The answer is a bare JSON array.
+        url = apiUrl(legacyRoute ? QStringLiteral("Users/") + userId_ + QStringLiteral("/Items/Latest") : QStringLiteral("Items/Latest"));
+        if (validId(libraryId)) query.addQueryItem(QStringLiteral("ParentId"), libraryId);
+    } else if (kind == HomeList::Favorites) {
+        if (legacyRoute) return QUrl();   // /Items has the same shape on every version: nothing older to try
+        url = apiUrl(QStringLiteral("Items"));
+        query.removeQueryItem(QStringLiteral("userId"));
+        query.addQueryItem(QStringLiteral("UserId"), userId_);
+        query.addQueryItem(QStringLiteral("Filters"), QStringLiteral("IsFavorite"));
+        query.addQueryItem(QStringLiteral("Recursive"), QStringLiteral("true"));
+        query.addQueryItem(QStringLiteral("IncludeItemTypes"), QStringLiteral("Movie,Series,Episode,Video,MusicVideo"));
+        query.addQueryItem(QStringLiteral("SortBy"), QStringLiteral("SortName"));
+        query.addQueryItem(QStringLiteral("SortOrder"), QStringLiteral("Ascending"));
     } else {
         if (legacyRoute) return QUrl();   // /Shows/NextUp has no older route
         url = apiUrl(QStringLiteral("Shows/NextUp"));
@@ -626,9 +645,61 @@ QUrl JellyfinClient::homeUrl(HomeList kind, bool legacyRoute) const {
     return url;
 }
 
-quint64 JellyfinClient::home(HomeList kind) {
+quint64 JellyfinClient::home(HomeList kind, QString libraryId) {
     if (!signedIn()) { const quint64 request = ++nextRequest_; fail(request, QStringLiteral("Sign in to Jellyfin first.")); return request; }
-    return send(Operation::Home, get(homeUrl(kind)), QString::number(kind == HomeList::NextUp ? 1 : 0) + QLatin1String(":0"));
+    if (!libraryId.isEmpty() && !validId(libraryId)) libraryId.clear();
+    // "<list code>#<attempt>#<library>": '#' cannot occur in a valid id.
+    return send(Operation::Home, get(homeUrl(kind, false, libraryId)),
+                QString::number(int(kind)) + QLatin1String("#0#") + libraryId);
+}
+
+QUrl JellyfinClient::userFlagUrl(UserFlag flag, const QString& itemId, bool legacyRoute) const {
+    const bool played = flag == UserFlag::Played;
+    QUrl url;
+    if (legacyRoute) {
+        url = apiUrl(QStringLiteral("Users/") + userId_ + (played ? QStringLiteral("/PlayedItems/") : QStringLiteral("/FavoriteItems/")) + itemId);
+        return url;
+    }
+    url = apiUrl((played ? QStringLiteral("UserPlayedItems/") : QStringLiteral("UserFavoriteItems/")) + itemId);
+    QUrlQuery query;
+    query.addQueryItem(QStringLiteral("userId"), userId_);
+    url.setQuery(query);
+    return url;
+}
+
+quint64 JellyfinClient::setUserFlag(QString itemId, UserFlag flag, bool value) {
+    if (!signedIn() || !validId(itemId)) {
+        const quint64 request = ++nextRequest_;
+        QTimer::singleShot(0, this, [this, request, itemId, flag, value] { emit userFlagChanged(request, itemId, int(flag), value, false); });
+        return request;
+    }
+    const QUrl url = userFlagUrl(flag, itemId);
+    auto* reply = value ? post(url, QByteArray()) : deleteResource(url);
+    return send(Operation::UserFlag, reply,
+                QString::number(int(flag)) + QLatin1Char('#') + (value ? QLatin1Char('1') : QLatin1Char('0')) + QLatin1String("#0#") + itemId);
+}
+
+QUrl JellyfinClient::nextUpUrl(const QString& seriesId) const {
+    QUrl url = homeUrl(HomeList::NextUp);
+    QUrlQuery query(url);
+    query.removeQueryItem(QStringLiteral("Limit"));
+    query.addQueryItem(QStringLiteral("Limit"), QStringLiteral("3"));
+    query.addQueryItem(QStringLiteral("seriesId"), seriesId);
+    url.setQuery(query);
+    return url;
+}
+
+quint64 JellyfinClient::nextEpisode(QString seriesId, QString currentId) {
+    const quint64 request = ++nextRequest_;
+    if (!signedIn() || !validId(seriesId) || !validId(currentId)) {
+        QTimer::singleShot(0, this, [this, request] { emit nextEpisodeReady(request, JellyfinItem{}, false); });
+        return request;
+    }
+    // The watched mark goes first: NextUp answers "the next unwatched episode", which is the finished one until the
+    // server has been told. Its answer (flag request id) releases the NextUp request.
+    const quint64 flag = setUserFlag(currentId, UserFlag::Played, true);
+    nextWait_.insert(flag, NextWait{request, seriesId, currentId});
+    return request;
 }
 
 void JellyfinClient::markPlayed(QString itemId) {
@@ -944,16 +1015,17 @@ void JellyfinClient::finish(QNetworkReply* reply, Operation operation, quint64 r
         return;
     }
     if (operation == Operation::Home) {
-        // context = "<list>:<attempt>". The current route is tried first; a 404/405 retries the older user-scoped
+        // context = "<list code>#<attempt>#<library>". The current route is tried first; a 404/405 retries the older user-scoped
         // route once (its answer is delivered under the original request id), and a server with neither answers an
         // empty list: having no Continue Watching route is not an error the viewer needs.
-        const QStringList parts = context.split(QLatin1Char(':'));
+        const QStringList parts = context.split(QLatin1Char('#'));
         if (homeAlias_.contains(request)) request = homeAlias_.take(request);
         if (!ok && (status == 404 || status == 405 || status == 501)) {
-            const auto kind = parts.value(0) == QLatin1String("1") ? HomeList::NextUp : HomeList::Resume;
-            const QUrl legacy = homeUrl(kind, true);
+            const int code = std::clamp(parts.value(0).toInt(), 0, 3);
+            const auto kind = static_cast<HomeList>(code);
+            const QUrl legacy = homeUrl(kind, true, parts.value(2));
             if (parts.value(1) == QLatin1String("0") && legacy.isValid() && !legacy.isEmpty()) {
-                const quint64 retry = send(Operation::Home, get(legacy), parts.value(0) + QLatin1String(":1"));
+                const quint64 retry = send(Operation::Home, get(legacy), parts.value(0) + QLatin1String("#1#") + parts.value(2));
                 homeAlias_.insert(retry, request);
                 return;
             }
@@ -961,6 +1033,51 @@ void JellyfinClient::finish(QNetworkReply* reply, Operation operation, quint64 r
             return;
         }
     }
+    // A watched or favourite flag: 10.9+ route first, the older user-scoped route once on a 404/405/501, then the answer.
+    // "<flag>#<value>#<attempt>#<item>". A next-episode lookup waiting behind a watched mark is released here.
+    if (operation == Operation::UserFlag) {
+        const QStringList parts = context.split(QLatin1Char('#'));
+        const auto flag = parts.value(0) == QLatin1String("1") ? UserFlag::Favorite : UserFlag::Played;
+        const bool value = parts.value(1) == QLatin1String("1");
+        const QString item = parts.mid(3).join(QLatin1Char('#'));
+        if (flagAlias_.contains(request)) request = flagAlias_.take(request);
+        if (!ok && (status == 404 || status == 405 || status == 501) && parts.value(2) == QLatin1String("0") && signedIn()) {
+            const QUrl legacy = userFlagUrl(flag, item, true);
+            auto* retry = value ? post(legacy, QByteArray()) : deleteResource(legacy);
+            const quint64 again = send(Operation::UserFlag, retry, parts.value(0) + QLatin1Char('#') + parts.value(1) + QLatin1String("#1#") + item);
+            flagAlias_.insert(again, request);
+            return;
+        }
+        if (nextWait_.contains(request)) {
+            const NextWait wait = nextWait_.take(request);
+            // Whether or not the mark was accepted, NextUp is asked: the stop report may have marked it already.
+            const quint64 lookup = send(Operation::NextEpisode, get(nextUpUrl(wait.seriesId)), wait.currentId);
+            nextAlias_.insert(lookup, wait.request);
+            return;
+        }
+        emit userFlagChanged(request, item, int(flag), value, ok);
+        return;
+    }
+    if (operation == Operation::NextEpisode) {
+        if (nextAlias_.contains(request)) request = nextAlias_.take(request);
+        JellyfinItem found;
+        bool have = false;
+        if (ok) {
+            const QJsonDocument parsed = QJsonDocument::fromJson(bytes);
+            const QJsonArray values = parsed.isArray() ? parsed.array() : parsed.object().value(QStringLiteral("Items")).toArray();
+            for (const auto& value : values) {
+                if (!value.isObject()) continue;
+                auto item = parseItem(value.toObject());
+                if (!validId(item.id) || item.id == context || item.type != QLatin1String("Episode") || item.played) continue;
+                found = std::move(item);
+                have = true;
+                break;
+            }
+        }
+        emit nextEpisodeReady(request, found, have);
+        return;
+    }
+
     // A subtitle stream is text, not JSON: the bytes go to the parser as they are, or empty on failure.
     if (operation == Operation::Subtitle || operation == Operation::SubtitleImage) {
         emit subtitleReady(request, context.toInt(), ok ? bytes : QByteArray{});
