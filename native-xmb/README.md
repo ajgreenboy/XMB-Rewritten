@@ -65,6 +65,11 @@ Local named-state captures and layer scoring: [verification harness](audit/VERIF
 The harness keeps user preferences separate, checks category/page state and reports failures; repeatable native
 captures are distinct from firmware-fidelity evidence.
 
+Before tagging a release, run the two CI checks locally: `bun work/ci-guard.ts` (the CMake options and targets, `tests/` and
+`.github/workflows/tests.yml` must agree; CI runs it too) and `powershell -NoProfile -ExecutionPolicy Bypass -File workci-config-build.ps1`
+(builds every test target with the CI option set and runs the argument-free runners). A runner that links in a local build but not in
+the CI set is otherwise only found after the tag.
+
 ### Sharing logs
 
 `XMB_LOG=<file>` and the launcher's session logs name the Windows account, the Tailscale host and audio devices.

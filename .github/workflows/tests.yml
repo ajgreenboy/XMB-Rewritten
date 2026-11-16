@@ -29,6 +29,17 @@ jobs:
       - name: Check out the source
         uses: actions/checkout@v4
 
+      # The wiring between CMakeLists.txt, tests/ and this file must agree (work/ci-guard.ts); a runner that is
+      # added in one place and forgotten in another otherwise only fails after a release tag.
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Check the test wiring
+        shell: pwsh
+        run: |
+          bun work/ci-guard.ts
+          if ($LASTEXITCODE) { throw "Test wiring check failed." }
+
       - name: Install Qt (MSVC 2022 64-bit)
         uses: jurplel/install-qt-action@v4
         with:
