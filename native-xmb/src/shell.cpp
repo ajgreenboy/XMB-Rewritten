@@ -395,6 +395,9 @@ void Shell::resolveNetworkColumn() {
         Entry entry=item(row.id,title,texture,container,Action::Unavailable);
         entry.source=source;
         if(!row.infoRsc.isEmpty())entry.detail=assets_.text(container,row.infoRsc);
+        // The Remote Play row is the bare plugin item (no info_rsc in the XMBML); the console shows explore_category_network's
+        // msg_remoteplay_explanation under it when focused (RPCS3 4.93, parity sweep 8).
+        else if(row.key==QLatin1String("seg_premo") || row.id==QLatin1String("premo"))entry.detail=assets_.text(container,"msg_remoteplay_explanation");
         const auto decision=actionFor(row.kind(),row);
         entry.action=decision.first;
         if(verbose)qInfo().noquote()<<"xmbml: network row"<<entry.id<<"key="+row.key
