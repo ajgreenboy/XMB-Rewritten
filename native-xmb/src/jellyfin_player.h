@@ -33,6 +33,19 @@ struct StopOutcome {
 // point; a position nearer the start than kMinResumeMs is no resume point; anything else resumes where it stopped.
 StopOutcome stopOutcome(qint64 positionMs, qint64 durationMs, bool completed);
 
+// ---- Audio (audit/MUSIC-PLAN-2026-11-16.md) ----------------------------------------------------------------
+// Only long audio (an audiobook, a podcast episode) keeps a resume point; a song always starts from the top.
+constexpr qint64 kAudioResumeMinMs = 20LL * 60 * 1000;
+bool audioResumable(qint64 durationMs);
+// The same as stopOutcome for audio: a song reaching its end (or 90 percent) is played with no resume point, and a song
+// left earlier keeps nothing; long audio follows stopOutcome exactly.
+StopOutcome audioStopOutcome(qint64 positionMs, qint64 durationMs, bool completed);
+// The resume position a music row may carry: the server's value for long audio, 0 for a song.
+qint64 audioRowResumeMs(qint64 serverResumeMs, qint64 durationMs);
+// Whether a finished audio item is also marked played explicitly. A song's play count belongs to the server's own rule on the
+// stop report, so only long audio (which keeps a resume point to clear) gets the explicit mark.
+bool audioNeedsPlayedMark(qint64 durationMs, bool played);
+
 // ---- Chapters --------------------------------------------------------------------------------------------
 struct Chapter {
     qint64 startMs = 0;

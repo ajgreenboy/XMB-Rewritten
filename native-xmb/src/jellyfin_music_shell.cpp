@@ -16,6 +16,7 @@
 #include "glyphs.h"
 #include "service_icons.h"
 #include "media_controls.h"
+#include "jellyfin_player.h"
 #include <QDir>
 #include <QUrl>
 #include <algorithm>
@@ -188,7 +189,7 @@ void Shell::buildJellyfinMusicPage(const JellyfinPage& result) {
         Entry e=musicRow(QStringLiteral("jellyfin:")+media.id,media.title,Action::JellyfinPlay,media.id);
         e.container=QStringLiteral("explore_plugin_full");e.texture=QStringLiteral("music_tex_album_pic");e.iconSized=true;
         e.mediaKind=QStringLiteral("Music");e.option=true;
-        e.resumeMs=media.resumeMs;e.durationMs=media.durationMs;e.played=media.played;
+        e.resumeMs=jfplayer::audioRowResumeMs(media.resumeMs,media.durationMs);e.durationMs=media.durationMs;e.played=media.played;e.favorite=media.favorite;
         auto meta=std::make_shared<Entry::MusicMeta>();meta->artist=media.artist;meta->album=media.album;meta->albumId=media.albumId;meta->albumTag=media.albumTag;
         QStringList info;
         if(!media.artist.isEmpty())info<<media.artist;

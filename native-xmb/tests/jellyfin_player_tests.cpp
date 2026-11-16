@@ -147,6 +147,25 @@ int main(int argc, char** argv) {
         check(speedLabel(1.0) == QLatin1String("1x") && speedLabel(1.25) == QLatin1String("1.25x") && speedLabel(0.5) == QLatin1String("0.5x") && speedLabel(2.0) == QLatin1String("2x") && speedLabel(1.5) == QLatin1String("1.5x"), "speed: labels without trailing zeros");
     }
 
+    // ---- audio: songs never resume, long audio does (audit/MUSIC-PLAN-2026-11-16.md) ------------------------------
+    {
+        constexpr qint64 song = 240000, book = 3600000;
+        check(!audioResumable(song) && !audioResumable(0) && !audioResumable(kAudioResumeMinMs - 1) && audioResumable(kAudioResumeMinMs) && audioResumable(book), "audio: 20 minutes is the line between a song and an audiobook");
+        const auto abandoned = audioStopOutcome(70000, song, false);
+        check(!abandoned.played && abandoned.resumeMs == 0, "audio: a song left at 1:10 keeps no resume point");
+        const auto finished = audioStopOutcome(0, song, true);
+        check(finished.played && finished.resumeMs == 0, "audio: a finished song is played with no resume point");
+        check(audioStopOutcome(216000, song, false).played, "audio: a song stopped at 90 percent counts as played");
+        check(!audioStopOutcome(215999, song, false).played, "audio: a song just under 90 percent does not");
+        const auto mid = audioStopOutcome(1800000, book, false);
+        check(!mid.played && mid.resumeMs == 1800000, "audio: an audiobook halfway keeps its position");
+        check(audioStopOutcome(5000, book, false).resumeMs == 0, "audio: an audiobook stopped under 10 s in keeps nothing");
+        check(audioStopOutcome(3500000, book, false).played && audioStopOutcome(3500000, book, false).resumeMs == 0, "audio: an audiobook at its end is played with no resume point");
+        check(!audioStopOutcome(70000, 0, false).played && audioStopOutcome(70000, 0, false).resumeMs == 0, "audio: an unknown duration is treated as a song");
+        check(audioRowResumeMs(90000, song) == 0 && audioRowResumeMs(90000, 0) == 0 && audioRowResumeMs(90000, book) == 90000 && audioRowResumeMs(-5, book) == 0, "audio: the row carries the server's position only for long audio");
+        check(audioNeedsPlayedMark(book, true) && !audioNeedsPlayedMark(song, true) && !audioNeedsPlayedMark(book, false), "audio: only a played long item gets the explicit mark");
+    }
+
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

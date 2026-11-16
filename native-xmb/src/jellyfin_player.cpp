@@ -28,6 +28,21 @@ StopOutcome stopOutcome(qint64 positionMs, qint64 durationMs, bool completed) {
     return out;
 }
 
+bool audioResumable(qint64 durationMs) { return durationMs >= kAudioResumeMinMs; }
+
+StopOutcome audioStopOutcome(qint64 positionMs, qint64 durationMs, bool completed) {
+    if (audioResumable(durationMs)) return stopOutcome(positionMs, durationMs, completed);
+    StopOutcome out;
+    out.played = completed || reachedPlayed(positionMs, durationMs);
+    return out;
+}
+
+qint64 audioRowResumeMs(qint64 serverResumeMs, qint64 durationMs) {
+    return audioResumable(durationMs) && serverResumeMs > 0 ? serverResumeMs : 0;
+}
+
+bool audioNeedsPlayedMark(qint64 durationMs, bool played) { return played && audioResumable(durationMs); }
+
 QVector<Chapter> normalizedChapters(QVector<Chapter> chapters) {
     chapters.erase(std::remove_if(chapters.begin(), chapters.end(), [](const Chapter& c) { return c.startMs < 0; }), chapters.end());
     std::stable_sort(chapters.begin(), chapters.end(), [](const Chapter& a, const Chapter& b) { return a.startMs < b.startMs; });

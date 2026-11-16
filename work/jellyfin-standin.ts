@@ -29,6 +29,7 @@ const hlsStatus = Number(opt("hls-status", "0")); // force master.m3u8 to answer
 const hlsBody = opt("hls-body", "Error processing request.");
 const noMusic = args.includes("--no-music");                 // the server has no music library (the Music column says so)
 const secondLibrary = args.includes("--second-library");       // a second music library (the Music page lists the libraries first)
+const audiobook = args.includes("--audiobook");                 // one 25 minute audio item ("The Long Story") that keeps a resume position
 const musicTranscode = args.includes("--music-transcode");     // audio is served through a Transcode answer (/Audio/{id}/universal)
 const extraSongs = Number(opt("extra-songs", "0"));            // filler songs, to page through a large library
 const musicStatus = Number(opt("music-status", "0"));          // force every music list to answer this status (error text test)
@@ -73,11 +74,17 @@ const isEpisode = (m: Movie) => m.id.startsWith("cccc");
 const everything = [...movies, ...episodes];
 // What the server remembers about this user's progress. Reports from the XMB change it, exactly as the real
 // server's UserDataManager would: a stop beyond 90 percent is "played" with no resume point.
-const userData = new Map<string, { ticks: number; played: boolean }>();
+const userData = new Map<string, { ticks: number; played: boolean; count?: number; last?: number }>();
+let playClock = 0;   // a counter standing in for LastPlayedDate: bigger = more recent
 const favorites = new Set<string>();   // items this user flagged as favourite
 const SERIES = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeee01";
 const reports: Array<{ kind: string; item: string; ticks: number | null; paused: unknown; session: string }> = [];
-const dataOf = (m: Movie) => userData.get(m.id) ?? { ticks: 0, played: false };
+const dataOf = (m: { id: string }) => userData.get(m.id) ?? { ticks: 0, played: false };
+// Keeps the play count and the last-played stamp when a flag or position changes (the real server's UserData is one record).
+const setData = (id: string, patch: { ticks: number; played: boolean }, counted = false) => {
+  const old = userData.get(id);
+  userData.set(id, { ...patch, count: (old?.count ?? 0) + (counted ? 1 : 0), last: counted ? ++playClock : old?.last });
+};
 // Chapters of a title: four marks, the second one unnamed.
 const chaptersOf = (m: Movie) => noChapters ? [] : [0, 1, 2, 3].map((i) => ({ StartPositionTicks: Math.floor(m.ticks / 4) * i, Name: i === 1 ? "" : "Chapter mark " + (i + 1) }));
 
@@ -162,6 +169,12 @@ albumDefs.forEach(([, , , names], ai) => names.forEach((name, ti) => tracks.push
   id: hex("3", tracks.length + 1), name, artist: albums[ai].artist, album: albums[ai], no: ti + 1,
   hz: 220 + 40 * tracks.length, ticks: 300000000, // 30 s of a sine tone, one pitch per track
 })));
+const LONG_AUDIO_TICKS = 12000000000;   // 20 minutes
+if (audiobook) {
+  const book: Album = { id: hex("2", 98), name: "Audiobooks", artist: artists[2], year: 2015, hue: 140, added: 0 };
+  albums.push(book);
+  tracks.push({ id: hex("3", 2000), name: "The Long Story", artist: book.artist, album: book, no: 1, hz: 262, ticks: 15000000000 });   // 25 minutes of metadata; the file is the 30 s tone
+}
 if (extraSongs > 0) {
   const filler: Album = { id: hex("2", 99), name: "Filler Collection", artist: artists[1], year: 2000, hue: 200, added: 0 };
   albums.push(filler);
@@ -176,11 +189,14 @@ for (const p of playlists) musicIds.set(p.id, { hue: 300 });
 const imageTag = (id: string) => "t" + id.slice(-3);
 const artistJson = (a: Artist) => ({ Id: a.id, Name: a.name, SortName: a.name.toLowerCase(), Type: "MusicArtist", IsFolder: true, ImageTags: { Primary: imageTag(a.id) } });
 const albumJson = (a: Album) => ({ Id: a.id, Name: a.name, SortName: a.name.toLowerCase(), Type: "MusicAlbum", IsFolder: true, AlbumArtist: a.artist.name, ProductionYear: a.year, ImageTags: { Primary: imageTag(a.id) } });
-const trackJson = (t: Track) => ({
+const trackJson = (t: Track) => {
+  const ud = dataOf(t);
+  return {
   Id: t.id, Name: t.name, Type: "Audio", MediaType: "Audio", IsFolder: false, RunTimeTicks: t.ticks, IndexNumber: t.no, ParentIndexNumber: 1,
   Artists: [t.artist.name], AlbumArtist: t.artist.name, Album: t.album.name, AlbumId: t.album.id, AlbumPrimaryImageTag: imageTag(t.album.id), ProductionYear: t.album.year,
-  UserData: { Played: false, PlaybackPositionTicks: 0 }, ImageTags: {},
-});
+  UserData: { Played: ud.played, PlaybackPositionTicks: ud.ticks, PlayCount: ud.count ?? 0, IsFavorite: favorites.has(t.id), ...(ud.last ? { LastPlayedDate: new Date(Date.UTC(2026, 10, 16, 0, 0, ud.last)).toISOString() } : {}) }, ImageTags: {},
+  };
+};
 const playlistJson = (p: { id: string; name: string }) => ({ Id: p.id, Name: p.name, Type: "Playlist", MediaType: "Audio", IsFolder: true, ImageTags: {} });
 
 // A mono 16-bit 22.05 kHz sine tone in a WAV container: the audio file the player can decode.
@@ -278,6 +294,7 @@ function musicRoutes(req: any, res: any, path: string, q: URLSearchParams, body:
     if (strict && !direct) return fail(400, "an audio DirectPlayProfile is required");
     const canDirect = !musicTranscode && String(direct?.Container ?? "").split(",").includes("wav");
     const playSessionId = "ps" + Math.random().toString(16).slice(2, 18);
+    sessions.set(playSessionId, { item: t.id, transcodeStarted: false });   // so the start / progress / stopped reports of this play are accepted in strict mode
     const source: any = { Id: t.id, Protocol: "File", Container: "wav", RunTimeTicks: t.ticks, SupportsDirectPlay: canDirect, SupportsDirectStream: false, SupportsTranscoding: true,
       MediaStreams: [{ Index: 0, Type: "Audio", Codec: "pcm_s16le", Channels: 1, DisplayTitle: "WAV 22 kHz mono", IsDefault: true }] };
     if (!canDirect) {
@@ -386,7 +403,7 @@ createServer(async (req, res) => {
     if (noFlags || (path.startsWith("/UserPlayedItems/") && legacyFlags)) return fail(404, "Not found: " + path);
     const target = everything.find((x) => x.id === m![1]);
     if (!target) return fail(404, "no item");
-    userData.set(target.id, { ticks: 0, played: false });
+    setData(target.id, { ticks: 0, played: false });
     reports.push({ kind: "unplayed", item: target.id, ticks: null, paused: null, session: "" });
     return send(res, 200, JSON.stringify({ Played: false, PlaybackPositionTicks: 0 }));
   }
@@ -395,7 +412,7 @@ createServer(async (req, res) => {
     if (noFlags || (path.startsWith("/UserPlayedItems/") && legacyFlags)) return fail(404, "Not found: " + path);
     const target = everything.find((x) => x.id === m![1]);
     if (!target) return fail(404, "no item");
-    userData.set(target.id, { ticks: 0, played: true });
+    setData(target.id, { ticks: 0, played: true });
     reports.push({ kind: "played", item: target.id, ticks: null, paused: null, session: "" });
     return send(res, 200, JSON.stringify({ Played: true, PlaybackPositionTicks: 0 }));
   }
@@ -511,15 +528,16 @@ createServer(async (req, res) => {
     try { info = JSON.parse(body.toString("utf8")); } catch { return fail(400, "bad json"); }
     const kind = path === "/Sessions/Playing" ? "start" : path === "/Sessions/Playing/Progress" ? "progress" : path === "/Sessions/Playing/Stopped" ? "stopped" : "";
     if (!kind) return fail(404, "Not found: " + path);
-    const target = everything.find((x) => x.id === info.ItemId);
+    const target = everything.find((x) => x.id === info.ItemId) ?? tracks.find((x) => x.id === info.ItemId);
     if (strict && !target) return fail(400, "ItemId missing or unknown");
     if (strict && !sessions.has(String(info.PlaySessionId ?? ""))) return fail(400, "PlaySessionId is not a session this server opened");
     if (strict && !Number.isInteger(info.PositionTicks)) return fail(400, "PositionTicks must be an integer");
     reports.push({ kind, item: String(info.ItemId ?? ""), ticks: info.PositionTicks ?? null, paused: info.IsPaused ?? null, session: String(info.PlaySessionId ?? "") });
     if (target && kind !== "start") {
       const played = dataOf(target).played;
-      if (kind === "stopped" && info.PositionTicks >= target.ticks * 0.9) userData.set(target.id, { ticks: 0, played: true });   // MaxResumePct
-      else if (info.PositionTicks > 0) userData.set(target.id, { ticks: info.PositionTicks, played: kind === "progress" ? played : false });
+      const song = "album" in target && target.ticks < LONG_AUDIO_TICKS;   // the server keeps a position for long audio only (a stand-in assumption)
+      if (kind === "stopped" && info.PositionTicks >= target.ticks * 0.9) setData(target.id, { ticks: 0, played: true }, "album" in target);   // MaxResumePct; a played audio item counts a play
+      else if (info.PositionTicks > 0 && !song) setData(target.id, { ticks: info.PositionTicks, played: kind === "progress" ? played : false });
     }
     return send(res, 204, "");
   }

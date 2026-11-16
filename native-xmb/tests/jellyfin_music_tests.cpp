@@ -369,6 +369,33 @@ int main(int argc, char** argv) {
             stream.close();
         }
     }
+    // ---- audio reports: start, progress, stopped (what keeps "recently played" and play counts right) ---------------------------------
+    {
+        JellyfinPlayback audio;
+        audio.audio = true; audio.itemId = kTrack; audio.mediaSourceId = kTrack; audio.playSessionId = QStringLiteral("ps0123456789abcdef");
+        audio.playMethod = QStringLiteral("DirectPlay");
+        const int before = int(fake.log.size());
+        client.reportPlayback(audio, 0, false, QStringLiteral("start"));
+        client.reportPlayback(audio, 10000, false, QStringLiteral("progress"));
+        client.reportPlayback(audio, 10000, true, QStringLiteral("progress"));
+        client.reportPlayback(audio, 240000, false, QStringLiteral("stop"));   // a finished 4:00 song is reported at its end
+        check(waitFor([&] { return fake.count("/Sessions/Playing") >= 4; }), "audio reports: four requests reach the server");
+        const auto body = [&](const char* path, int nth) {
+            int seen = 0;
+            for (int i = before; i < fake.log.size(); ++i) if (fake.log[i].path == path && seen++ == nth) return QJsonDocument::fromJson(fake.log[i].body).object();
+            return QJsonObject{};
+        };
+        const auto start = body("/Sessions/Playing", 0), progress = body("/Sessions/Playing/Progress", 0), paused = body("/Sessions/Playing/Progress", 1), stop = body("/Sessions/Playing/Stopped", 0);
+        check(start.value("ItemId").toString() == kTrack && start.value("PositionTicks").toInteger() == 0 && start.value("PlayMethod").toString() == QLatin1String("DirectPlay"), "audio reports: start names the item, position 0 and the play method");
+        check(progress.value("PositionTicks").toInteger() == 100000000 && !progress.value("IsPaused").toBool(), "audio reports: progress carries the position in ticks");
+        check(paused.value("IsPaused").toBool(), "audio reports: a pause is a progress report with IsPaused");
+        check(stop.value("PositionTicks").toInteger() == 2400000000LL && !stop.value("IsPaused").toBool(), "audio reports: a finished song stops at its end (so the server counts it played)");
+        check(start.value("PlaySessionId").toString() == QLatin1String("ps0123456789abcdef") && stop.value("MediaSourceId").toString() == kTrack, "audio reports: the play session and media source ride along");
+        bool leaked = false;
+        for (int i = before; i < fake.log.size(); ++i) if (fake.log[i].rawQuery.contains(kToken) || fake.log[i].body.contains(kToken)) leaked = true;
+        check(!leaked, "audio reports: no credential in a url or a body");
+        check(tokenOf(fake.last("/Sessions/Playing/Stopped")) == kToken, "audio reports: authorised by header");
+    }
     // ---- the reason an error carries --------------------------------------------------------------------------------------------------
     {
         const auto failWith = [&](int status, const QByteArray& body) {

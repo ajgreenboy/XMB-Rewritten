@@ -602,8 +602,10 @@ void Shell::finishJellyfinPlayback(bool completed) {
             .arg(completed?" (reached the end)":"");
         // Reaching the end or 90 percent is "watched": the server is told so explicitly (idempotent next to its own
         // rule on the stop report), and the resume point goes. A stop near the start keeps no resume point.
-        const auto outcome=jfplayer::stopOutcome(at,duration,completed);
-        if((jellyfinStarted_ || completed) && outcome.played && !jellyfinPlayback_.audio) {
+        const auto outcome=jellyfinPlayback_.audio?jfplayer::audioStopOutcome(at,duration,completed):jfplayer::stopOutcome(at,duration,completed);
+        // Audio: a song's play count is the server's own rule on the stop report (a second mark could count it twice); only long
+        // audio (audiobook, podcast) is marked explicitly, which also clears its resume point.
+        if((jellyfinStarted_ || completed) && outcome.played && (!jellyfinPlayback_.audio || jfplayer::audioNeedsPlayedMark(duration,outcome.played))) {
             qInfo().noquote()<<QString("jellyfin: marking %1 watched (%2 of %3 ms)").arg(id).arg(at).arg(duration);
             jellyfin_.markPlayed(id);
         }
