@@ -51,6 +51,7 @@ namespace xmb {
 class MusicTap;
 class Assets;
 class SteamArtwork;
+struct SteamCmdUi;   // steamcmd_shell.cpp
 class RawgArtwork;
 enum class Action { Unavailable, SettingsPage, SettingChoices, SetSetting, EditName, CreateUser, SelectUser, Wallpaper, Theme, Information, Library, ChooseLibrary, File, Folder, Launch, LaunchSteam, InstallSteam, SteamFolder, SteamStoreBrowse, SteamStoreSection, LaunchApp, OpenUrl, RefreshContent, RefreshFriends, ImportApps, ArtworkSettings, JellyfinApp, JellyfinFolder, JellyfinPlay, JellyfinMore, JellyfinSignOut, SteamDownloads,
     // A free-text search of the signed-in server's own library: the row asks the view for the XMB
@@ -79,6 +80,9 @@ enum class Action { Unavailable, SettingsPage, SettingChoices, SetSetting, EditN
     // binds a PSN account, and no local frame shows a console account-switch page, so the surface is this
     // app's ordinary page of rows (see openSteamAccounts()).
     SteamAccounts, SteamAccountSwitch,
+    // SteamCMD (steamcmd_shell.cpp, audit/STEAMCMD.md): every row of the SteamCMD pages and of its jobs in Download
+    // Management. Entry::value is "command|argument"; the shell decides what it means for the page it is on.
+    SteamCmd,
     // One group folder of a page the item menu's Group Content rebuilt (an "A".."Z"/"#" letter row). Its
     // value is the group's key; activating it pushes that key's rows. It exists only inside a grouped page.
     GroupFolder,
@@ -258,6 +262,8 @@ enum class OptionCommand { Activate, Information,
     CopyPlural, DeletePlural, SelectAll, DeselectAll, MultiSelectDecide, MultiSelectCancel,
     // A Steam game row's hand-offs to the Steam client (steam:// links); MenuOption::index picks which.
     SteamLink,
+    // SteamCMD: index 0 install, 1 update, 2 validate (the title's Steam app id is the row's value); SteamCmdSetup opens its page.
+    SteamCmdJob, SteamCmdSetup,
     // A user row's menu (explore_plugin table 0x27dc40, FUN_0008cdf4): Log Out, Automatic Login, Delete and
     // Information with two or more users, Information alone with one. Delete runs the traced two-step ask.
     UserLogOut, UserAutoLogin, UserDelete,
@@ -561,6 +567,19 @@ public:
     // result page carrying prompt.outcomeText or the real failure. No credential is read, written or logged;
     // nothing starts before both steps are confirmed (SteamSwitchConfirmation).
     void openSteamAccounts();
+    // ---- SteamCMD (steamcmd_shell.cpp, audit/STEAMCMD.md) -----------------------------------------------
+    // Installs, updates and validates Steam games with Valve's SteamCMD instead of handing them to the client window.
+    // The XMB collects the user name, the password and the Steam Guard code on its own keyboard (masked), writes them
+    // to SteamCMD's stdin and nowhere else, and keeps nothing: SteamCMD caches its own login token.
+    void openSteamCmdPage();
+    void activateSteamCmd(const Entry& entry);
+    bool steamCmdBack();                                   // Circle on a SteamCMD page; true when it handled it
+    void steamCmdField(const QString& field,const QString& value);
+    bool steamCmdReady() const;                            // steamcmd.exe is found and an account name is saved
+    void steamCmdStartJob(const QString& appId,const QString& title,int kind);
+    void steamCmdPump();
+    QVector<Entry> steamCmdJobRows() const;
+    void steamCmdRefreshJobRows();
     void openSaveData(const QString& kind);
     bool steamAccountsOpen() const;
     // The accounts on the open page, for the dump and the scripted check.
@@ -1223,7 +1242,7 @@ private:
     int columnSink_=0;
     // `grouped` is a page the item menu's Group Content level rebuilt into letter folders: `groupedSource` keeps
     // the ungrouped rows so All can put them back without a rescan, and the folders' rows are the same entries.
-    struct Page { QString title; QVector<Entry> entries; int selection=0; QString directory; bool jellyfin=false,jellyfinViews=false,jellyfinSearch=false; QString jellyfinParent; QString jellyfinMusic,jellyfinLibrary; QString jellyfinHome; int jellyfinStart=0; bool downloads=false; bool continuePage=false; bool signIn=false; bool jfSetup=false; bool steamAccounts=false; bool grouped=false; QString groupKey; QVector<Entry> groupedSource; bool sysconfPlugin=false; QString playlistsType,playlistId; QString spotify,spotifyContext; QString dlna; int dlnaServer=-1; QString tailscale; QString wol,ha; bool weather=false; bool systemCheck=false; QString userInfo; int userInfoStep=0; bool browse=false; QString browsePath; QString browseFiles; bool libraryRoot=false; };
+    struct Page { QString title; QVector<Entry> entries; int selection=0; QString directory; bool jellyfin=false,jellyfinViews=false,jellyfinSearch=false; QString jellyfinParent; QString jellyfinMusic,jellyfinLibrary; QString jellyfinHome; int jellyfinStart=0; bool downloads=false; QString steamCmd; bool continuePage=false; bool signIn=false; bool jfSetup=false; bool steamAccounts=false; bool grouped=false; QString groupKey; QVector<Entry> groupedSource; bool sysconfPlugin=false; QString playlistsType,playlistId; QString spotify,spotifyContext; QString dlna; int dlnaServer=-1; QString tailscale; QString wol,ha; bool weather=false; bool systemCheck=false; QString userInfo; int userInfoStep=0; bool browse=false; QString browsePath; QString browseFiles; bool libraryRoot=false; };
     QVector<Page> pages_;
     bool psMenu_=false;              // the PS-button system menu is showing
     bool desktopMode_=false;         // the XMB window is hidden for Desktop Mode (main.cpp DesktopMode)
@@ -1377,6 +1396,8 @@ private:
     bool mediaDisplayPinned_=false;
     // ---- Steam accounts page state (Users > Steam Account) --------------------------------------------
     QVector<SteamAccount> steamAccounts_;
+    std::shared_ptr<SteamCmdUi> steamCmd_;   // created on first use; its Secret members wipe themselves
+    SteamCmdUi& steamCmdState();
     QString steamAccountsError_;
     SteamSwitchPrompt steamSwitch_;
     SteamSwitchConfirmation steamSwitchConfirmation_;

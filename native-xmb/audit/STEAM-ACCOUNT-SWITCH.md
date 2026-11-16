@@ -33,9 +33,19 @@ A current Steam client writes `AutoLogin` (and a lowercase `timestamp`) instead 
 HTPC's own file is in that form. The rewrite handles both generations, which is why `AutoLogin` is kept exclusive to
 the target when the file uses it.
 
-Never read, written or logged: passwords, web tokens, cookies, `ssfn*` files, `ConnectCache`, the credentials in
-`config.vdf`, anything under `userdata`. Steam is never started with `-login`, a user name, a password or a token. The
-log carries file paths, the registry key and value names, and the account's login name; no secret.
+Never read, written or logged **by the account switch**: passwords, web tokens, cookies, `ssfn*` files, `ConnectCache`,
+the credentials in `config.vdf`, anything under `userdata`. Steam is never started with `-login`, a user name, a password
+or a token. The log carries file paths, the registry key and value names, and the account's login name; no secret.
+
+**What is now true about passwords in the XMB as a whole (SteamCMD, [STEAMCMD.md](STEAMCMD.md)).** The old sentence
+"the XMB never handles a password" no longer holds for the whole application, by design, in exactly one place: the
+**SteamCMD sign-in page** (Users > Steam Account > SteamCMD > Sign In) takes the Steam account name, the password and a
+Steam Guard code on the XMB keyboard and writes them to the stdin of Valve's `steamcmd.exe`, a separate program that is
+not the Steam client. That is the only place a Steam password or code enters the XMB; they are held in memory only from
+the keyboard until SteamCMD has read them, then overwritten, and are never in a file, a setting, a log line, a command
+line or an environment variable (tests assert this). The account switch described in this file is unchanged and still
+reads and writes no credential; it never touches SteamCMD, and SteamCMD never touches the Steam client's login, registry
+or files.
 
 ## Why this is safe
 

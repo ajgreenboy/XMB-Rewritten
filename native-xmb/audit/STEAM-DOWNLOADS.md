@@ -1,6 +1,6 @@
 # Steam download state: verified local sources for the XMB download page
 
-Status: `src/steam_downloads.{h,cpp}` implements the scanner and the UI text helper. It is compiled
+Status: SteamCMD jobs also appear on the page (section 11). `src/steam_downloads.{h,cpp}` implements the scanner and the UI text helper. It is compiled
 into the app (`CMakeLists.txt`, main executable and the optional `xmb-steam-client` target) and is
 exposed as a report-only CLI in `main.cpp`: `--steam-root <dir>` plus
 `--steam-downloads-report <file.json>`, with `XMB_STEAM_DOWNLOADS_LOG=1` for the qInfo dump. It is now
@@ -548,3 +548,18 @@ harness file, threshold or reference was edited by this work.
 Not touched: `view.cpp`/`view.h`, `main.cpp`, `steam_downloads.{h,cpp}`, `CMakeLists.txt`, the harness
 (`work/ab-layers.ts`, its thresholds and references), and anything under the firmware.
 
+## 11. SteamCMD jobs on the same page
+
+Implemented on `wt/steamcmd` ([STEAMCMD.md](STEAMCMD.md)). When the XMB installs, updates or validates a Steam game with
+SteamCMD, the Download Management page lists that job **above** the client's own rows, from the job's own state and
+SteamCMD's own output (`Update state (0x61) downloading, progress: 43.00 (410 / 953)` becomes "SteamCMD - Downloading
+43% (410 B of 953 B)"; nothing is estimated or invented):
+
+- the row id is `download:steamcmd:<n>`; Cross on a running job stops it, on a waiting or finished one removes it;
+- a page with a job is never the "Steam could not be read" error page, because the job is real even if the client's files
+  cannot be scanned; `steamDownloadRows()` clears the scanner error while a job exists;
+- the job rows are refreshed in place (about four times a second at most) without a rescan of the client's files; the
+  5 s page reload keeps them;
+- the information panel of a job row shows its status, task, app id and folder;
+- the old hand-off remains: when SteamCMD is not set up, an install is still `steam://install/<id>` and its progress is
+  still read from the client's manifests exactly as sections 1 to 10 describe.

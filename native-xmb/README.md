@@ -221,11 +221,22 @@ Open **Game → Artwork Settings**, enter a [RAWG API key](https://rawg.io/apido
 **Switching Steam accounts.** **Users > Steam Account** lists the accounts this PC's Steam remembers. Choosing one asks two
 questions (Close Steam, Start Steam) and then, if that account has a saved sign-in (Remember my password was ticked once),
 closes Steam, selects the account for Steam's own automatic sign-in, starts Steam and reports "Signed in as <name>" once
-Steam's own record names it. The XMB never handles a password, token or session file. What it writes is exactly:
+Steam's own record names it. The account switch never handles a password, token or session file (the one place the XMB
+takes a Steam password is the SteamCMD sign-in below). What it writes is exactly:
 `configloginusers.vdf` (account flags only, after a timestamped `loginusers.vdf.xmb-backup-<time>` copy next to it) and
 the `AutoLoginUser` / `RememberPassword` values under `HKCUSoftwareValveSteam`; a failure puts both back. An account
 without a saved sign-in is not changed: Steam restarts and the page says to sign in as it once inside Steam. Details,
 flow and test seams: [audit/STEAM-ACCOUNT-SWITCH.md](audit/STEAM-ACCOUNT-SWITCH.md).
+
+**Installing with SteamCMD.** Optionally, **Users > Steam Account > SteamCMD** sets up Valve's command-line Steam client
+([audit/STEAMCMD.md](audit/STEAMCMD.md)): choose its folder, let the XMB look for it, or download it (only after an
+on-screen confirmation that names the exact source and destination). **Sign In** takes your Steam account name, password
+and Steam Guard code (or an approval on your phone) on the XMB's own keyboard and hands them to SteamCMD only; they are
+kept in memory just until SteamCMD has read them and are never stored, logged or put on a command line (SteamCMD keeps
+its own sign-in). With that done, Cross on a game that is not installed, and **Install / Update / Validate with
+SteamCMD** on the item menu, run in the XMB with SteamCMD's own progress on the Download Management page; without it
+everything is the `steam://install` hand-off above. Games still start in the Steam client. Everything against a real
+SteamCMD is untested so far.
 
 **Import Games and Apps** reads a versioned JSON manifest. The same tool is available without opening XMB:
 

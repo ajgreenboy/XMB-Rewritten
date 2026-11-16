@@ -38,7 +38,10 @@ QStringList Preferences::sharedKeys() {
             // D9: HDMI-CEC TV control belongs to the TV and the machine, not to a profile.
             QStringLiteral("cec/tvOnAtStart"),QStringLiteral("cec/standbyOnTurnOff"),
             // Steam background mode (audit/STEAM-HIDDEN.md) belongs to the machine the TV is on.
-            QStringLiteral("steam/background")};
+            QStringLiteral("steam/background"),
+            // SteamCMD (audit/STEAMCMD.md): where it is, which account name it was signed in with, and the Steam
+            // library installs go to. Machine-wide, like the SteamCMD folder itself. Never a password or a code.
+            QStringLiteral("steamcmd/path"),QStringLiteral("steamcmd/account"),QStringLiteral("steamcmd/library")};
 }
 bool Preferences::isSharedKey(const QString& key) {
     return sharedKeys().contains(key);
@@ -109,6 +112,7 @@ QVariant Preferences::defaultValue(const QString& key) {
        key=="cec/tvOnAtStart" || key=="cec/standbyOnTurnOff")return false;
     if(key=="system/name")return QSysInfo::machineHostName().left(64);
     if(key=="clock/timeZone")return QString("System");
+    if(key.startsWith("steamcmd/"))return QString{};
     if(key=="appearance/wallpaper" || key=="appearance/theme" || key.startsWith("library/") ||
        key=="media/resume" || key=="media/choices")return QString{};
     return {};
@@ -136,6 +140,18 @@ bool Preferences::validBare(const QString& key,const QVariant& value) {
     if(value.metaType().id()!=QMetaType::QString)return false;
     const auto text=value.toString();
     if(text.contains(QChar(0)))return false;
+    if(key==QStringLiteral("steamcmd/path") || key==QStringLiteral("steamcmd/library"))
+        return text.size()<=1024 && !text.contains(QLatin1Char('\n')) && !text.contains(QLatin1Char('\r'));
+    if(key==QStringLiteral("steamcmd/account")) {
+        // The account NAME only: the same rule as steamcmd.h validAccountName (it ends up as one command-line word).
+        if(text.isEmpty())return true;
+        if(text.size()<3 || text.size()>64)return false;
+        for(const QChar c:text) {
+            const bool ok=(c>='0' && c<='9') || (c>='a' && c<='z') || (c>='A' && c<='Z') || c==QLatin1Char('_') || c==QLatin1Char('-') || c==QLatin1Char('.');
+            if(!ok)return false;
+        }
+        return true;
+    }
     if(key==QStringLiteral("debrid/realDebridToken"))return text.size()<=4096 && !text.contains(QLatin1Char('\n')) && !text.contains(QLatin1Char('\r'));
     if(key==QStringLiteral("debrid/flareSolverrUrl"))return text.size()<=256 && !text.contains(QLatin1Char('\n')) && !text.contains(QLatin1Char('\r')) && !text.contains(QLatin1Char(' '));
     // A global hotkey: one or more of Ctrl/Alt/Shift/Win, then Home/End/Insert/Delete/PageUp/PageDown, F1-F24, a letter or a
