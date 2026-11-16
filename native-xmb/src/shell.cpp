@@ -25,6 +25,7 @@
 #include "steam_overrides.h"
 #include "steam_family.h"
 #include "steam_downloads.h"
+#include "steamcmd.h"
 #include "steam_quit.h"
 #include "web_adopt.h"
 #include "web_launch.h"
@@ -1139,8 +1140,12 @@ QVector<Entry> Shell::steamDownloadRows(QString& error) const {
     error.clear();
     QElapsedTimer timer;timer.start();
     QVector<SteamDownload> downloads=scanSteamDownloads(QString(),&error);
-    QVector<Entry> rows;
-    rows.reserve(downloads.size());
+    // SteamCMD's own jobs come first. While one exists the page is not an error page, even when the Steam client's
+    // files cannot be read: the job is still real.
+    QVector<Entry> rows=steamCmdJobRows();
+    if(!rows.isEmpty())error.clear();
+    const int jobRowCount=int(rows.size());
+    rows.reserve(rows.size()+downloads.size());
     const QString cache=QDir(dataDirectory_).filePath("cache/steam");
     int decoded=0;
     for(const auto& download:downloads) {
@@ -1188,7 +1193,7 @@ QVector<Entry> Shell::steamDownloadRows(QString& error) const {
                 {"bytesStaged",double(download.bytesStaged)},{"bytesToStage",double(download.bytesToStage)},
                 {"fraction",download.fraction()},{"active",download.active},
                 {"paused",download.paused},{"queued",download.queued},
-                {"hasArtwork",!rows.value(i).artwork.isNull()}});
+                {"hasArtwork",!rows.value(jobRowCount+i).artwork.isNull()}});
         }
         QFile file(qEnvironmentVariable("XMB_DUMP_ENTRIES")+".dl.json");
         if(file.open(QIODevice::WriteOnly))file.write(QJsonDocument(QJsonObject{{"page","dl"},
@@ -2583,7 +2588,9 @@ void Shell::activate() {
     }
     case Action::SteamStoreSection:steamStore_.featured(entry.value);break;
     case Action::InstallSteam: {
-        // Steam owns the download: opening steam://install/<id> asks the client to install it.
+        // With SteamCMD set up and signed in, the XMB installs the game itself (audit/STEAMCMD.md); otherwise Steam
+        // owns the download: opening steam://install/<id> asks the client to install it.
+        if(steamCmdReady() && steamcmd::validAppId(entry.value)){steamCmdStartJob(entry.value,entry.title,0);break;}
         if(!QDesktopServices::openUrl(QUrl(SteamOwned::installUrl(entry.value))))
             showMessage(entry.title,"Steam could not be asked to install this game.",MessageKind::Page);
         else {
@@ -2698,6 +2705,7 @@ void Shell::activate() {
         beginResetWrite();
         break;
     case Action::SteamAccounts:openSteamAccounts();break;
+    case Action::SteamCmd:activateSteamCmd(entry);break;
     case Action::SteamAccountSwitch:steamAccountSelected(entry.value);break;
     // A letter folder of a page the item menu's Group Content rebuilt: it opens that key's rows as an ordinary
     // page, so Circle returns to the letter list and the item menu's All puts the page back together.
@@ -3114,7 +3122,7 @@ bool Shell::optionGroupable() const {
     // appearing over rows it cannot name. A page that is already grouped is still groupable (All / re-group).
     if(pages_.isEmpty() || entries().size()<2)return false;
     const auto& page=pages_.last();
-    if(page.signIn || page.jfSetup || page.downloads || page.jellyfin || page.jellyfinViews || page.jellyfinSearch
+    if(page.signIn || page.jfSetup || !page.steamCmd.isEmpty() || page.downloads || page.jellyfin || page.jellyfinViews || page.jellyfinSearch
        || page.steamAccounts || page.continuePage || page.userInfoStep)return false;
     for(const auto& entry:entries())if(entry.title.trimmed().isEmpty())return false;
     return true;
@@ -3256,6 +3264,23 @@ void Shell::buildOptions() {
             if(steamInstalled) {
                 link(QStringLiteral("Screenshots"),2,tr("This game's screenshots in Steam."));
                 link(QStringLiteral("Verify Game Files"),3,tr("Steam checks the installed files and repairs them."));
+            }
+            // SteamCMD (audit/STEAMCMD.md): the XMB installs, updates and checks the game itself. Without SteamCMD the
+            // one row is the way to set it up; the Steam-client hand-offs above stay as they are.
+            if(steamCmdReady()) {
+                const auto job=[&](const QString& title,int kind,const QString& note){
+                    addOption({"",title},OptionCommand::SteamCmdJob,"steam-game");options_.last().index=kind;options_.last().note=note;
+                };
+                if(steamInstalled) {
+                    job(QStringLiteral("Update with SteamCMD"),1,tr("SteamCMD brings the installed game up to date."));
+                    job(QStringLiteral("Validate with SteamCMD"),2,tr("SteamCMD checks every file and repairs what differs."));
+                } else {
+                    job(QStringLiteral("Install with SteamCMD"),0,tr("SteamCMD downloads the game into your Steam library."));
+                    link(QStringLiteral("Install in Steam Client"),5,tr("Hands the install to the Steam window instead."));
+                }
+            } else if(!steamInstalled) {
+                addOption({"",QStringLiteral("Set Up SteamCMD")},OptionCommand::SteamCmdSetup,"steam-game");
+                options_.last().note=tr("Install games from here, without the Steam window.");
             }
         }
         // Delete is the firmware's always-present row (A4 row 4). An installed Steam title's files belong to the
@@ -3485,7 +3510,7 @@ void Shell::toggleOptions() {
     // The sign-in page is a form, not a content list: its five rows have no item-level options, and a panel
     // offering "Start"/"Information" over a password field is exactly the kind of noise a credential page
     // should not have. Triangle therefore does nothing there.
-    if(!pages_.isEmpty() && (pages_.last().signIn || pages_.last().jfSetup))return;
+    if(!pages_.isEmpty() && (pages_.last().signIn || pages_.last().jfSetup || !pages_.last().steamCmd.isEmpty()))return;
     if(mediaOpen_) {
         // Triangle during video playback is the console's own control panel: subtitle, audio, repeat.
         // Anything else that reaches the player (music, a photo slideshow) keeps its old binding, so a
@@ -3703,12 +3728,25 @@ void Shell::optionsActivate() {
         interactionAudio_.play(InteractionAudio::Cue::Confirm);
         emit changed();
         break;
+    case OptionCommand::SteamCmdJob: {
+        const Entry row=entry;const int kind=option.index;
+        resetOptions();
+        interactionAudio_.play(InteractionAudio::Cue::Confirm);
+        steamCmdStartJob(row.value,row.title,kind);
+        break;
+    }
+    case OptionCommand::SteamCmdSetup:
+        resetOptions();
+        interactionAudio_.play(InteractionAudio::Cue::Confirm);
+        openSteamCmdPage();
+        emit changed();
+        break;
     case OptionCommand::SteamLink: {
         static const char* const routes[]={"steam://nav/games/details/%1","steam://store/%1","steam://open/screenshots/%1",
-                                           "steam://validate/%1","steam://uninstall/%1"};
+                                           "steam://validate/%1","steam://uninstall/%1","steam://install/%1"};
         resetOptions();
         bool numeric=false;entry.value.toULongLong(&numeric);
-        if(!numeric || option.index<0 || option.index>4)break;
+        if(!numeric || option.index<0 || option.index>5)break;
         const QUrl url(QString::fromLatin1(routes[option.index]).arg(entry.value));
         qInfo().noquote()<<"steam: hand-off"<<url.toString()<<"for"<<entry.title;
         if(QDesktopServices::openUrl(url))interactionAudio_.play(InteractionAudio::Cue::Confirm);
@@ -4642,7 +4680,7 @@ void Shell::showEntryInformation(const Entry& entry) {
     // A Download Management row already carries its own information page (State, Progress, the pause/
     // resume note), so the panel shows that page rather than wrapping it in the generic rows.
     if(entry.id.startsWith("download:")) {
-        showMessage(entry.value,MessageKind::Info);
+        showMessage(entry.action==Action::SteamCmd?entry.setting:entry.value,MessageKind::Info);
         qInfo().noquote()<<"shell: options information title="<<entry.title<<"(download page)";
         return;
     }
@@ -4879,6 +4917,7 @@ void Shell::back() {
     else if(setupHandleBack());   // D8: Circle on the setup Welcome page asks before leaving
     else if(!pages_.isEmpty() && pages_.last().signIn)cancelJellyfinSignInPage();
     else if(!pages_.isEmpty() && pages_.last().jfSetup)closeJellyfinSetupPage();   // abandons a check or a search in flight
+    else if(steamCmdBack());   // Circle on the SteamCMD sign-in page stops SteamCMD and wipes the password
     else if(multiSelect_)exitMultiSelect();   // Circle leaves the marking mode before it leaves the page
     else if(browseUp());   // Circle in the folder browser goes up one folder; at This PC it leaves the page
     else if(!pages_.isEmpty()){library_.cancel();scanRequest_=0;jellyfinRequest_=0;loading_=false;status_.clear();pages_.removeLast();}
@@ -6095,6 +6134,12 @@ void Shell::openSteamAccounts() {
         e.detail=detail;
         page.entries.push_back(std::move(e));
     }
+    {
+        // SteamCMD's settings page (audit/STEAMCMD.md): installs without the Steam window, signed in on this keyboard.
+        auto e=item("steamcmd:open",QObject::tr("SteamCMD"),"item_tex_plain_folder","explore_plugin_full",Action::SteamCmd,QStringLiteral("open"));
+        e.detail=steamCmdReady()?QObject::tr("Set up. Installs and updates games without the Steam window."):QObject::tr("Install, update and check Steam games without the Steam window.");
+        page.entries.push_back(std::move(e));
+    }
     if(!steamAccountsError_.isEmpty())
         qWarning().noquote()<<"steam accounts: partial list:"<<steamAccountsError_;
     qInfo().noquote()<<QStringLiteral("steam accounts: page opened rows=%1 active=%2 steamExe=%3")
@@ -6736,6 +6781,7 @@ void Shell::refreshJellyfinSignInPage() {
     page.selection=std::clamp(page.selection,0,std::max(0,int(page.entries.size())-1));
 }
 void Shell::setJellyfinSignInField(const QString& field,const QString& value) {
+    if(field.startsWith(QStringLiteral("steamcmd:"))){steamCmdField(field,value);return;}   // the password and the Steam Guard code go straight to a zeroed Secret
     if(field==QStringLiteral("jfsetup:address")){setJellyfinSetupAddress(value);return;}
     if(field==QStringLiteral("debrid:token")){saveDebridToken(value);return;}
     if(field==QStringLiteral("flaresolverr:url")){saveFlareSolverrUrl(value);return;}

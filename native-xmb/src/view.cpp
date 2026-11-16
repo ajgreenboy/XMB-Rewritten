@@ -5914,10 +5914,13 @@ void View::openOsk(const QString& title,const QString& initial,std::function<voi
 }
 void View::oskClose(bool accept) {
     auto done=std::move(osk_.done);
-    const auto value=osk_.preserveWhitespace?osk_.text:osk_.text.trimmed();
-    const bool allowEmpty=osk_.allowEmpty;
+    QString value=osk_.preserveWhitespace?osk_.text:osk_.text.trimmed();
+    const bool allowEmpty=osk_.allowEmpty,masked=osk_.masked;
+    QString typed=std::move(osk_.text);
     osk_=Osk{};
     if(accept && done && (allowEmpty || !value.isEmpty()))done(value);
+    // A masked field held a password or a code: the buffers this keyboard owned are overwritten, not just released.
+    if(masked){value.fill(QChar(0));typed.fill(QChar(0));}
     update();
 }
 void View::oskInsert(const QString& value) {

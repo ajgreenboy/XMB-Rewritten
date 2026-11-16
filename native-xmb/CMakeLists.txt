@@ -57,7 +57,7 @@ qt_add_executable(re-ps3-native
     src/text_renderer.cpp src/text_renderer.h
     src/font_raster.cpp src/font_raster.h
     src/profiles.cpp src/profiles.h
-    src/steam_library.cpp src/steam_library.h src/steam_vdf.cpp src/steam_vdf.h src/steam_quit.cpp src/steam_quit.h
+    src/steam_library.cpp src/steam_library.h src/steam_vdf.cpp src/steam_vdf.h src/steam_quit.cpp src/steam_quit.h src/steamcmd.cpp src/steamcmd.h src/steamcmd_shell.cpp
     src/steam_downloads.cpp src/steam_downloads.h src/steam_accounts.cpp src/steam_accounts.h src/steam_switch.cpp src/steam_switch.h src/steam_friends.cpp src/steam_friends.h
     src/steam_artwork.cpp src/steam_artwork.h src/steam_store.cpp src/steam_store.h src/steam_owned.cpp src/steam_owned.h src/steam_collections.cpp src/steam_collections.h src/steam_overrides.cpp src/steam_overrides.h src/steam_family.cpp src/steam_family.h
     src/content_registry.cpp src/content_registry.h src/web_launch.cpp src/web_launch.h src/app_editor.cpp src/app_editor.h
@@ -222,6 +222,20 @@ if(XMB_STEAM_QUIT_BUILD_TESTS)
             target_compile_options(xmb-steam-quit-tests PRIVATE /W4 /permissive- /utf-8)
         endif()
         add_dependencies(xmb-steam-quit-tests xmb-steam-quit-standin)
+    endif()
+endif()
+option(XMB_STEAMCMD_BUILD_TESTS "Build the SteamCMD client tests (prompt matching, progress, command lines, credential audit) and the fake steamcmd they drive" OFF)
+if(XMB_STEAMCMD_BUILD_TESTS)
+    qt_add_executable(xmb-steamcmd-tests tests/steamcmd_tests.cpp src/steamcmd.cpp src/steamcmd.h src/steam_vdf.cpp src/steam_vdf.h)
+    target_include_directories(xmb-steamcmd-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(xmb-steamcmd-tests PRIVATE Qt6::Core)
+    if(WIN32)
+        add_executable(xmb-steamcmd-standin tests/steamcmd_standin.cpp)
+        if(MSVC)
+            target_compile_options(xmb-steamcmd-standin PRIVATE /W4 /permissive- /utf-8)
+            target_compile_options(xmb-steamcmd-tests PRIVATE /W4 /permissive- /utf-8)
+        endif()
+        add_dependencies(xmb-steamcmd-tests xmb-steamcmd-standin)
     endif()
 endif()
 option(XMB_OVERLAY_BUILD_TESTS "Build the in-game live overlay stand-in game (borderless/windowed D3D11 window, never shipped)" OFF)
