@@ -161,9 +161,10 @@ private:
     struct FrameSample { qint64 at,cpu; bool swap,rebuilt,moving; double dt=0;qint64 gpu=0; };
     QString frameTracePath_;
     xmb::frametrace::Recorder frameLog_;   // XMB_FRAME_TRACE=1: the slow-frame log (frame_trace.h)
-    bool frameLogPsMenu_=false,frameLogOptions_=false,frameLogMessage_=false,frameLogOsk_=false;
+    bool frameLogPsMenu_=false,frameLogOptions_=false,frameLogMessage_=false,frameLogOsk_=false,frameLogJfSignIn_=false,frameLogAccounts_=false;
+    int frameLogDepth_=0;QString frameLogPage_,frameLogFocus_;   // the open page stack depth and the top page title, to label a page's first open
     QSet<QString> frameLogSeen_;
-    quint64 frameLogMisses_=0;qint64 frameLogMissNs_=0;
+    quint64 frameLogMisses_=0,frameLogLayouts_=0;qint64 frameLogMissNs_=0,frameLogLayoutNs_=0;
     void traceSurfaceTransitions();
     qint64 sceneNs_=0,iconNs_=0; // XMB_TEXT_COST: the last frame's drawScene and glass-icon pass, CPU ns
     QVector<FrameSample> frameTrace_;
@@ -567,7 +568,7 @@ private:
     // Idle prewarm of the labels every category's column will draw (audit/COLUMN-HITCH.md): the glyph tiles of each
     // row's title, value, second line and help text, nearest category first, a time-boxed slice per quiet frame, so
     // the first visit to a column finds its tiles in the atlas. XMB_COLUMN_PREWARM=0 turns it off.
-    struct ColumnWarmJob { QString text;int size=0,flags=0;qreal width=0; };
+    struct ColumnWarmJob { QString text;int size=0,flags=0;qreal width=0;int weight=QFont::Normal; };
     struct ColumnWarm {
         QVector<ColumnWarmJob> jobs;
         int next=0,cursor=0;
@@ -576,6 +577,13 @@ private:
         QSet<QString> seen;
     } columnWarm_;
     bool prewarmColumnText();
+    // Page text prewarm (audit/FRAME-PACING.md, "First-open page hitch"): the glyph tiles of pages opened with Cross, whose
+    // rows exist only once opened. Stage 10 runs it whenever the column queue is empty.
+    struct PageWarm { QVector<ColumnWarmJob> jobs;int next=0,cursor=0;quint32 generation=0;bool built=false,announced=false; } pageWarm_;
+    bool prewarmPageText();
+    void buildPageWarmJobs();
+    bool warmSlice(QVector<ColumnWarmJob>& jobs,int& next,int& cursor);   // one 1.2 ms slice of a warm queue (inside warmRender)
+    void saveTextDemand();
     void buildColumnWarmJobs();
     QSize prewarmPixels_;   // the UI layer size the glyph tiles were warmed for; a resize or a display change warms them again
     // The PS menu's bloom: the label's blurred coverage mask per label/size/scale, and the glow image built from it

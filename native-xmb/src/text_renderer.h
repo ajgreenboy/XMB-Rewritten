@@ -3,6 +3,7 @@
 #include <QColor>
 #include <QFont>
 #include <QHash>
+#include <QMap>
 #include <QImage>
 #include <QOpenGLFunctions_3_3_Core>
 #include <QOpenGLShaderProgram>
@@ -96,6 +97,8 @@ public:
     std::pair<int,qint64> takeMissCost() { const auto cost=std::pair{misses_,missNs_};misses_=0;missNs_=0;return cost; }
     // Running totals that nothing resets, for the XMB_FRAME_TRACE log (a per-frame difference of these).
     std::pair<quint64,qint64> totalMissCost() const { return {totalMisses_,totalMissNs_}; }
+    // The same for string layouts (QTextLayout shaping + face lookup) built on a cache miss.
+    std::pair<quint64,qint64> totalLayoutCost() const { return {totalLayouts_,totalLayoutNs_}; }
     // Idle prewarm of the glyph tiles a string will need (audit/COLUMN-HITCH.md): every pen phase of every glyph of
     // `text` at `font`'s size, i.e. the tiles drawImpl would rasterise for it wherever it lands. `cursor` is the resume
     // point (0 to start); the call stops once `budgetNs` is spent and returns true when the string is finished. Does
@@ -103,9 +106,17 @@ public:
     bool warmGlyphs(QOpenGLFunctions_3_3_Core& gl,const QString& text,const QFont& font,int flags,qreal width,int& cursor,qint64 budgetNs);
     // Bumped whenever the atlas is dropped (a scale change or a full atlas): warmed work from an older value is gone.
     quint32 atlasGeneration() const { return generation_; }
+    // What the session actually had to rasterise (audit/FRAME-PACING.md, first-open page hitch): per text style
+    // (design pixel size, bold in bit 16) the distinct characters of every string whose draw missed the glyph cache.
+    // The View saves it for the next session and warms those characters at idle, so a page seen before opens warm.
+    const QMap<quint32,QString>& glyphDemand() const { return demand_; }
+    bool glyphDemandChanged() const { return demandChanged_; }
+    void noteDemand(quint32 style,const QString& text);
 private:
     int misses_=0;qint64 missNs_=0;
     quint64 totalMisses_=0;qint64 totalMissNs_=0;
+    quint64 totalLayouts_=0;qint64 totalLayoutNs_=0;
+    QMap<quint32,QString> demand_;bool demandChanged_=false;
     // The firmware shadow reduced to what the two draw paths apply: colour with its alpha, and the
     // offset in 1920x1080 scene pixels with +y down (screen), already sign-corrected.
     struct ShadowStyle { bool on=false; QColor colour; qreal dx=0,dy=0; };
