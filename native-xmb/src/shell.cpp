@@ -5834,7 +5834,7 @@ void Shell::loadTheme() {
     theme_.font=fontSel<0?-1:(fontSel==0?0:(fontSel==1?2:1));
     theme_.color=p3t.colorSelection();
     interactionAudio_.setThemeSounds(p3t.sounds());
-    qInfo().noquote()<<"theme:"<<theme_.name<<"background"<<theme_.background.size()<<(p3t.hasScene()?"(scene rendered as a still; animation not played)":"")<<"icons"<<theme_.icons.size()<<"font"<<theme_.font<<"color"<<theme_.color;
+    qInfo().noquote()<<"theme:"<<theme_.name<<"background"<<theme_.background.size()<<(p3t.hasScene()?"(has an animated scene: drawn as a still unless XMB_RAF_THEMES=0; never animated)":"")<<"icons"<<theme_.icons.size()<<"font"<<theme_.font<<"color"<<theme_.color;
 }
 qint64 Shell::mediaPosition()const{return player_->position();}
 qint64 Shell::mediaDuration()const{return player_->duration();}
