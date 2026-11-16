@@ -4,6 +4,7 @@
 #include <bit>
 #include <cmath>
 #include <functional>
+#include <iterator>
 
 namespace xmb {
 QVector4D sample(const VsmxTimeline& timeline,const QString& actor,VsmxKey::Kind kind,double t) {
@@ -87,5 +88,115 @@ bool evalVsmx(const QByteArray& data,VsmxTimeline* out,QString* error) {
     };
     if(!run(0,0,0))return fail(QStringLiteral("Invalid VSMX execution or instruction limit exceeded"));
     return true;
+}
+}
+
+namespace xmb {
+namespace {
+// Opcode names as the community VSMX decompilers use them; gaps are opcodes never seen in a firmware script.
+const char* const kMnemonic[]={
+    nullptr,"ASSIGN","ADD","SUBTRACT","MULTIPLY","DIVIDE","MODULO","POSITIVE","NEGATE","NOT",
+    "PRE_INCREMENT","PRE_DECREMENT","POST_INCREMENT","POST_DECREMENT","EQUAL","NOT_EQUAL","STRICT_EQUAL","STRICT_NOT_EQUAL",
+    "LESS","LESS_EQUAL","GREATER_EQUAL","GREATER",nullptr,nullptr,"TYPEOF","BIT_AND","BIT_XOR","BIT_OR","BIT_NOT",
+    "SHIFT_LEFT","SHIFT_RIGHT","SHIFT_UNSIGNED","DUPLICATE",nullptr,"END_STATEMENT","CONST_NULL","CONST_ARRAY",
+    "CONST_BOOL","CONST_INT","CONST_FLOAT","CONST_STRING","CONST_OBJECT","FUNCTION","ARRAY_START","THIS","ARGUMENT",
+    "VARIABLE","PROPERTY","PROPERTY_REF","PROPERTY_ASSIGN","PROPERTY_DELETE","OBJECT_PROPERTY","INDEX",nullptr,"INDEX_ASSIGN",
+    nullptr,"ARRAY_APPEND","JUMP","JUMP_TRUE","JUMP_FALSE","CALL","METHOD_CALL","NEW","RETURN",
+    nullptr,nullptr,nullptr,nullptr,nullptr,"END",nullptr,nullptr,nullptr,"ARRAY_LITERAL"
+};
+}
+const QStringList& vsmxRuntimeGlobals() {
+    static const QStringList globals{"Actor","Camera","Light","IntervalTimer","OneShotTimer","Date","Math","System"};
+    return globals;
+}
+bool disassembleVsmx(const QByteArray& data,VsmxProgram* out,QString* error) {
+    if(error)error->clear();
+    const auto fail=[&](const QString& message){if(error)*error=message;return false;};
+    if(!out)return fail(QStringLiteral("no output"));
+    *out={};
+    if(data.size()<0x34 || !data.startsWith("VSMX"))return fail(QStringLiteral("Invalid VSMX header"));
+    const auto le=[&](qsizetype p){return qFromLittleEndian<quint32>(data.constData()+p);};
+    const auto region=[&](quint32 off,quint32 len){return quint64(off)+len<=quint64(data.size());};
+    const quint32 code=le(8),size=le(12);
+    if(!region(code,size) || size%8)return fail(QStringLiteral("Invalid VSMX code region"));
+    const auto table=[&](int header,bool wide,QStringList& strings)->bool {
+        const quint32 off=le(header),len=le(header+4);
+        if(!region(off,len) || (wide && len%2))return false;
+        if(!wide){for(const auto& s:data.mid(off,len).split('\0'))strings.append(QString::fromLatin1(s));return true;}
+        QString s;
+        for(quint32 i=0;i<len;i+=2){const ushort c=qFromLittleEndian<quint16>(data.constData()+off+i);if(c)s.append(QChar(c));else {strings.append(s);s.clear();}}
+        if(!s.isEmpty())strings.append(s);
+        return true;
+    };
+    if(!table(0x10,true,out->text) || !table(0x1c,true,out->properties) || !table(0x28,false,out->names))
+        return fail(QStringLiteral("Invalid VSMX string table region"));
+    const auto resolved=[](const QStringList& strings,quint32 index) {
+        return index<quint32(strings.size())?QStringLiteral("%1: %2").arg(index).arg(strings[int(index)]):QStringLiteral("%1: <invalid index>").arg(index);
+    };
+    out->code.reserve(int(size/8));
+    for(quint32 i=0;i<size/8;++i) {
+        VsmxInstruction x;x.index=i;x.id=le(qsizetype(code)+qsizetype(i)*8);x.value=le(qsizetype(code)+qsizetype(i)*8+4);x.op=int(x.id&0xff);
+        const char* name=x.op<int(std::size(kMnemonic))?kMnemonic[x.op]:nullptr;
+        x.mnemonic=name?QString::fromLatin1(name):QStringLiteral("UNKNOWN");
+        const quint32 v=x.value;const int op=x.op;
+        if(!name)x.operands=QStringLiteral("raw=%1").arg(QString::fromLatin1(data.mid(qsizetype(code)+qsizetype(i)*8,8).toHex()));
+        else if(op==0x25)x.operands=v?QStringLiteral("true"):QStringLiteral("false");
+        else if(op==0x26)x.operands=QString::number(qint32(v));
+        else if(op==0x27)x.operands=QString::number(double(std::bit_cast<float>(v)),'g',9);
+        else if(op==0x28)x.operands=resolved(out->text,v);
+        else if(op==0x2e)x.operands=resolved(out->names,v);
+        else if(op>=0x2f && op<=0x33)x.operands=resolved(out->properties,v);
+        else if(op==0x2a)x.operands=QStringLiteral("target=%1 args=%2 locals=%3").arg(v).arg((x.id>>8)&0xff).arg(x.id>>24);
+        else if(op==0x2d)x.operands=QStringLiteral("index=%1").arg(v);
+        else if(op>=0x39 && op<=0x3b)x.operands=QStringLiteral("target=%1").arg(v);
+        else if((op>=0x3c && op<=0x3e) || op==0x49)x.operands=QStringLiteral("count=%1").arg(v);
+        out->code.append(x);
+    }
+    return true;
+}
+VsmxUsage vsmxUsage(const VsmxProgram& program) {
+    VsmxUsage u;
+    QStringList stack; // symbolic labels: a variable name, ".method" for a property reference, "" for anything else
+    const auto pop=[&](int n){for(int i=0;i<n && !stack.isEmpty();++i)stack.removeLast();};
+    const auto at=[&](int fromTop){return fromTop<stack.size()?stack[stack.size()-1-fromTop]:QStringLiteral("?");};
+    const auto add=[](QStringList& list,const QString& s){if(!list.contains(s))list.append(s);};
+    const auto property=[&](quint32 v){return v<quint32(program.properties.size())?program.properties[int(v)]:QStringLiteral("?");};
+    // A function literal is FUNCTION, JUMP past the body, body, RETURN: the body is swept with its own stack and the
+    // enclosing expression's stack comes back at the jump target (so "new OneShotTimer(t, function(){...})" resolves).
+    QMap<quint32,QStringList> resume;int previous=-1;
+    for(const auto& x:program.code) {
+        const int op=x.op;const quint32 v=x.value;
+        if(resume.contains(x.index))stack=resume.take(x.index);
+        const int before=previous;previous=op;
+        if(op==0x39 && before==0x2a && v>x.index){resume.insert(v,stack);stack.clear();}
+        u.opcodes[QStringLiteral("0x%1 %2").arg(op,2,16,QChar('0')).arg(x.mnemonic)]++;
+        if(x.mnemonic==QStringLiteral("UNKNOWN"))add(u.unknownOpcodes,QStringLiteral("0x%1").arg(op,2,16,QChar('0')));
+        if(op==0x22){stack.clear();continue;}
+        if(op==0x2e) {
+            const QString name=v<quint32(program.names.size())?program.names[int(v)]:QStringLiteral("?");
+            if(vsmxRuntimeGlobals().contains(name))add(u.globals,name);
+            stack.append(name);continue;
+        }
+        if(op==0x2a){++u.functions;stack.append(QStringLiteral("function"));continue;}
+        if(op==0x20){stack.append(at(0));continue;}
+        if((op>=0x23 && op<=0x29) || op==0x2b || op==0x2c || op==0x2d){stack.append(QString{});continue;}
+        if(op==0x2f){add(u.propertiesRead,property(v));pop(1);stack.append(QString{});continue;}
+        if(op==0x30){pop(1);stack.append(QStringLiteral(".")+property(v));continue;}
+        if(op==0x31){add(u.propertiesWritten,property(v));pop(2);stack.append(QString{});continue;}
+        if(op==0x36){pop(3);stack.append(QString{});continue;}
+        if(op==0x49){pop(int(v));stack.append(QString{});continue;}
+        if(op>=0x3c && op<=0x3e) {
+            const QString callee=at(int(v));
+            const QString label=callee.isEmpty()?QStringLiteral("?"):callee;
+            if(op==0x3e)u.constructors[label]++;
+            else if(op==0x3d)u.methods[label.startsWith(QLatin1Char('.'))?label.mid(1):label]++;
+            else u.calls[label]++;
+            pop(int(v)+1);stack.append(QString{});continue;
+        }
+        if(op==0x3a || op==0x3b || op==0x3f){pop(1);continue;}
+        if(op==0x01 || (op>=0x02 && op<=0x06) || (op>=0x0e && op<=0x15) || (op>=0x19 && op<=0x1b) || (op>=0x1d && op<=0x1f) || op==0x34){pop(2);stack.append(QString{});continue;}
+        if((op>=0x07 && op<=0x0d) || op==0x18 || op==0x1c){pop(1);stack.append(QString{});continue;}
+    }
+    return u;
 }
 }
