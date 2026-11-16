@@ -8,7 +8,7 @@ drive it, and it blocks the XMB until closed (a scripted run hung on it). It is 
 
 | Input | Result |
 |---|---|
-| Cross on Choose Media Folder, or on an empty Video / Music / Photo Library row | the browser page opens on the start folder (below) |
+| Cross on Choose Media Folder (the first row inside the Video, Music or Photo Library page), or on an empty Video / Music / Photo Library row (no folder set yet) | the browser page opens on the start folder (below) |
 | Up / Down | move through the rows |
 | Cross on a drive or folder row | go into it (the page stays, its rows change) |
 | Cross on **Use This Folder** (the first row) | the page closes and the folder goes to `Shell::chooseLibrary()`, exactly where the dialog's answer went: stored as `library/<column>` and opened |

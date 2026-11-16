@@ -193,8 +193,8 @@ Counters: queries 9, expanded 0, skipped 0, untitled 7, fallback 1, pluginRsc 0,
 
 Column the shell would install: row 4 (`gameDir`, the HDD content query) as `library`, titled and
 iconed from this column's fallback because the definition leaves provider rows untitled - their rows
-are the photos themselves. Then this build's own two rows, `options` (Photo Settings) and `choose`
-(Choose Media Folder). Rows 0-3 and 5-8 are skipped with the reasons the CLI prints (`search for media
+are the photos themselves. Then this build's own row `options` (Photo Settings); `choose`
+(Choose Media Folder) is no longer a column row: it is the first row inside the library page. Rows 0-3 and 5-8 are skipped with the reasons the CLI prints (`search for media
 servers` = a DLNA client this build does not have; `hakoniwa`/`screenshot`/`mgmt` = the definition
 leaves them untitled because their labels are built by plugins; `dlna_device`/`data_device` = no DLNA
 client and no optical/card reader; `hdd_contents` = this build's local library row is `gameDir`;

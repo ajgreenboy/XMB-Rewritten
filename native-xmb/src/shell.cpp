@@ -489,8 +489,8 @@ void Shell::resolveMediaColumns() {
     // The native rows each column appends, by the ids the built-in table already declared. They are taken
     // from the current entries so their action/value/setting stay exactly as the table wrote them.
     static const QHash<QString,QStringList> nativeIds{
-        {"video",{"continue","library","choose"}},{"music",{"library","choose","spotify"}},
-        {"photo",{"library","choose","options"}}};
+        {"video",{"continue","library"}},{"music",{"library","spotify"}},
+        {"photo",{"library","options"}}};
     static const QHash<QString,QString> xmlFiles{
         {"video","category_video.xml"},{"music","category_music.xml"},{"photo","category_photo.xml"}};
     const bool verbose=qEnvironmentVariableIsSet("XMB_XMBML_LOG") && qEnvironmentVariable("XMB_XMBML_LOG")!=QStringLiteral("0");
@@ -1555,17 +1555,15 @@ Shell::Shell(QString dataDirectory,Assets& assets,QObject* parent):QObject(paren
             item("gallery","Photo Gallery","","file",Action::PhotoGallery),
             item("playlists","Playlists","tex_playlist","explore_category_photo"),
             // Native rows (FIDELITY-MEDIA P1's "10 native-only rows"): the library folder, the one settings page
-            // that has no other surface, and the folder picker. They stay because each is a feature's only door.
+            // that has no other surface (the folder picker is the first row inside the library page). They stay because each is a feature's only door.
             item("library","Photo Library","item_tex_plain_folder",full,Action::Library),
-            item("choose","Choose Media Folder","item_tex_plain_folder",full,Action::ChooseLibrary),
             item("options","Photo Settings","tex_photo",full,Action::SettingsPage,"photo")}},
         {"music","Music","qgl/icontex","4n",{
             item("dlna-scan","Search for Media Servers","item_tex_dlna_scan","explore_category_music",Action::DlnaScan),
             item("playlists","Playlists","tex_playlist","explore_category_music"),
-            // Native rows: the library and the picker. Music Settings is dropped from this column because the
+            // Native rows: the library (its Choose Media Folder row lives inside it). Music Settings is dropped from this column because the
             // Settings column's own "Music Settings" row opens the same page (id "music", Action::SettingsPage).
             item("library","Music Library","item_tex_plain_folder",full,Action::Library),
-            item("choose","Choose Media Folder","item_tex_plain_folder",full,Action::ChooseLibrary),
             // Spotify (spotify_shell.cpp): browse the account's library and play on a Spotify Connect device.
             item("spotify","Spotify","item_tex_plain_folder",full,Action::SpotifyApp)}},
         {"video","Video","qgl/icontex","5n",{
@@ -1578,8 +1576,7 @@ Shell::Shell(QString dataDirectory,Assets& assets,QObject* parent):QObject(paren
             // page from the remembered resume points instead of reading a folder (audit/MEDIA-CONTROLS.md).
             // Video Settings is dropped here for the same reason as Music Settings above.
             item("continue","Continue Watching","item_tex_plain_folder",full,Action::Library),
-            item("library","Video Library","item_tex_plain_folder",full,Action::Library),
-            item("choose","Choose Media Folder","item_tex_plain_folder",full,Action::ChooseLibrary)}},
+            item("library","Video Library","item_tex_plain_folder",full,Action::Library)}},
         {"tv","TV/Video Services","qgl/icontex","35n", /* normal-mapped like the others; tex_video is 46 px */{item("services","My Channels","tex_video")}},
         {"game","Game","qgl/icontex","6n",{
             // Row art is the firmware's own `icon_rsc` per segment view of category_game.xml, read this pass.
@@ -1864,6 +1861,8 @@ Shell::Shell(QString dataDirectory,Assets& assets,QObject* parent):QObject(paren
         const QString previous=page.entries.isEmpty()?QString{}:page.entries[page.selection].id;
         page.directory=path;page.entries.clear();page.selection=0;
         const QString kind=categories_[category_].id;
+        // A library's top page leads with Choose Media Folder (audit/FOLDER-BROWSER.md); subfolders do not.
+        if(page.libraryRoot)page.entries.push_back(item("choose",tr("Choose Media Folder"),"item_tex_plain_folder","explore_plugin_full",Action::ChooseLibrary));
         for(const auto& file:files) {
             page.entries.push_back(item(file.path,file.title,file.isDirectory?"item_tex_plain_folder":kind=="photo"?"photo_tex_album_pic":kind=="music"?"music_tex_album_pic":"video_tex_album_default","explore_plugin_full",file.isDirectory?Action::Folder:Action::File,file.path));
             auto& entry=page.entries.last();
@@ -1874,7 +1873,7 @@ Shell::Shell(QString dataDirectory,Assets& assets,QObject* parent):QObject(paren
         // label column, not in a dialog and not in a status line under the page (D3, frame 14.4 s).
         status_=truncated?"Showing the first 5,000 matching items.":QString{};
         if(!error.isEmpty())showMessage(error,MessageKind::Page);
-        else if(page.entries.isEmpty())
+        else if(files.isEmpty())
             showMessage(assets_.text("explore_plugin_full","msg_error_no_content","There are no content items."),MessageKind::Inline);
         else clearMessage();
         qInfo()<<"media: directory result"<<files.size()<<"entries; truncated"<<truncated<<"error"<<!error.isEmpty();
@@ -2486,9 +2485,9 @@ void Shell::activate() {
         // action enum (labels, kinds, the information page) keeps its meaning.
         if(entry.id=="continue"){openContinueWatching();break;}
         const auto path=preferences_.value("library/"+categories_[category_].id).toString();
-        if(!path.isEmpty())openDirectory(path);else openFolderBrowser();break;
+        if(!path.isEmpty())openDirectory(path,true);else openFolderBrowser();break;
     }
-    case Action::ChooseLibrary:openFolderBrowser();break;
+    case Action::ChooseLibrary:openFolderBrowser();break;   // the first row of a library page
     case Action::BrowseOpen:case Action::BrowseUse:case Action::BrowseFile:activateBrowse(entry);break;
     case Action::PhotoGallery:emit requestPhotoGallery();break;
     case Action::Folder:openDirectory(entry.value);break;
@@ -4612,6 +4611,7 @@ void Shell::sortPageByDate(bool ascending,bool created) {
     auto& page=pages_.last();
     if(page.entries.size()<2)return;
     const QString selected=page.entries.value(page.selection).id;
+    const auto first=page.libraryRoot?page.entries.begin()+1:page.entries.begin();   // Choose Media Folder stays first
     // The firmware's own sort fields are dates (A3: Creation Date / Update Date / Import Date / Release Year /
     // Film Date / Earned Date). A local row carries the two dates this build can read from the file system;
     // a row with no readable time sorts after the ones that have one rather than being given an invented date.
@@ -4620,7 +4620,7 @@ void Shell::sortPageByDate(bool ascending,bool created) {
         const QDateTime when=created?info.birthTime():info.lastModified();
         return when.isValid()?when:info.lastModified();
     };
-    std::stable_sort(page.entries.begin(),page.entries.end(),[&stamp,ascending](const Entry& left,const Entry& right){
+    std::stable_sort(first,page.entries.end(),[&stamp,ascending](const Entry& left,const Entry& right){
         const QDateTime l=stamp(left),r=stamp(right);
         const bool leftKnown=l.isValid(),rightKnown=r.isValid();
         if(leftKnown!=rightKnown)return leftKnown;
@@ -4682,11 +4682,11 @@ void Shell::back() {
 }
 void Shell::chooseLibrary(const QString& folder) {
     if(folder.isEmpty())return;
-    if(preferences_.setValue("library/"+categories_[category_].id,folder)){openDirectory(folder);emit changed();}
+    if(preferences_.setValue("library/"+categories_[category_].id,folder)){openDirectory(folder,true);emit changed();}
 }
-void Shell::openDirectory(const QString& path) {
+void Shell::openDirectory(const QString& path,bool libraryRoot) {
     if(pages_.size()>=32){showMessage("The maximum folder depth has been reached.",MessageKind::Page);return;}
-    Page page;page.title=QFileInfo(path).fileName();page.directory=path;
+    Page page;page.title=QFileInfo(path).fileName();page.directory=path;page.libraryRoot=libraryRoot;
     const QString kind=categories_[category_].id;
     pages_.push_back(std::move(page));
     loading_=true;status_=QObject::tr("Reading media folder...");
