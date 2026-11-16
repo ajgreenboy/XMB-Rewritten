@@ -3274,8 +3274,13 @@ void View::drawScene(QPainter& p) {
                         // 2026-11-14 sweep 6a) Remote Play Settings' line 1 ends at "...supports remote play" with ink
                         // x 682..1583 and "(such" does not fit, so the box is between 902 and about 950 wide
                         // (this build's glyph advances run wider, so 965 reproduces that break; not a traced constant). The same string in this build ran to 1854.
-                        const bool settingsColumn=level==0 && shell_.categories()[shell_.category()].id==QLatin1String("settings");
-                        const qreal helpWidth=settingsColumn?965.:panelAmount>.001?std::min<qreal>(1182.,1240.-labelX):1182.;
+                        // Sweep 8: the Network column's Remote Play help wraps at the console's same narrow box (line 1 ink x 682..1634 ends
+                        // "...operate this system over", "a" does not fit). This build's advances are about 5% wider, so the
+                        // equivalent box is about 1005 here (a fit, like the 965 above, not a traced constant).
+                        const auto columnId=shell_.categories()[shell_.category()].id;
+                        const bool settingsColumn=level==0 && columnId==QLatin1String("settings");
+                        const bool networkColumn=level==0 && columnId==QLatin1String("network");
+                        const qreal helpWidth=settingsColumn?965.:networkColumn?1005.:panelAmount>.001?std::min<qreal>(1182.,1240.-labelX):1182.;
                         QFont helpFont(shell_.fontFamily());helpFont.setPixelSize(helpSize);
                         helpFont.setHintingPreference(QFont::PreferNoHinting);
                         QTextLayout wrap(entry.detail,helpFont);QTextOption option;
