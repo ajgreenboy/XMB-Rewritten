@@ -263,7 +263,7 @@ void Shell::refreshSeerrSabStatus() {
     if(config!=state.sabActive) {
         state.sabActive=config;
         state.sabStates.clear();
-        state.sabClient.configure(SeerrClient::normalizeServer(config.server),config.apiKey);
+        state.sabClient.configure(SabnzbdClient::normalizeServer(config.server),config.apiKey);
     }
     const auto epoch=++state.sabEpoch;
     if(config.server.isEmpty())return;
@@ -470,10 +470,10 @@ void Shell::seerrField(const QString& field,const QString& value) {
     const QString key=field.startsWith(QStringLiteral("seerr:"))?field.mid(6):field;
     if(key.startsWith(QLatin1String("sab-"))) {
         if(key==QLatin1String("sab-server")) {
-            const auto url=SeerrClient::normalizeServer(value);
+            const auto url=SabnzbdClient::normalizeServer(value);
             if(!value.trimmed().isEmpty() && url.isEmpty())ui.error=tr("Enter a SABnzbd address without credentials or query parameters.");
             else {
-                if(url!=SeerrClient::normalizeServer(ui.sabEdit.server))ui.sabEdit.apiKey.clear();
+                if(url!=SabnzbdClient::normalizeServer(ui.sabEdit.server))ui.sabEdit.apiKey.clear();
                 ui.sabEdit.server=url.toString(QUrl::FullyEncoded);
                 ui.error.clear();
             }

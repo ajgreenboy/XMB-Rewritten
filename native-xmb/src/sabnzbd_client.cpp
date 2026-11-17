@@ -28,6 +28,14 @@ SabnzbdClient::SabnzbdClient(QObject* parent)
     network_->setProxy(QNetworkProxy(QNetworkProxy::NoProxy));
 }
 
+QUrl SabnzbdClient::normalizeServer(const QString& server) {
+    const QUrl url(server.trimmed(), QUrl::StrictMode);
+    if (!url.isValid() || url.host().isEmpty() || !url.userInfo().isEmpty()
+        || url.hasQuery() || url.hasFragment()
+        || (url.scheme() != u"http" && url.scheme() != u"https")) return {};
+    return url;
+}
+
 bool SabnzbdClient::isJobId(const QString& id) {
     static const QRegularExpression pattern(QStringLiteral("\\ASABnzbd_nzo_[A-Za-z0-9_]{1,128}\\z"));
     return pattern.match(id).hasMatch();

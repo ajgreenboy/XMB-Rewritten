@@ -1,5 +1,6 @@
 #include "seerr_config.h"
 #include "seerr_client.h"
+#include "sabnzbd_client.h"
 #include <QDir>
 #include <QFile>
 #include <QJsonDocument>
@@ -86,12 +87,12 @@ SabConfig loadSab(const QString& dataDir) {
     const auto values=QJsonDocument::fromJson(protect(file.read(MaxFile+1),false)).object();
     if(values.value(QStringLiteral("kind")).toString()!=QLatin1String("sabnzbd-v1"))return {};
     const SabConfig config{values.value(QStringLiteral("server")).toString(),values.value(QStringLiteral("key")).toString()};
-    return validKey(config.apiKey) && !SeerrClient::normalizeServer(config.server).isEmpty()?config:SabConfig{};
+    return validKey(config.apiKey) && !SabnzbdClient::normalizeServer(config.server).isEmpty()?config:SabConfig{};
 }
 
 bool saveSab(const QString& dataDir,const SabConfig& config,QString& error) {
     error.clear();
-    const auto url=SeerrClient::normalizeServer(config.server);
+    const auto url=SabnzbdClient::normalizeServer(config.server);
     const bool disabled=config.server.isEmpty() && config.apiKey.isEmpty();
     if(!disabled && (url.isEmpty() || !validKey(config.apiKey))) {
         error=QObject::tr("Enter the SABnzbd address and API key.");

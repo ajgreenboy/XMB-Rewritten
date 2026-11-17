@@ -24,6 +24,7 @@ public:
     void setPaused(QStringList ids, bool paused, Result callback);
     void cancel(QStringList ids, Result callback);
 
+    static QUrl normalizeServer(const QString& server);
     static bool isJobId(const QString& id);
 
 private:
