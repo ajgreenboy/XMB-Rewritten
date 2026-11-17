@@ -35,13 +35,14 @@ public:
     // Exact release selection for a game job. Reviewed candidate links take precedence over a lookup.
     QString downloadGame(const QString& sourceSlug,const QUrl& sourceUrl,const QString& releaseTitle,
                          const QVector<Download>& reviewed,const QString& destDir,QString* error,
-                         const ReleaseProgress& progress,const std::atomic_bool* cancel) const;
+                         const ReleaseProgress& progress,const std::atomic_bool* cancel,const std::atomic_bool* pausing=nullptr) const;
+    static void discardGamePartial(const QString& destDir);
 private:
     bool fetchSourceJson(const QUrl& jsonUrl,QVector<IndexedRelease>* releases,QString* name,QString* error,
                          const std::atomic_bool* cancel=nullptr) const;
     QString downloadResolved(const QVector<Download>& candidates,const QString& title,const QString& destDir,
                              QString* error,const ReleaseProgress& progress,
-                             const std::atomic_bool* cancel=nullptr) const;
+                             const std::atomic_bool* cancel=nullptr,const std::atomic_bool* pausing=nullptr) const;
     QString dataDirectory_;
     const Preferences& preferences_;
 };

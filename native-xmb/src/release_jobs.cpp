@@ -17,13 +17,14 @@
 #include <QtConcurrentRun>
 #include <algorithm>
 #include <atomic>
+#include <mutex>
 
 namespace xmb {
 namespace {
 constexpr qsizetype MaxReleaseJobs = 32;
 const QString JobPrefix = QStringLiteral("download:release:");
 
-enum class State { Queued, Resolving, Downloading, Extracting, Cancelling, Finished, Failed, Cancelled };
+enum class State { Queued, Paused, Resolving, Downloading, Pausing, Extracting, Cancelling, Finished, Failed, Cancelled };
 struct Request {
     QString title;
     QString releaseTitle;
@@ -46,19 +47,58 @@ struct Job {
     State state = State::Queued;
     int progress = 0;
     Result result;
+    QString archiveForResume;
 };
 
+struct JobControl {
+    std::atomic_bool cancel{false};
+    std::atomic_bool pausing{false};
+
+    bool requestPause() {
+        std::lock_guard lock(extractionMutex);
+        if(extracting)return false;
+        pausing.store(true);
+        cancel.store(true);
+        return true;
+    }
+
+    bool beginExtraction() {
+        std::lock_guard lock(extractionMutex);
+        if(cancel.load())return false;
+        extracting = true;
+        return true;
+    }
+
+private:
+    std::mutex extractionMutex;
+    bool extracting = false;
+};
+
+bool canPause(State state) {
+    return state == State::Queued || state == State::Resolving || state == State::Downloading;
+}
+
+bool canCancel(State state) {
+    return canPause(state) || state == State::Paused || state == State::Extracting;
+}
+
 bool active(State state) {
-    return state == State::Resolving || state == State::Downloading ||
+    return state == State::Resolving || state == State::Downloading || state == State::Pausing ||
            state == State::Extracting || state == State::Cancelling;
+}
+
+QString gameArchiveDirectory(const Request& request,const QString& id) {
+    return QDir(request.gamesDirectory).filePath(QStringLiteral("Download Archives/") + id);
 }
 
 QString statusText(const Job& job) {
     switch(job.state) {
     case State::Queued: return QObject::tr("Queued");
+    case State::Paused: return QObject::tr("Paused");
     case State::Resolving: return QObject::tr("Connecting to source");
     case State::Downloading:
         return job.progress > 0 ? QObject::tr("Downloading %1%").arg(job.progress) : QObject::tr("Downloading");
+    case State::Pausing: return QObject::tr("Pausing");
     case State::Extracting: return QObject::tr("Preparing game files");
     case State::Cancelling: return QObject::tr("Cancelling");
     case State::Finished: return QObject::tr("Installed");
@@ -88,9 +128,9 @@ QVector<Entry> jobActions(const Job& job) {
     const auto add = [&](const QString& command,const QString& title) {
         rows.append(jobRow(prefix + command,title,command));
     };
-    if(job.state==State::Queued || (active(job.state) && job.state!=State::Cancelling)) {
-        add(QStringLiteral("cancel"),QObject::tr("Cancel Download"));
-    }
+    if(canPause(job.state))add(QStringLiteral("pause"),QObject::tr("Pause"));
+    if(job.state==State::Paused)add(QStringLiteral("resume"),QObject::tr("Resume"));
+    if(canCancel(job.state))add(QStringLiteral("cancel"),QObject::tr("Cancel Download"));
     const bool canRetry = job.state==State::Failed || job.state==State::Cancelled;
     if(canRetry)add(QStringLiteral("retry"),QObject::tr("Retry Download"));
     if(!job.result.archive.isEmpty())add(QStringLiteral("folder"),QObject::tr("Open Download Folder"));
@@ -300,28 +340,32 @@ try {
 }
 
 Result prepareGame(const QString& data,const Request& request,const QString& id,
-                   const std::atomic_bool& cancel,QPromise<Result>& promise) {
+                   const QString& archiveForResume,JobControl& control,QPromise<Result>& promise) {
     Result result;
     const QDir library(request.gamesDirectory);
-    const QString archiveDirectory = library.filePath(QStringLiteral("Download Archives/") + id);
-    Preferences preferences(data);
-    ReleaseSources sources(data,preferences);
     promise.setProgressRange(0,1002);
-    const auto progress = [&promise](qint64 received,qint64 total) {
-        if(received <= 0 && total <= 0)return;
-        const double fraction = total > 0 ? std::clamp(double(received)/double(total),0.0,1.0) : 0.0;
-        promise.setProgressValue(1 + int(fraction*1000));
-    };
-    result.archive = sources.downloadGame(request.sourceSlug,request.sourceUrl,request.releaseTitle,
-                                         request.candidates,archiveDirectory,&result.error,progress,&cancel);
-    if(result.archive.isEmpty() || cancel.load())return result;
+    if(QFileInfo(archiveForResume).isFile()) {
+        result.archive = archiveForResume;
+    } else {
+        Preferences preferences(data);
+        ReleaseSources sources(data,preferences);
+        const auto progress = [&promise](qint64 received,qint64 total) {
+            if(received <= 0 && total <= 0)return;
+            const double fraction = total > 0 ? std::clamp(double(received)/double(total),0.0,1.0) : 0.0;
+            promise.setProgressValue(1 + int(fraction*1000));
+        };
+        result.archive = sources.downloadGame(request.sourceSlug,request.sourceUrl,request.releaseTitle,
+                                             request.candidates,gameArchiveDirectory(request,id),&result.error,
+                                             progress,&control.cancel,&control.pausing);
+    }
+    if(result.archive.isEmpty() || !control.beginExtraction())return result;
     promise.setProgressValue(1002);
     auto stage = std::make_shared<QTemporaryDir>(library.filePath(QStringLiteral(".xmb-install-XXXXXX")));
     if(!stage->isValid()) {
         result.error = QObject::tr("Could not create a staging folder in the selected game library.");
         return result;
     }
-    if(!extractGameArchive(result.archive,stage->path(),cancel,result.error) || cancel.load())return result;
+    if(!extractGameArchive(result.archive,stage->path(),control.cancel,result.error) || control.cancel.load())return result;
     const QString executable = findGameExecutable(stage->path(),&result.error);
     if(executable.isEmpty())return result;
     result.relativeExecutable = QDir(stage->path()).relativeFilePath(executable);
@@ -332,7 +376,7 @@ Result prepareGame(const QString& data,const Request& request,const QString& id,
 
 struct ReleaseGameQueue {
     QVector<Job> jobs;
-    std::shared_ptr<std::atomic_bool> cancel;
+    std::shared_ptr<JobControl> control;
 };
 
 QVector<Entry> Shell::releaseJobRows() const {
@@ -340,6 +384,8 @@ QVector<Entry> Shell::releaseJobRows() const {
     if(!releaseJobs_)return rows;
     for(const auto& job:releaseJobs_->jobs) {
         Entry row = jobRow(JobPrefix + job.id,job.request.title,QStringLiteral("details"));
+        row.container=QStringLiteral("explore_category_network");
+        row.texture=QStringLiteral("tex_dl_dst_game");
         row.detail = statusText(job);
         row.setting = job.request.title + "\n\n" + row.detail;
         if(!job.result.error.isEmpty())row.setting += "\n" + job.result.error;
@@ -355,7 +401,11 @@ void Shell::addReleaseDownloadOptions(const Entry& entry) {
     const auto& jobs=releaseJobs_->jobs;
     const auto job=std::find_if(jobs.cbegin(),jobs.cend(),[&](const Job& value){return value.id==id;});
     if(job==jobs.cend())return;
-    if(job->state==State::Queued || (active(job->state) && job->state!=State::Cancelling))
+    if(canPause(job->state))
+        addOption({"",tr("Pause")},OptionCommand::ReleaseDownloadPause,"download-job");
+    if(job->state==State::Paused)
+        addOption({"",tr("Resume")},OptionCommand::ReleaseDownloadResume,"download-job");
+    if(canCancel(job->state))
         addOption({"",tr("Cancel")},OptionCommand::ReleaseDownloadCancel,"download-job");
     if(job->state==State::Failed || job->state==State::Cancelled)
         addOption({"",tr("Retry")},OptionCommand::ReleaseDownloadRetry,"download-job");
@@ -401,7 +451,7 @@ void Shell::enqueueReleaseGame(const QString& title,const QString& releaseTitle,
     const QString library = QDir::cleanPath(gamesDirectory);
     for(const auto& job:releaseJobs_->jobs) {
         if(job.request.releaseTitle==releaseTitle && job.request.sourceSlug==sourceSlug && job.request.sourceUrl==sourceUrl &&
-           job.request.gamesDirectory==library && (job.state==State::Queued || active(job.state))) {
+           job.request.gamesDirectory==library && (job.state==State::Queued || job.state==State::Paused || active(job.state))) {
             showMessage(tr("Downloads"),tr("This release already has a job in Download Management."),MessageKind::Page);
             emit changed();
             return;
@@ -422,20 +472,21 @@ void Shell::enqueueReleaseGame(const QString& title,const QString& releaseTitle,
 }
 
 void Shell::pumpReleaseJobs() {
-    if(releaseJobs_->cancel)return;
+    if(releaseJobs_->control)return;
     auto& jobs = releaseJobs_->jobs;
     const auto next = std::find_if(jobs.rbegin(),jobs.rend(),[](const Job& job) { return job.state==State::Queued; });
     if(next==jobs.rend())return;
     next->state = State::Resolving;
     const QString id = next->id;
     const Request request = next->request;
-    const auto cancel = std::make_shared<std::atomic_bool>(false);
-    releaseJobs_->cancel = cancel;
+    const QString archiveForResume = next->archiveForResume;
+    const auto control = std::make_shared<JobControl>();
+    releaseJobs_->control = control;
     auto* watcher = new QFutureWatcher<Result>(this);
     connect(watcher,&QFutureWatcher<Result>::progressValueChanged,this,[this,id](int value) {
         auto& jobs = releaseJobs_->jobs;
         const auto job = std::find_if(jobs.begin(),jobs.end(),[&](const Job& job) { return job.id==id; });
-        if(job==jobs.end() || !active(job->state) || job->state==State::Cancelling || value<=0)return;
+        if(job==jobs.end() || (job->state!=State::Resolving && job->state!=State::Downloading) || value<=0)return;
         const State stage = value==1002 ? State::Extracting : State::Downloading;
         const int percent = std::min((value-1)/10,100);
         if(job->state==stage && job->progress==percent)return;
@@ -443,15 +494,21 @@ void Shell::pumpReleaseJobs() {
         job->progress = percent;
         refreshReleaseJobRows();
     });
-    connect(watcher,&QFutureWatcher<Result>::finished,this,[this,id,cancel,watcher] {
+    connect(watcher,&QFutureWatcher<Result>::finished,this,[this,id,control,watcher] {
         Result result = watcher->result();
         watcher->deleteLater();
-        releaseJobs_->cancel.reset();
+        releaseJobs_->control.reset();
         auto& jobs = releaseJobs_->jobs;
         const auto job = std::find_if(jobs.begin(),jobs.end(),[&](const Job& job) { return job.id==id; });
-        if(job==jobs.end())return;
-        job->state = cancel->load() ? State::Cancelled : State::Failed;
-        if(!cancel->load() && result.folder) {
+        if(job==jobs.end()) {
+            pumpReleaseJobs();
+            return;
+        }
+        const bool paused = control->pausing.load();
+        const bool cancelled = control->cancel.load();
+        job->state = paused ? State::Paused : cancelled ? State::Cancelled : State::Failed;
+        job->archiveForResume = paused ? result.archive : QString();
+        if(!cancelled && result.folder) {
             const QString installed = QDir(job->request.gamesDirectory).filePath(QStringLiteral("game-") + id);
             if(!QDir().rename(result.folder->path(),installed)) {
                 result.error = tr("Could not move the game files into the selected library.");
@@ -473,7 +530,7 @@ void Shell::pumpReleaseJobs() {
                 }
             }
         }
-        if(job->state==State::Cancelled)result.error.clear();
+        if(paused || cancelled)result.error.clear();
         if(job->state==State::Failed && result.error.isEmpty())result.error = tr("Could not prepare the game.");
         job->result.archive = result.archive.isEmpty() ? job->result.archive : result.archive;
         job->result.error = result.error;
@@ -481,14 +538,14 @@ void Shell::pumpReleaseJobs() {
         refreshReleaseJobRows();
         pumpReleaseJobs();
     });
-    watcher->setFuture(QtConcurrent::run([data=dataDirectory_,request,id,cancel](QPromise<Result>& promise) {
-        promise.addResult(prepareGame(data,request,id,*cancel,promise));
+    watcher->setFuture(QtConcurrent::run([data=dataDirectory_,request,id,archiveForResume,control](QPromise<Result>& promise) {
+        promise.addResult(prepareGame(data,request,id,archiveForResume,*control,promise));
     }));
     refreshReleaseJobRows();
 }
 
 void Shell::stopReleaseJobs() {
-    if(releaseJobs_ && releaseJobs_->cancel)releaseJobs_->cancel->store(true);
+    if(releaseJobs_ && releaseJobs_->control)releaseJobs_->control->cancel.store(true);
 }
 
 void Shell::activateReleaseJob(const Entry& entry) {
@@ -498,11 +555,27 @@ void Shell::activateReleaseJob(const Entry& entry) {
     const auto job = std::find_if(jobs.begin(),jobs.end(),[&](const Job& job) { return job.id==id; });
     if(job==jobs.end())return;
     const bool retryable = job->state==State::Failed || job->state==State::Cancelled;
-    if(entry.value==QLatin1String("cancel")) {
-        if(job->state==State::Queued)job->state = State::Cancelled;
-        else if(active(job->state) && releaseJobs_->cancel) {
+    if(entry.value==QLatin1String("pause")) {
+        if(!canPause(job->state))return;
+        if(job->state==State::Queued) {
+            job->state = State::Paused;
+        } else {
+            const auto& control = releaseJobs_->control;
+            if(!control || !control->requestPause())return;
+            job->state = State::Pausing;
+        }
+    } else if(entry.value==QLatin1String("resume")) {
+        if(job->state!=State::Paused || diagnostics::safeMode())return;
+        job->state = State::Queued;
+    } else if(entry.value==QLatin1String("cancel")) {
+        if(!canCancel(job->state))return;
+        if(job->state==State::Queued || job->state==State::Paused) {
+            ReleaseSources::discardGamePartial(gameArchiveDirectory(job->request,id));
+            job->archiveForResume.clear();
+            job->state = State::Cancelled;
+        } else if(releaseJobs_->control) {
             job->state = State::Cancelling;
-            releaseJobs_->cancel->store(true);
+            releaseJobs_->control->cancel.store(true);
         }
     } else if(entry.value==QLatin1String("retry")) {
         if(!retryable || diagnostics::safeMode())return;

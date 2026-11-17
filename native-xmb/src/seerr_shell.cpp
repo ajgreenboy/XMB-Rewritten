@@ -182,7 +182,7 @@ void Shell::refreshSeerrDownloads() {
             const QString identifier=QStringLiteral("download:seerr:%1").arg(requestId);
             const QString title=state.titles.value(key,seerrTitle(request));
             auto row=seerrItem(identifier,title==self->tr("Untitled")?self->tr("Seerr Request #%1").arg(requestId):title,
-                QStringLiteral("tex_video"),QStringLiteral("explore_plugin_full"));
+                QStringLiteral("tex_dl_dst_video"),QStringLiteral("explore_category_network"));
             QList<int> seasons;
             for(const auto season:request.value(QStringLiteral("seasons")).toArray())
                 seasons.push_back(season.toObject().value(QStringLiteral("seasonNumber")).toInt(-1));
@@ -190,7 +190,7 @@ void Shell::refreshSeerrDownloads() {
             row.detail=tracked.isEmpty()?self->tr("Seerr · %1").arg(seerrMediaStatus(status)):self->tr("Seerr · %1").arg(tracked);
             row.value=row.title+QStringLiteral("\n\n")+row.detail+QStringLiteral("\n")+self->tr("Managed by Seerr and the configured download client.");
             row.action=Action::Information;
-            row.artwork=state.posters.value(identifier,serviceIcons::seerr());
+            row.artwork=state.posters.value(identifier);
             rows.append(std::move(row));
             if(state.titles.contains(key) || state.downloadDetails.contains(key))continue;
             state.downloadDetails.insert(key);

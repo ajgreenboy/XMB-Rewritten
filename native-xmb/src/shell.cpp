@@ -1257,7 +1257,7 @@ QVector<Entry> Shell::steamDownloadRows(QString& error) {
         // A Steam download can be watched but not started, stopped, paused or resumed from here: Steam's
         // command surface has no per-title command for any of those (audit/STEAM-CLI.md), so the row
         // opens its own facts instead of a fabricated control.
-        auto e=item("download:"+download.appId,download.title,"game_tex_default_ps3","explore_plugin_full",
+        auto e=item("download:"+download.appId,download.title,"tex_dl_dst_game","explore_category_network",
             Action::Information);
         e.detail=downloadRowDetail(download);
         e.value=downloadInformationText(download);
@@ -3815,10 +3815,18 @@ void Shell::optionsActivate() {
         emit changed();
         break;
     case OptionCommand::ReleaseDownloadCancel:
-    case OptionCommand::ReleaseDownloadRetry: {
+    case OptionCommand::ReleaseDownloadRetry:
+    case OptionCommand::ReleaseDownloadPause:
+    case OptionCommand::ReleaseDownloadResume: {
         resetOptions();
         auto job=entry;
-        job.value=option.command==OptionCommand::ReleaseDownloadCancel?QStringLiteral("cancel"):QStringLiteral("retry");
+        switch(option.command) {
+        case OptionCommand::ReleaseDownloadCancel:job.value=QStringLiteral("cancel");break;
+        case OptionCommand::ReleaseDownloadRetry:job.value=QStringLiteral("retry");break;
+        case OptionCommand::ReleaseDownloadPause:job.value=QStringLiteral("pause");break;
+        case OptionCommand::ReleaseDownloadResume:job.value=QStringLiteral("resume");break;
+        default:break;
+        }
         activateReleaseJob(job);
         break;
     }

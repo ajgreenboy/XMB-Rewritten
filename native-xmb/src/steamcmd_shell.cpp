@@ -367,8 +367,8 @@ QVector<Entry> Shell::steamCmdJobRows() {
         using State = SteamCmdUi::Job::State;
         Entry e = makeRow(QStringLiteral("download:steamcmd:") + QString::number(job.id), job.title, {},
                           QStringLiteral("job|") + QString::number(job.id));
-        e.container = QStringLiteral("explore_plugin_full");
-        e.texture = QStringLiteral("game_tex_default_ps3");
+        e.container = QStringLiteral("explore_category_network");
+        e.texture = QStringLiteral("tex_dl_dst_game");
         QString state, hint;
         switch (job.state) {
         case State::Queued: state = QObject::tr("Waiting for SteamCMD"); hint = QObject::tr("Cross removes it from the queue."); break;

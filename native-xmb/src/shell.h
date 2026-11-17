@@ -274,7 +274,7 @@ enum class OptionCommand { Activate, Information,
     UserAutoLoginTarget,
     // A Jellyfin image subtitle the client cannot draw: re-open the title with that stream burned into a
     // server transcode (MenuOption::index is the server's stream index).
-    SubtitleBurnIn, ReleaseDownloadCancel, ReleaseDownloadRetry };
+    SubtitleBurnIn, ReleaseDownloadCancel, ReleaseDownloadRetry, ReleaseDownloadPause, ReleaseDownloadResume };
 // A label read from the RCO text table: the key plus the English string it should resolve to. The fallback
 // is used only when the local flash image has no table; whenever the RCO is present, its value is the label.
 struct OptionLabel { const char* key=nullptr; QString fallback; };

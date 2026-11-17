@@ -97,10 +97,201 @@ bool fetch(const QUrl& url,QIODevice* output,qint64 limit,int timeoutMs,QString*
     else return true;
     return false;
 }
+
+constexpr auto PartialFile = ".xmb-game.part";
+constexpr auto PartialMetadata = ".xmb-game.resume.json";
+
+QString transferIdentity(const QUrl& url) {
+    return QString::fromLatin1(QCryptographicHash::hash(url.toEncoded(),QCryptographicHash::Sha256).toHex());
+}
+
+bool strongValidator(const QByteArray& value) {
+    if(value.size()<2 || value.size()>512 || value.front()!='"' || value.back()!='"')return false;
+    for(qsizetype i=1;i+1<value.size();++i)
+        if(uchar(value[i])<0x21 || value[i]=='"' || value[i]==0x7f)return false;
+    return true;
+}
+
+struct Checkpoint {
+    QString resource;
+    QByteArray validator;
+    qint64 length=-1;
+};
+
+Checkpoint readCheckpoint(const QString& path,const QString& resource) {
+    QFile file(path);
+    if(!file.open(QIODevice::ReadOnly) || file.size()>4096)return {};
+    const auto data=QJsonDocument::fromJson(file.readAll()).object();
+    const auto validator=QByteArray::fromBase64(data.value(QStringLiteral("etag")).toString().toLatin1());
+    bool valid=false;
+    const qint64 length=data.value(QStringLiteral("length")).toString().toLongLong(&valid);
+    if(!valid || length < -1 || length==0 || !strongValidator(validator) || data.value(QStringLiteral("resource")).toString()!=resource)return {};
+    return {resource,validator,length};
+}
+
+bool writeCheckpoint(const QString& path,const Checkpoint& checkpoint) {
+    const QJsonObject data{{QStringLiteral("resource"),checkpoint.resource},
+        {QStringLiteral("etag"),QString::fromLatin1(checkpoint.validator.toBase64())},
+        {QStringLiteral("length"),QString::number(checkpoint.length)}};
+    const auto bytes=QJsonDocument(data).toJson(QJsonDocument::Compact);
+    QSaveFile file(path);
+    file.setDirectWriteFallback(false);
+    return file.open(QIODevice::WriteOnly) && file.write(bytes)==bytes.size() && file.commit();
+}
+
+qint64 contentRangeTotal(const QByteArray& header,qint64 start) {
+    static const QRegularExpression pattern(QStringLiteral("^bytes ([0-9]+)-([0-9]+)/([0-9]+)$"));
+    const auto match=pattern.match(QString::fromLatin1(header));
+    if(!match.hasMatch())return -1;
+    bool firstOk=false,lastOk=false,totalOk=false;
+    const auto first=match.capturedView(1).toLongLong(&firstOk);
+    const auto last=match.capturedView(2).toLongLong(&lastOk);
+    const auto total=match.capturedView(3).toLongLong(&totalOk);
+    if(!firstOk || !lastOk || !totalOk || first!=start || total<=start || last!=total-1)return -1;
+    return total;
+}
+
+bool publishGameArchive(const QString& partial,const QString& path) {
+    if(!QFile::exists(path))return QFile::rename(partial,path);
+    QFile input(partial);
+    QSaveFile replacement(path);
+    replacement.setDirectWriteFallback(false);
+    if(!input.open(QIODevice::ReadOnly) || !replacement.open(QIODevice::WriteOnly))return false;
+    while(!input.atEnd()) {
+        const auto block=input.read(256*1024);
+        if(block.isEmpty() || replacement.write(block)!=block.size())return false;
+    }
+    input.close();
+    if(!replacement.commit())return false;
+    QFile::remove(partial);
+    return true;
+}
+
+bool downloadGameArchive(const QUrl& url,const QString& path,QString* error,const ReleaseProgress& progress,
+                         const std::atomic_bool* cancel,const std::atomic_bool* pausing) {
+    if(!url.isValid() || url.host().isEmpty() || !url.userInfo().isEmpty() ||
+       (url.scheme()!=QLatin1String("http") && url.scheme()!=QLatin1String("https"))) {
+        fail(error,QStringLiteral("Invalid HTTP(S) URL"));return false;
+    }
+    const QDir directory=QFileInfo(path).absoluteDir();
+    const QString partial=directory.filePath(QLatin1String(PartialFile));
+    const QString metadata=directory.filePath(QLatin1String(PartialMetadata));
+    const QString resource=transferIdentity(url);
+    const auto stopped=[&]{return cancel && cancel->load();};
+    QNetworkAccessManager manager;
+    for(int attempt=0;attempt<2;++attempt) {
+        if(stopped())break;
+        Checkpoint checkpoint=attempt==0?readCheckpoint(metadata,resource):Checkpoint{};
+        const QFileInfo partialInfo(partial);
+        if(partialInfo.isSymLink() || QFileInfo(metadata).isSymLink()) {
+            fail(error,QStringLiteral("Invalid download staging file"));return false;
+        }
+        qint64 offset=partialInfo.size();
+        if(offset<=0 || checkpoint.validator.isEmpty() || (checkpoint.length>=0 && offset>=checkpoint.length)) {offset=0;checkpoint={};}
+        const bool ranged=offset>0;
+        QNetworkRequest request(url);
+        request.setRawHeader("Accept-Encoding","identity");
+        request.setTransferTimeout(60000);
+        request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,QNetworkRequest::NoLessSafeRedirectPolicy);
+        if(ranged) {
+            request.setRawHeader("Range","bytes="+QByteArray::number(offset)+"-");
+            request.setRawHeader("If-Range",checkpoint.validator);
+        }
+        auto* reply=manager.get(request);
+        reply->setReadBufferSize(256*1024);
+        QFile file(partial);
+        QEventLoop loop;
+        QTimer interrupt;
+        bool restart=false;
+        bool checked=false;
+        QString failure;
+        qint64 expected=-1;
+        const auto consume=[&]{
+            if(stopped())return;
+            if(!checked) {
+                const int status=reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+                if(status==0 || (status>=300 && status<400))return;
+                checked=true;
+                const QByteArray encoding=reply->rawHeader("Content-Encoding").trimmed().toLower();
+                bool knownLength=false;
+                const auto length=reply->rawHeader("Content-Length").toLongLong(&knownLength);
+                const auto validator=reply->rawHeader("ETag");
+                if(status==416 && ranged) {restart=true;reply->abort();return;}
+                if(status==206 && ranged) {
+                    expected=contentRangeTotal(reply->rawHeader("Content-Range"),offset);
+                    if(reply->url()!=url || validator!=checkpoint.validator || expected<0 ||
+                       (checkpoint.length>=0 && expected!=checkpoint.length) ||
+                       (knownLength && length!=expected-offset)) {
+                        restart=true;reply->abort();return;
+                    }
+                    checkpoint.length=expected;
+                } else if(status==200) {
+                    offset=0;
+                    expected=knownLength?length:-1;
+                    // A redirect can change representations between requests. Start fresh for such links.
+                    checkpoint=reply->url()==url && strongValidator(validator)?Checkpoint{resource,validator,expected}:Checkpoint{};
+                } else {
+                    failure=QStringLiteral("Server returned HTTP %1").arg(status);reply->abort();return;
+                }
+                if((!encoding.isEmpty() && encoding!="identity") || expected==0 ||
+                   !file.open(QIODevice::WriteOnly | (offset>0?QIODevice::Append:QIODevice::Truncate))) {
+                    failure=QStringLiteral("Could not open a valid download stream");reply->abort();return;
+                }
+            }
+            if(!file.isOpen())return;
+            const auto bytes=reply->readAll();
+            if((expected>=0 && bytes.size()>expected-offset) || file.write(bytes)!=bytes.size()) {
+                failure=QStringLiteral("Download exceeds its reported size or could not be written");reply->abort();return;
+            }
+            offset+=bytes.size();
+            if(progress && !bytes.isEmpty())progress(offset,expected);
+        };
+        QObject::connect(reply,&QNetworkReply::readyRead,&loop,consume);
+        QObject::connect(reply,&QNetworkReply::finished,&loop,&QEventLoop::quit);
+        QObject::connect(&interrupt,&QTimer::timeout,&loop,[&]{if(stopped())reply->abort();});
+        if(cancel)interrupt.start(100);
+        if(!reply->isFinished())loop.exec();
+        consume();
+        const bool flushed=!file.isOpen() || file.flush();
+        file.close();
+        const auto networkError=reply->error();
+        const auto networkMessage=reply->errorString();
+        reply->deleteLater();
+        if(stopped()) {
+            if(pausing && pausing->load() && failure.isEmpty() && flushed && offset>0 && !checkpoint.validator.isEmpty() &&
+               (checkpoint.length<0 || offset<checkpoint.length) &&
+               writeCheckpoint(metadata,checkpoint)) {
+                fail(error,QStringLiteral("Download paused"));return false;
+            }
+            break;
+        }
+        if(restart)continue;
+        if(!failure.isEmpty())fail(error,failure);
+        else if(networkError!=QNetworkReply::NoError)fail(error,QStringLiteral("Network error: %1").arg(networkMessage));
+        else if(!checked || !flushed || offset<=0 || (expected>=0 && offset!=expected))
+            fail(error,QStringLiteral("The archive download was incomplete"));
+        else if(publishGameArchive(partial,path)) {
+            QFile::remove(metadata);
+            return true;
+        } else fail(error,QStringLiteral("Could not publish the archive to the game download folder"));
+        ReleaseSources::discardGamePartial(directory.path());
+        return false;
+    }
+    ReleaseSources::discardGamePartial(directory.path());
+    fail(error,stopped()?QStringLiteral("Download stopped"):QStringLiteral("Server returned an invalid resume response"));
+    return false;
+}
+
 void pause(int milliseconds) {
     QEventLoop loop;QTimer::singleShot(milliseconds,&loop,&QEventLoop::quit);loop.exec();
 }
 }
+void ReleaseSources::discardGamePartial(const QString& destDir) {
+    const QDir directory(destDir);
+    QFile::remove(directory.filePath(QLatin1String(PartialFile)));
+    QFile::remove(directory.filePath(QLatin1String(PartialMetadata)));
+}
+
 ReleaseSources::ReleaseSources(const QString& dataDirectory,const Preferences& preferences)
     :dataDirectory_(dataDirectory),preferences_(preferences) {}
 bool ReleaseSources::fetchSourceJson(const QUrl& jsonUrl,QVector<IndexedRelease>* releases,QString* name,QString* error,const std::atomic_bool* cancel) const {
@@ -235,7 +426,7 @@ QString ReleaseSources::downloadedPath(const QString& source,const QString& titl
     return {};
 }
 QString ReleaseSources::downloadResolved(const QVector<Download>& candidates,const QString& title,const QString& destDir,
-                                         QString* error,const ReleaseProgress& progress,const std::atomic_bool* cancel) const {
+                                         QString* error,const ReleaseProgress& progress,const std::atomic_bool* cancel,const std::atomic_bool* pausing) const {
     if(cancel && cancel->load()){fail(error,QStringLiteral("Download cancelled"));return {};}
     QString direct,magnet;
     for(const auto& download:candidates) {
@@ -277,6 +468,7 @@ QString ReleaseSources::downloadResolved(const QVector<Download>& candidates,con
     const QDir directory(destDir);
     if(!QDir().mkpath(directory.path())){fail(error,QStringLiteral("Cannot create download directory"));return {};}
     const QString path=directory.filePath(safeName(title)+QLatin1Char('.')+extension);
+    if(pausing)return downloadGameArchive(resolved,path,error,progress,cancel,pausing)?path:QString{};
     QSaveFile file(path);file.setDirectWriteFallback(false);
     if(!file.open(QIODevice::WriteOnly)){fail(error,QStringLiteral("Cannot open download: ")+file.errorString());return {};}
     if(!fetch(resolved,&file,std::numeric_limits<qint64>::max(),60000,error,progress,false,cancel))return {};
@@ -318,10 +510,10 @@ QString ReleaseSources::downloadGameByUrl(const QString& title,const QUrl& sourc
 }
 QString ReleaseSources::downloadGame(const QString& sourceSlug,const QUrl& sourceUrl,const QString& releaseTitle,
                                      const QVector<Download>& reviewed,const QString& destDir,QString* error,
-                                     const ReleaseProgress& progress,const std::atomic_bool* cancel) const {
+                                     const ReleaseProgress& progress,const std::atomic_bool* cancel,const std::atomic_bool* pausing) const {
     if(error)error->clear();
     if(!reviewed.isEmpty()) {
-        return downloadResolved(reviewed,releaseTitle,destDir,error,progress,cancel);
+        return downloadResolved(reviewed,releaseTitle,destDir,error,progress,cancel,pausing);
     }
     QVector<IndexedRelease> releases;
     if(!sourceSlug.isEmpty()) {
@@ -339,7 +531,7 @@ QString ReleaseSources::downloadGame(const QString& sourceSlug,const QUrl& sourc
         for(const auto& mirror:release.mirrors) {
             if(mirror.parts.size()==1)candidates.append(mirror.parts.first());
         }
-        return downloadResolved(candidates,releaseTitle,destDir,error,progress,cancel);
+        return downloadResolved(candidates,releaseTitle,destDir,error,progress,cancel,pausing);
     }
     fail(error,QStringLiteral("Release not found in the selected source"));
     return {};
