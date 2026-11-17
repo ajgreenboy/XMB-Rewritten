@@ -169,6 +169,8 @@ release verification, and exact PS3 fidelity.
   automatic artwork lookup landed in commit d9e2af8 (`src/rawg_client.*`, `src/rawg_artwork.*`, `src/artwork_settings.*`): Game >
   Artwork Settings takes the RAWG key (or `RAWG_API_KEY`), library scans match installed Steam and imported games, matches are
   cached for offline use, and explicit local overrides win. Real-key end-to-end coverage is not recorded in this file.
+  Updated 2026-11-16: imported games with no real art also get key-free artwork from a conservative Steam store title
+  match (`src/imported_art*.cpp`, cache `<data>\cache\imported-art\`, see `README.md`). Not yet run on the HTPC.
 - **Spotify (Updated 2026-11-07):** Music > Spotify browses the account and controls a Spotify Connect device
   (`src/spotify_client.*`, `src/spotify_shell.cpp`; `audit/SPOTIFY.md`). Verified on a real Premium account; the free-account
   path and the Liked Songs queue on a real device are not.

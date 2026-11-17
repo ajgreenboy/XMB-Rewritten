@@ -579,6 +579,12 @@ added as an entry with id `custom:<app id>`; a `kind: "game"` entry gets `Action
 places imported titles after the installed Steam titles and the Steam Store / All Games provider
 rows.
 
+An imported game whose `artwork` is the manager's generated placeholder card (an import that found no sidecar art
+writes one) or is missing gets real art automatically and without any key: the XMB matches the title against Steam's
+public store search and caches that app's header (row) and library hero (background) under
+`<data>\cache\imported-art\`. Real art in `artwork` is never replaced. Source order and matching rules: `README.md`,
+"Imported games get art without any key". It needs the network once per title; with the cache it works offline.
+
 The XMB re-runs this on startup, on **F5** / the **Refresh Game Library** row, after an in-XMB
 import, and after an install handoff. It does not watch the file: an import made while the XMB is
 open appears after a refresh.

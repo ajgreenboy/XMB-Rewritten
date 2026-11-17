@@ -216,6 +216,24 @@ Artwork overrides go in `<native-data>/artwork/`: `<appid>.png` for the wide row
 `<appid>_icon.png` for the square icon and `<appid>_bg.png` for the background (`.jpg/.jpeg/.webp` also work). An
 override wins over the cached Steam header and the manifest icon; `XMB_STEAM_ARTWORK_LOG=1` logs which files are used.
 
+**Imported games get art without any key.** A game imported through xmb-manager that has no real artwork (none, or the
+generated placeholder card the manager draws when an import found no art) is looked up by title in Steam's public store
+search (`store.steampowered.com/api/storesearch`, no account, no key). Only a confident match is used: the normalised
+title (case, `™ ® ©`, punctuation, "Part Two" = "Part II") must equal one result, or equal it once a leading "The",
+bracketed notes and trailing edition words ("Remastered", "Definitive Edition", "Game of the Year Edition") are dropped,
+or be one clearly best, very similar title with the same sequel numbers. Demos, DLC and packs are never chosen, and
+ambiguous results (two games with the same name, "Prey" next to "Prey (2006)") are rejected, so a wrong picture never
+replaces the placeholder. The matched app's public `header.jpg` becomes the row art and its `library_hero.jpg` the
+focused background. Both are stored under `<native-data>\cache\imported-art\` (`<title key>.json` records the Steam app
+id, its name and the match reason; `<appid>_header.image` and `<appid>_hero.image` are the pictures), fetched once and
+used offline afterwards. The log says `artwork: <title> -> steam app <id> (<reason>)` or
+`artwork: <title> no confident match (<why>)`. A title with no confident match is not asked again for 7 days. If the
+store is unreachable the XMB retries at most once an hour, one title at a time, at most 48 titles per library scan.
+**Game → Artwork Settings → Fetch Artwork** (no key needed) forgets those waits and runs matching again. Source order
+for an imported game: real art in its manifest > RAWG (key set) > Steam store match > the manager's generated card >
+the default Game icon. `XMB_IMPORTED_ART=0` (and `XMB_STEAM_ARTWORK=0`, which the gate sets) disables the network
+lookup; the cache is still read. Safe mode fetches nothing.
+
 Open **Game → Artwork Settings**, enter a [RAWG API key](https://rawg.io/apidocs), then choose **Fetch Artwork**. XMB looks up installed Steam games and imported games during library scans. Matched artwork supplies the game card and focused background. Explicit local overrides take priority. Games without a confident match keep their existing artwork. Cached matches work offline. The key is saved in the user's application settings directory, separate from the library and repository. You can also set `RAWG_API_KEY` before launching XMB.
 
 **Switching Steam accounts.** **Users > Steam Account** lists the accounts this PC's Steam remembers. Choosing one asks two

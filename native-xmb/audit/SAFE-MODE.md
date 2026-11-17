@@ -11,7 +11,7 @@ surface below is **INFERRED** (this build's own).
 | Skipped | How |
 |---|---|
 | Network clients: Spotify, Jellyfin, DLNA, Tailscale, Home Assistant, Wake on LAN, Weather, Steam Store | their startup work does not run (Spotify session restore, Tailscale and Weather refresh, Home Assistant and Jellyfin server icons); the rows stay in the columns and, when activated, say "Not available in safe mode. Restart the XMB normally to use it." (`Shell::activate`) |
-| Steam artwork, RAWG artwork, web-app site icons, Steam friends and owned-games refresh | the fetches are not requested (`refreshContent`, hero requests, `loadSiteIcon`) |
+| Steam artwork, RAWG artwork, imported-game Steam store artwork, web-app site icons, Steam friends and owned-games refresh | the fetches are not requested (`refreshContent`, hero requests, `loadSiteIcon`) |
 | The theme | `Shell::loadTheme` draws the default (empty path); the stored `appearance/theme` is untouched and applies again on a normal start |
 | Boot extras | no cold-boot intro and no health warning |
 
