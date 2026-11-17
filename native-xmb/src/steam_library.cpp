@@ -119,6 +119,21 @@ void appendArtworkMatches(QStringList& candidates, const QString& directory, con
     for (qsizetype i = 0; i < count; ++i) candidates.append(matches.at(i).absoluteFilePath());
 }
 
+// Current Steam clients keep an app's library art in appcache/librarycache/<appid>/ under plain names
+// (header.jpg, library_header.jpg, library_hero.jpg, library_600x900.jpg, library_capsule.jpg), and newer
+// titles put them one level deeper in a hashed folder (<appid>/<sha1>/library_header.jpg). The older
+// prefixed names (<appid>_header.jpg, *_header.jpg) are still tried by the callers. Measured on a real
+// client 2026-11-16: of 1856 cache folders, 1149 had a plain header.jpg and 455 kept their art only in a
+// hashed sub-folder, so neither was found and those rows drew the placeholder.
+void appendCacheArtwork(QStringList& candidates, const QString& nested, const QStringList& names) {
+    constexpr qsizetype MaximumSubfolders = 8;
+    for (const auto& name : names) candidates.append(QDir(nested).filePath(name));
+    const auto subfolders = QDir(nested).entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot | QDir::Readable | QDir::NoSymLinks, QDir::Name);
+    const qsizetype count = std::min<qsizetype>(subfolders.size(), MaximumSubfolders);
+    for (qsizetype i = 0; i < count; ++i)
+        for (const auto& name : names) candidates.append(QDir(subfolders.at(i).absoluteFilePath()).filePath(name));
+}
+
 QString artworkFor(const QString& steamRoot, const QString& appId, const QString& steamId) {
     const QString cache = QDir(steamRoot).filePath(QStringLiteral("appcache/librarycache"));
     QStringList candidates;
@@ -152,6 +167,8 @@ QString artworkFor(const QString& steamRoot, const QString& appId, const QString
                << QDir(cache).filePath(appId + QStringLiteral("_header.png"));
     appendArtworkMatches(candidates, nested, {QStringLiteral("*_header_2x.jpg"), QStringLiteral("*_header_2x.png")});
     appendArtworkMatches(candidates, nested, {QStringLiteral("*_header.jpg"), QStringLiteral("*_header.png")});
+    appendCacheArtwork(candidates, nested, {QStringLiteral("header.jpg"), QStringLiteral("library_header.jpg"),
+                                            QStringLiteral("library_header_2x.jpg")});
 
     candidates << QDir(cache).filePath(appId + QStringLiteral("_hero.jpg"))
                << QDir(cache).filePath(appId + QStringLiteral("_hero.png"))
@@ -170,6 +187,8 @@ QString artworkFor(const QString& steamRoot, const QString& appId, const QString
                << QDir(cache).filePath(appId + QStringLiteral("_library_600x900.png"));
     appendArtworkMatches(candidates, nested, {QStringLiteral("*_library_600x900_2x.jpg"), QStringLiteral("*_library_600x900_2x.png")});
     appendArtworkMatches(candidates, nested, {QStringLiteral("*_library_600x900.jpg"), QStringLiteral("*_library_600x900.png")});
+    appendCacheArtwork(candidates, nested, {QStringLiteral("library_hero.jpg"), QStringLiteral("library_600x900.jpg"),
+                                            QStringLiteral("library_capsule.jpg")});
     for (const auto& grid : userGrids)
         candidates << QDir(grid).filePath(appId + QStringLiteral("p.png"))
                    << QDir(grid).filePath(appId + QStringLiteral("p.jpg"));
@@ -204,6 +223,7 @@ QString backgroundArtworkFor(const QString& steamRoot, const QString& appId, con
     const QString nested = QDir(cache).filePath(appId);
     appendArtworkMatches(candidates, nested, {QStringLiteral("*_library_hero_2x.jpg"), QStringLiteral("*_library_hero_2x.png")});
     appendArtworkMatches(candidates, nested, {QStringLiteral("*_library_hero.jpg"), QStringLiteral("*_library_hero.png")});
+    appendCacheArtwork(candidates, nested, {QStringLiteral("library_hero.jpg"), QStringLiteral("library_hero_2x.jpg")});
     return existingArtwork(candidates);
 }
 

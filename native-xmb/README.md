@@ -215,6 +215,8 @@ window.
 Artwork overrides go in `<native-data>/artwork/`: `<appid>.png` for the wide row,
 `<appid>_icon.png` for the square icon and `<appid>_bg.png` for the background (`.jpg/.jpeg/.webp` also work). An
 override wins over the cached Steam header and the manifest icon; `XMB_STEAM_ARTWORK_LOG=1` logs which files are used.
+Installed games can also use the artwork Steam already downloaded, including headers and heroes stored in
+`appcache/librarycache/<appid>/` or one level deeper in a hashed subfolder.
 
 **Imported games get art without any key.** A game imported through xmb-manager that has no real artwork (none, or the
 generated placeholder card the manager draws when an import found no art) is looked up by title in Steam's public store
@@ -222,8 +224,8 @@ search (`store.steampowered.com/api/storesearch`, no account, no key). Only a co
 title (case, `™ ® ©`, punctuation, "Part Two" = "Part II") must equal one result, or equal it once a leading "The",
 bracketed notes and trailing edition words ("Remastered", "Definitive Edition", "Game of the Year Edition") are dropped,
 or be one clearly best, very similar title with the same sequel numbers. Demos, DLC and packs are never chosen, and
-ambiguous results (two games with the same name, "Prey" next to "Prey (2006)") are rejected, so a wrong picture never
-replaces the placeholder. The matched app's public `header.jpg` becomes the row art and its `library_hero.jpg` the
+ambiguous results (two games with the same name, "Prey" next to "Prey (2006)") keep the placeholder.
+The matched app's public `header.jpg` becomes the row art and its `library_hero.jpg` the
 focused background. Both are stored under `<native-data>\cache\imported-art\` (`<title key>.json` records the Steam app
 id, its name and the match reason; `<appid>_header.image` and `<appid>_hero.image` are the pictures), fetched once and
 used offline afterwards. The log says `artwork: <title> -> steam app <id> (<reason>)` or
