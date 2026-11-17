@@ -81,9 +81,10 @@ Filename: "powershell.exe"; \
 Filename: "powershell.exe"; \
   Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\install-autostart.ps1"" -Uninstall"; \
   Flags: runhidden waituntilterminated; Tasks: not autostart and not shortcuts
-; Start it now the way the logon task would (without firmware it opens the XMB's own first-run setup).
-Filename: "powershell.exe"; \
-  Parameters: "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""{app}\watchdog.ps1"" -Display {code:DisplayArg}"; \
+; Start it now the way the logon task would (without firmware it opens the XMB's own first-run setup). Through
+; conhost --headless, like the task: Windows 11's default terminal would otherwise open an empty terminal window.
+Filename: "{sys}\conhost.exe"; \
+  Parameters: "--headless powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""{app}\watchdog.ps1"" -Display {code:DisplayArg}"; \
   WorkingDir: "{app}"; Description: "Start the XMB now"; Flags: postinstall nowait runhidden skipifsilent
 
 [UninstallRun]

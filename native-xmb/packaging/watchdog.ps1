@@ -71,12 +71,26 @@ Log "policy: safe mode after $SafeAfterCrashes crashes within $CrashWindowSecond
 $consecutiveRapid = 0
 $crashTimes = New-Object System.Collections.Generic.List[datetime]
 $safe = $false
+# Start the XMB with no console window. re-ps3-native.exe is a console-subsystem program (its command-line modes
+# print to the console), so a plain Start-Process gives it a fresh console, and on Windows 11 the default-terminal
+# setting hands that console to Windows Terminal: an empty terminal window over the XMB on the TV. CreateNoWindow
+# (CREATE_NO_WINDOW) allocates no console at all. The app logs to its own file (XMB_LOG), so nothing is lost.
+function Start-XmbNoConsole([string]$File, [string[]]$ArgumentList, [string]$Directory) {
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $File
+    $psi.Arguments = ($ArgumentList -join " ")
+    $psi.WorkingDirectory = $Directory
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    return [System.Diagnostics.Process]::Start($psi)
+}
+
 while($true) {
     $runArguments = $arguments
     if($safe) { $runArguments = $arguments + @('--safe') }
     Log ("starting the XMB in {0} mode" -f $(if($safe) { 'SAFE' } else { 'normal' }))
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
-    $process = Start-Process -FilePath $exe -ArgumentList $runArguments -WorkingDirectory $root -PassThru
+    $process = Start-XmbNoConsole -File $exe -ArgumentList $runArguments -Directory $root
     $process.WaitForExit()
     $sw.Stop()
     $code = $process.ExitCode

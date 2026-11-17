@@ -47,7 +47,10 @@ if(-not $NoTask) {
     # and restarts it after a crash; Task Scheduler's own RestartCount is a belt-and-suspenders guard.
     # The XMB's "Start at Sign-in" row calls this script, so the row and the script cannot disagree about what
     # "on" means: a task of this name whose action runs the watchdog.ps1 beside the exe.
-    $action   = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$watchdog`" -Display $Display"
+    # Through conhost --headless: on Windows 11 the default-terminal setting hands any new console to Windows
+    # Terminal, which ignores -WindowStyle Hidden and leaves an empty terminal window over the XMB. A headless
+    # console host never shows a window (measured on the HTPC 2026-11-16: 0 terminal windows, against 1 without it).
+    $action   = New-ScheduledTaskAction -Execute (Join-Path $env:SystemRoot 'System32\conhost.exe') -Argument "--headless powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$watchdog`" -Display $Display"
     # -User matters: an at-logon trigger for "any user" needs administrator rights to register, one for this user does not.
     $trigger  = New-ScheduledTaskTrigger -AtLogOn -User "$env:USERDOMAIN\$env:USERNAME"
     $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
@@ -66,10 +69,10 @@ if($Shortcuts -or $NoTask) {
     if(-not (Test-Path -LiteralPath $exe)) { throw "re-ps3-native.exe not found in '$PackageDirectory'." }
     New-Item -ItemType Directory -Path $ShortcutDirectory -Force | Out-Null
     $shell = New-Object -ComObject WScript.Shell
-    # "XMB" starts the kiosk through the watchdog (hidden console), exactly as the logon task does.
+    # "XMB" starts the kiosk through the watchdog (headless console), exactly as the logon task does.
     $link = $shell.CreateShortcut((Join-Path $ShortcutDirectory 'XMB.lnk'))
-    $link.TargetPath = (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe')
-    $link.Arguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$watchdog`" -Display $Display"
+    $link.TargetPath = (Join-Path $env:SystemRoot 'System32\conhost.exe')
+    $link.Arguments = "--headless powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$watchdog`" -Display $Display"
     $link.WorkingDirectory = $PackageDirectory
     $link.IconLocation = "$exe,0"
     $link.Description = 'Start the PS3 XMB in kiosk mode'
