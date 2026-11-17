@@ -8,8 +8,9 @@
 #include <QTimer>
 
 namespace xmb {
-bool FlareSolverr::request(const QUrl& url, QByteArray* response, QString* error) const {
+bool FlareSolverr::request(const QUrl& url, QByteArray* response, QString* error,const std::atomic_bool* cancel) const {
     if(response)*response=QByteArray();
+    if(cancel && cancel->load()){if(error)*error=QStringLiteral("Download cancelled");return false;}
     if(endpoint_.isEmpty()) { if(error)*error=QStringLiteral("No FlareSolverr endpoint configured"); return false; }
     QNetworkAccessManager manager;
     QNetworkRequest request(QUrl(endpoint_+QStringLiteral("/v1")));
@@ -21,7 +22,12 @@ bool FlareSolverr::request(const QUrl& url, QByteArray* response, QString* error
     bool timedOut=false;
     QObject::connect(&timer,&QTimer::timeout,&loop,[&]{timedOut=true;reply->abort();});
     QObject::connect(reply,&QNetworkReply::finished,&loop,&QEventLoop::quit);
-    timer.start(120000); loop.exec();
+    QTimer cancellation;
+    QObject::connect(&cancellation,&QTimer::timeout,&loop,[&]{if(cancel->load())reply->abort();});
+    if(cancel)cancellation.start(100);
+    timer.start(120000);
+    if(!reply->isFinished())loop.exec();
+    if(cancel && cancel->load()){if(error)*error=QStringLiteral("Download cancelled");return false;}
     if(timedOut){ reply->deleteLater(); if(error)*error=QStringLiteral("FlareSolverr timed out"); return false; }
     if(reply->error()!=QNetworkReply::NoError) {
         const QString message=reply->errorString(); reply->deleteLater();

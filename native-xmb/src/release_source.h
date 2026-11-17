@@ -3,6 +3,7 @@
 #include <QUrl>
 #include <functional>
 #include <atomic>
+#include <QStringList>
 
 namespace xmb {
 class Preferences;
@@ -19,6 +20,9 @@ class ReleaseSources {
 public:
     ReleaseSources(const QString& dataDirectory,const Preferences& preferences);
     bool importSource(const QUrl& jsonUrl,QString* error=nullptr);
+    // Refresh all imported remote indexes. Each source is replaced atomically only
+    // after a successful fetch and parse; failures preserve its last good data.
+    int refreshSources(QStringList* errors=nullptr,bool force=false);
     bool removeSource(const QString& slug,QString* error=nullptr);
     QVector<ReleaseSource> listSources(QString* error=nullptr) const;
     QString downloadedPath(const QString& source,const QString& title) const;
@@ -28,10 +32,16 @@ public:
     // link through the debrid manager, and save the archive into destDir.
     QString downloadGameByUrl(const QString& title,const QUrl& sourceUrl,const QString& destDir,
                               QString* error=nullptr,const ReleaseProgress& progress={}) const;
+    // Exact release selection for a game job. Reviewed candidate links take precedence over a lookup.
+    QString downloadGame(const QString& sourceSlug,const QUrl& sourceUrl,const QString& releaseTitle,
+                         const QVector<Download>& reviewed,const QString& destDir,QString* error,
+                         const ReleaseProgress& progress,const std::atomic_bool* cancel) const;
 private:
-    bool fetchSourceJson(const QUrl& jsonUrl,QVector<IndexedRelease>* releases,QString* name,QString* error) const;
+    bool fetchSourceJson(const QUrl& jsonUrl,QVector<IndexedRelease>* releases,QString* name,QString* error,
+                         const std::atomic_bool* cancel=nullptr) const;
     QString downloadResolved(const QVector<Download>& candidates,const QString& title,const QString& destDir,
-                             QString* error,const ReleaseProgress& progress) const;
+                             QString* error,const ReleaseProgress& progress,
+                             const std::atomic_bool* cancel=nullptr) const;
     QString dataDirectory_;
     const Preferences& preferences_;
 };

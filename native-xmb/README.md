@@ -305,7 +305,7 @@ with these steps. Code: `src/spotify_client.*`, `src/spotify_shell.cpp`; details
 
 ### Media Requests through Seerr
 
-Open **TV/Video Services → Media Requests**. Enter your Seerr server address and its API key from **Settings → General**,
+Open **TV/Video Services → Seerr**. Enter your Seerr server address and its API key from **Settings → General**,
 then choose **Test Connection** and **Save**. Search for a movie or TV series, inspect the results, and confirm your
 request. For TV, choose the seasons you want first. **My Requests** shows Seerr's request and availability states.
 Seerr manages approval and handles Sonarr or Radarr using its existing configuration. See [Seerr setup](audit/SEERR.md).

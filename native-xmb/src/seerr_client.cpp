@@ -80,12 +80,13 @@ void SeerrClient::details(QString type, int tmdbId, Result cb) {
     get(type + QLatin1Char('/') + QString::number(tmdbId), {}, std::move(cb));
 }
 
-void SeerrClient::requests(int skip, Result cb) {
+void SeerrClient::requests(int skip, Result cb, bool processingOnly) {
     if (skip < 0 || skip > 1000000) {
         if (cb) cb({}, QStringLiteral("Invalid request list offset."));
         return;
     }
     QUrlQuery params; params.addQueryItem(QStringLiteral("take"), QStringLiteral("20")); params.addQueryItem(QStringLiteral("skip"), QString::number(skip));
+    if(processingOnly)params.addQueryItem(QStringLiteral("filter"),QStringLiteral("processing"));
     get(QStringLiteral("request"), params, std::move(cb));
 }
 

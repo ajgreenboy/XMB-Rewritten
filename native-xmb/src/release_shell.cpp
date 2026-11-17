@@ -1,7 +1,6 @@
 #include "shell.h"
 #include "rawg_artwork.h"
-#include "archive_extract.h"
-#include "content_registry.h"
+#include "diagnostics.h"
 #include <QBuffer>
 #include <QCryptographicHash>
 #include <QDesktopServices>
@@ -13,7 +12,6 @@
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
-#include <QPromise>
 #include <QSaveFile>
 #include <QtConcurrent/QtConcurrentRun>
 #include <algorithm>
@@ -75,6 +73,68 @@ QImage fetchCover(const QUrl& url,const QString& path) {
     }
     return image;
 }
+QString gameSearchKey(const QString& title) {
+    return title.normalized(QString::NormalizationForm_KC).simplified().toCaseFolded();
+}
+
+GameResult importedGame(const ReleaseSource& source,const IndexedRelease& release) {
+    GameResult game;
+    game.name=release.raw.value(QStringLiteral("gameTitle")).toString().trimmed();
+    if(game.name.isEmpty())game.name=release.raw.value(QStringLiteral("name")).toString().trimmed();
+    if(game.name.isEmpty())game.name=release.title;
+    const QString cover=coverUrl(release);
+    if(!cover.isEmpty())game.coverUrl=source.url.resolved(QUrl(cover)).toString();
+    QSet<QString> multipart, seen;
+    for(const auto& mirror:release.mirrors)
+        if(mirror.parts.size()>1)
+            for(const auto& part:mirror.parts)multipart.insert(part.uri);
+    const auto add=[&](const Download& download,const QString& host) {
+        if(download.kind!=QLatin1String("direct") && download.kind!=QLatin1String("magnet"))return;
+        if(download.uri.isEmpty() || multipart.contains(download.uri) || seen.contains(download.uri) || game.options.size()>=24)return;
+        seen.insert(download.uri);
+        GameSourceOption option;
+        option.source=source.name;
+        option.sourceSlug=source.slug;
+        option.sourceUrl=source.url.toString();
+        option.releaseTitle=release.title;
+        option.fileSize=release.sizeLabel;
+        option.mirror=host.isEmpty()?QUrl(download.uri).host():host;
+        if(option.mirror.isEmpty() && download.kind==QLatin1String("magnet"))option.mirror=QObject::tr("Magnet");
+        option.downloads={download};
+        game.options.append(std::move(option));
+    };
+    for(const auto& mirror:release.mirrors)
+        if(mirror.parts.size()==1)add(mirror.parts.first(),mirror.host);
+    for(const auto& download:release.downloads)add(download,{});
+    return game;
+}
+
+QString optionCount(const GameResult& game) {
+    QSet<QString> sources;
+    for(const auto& option:game.options)sources.insert(option.source);
+    if(sources.size()==1 && game.options.size()==1)return game.options.first().source;
+    if(sources.size()>1)return QObject::tr("%n source(s)",nullptr,int(sources.size()));
+    return QObject::tr("%n download option(s)",nullptr,int(game.options.size()));
+}
+
+QVector<Entry> downloadHubRows(const QVector<ReleaseSource>& sources) {
+    QVector<Entry> rows;
+    rows.append(releaseRow(QStringLiteral("game:search"),QObject::tr("Search Games"),Action::SearchGames));
+    rows.append(releaseRow(QStringLiteral("game:browse"),QObject::tr("Browse Popular"),Action::BrowseGames));
+    rows.append(releaseRow(QStringLiteral("release:import"),QObject::tr("Import Source"),Action::ImportSource));
+    for(const auto& source:sources) {
+        auto row=releaseRow(QStringLiteral("release:source:")+source.slug,source.name,Action::ReleaseFolder,source.slug);
+        row.detail=QObject::tr("%n release(s)",nullptr,int(source.releases.size()));
+        rows.append(std::move(row));
+    }
+    if(sources.isEmpty()) {
+        auto row=releaseRow(QStringLiteral("release:none"),QObject::tr("No sources imported yet."),Action::Unavailable);
+        row.detail=QObject::tr("Import Source adds a release index to download from.");
+        rows.append(std::move(row));
+    }
+    return rows;
+}
+
 // Browse worker result: the popular games plus their fetched box art (indexed by list position).
 struct BrowseOutcome { QVector<GameResult> games; QHash<int,QImage> covers; QString error; };
 }
@@ -82,6 +142,7 @@ struct BrowseOutcome { QVector<GameResult> games; QHash<int,QImage> covers; QStr
 void Shell::refreshReleaseSources(const QUrl& importUrl) {
     const bool importing=!importUrl.isEmpty();
     if(importing && busy())return;
+    if(importing)++releaseSourcesGeneration_;
     struct Result { QVector<ReleaseSource> sources; QHash<QString,QString> paths; QString error; };
     auto* watcher=new QFutureWatcher<Result>(this);
     connect(watcher,&QFutureWatcher<Result>::finished,this,[this,watcher,importing]{
@@ -90,7 +151,8 @@ void Shell::refreshReleaseSources(const QUrl& importUrl) {
         rebuildReleaseSources();
         if(importing){busy_=false;status_.clear();busyProgress_=-1.;busySpinnerPhase_=-1.;}
         if(!result.error.isEmpty())showMessage(tr("Release Sources"),result.error,MessageKind::Page);
-        else if(importing)showMessage(tr("Import Source"),tr("Source imported. Open its folder in Game to browse releases."),MessageKind::Page);
+        else if(importing)showMessage(tr("Import Source"),tr("Source imported. Open its folder in Download Games to browse releases."),MessageKind::Page);
+        if(!importing)refreshGameFeeds();
         emit changed();
     });
     const QString data=dataDirectory_;
@@ -108,7 +170,36 @@ void Shell::refreshReleaseSources(const QUrl& importUrl) {
         busyProgress_=-1.;busySpinnerPhase_=0.;busyClock_.start();emit changed();
     }
 }
+void Shell::refreshGameFeeds() {
+    if(releaseFeedsRefreshing_ || releaseSources_.isEmpty() || diagnostics::safeMode())return;
+    releaseFeedsRefreshing_=true;
+    const auto generation=releaseSourcesGeneration_;
+    auto* watcher=new QFutureWatcher<QVector<ReleaseSource>>(this);
+    connect(watcher,&QFutureWatcher<QVector<ReleaseSource>>::finished,this,[this,watcher,generation]{
+        auto sources=watcher->result();watcher->deleteLater();
+        releaseFeedsRefreshing_=false;
+        if(generation!=releaseSourcesGeneration_ || sources.isEmpty())return;
+        releaseSources_=std::move(sources);
+        rebuildReleaseSources();
+        emit changed();
+    });
+    const QString data=dataDirectory_;
+    watcher->setFuture(QtConcurrent::run([data]{
+        Preferences prefs(data);
+        ReleaseSources store(data,prefs);
+        if(store.refreshSources()==0)return QVector<ReleaseSource>{};
+        return store.listSources();
+    }));
+}
+
 void Shell::rebuildReleaseSources() {
+    for(auto& page:pages_)if(page.downloadHub) {
+        const QString focus=page.entries.value(page.selection).id;
+        page.entries=downloadHubRows(releaseSources_);
+        page.selection=0;
+        for(int i=0;i<page.entries.size();++i)
+            if(page.entries[i].id==focus){page.selection=i;break;}
+    }
     // The imported source folders no longer sit in the column: they are listed inside the Download Games
     // hub (openDownloadHub). This just keeps the hub folder's detail line honest about how many sources
     // are imported, so the column itself stays a fixed set of folders.
@@ -178,43 +269,17 @@ void Shell::requestReleaseArt(const Entry& entry,const IndexedRelease& release,c
     watcher->setFuture(QtConcurrent::run([url=sourceUrl.resolved(QUrl(imageUrl)),cache]{return fetchCover(url,cache);}));
 }
 void Shell::activateRelease(const Entry& entry) {
-    const QString local=releaseLocalPaths_.value(entry.id);
-    if(!local.isEmpty() && QFileInfo(local).isFile()) {
-        if(!QDesktopServices::openUrl(QUrl::fromLocalFile(local)))showMessage(tr("Download"),tr("Could not open the downloaded file."),MessageKind::Page);
-        emit changed();return;
-    }
-    busy_=true;status_=tr("Downloading %1...").arg(entry.title);
-    busyProgress_=-1.;busySpinnerPhase_=0.;busyClock_.start();
-    auto* watcher=new QFutureWatcher<QPair<QString,QString>>(this);
-    connect(watcher,&QFutureWatcher<QPair<QString,QString>>::finished,this,[this,watcher,entry]{
-        const auto result=watcher->result();watcher->deleteLater();
-        busy_=false;status_.clear();busyProgress_=-1.;busySpinnerPhase_=-1.;
-        if(result.first.isEmpty())showMessage(tr("Download"),result.second,MessageKind::Page);
-        else {
-            releaseLocalPaths_.insert(entry.id,result.first);
-            for(auto& page:pages_)for(auto& row:page.entries)if(row.id==entry.id) {
-                row.fieldValue=tr("Downloaded");row.detail=QDir::toNativeSeparators(result.first);
+    for(const auto& source:releaseSources_) {
+        if(source.slug!=entry.value)continue;
+        for(const auto& release:source.releases)
+            if(release.title==entry.setting) {
+                openGameSources(importedGame(source,release));
+                return;
             }
-            showMessage(tr("Download Complete"),tr("%1 is ready. Select it again to open the local file.").arg(entry.title),MessageKind::Page);
-        }
-        emit changed();
-    });
-    const QString data=dataDirectory_;
-    connect(watcher,&QFutureWatcher<QPair<QString,QString>>::progressValueChanged,this,[this](int value){
-        busyProgress_=value>0?double(value-1)/1000.:-1.;
-        emit changed();
-    });
-    // Worker-local preferences and QPromise keep both store access and progress delivery thread-safe.
-    watcher->setFuture(QtConcurrent::run([data,entry](QPromise<QPair<QString,QString>>& promise){
-        promise.setProgressRange(0,1001);
-        Preferences preferences(data);ReleaseSources store(data,preferences);QString error;
-        const QString path=store.downloadRelease(entry.value,entry.setting,&error,[&promise](qint64 received,qint64 total){
-            promise.setProgressValue(total>0?1+int(std::clamp(double(received)/double(total),0.,1.)*1000):0);
-        });
-        promise.addResult(qMakePair(path,error));
-    }));
-    emit changed();
+    }
+    showMessage(tr("Release Sources"),tr("This release is no longer in the feed. Go back and open the source again."),MessageKind::Page);
 }
+
 void Shell::openDownloadManager() {
     if(pages_.size()>=32)return;
     Page page;page.title=tr("Download Manager");
@@ -249,26 +314,28 @@ void Shell::saveFlareSolverrUrl(const QString& url) {
     for(auto& page:pages_)for(auto& row:page.entries)if(row.id==QStringLiteral("flaresolverr:url"))row.fieldValue=shown;
     setupRefresh();emit changed();
 }
-void Shell::openGameSearch() {
-    emit requestJellyfinFieldEdit(QStringLiteral("game:search"),tr("Search Games"),QString(),false);
-}
-void Shell::openDownloadHub() {
+void Shell::openGameSearch(const QString& scope) {
+    if(!scope.isEmpty()) {
+        emit requestJellyfinFieldEdit(QStringLiteral("game:search:")+scope,tr("Search Games"),{},false);
+        return;
+    }
     if(pages_.size()>=32)return;
-    Page page;page.title=tr("Download Games");
-    page.entries.push_back(releaseRow(QStringLiteral("game:search"),tr("Browse"),Action::BrowseGames));
-    page.entries.push_back(releaseRow(QStringLiteral("release:import"),tr("Import Source"),Action::ImportSource));
-    for(const auto& source:releaseSources_) {
-        Entry entry=releaseRow(QStringLiteral("release:source:")+source.slug,source.name,Action::ReleaseFolder,source.slug);
-        entry.detail=tr("%1 releases").arg(source.releases.size());
-        page.entries.push_back(entry);
-    }
-    if(releaseSources_.isEmpty()) {
-        Entry empty=releaseRow(QStringLiteral("release:none"),tr("No sources imported yet."),Action::Unavailable);
-        empty.detail=tr("Import Source adds a release index to download from.");page.entries.push_back(empty);
-    }
+    Page page;page.title=tr("Search Games");
+    page.entries.append(releaseRow(QStringLiteral("game:scope:all"),tr("All sources"),Action::SearchGames,QStringLiteral("all")));
+    page.entries.append(releaseRow(QStringLiteral("game:scope:imported"),tr("Imported feeds"),Action::SearchGames,QStringLiteral("imported")));
+    page.entries.append(releaseRow(QStringLiteral("game:scope:online"),tr("Online Browse"),Action::SearchGames,QStringLiteral("online")));
     pages_.push_back(std::move(page));
     emit changed();
 }
+void Shell::openDownloadHub() {
+    if(pages_.size()>=32)return;
+    Page page;page.title=tr("Download Games");page.downloadHub=true;
+    page.entries=downloadHubRows(releaseSources_);
+    pages_.push_back(std::move(page));
+    refreshGameFeeds();
+    emit changed();
+}
+
 void Shell::openBrowseGames() {
     if(busy())return;
     busy_=true;status_=tr("Loading popular games...");
@@ -277,19 +344,19 @@ void Shell::openBrowseGames() {
     connect(watcher,&QFutureWatcher<BrowseOutcome>::finished,this,[this,watcher]{
         const auto result=watcher->result();watcher->deleteLater();
         busy_=false;status_.clear();busyProgress_=-1.;busySpinnerPhase_=-1.;
-        gameSearch_=result.games;
         if(pages_.size()<32) {
             Page page;page.title=tr("Browse");
+            page.downloadResults=result.games;
             page.entries.append(releaseRow(QStringLiteral("game:search-row"),tr("Search"),Action::SearchGames));
             if(!result.error.isEmpty()) {
                 Entry error=releaseRow(QStringLiteral("game:error"),tr("Could not load games"),Action::Unavailable);
                 error.detail=result.error;page.entries.append(error);
-            } else if(gameSearch_.isEmpty()) {
+            } else if(page.downloadResults.isEmpty()) {
                 page.entries.append(releaseRow(QStringLiteral("game:empty"),tr("No popular games are downloadable right now."),Action::Unavailable));
             } else {
-                const int shown=qMin(100,gameSearch_.size());
+                const int shown=qMin(100,page.downloadResults.size());
                 for(int i=0;i<shown;++i) {
-                    const auto& game=gameSearch_[i];
+                    const auto& game=page.downloadResults[i];
                     Entry entry=releaseRow(QStringLiteral("game:result:")+QString::number(i),game.name,Action::GameSearchResult,QString::number(i));
                     entry.detail=game.options.size()>1?tr("%1 sources").arg(game.options.size()):game.options.first().source;
                     entry.fieldValue=game.options.first().fileSize;
@@ -319,135 +386,164 @@ void Shell::openBrowseGames() {
     }));
     emit changed();
 }
-void Shell::runGameSearch(const QString& query) {
+void Shell::runGameSearch(const QString& query,const QString& scope) {
     const QString term=query.trimmed();
-    if(term.isEmpty() || busy())return;
+    if(term.isEmpty() || busy() || pages_.size()>=32)return;
+    const bool online=scope==QLatin1String("all") || scope==QLatin1String("online");
+    const bool imported=scope==QLatin1String("all") || scope==QLatin1String("imported");
+    if(!online && !imported)return;
     busy_=true;status_=tr("Searching games...");
     busyProgress_=-1.;busySpinnerPhase_=0.;busyClock_.start();
-    auto* watcher=new QFutureWatcher<QPair<QVector<GameResult>,QString>>(this);
-    connect(watcher,&QFutureWatcher<QPair<QVector<GameResult>,QString>>::finished,this,[this,watcher,term]{
-        const auto result=watcher->result();watcher->deleteLater();
+    auto* watcher=new QFutureWatcher<BrowseOutcome>(this);
+    const auto depth=pages_.size();
+    connect(watcher,&QFutureWatcher<BrowseOutcome>::finished,this,[this,watcher,term,depth]{
+        auto result=watcher->result();watcher->deleteLater();
         busy_=false;status_.clear();busyProgress_=-1.;busySpinnerPhase_=-1.;
-        gameSearch_=result.first;
-        if(pages_.size()<32) {
+        if(pages_.size()==depth && depth<32) {
             Page page;page.title=tr("Search: %1").arg(term);
-            if(!result.second.isEmpty()) {
-                Entry error=releaseRow(QStringLiteral("game:error"),tr("Search failed"),Action::Unavailable);
-                error.detail=result.second;page.entries.append(error);
-            } else if(gameSearch_.isEmpty()) {
-                page.entries.append(releaseRow(QStringLiteral("game:empty"),tr("No portable results for \"%1\"").arg(term),Action::Unavailable));
-            } else {
-                for(int i=0;i<gameSearch_.size();++i) {
-                    const auto& game=gameSearch_[i];
-                    Entry entry=releaseRow(QStringLiteral("game:result:")+QString::number(i),game.name,Action::GameSearchResult,QString::number(i));
-                    entry.detail=game.options.size()>1?tr("%1 sources").arg(game.options.size()):game.options.first().source;
-                    entry.fieldValue=game.options.first().fileSize;
-                    page.entries.append(entry);
-                }
+            page.downloadResults=std::move(result.games);
+            const int shown=qMin(100,page.downloadResults.size());
+            for(int i=0;i<shown;++i) {
+                const auto& game=page.downloadResults[i];
+                const QString index=QString::number(i);
+                Entry entry=releaseRow(QStringLiteral("game:result:")+index,game.name,Action::GameSearchResult,index);
+                entry.detail=optionCount(game);
+                entry.gameTile=true;
+                entry.artworkUrl=game.coverUrl;
+                page.entries.append(std::move(entry));
+            }
+            if(shown==0)page.entries.append(releaseRow(QStringLiteral("game:empty"),tr("No games found for \"%1\"").arg(term),Action::Unavailable));
+            if(!result.error.isEmpty()) {
+                auto error=releaseRow(QStringLiteral("game:error"),tr("Online Browse unavailable"),Action::Unavailable);
+                error.detail=result.error;
+                page.entries.append(std::move(error));
             }
             pages_.push_back(std::move(page));
         }
         emit changed();
     });
-    watcher->setFuture(QtConcurrent::run([term]{
-        QVector<GameResult> results;QString error;
-        HydraLibrary().searchGames(term,&results,&error);
-        return qMakePair(results,error);
+    const auto sources=imported?releaseSources_:QVector<ReleaseSource>{};
+    watcher->setFuture(QtConcurrent::run([term,online,sources]{
+        BrowseOutcome result;
+        QHash<QString,int> indexes;
+        const auto add=[&](GameResult game) {
+            if(game.options.isEmpty())return;
+            const QString key=gameSearchKey(game.name);
+            if(key.isEmpty())return;
+            const auto found=indexes.constFind(key);
+            if(found!=indexes.cend()) {
+                auto& existing=result.games[*found];
+                if(existing.coverUrl.isEmpty())existing.coverUrl=game.coverUrl;
+                for(auto& option:game.options) {
+                    const auto duplicate=std::any_of(existing.options.cbegin(),existing.options.cend(),[&](const GameSourceOption& old){
+                        const QString oldUri=old.downloads.isEmpty()?QString{}:old.downloads.first().uri;
+                        const QString uri=option.downloads.isEmpty()?QString{}:option.downloads.first().uri;
+                        return old.sourceUrl==option.sourceUrl && old.releaseTitle==option.releaseTitle && oldUri==uri;
+                    });
+                    if(!duplicate && existing.options.size()<48)existing.options.append(std::move(option));
+                }
+            } else if(result.games.size()<100) {
+                indexes.insert(key,int(result.games.size()));
+                result.games.append(std::move(game));
+            }
+        };
+        const QString normalizedTerm=gameSearchKey(term);
+        for(const auto& source:sources)
+            for(const auto& release:source.releases) {
+                auto game=importedGame(source,release);
+                if(gameSearchKey(game.name).contains(normalizedTerm) || gameSearchKey(release.title).contains(normalizedTerm))add(std::move(game));
+            }
+        if(online) {
+            QVector<GameResult> results;
+            if(HydraLibrary().searchGames(term,&results,&result.error))
+                for(auto& game:results)add(std::move(game));
+        }
+        return result;
     }));
     emit changed();
 }
+
 void Shell::pickGameResult(int index) {
-    if(index<0 || index>=gameSearch_.size())return;
-    const auto& game=gameSearch_[index];
-    if(game.options.size()>1){openGameSources(index);return;}
-    beginGameDownload(game.name,QUrl(game.options.first().sourceUrl));
+    if(pages_.isEmpty() || index<0 || index>=pages_.last().downloadResults.size())return;
+    const GameResult game=pages_.last().downloadResults[index];
+    openGameSources(game);
 }
-void Shell::openGameSources(int index) {
-    if(index<0 || index>=gameSearch_.size() || pages_.size()>=32)return;
-    const auto& game=gameSearch_[index];
+
+void Shell::openGameSources(const GameResult& game) {
+    if(pages_.size()>=32)return;
     Page page;page.title=game.name;
+    page.downloadResults={game};
+    QHash<QString,int> mirrorCounts, mirrorIndex;
+    for(const auto& option:game.options)
+        if(!option.mirror.isEmpty())++mirrorCounts[option.source+QLatin1Char('/')+option.mirror];
     for(int i=0;i<game.options.size();++i) {
-        const auto& option=game.options[i];
-        Entry entry=releaseRow(QStringLiteral("game:source:")+QString::number(i),option.source,Action::GameSourcePick,QString::number(index)+QLatin1Char(':')+QString::number(i));
-        entry.detail=option.sourceStatus;
-        entry.fieldValue=option.fileSize;
-        page.entries.append(entry);
+        auto& option=page.downloadResults.first().options[i];
+        const QString index=QString::number(i);
+        Entry entry=releaseRow(QStringLiteral("game:source:")+index,option.source,Action::GameSourcePick,index);
+        if(!option.mirror.isEmpty()) {
+            const QString key=option.source+QLatin1Char('/')+option.mirror;
+            if(mirrorCounts.value(key)>1)option.mirror+=tr(" · Mirror %1").arg(++mirrorIndex[key]);
+            entry.title+=QStringLiteral(" / ")+option.mirror;
+        }
+        entry.detail=option.releaseTitle.isEmpty()?game.name:option.releaseTitle;
+        entry.fieldValue=option.fileSize.isEmpty()?tr("Size unknown"):option.fileSize;
+        page.entries.append(std::move(entry));
     }
+    if(page.entries.isEmpty())
+        page.entries.append(releaseRow(QStringLiteral("game:no-links"),tr("No supported single-file download"),Action::Unavailable));
     pages_.push_back(std::move(page));
     emit changed();
 }
+
 void Shell::pickGameSource(const QString& value) {
-    const int colon=value.indexOf(QLatin1Char(':'));
-    const int game=value.left(colon).toInt();
-    const int option=value.mid(colon+1).toInt();
-    if(game<0 || game>=gameSearch_.size())return;
-    const auto& g=gameSearch_[game];
-    if(option<0 || option>=g.options.size())return;
-    beginGameDownload(g.name,QUrl(g.options[option].sourceUrl));
+    if(pages_.isEmpty() || pages_.last().downloadResults.isEmpty())return;
+    const auto game=pages_.last().downloadResults.first();
+    bool valid=false;
+    const int option=value.toInt(&valid);
+    if(!valid || option<0 || option>=game.options.size())return;
+    beginGameDownload(game.name,game.options[option]);
 }
-void Shell::beginGameDownload(const QString& title,const QUrl& sourceUrl) {
-    pendingGameTitle_=title;pendingGameUrl_=sourceUrl;
+
+void Shell::beginGameDownload(const QString& title,const GameSourceOption& option) {
     if(pages_.size()>=32)return;
     Page page;page.title=tr("Choose a drive");
-    const auto drives=QDir::drives();
-    if(drives.isEmpty()) {
-        page.entries.append(releaseRow(QStringLiteral("drive:none"),tr("No drives found"),Action::Unavailable));
-    } else {
-        for(const auto& drive:drives) {
-            Entry entry=releaseRow(QStringLiteral("drive:")+drive.absolutePath(),drive.absolutePath(),Action::GameDownloadDrive,drive.absolutePath());
-            entry.detail=tr("Download \"%1\" here").arg(title);
-            page.entries.append(entry);
-        }
+    GameResult game;
+    game.name=title;
+    game.options={option};
+    page.downloadResults={std::move(game)};
+    for(const auto& drive:QDir::drives()) {
+        const QString path=drive.absolutePath();
+        Entry entry=releaseRow(QStringLiteral("drive:")+path,QDir::toNativeSeparators(path),Action::GameDownloadDrive,path);
+        entry.detail=tr("Install in %1").arg(QDir::toNativeSeparators(QDir(path).filePath(QStringLiteral("XMB Games"))));
+        page.entries.append(std::move(entry));
     }
+    if(page.entries.isEmpty())
+        page.entries.append(releaseRow(QStringLiteral("drive:none"),tr("No drives found"),Action::Unavailable));
     pages_.push_back(std::move(page));
     emit changed();
 }
+
 void Shell::completeGameDownload(const QString& drive) {
-    if(pendingGameTitle_.isEmpty() || busy())return;
-    const QString title=pendingGameTitle_;
-    const QUrl url=pendingGameUrl_;
-    pendingGameTitle_.clear();pendingGameUrl_.clear();
-    busy_=true;status_=tr("Downloading %1...").arg(title);
-    busyProgress_=-1.;busySpinnerPhase_=0.;busyClock_.start();
-    auto* watcher=new QFutureWatcher<QPair<QString,QString>>(this);
-    connect(watcher,&QFutureWatcher<QPair<QString,QString>>::finished,this,[this,watcher,title]{
-        const auto result=watcher->result();watcher->deleteLater();
-        busy_=false;status_.clear();busyProgress_=-1.;busySpinnerPhase_=-1.;
-        if(!result.second.isEmpty()){showMessage(tr("Download"),result.second,MessageKind::Page);emit changed();return;}
-        refreshContent();
-        fetchGameArtwork(result.first,title);
-        showMessage(tr("Download Complete"),tr("%1 is installed and ready in Games.").arg(title),MessageKind::Page);
+    if(pages_.isEmpty() || pages_.last().downloadResults.isEmpty())return;
+    const auto game=pages_.last().downloadResults.first();
+    if(game.options.size()!=1)return;
+    const auto option=game.options.first();
+    const QString directory=QDir(drive).filePath(QStringLiteral("XMB Games"));
+    QString source=option.source;
+    if(!option.mirror.isEmpty())source+=QStringLiteral(" / ")+option.mirror;
+    const QString size=option.fileSize.isEmpty()?tr("Unknown"):option.fileSize;
+    const QString question=tr("Download and install %1?").arg(game.name);
+    const QString release=option.releaseTitle.isEmpty()?game.name:option.releaseTitle;
+    const QString body=question+QStringLiteral("\n\n")+tr("Release: %1\nSource: %2\nSize: %3\nDestination: %4")
+        .arg(release,source,size,QDir::toNativeSeparators(directory));
+    showConfirm(question,body,[this,game,option,directory]{
+        pages_.removeLast();
+        enqueueReleaseGame(game.name,option.releaseTitle.isEmpty()?game.name:option.releaseTitle,
+                           QUrl(option.sourceUrl),option.sourceSlug,directory,option.downloads);
         emit changed();
     });
-    connect(watcher,&QFutureWatcher<QPair<QString,QString>>::progressValueChanged,this,[this](int value){
-        busyProgress_=value>0?double(value-1)/1000.:-1.;emit changed();
-    });
-    const QString data=dataDirectory_;
-    watcher->setFuture(QtConcurrent::run([data,title,url,drive](QPromise<QPair<QString,QString>>& promise){
-        promise.setProgressRange(0,1001);
-        Preferences preferences(data);ReleaseSources store(data,preferences);QString error;
-        const QString gamesDir=QDir(drive).filePath(QStringLiteral("XMB Games"));
-        const auto progress=[&promise](qint64 received,qint64 total){
-            promise.setProgressValue(total>0?1+int(std::clamp(double(received)/double(total),0.,1.)*800):0);
-        };
-        const QString archive=store.downloadGameByUrl(title,url,gamesDir,&error,progress);
-        if(archive.isEmpty()){promise.addResult(qMakePair(QString(),error));return;}
-        promise.setProgressValue(850);
-        const QString folder=QDir(gamesDir).filePath(title);
-        if(!extractArchive(archive,folder,&error)){promise.addResult(qMakePair(QString(),error));return;}
-        promise.setProgressValue(950);
-        const QString exe=findGameExecutable(folder,&error);
-        if(exe.isEmpty()){promise.addResult(qMakePair(QString(),error));return;}
-        ContentApp app;
-        app.id=QStringLiteral("hydra-")+QString::fromLatin1(QCryptographicHash::hash(title.toUtf8(),QCryptographicHash::Sha256).toHex().left(12));
-        app.title=title;app.kind=QStringLiteral("game");app.category=QStringLiteral("game");
-        app.executable=exe;app.workingDirectory=QFileInfo(exe).absolutePath();
-        if(!ContentRegistry::upsert(QDir(data).filePath("apps.json"),app,error)){promise.addResult(qMakePair(QString(),error));return;}
-        promise.setProgressValue(1001);
-        promise.addResult(qMakePair(app.id,QString()));
-    }));
-    emit changed();
 }
+
 void Shell::fetchGameArtwork(const QString& id,const QString& title) {
     if(!releaseArtwork_) {
         releaseArtwork_=std::make_unique<RawgArtwork>(QDir(dataDirectory_).filePath(QStringLiteral("cache/release-art")),this);

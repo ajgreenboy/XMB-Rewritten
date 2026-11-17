@@ -22,6 +22,7 @@ bool RealDebrid::hasToken() const {
 }
 bool RealDebrid::request(const QString& path,const QByteArray* form,QJsonObject* result,QString* error) const {
     if(error)error->clear();
+    if(cancel_ && cancel_->load()){fail(error,QStringLiteral("Download cancelled"));return false;}
     const QString token=preferences_.value(QStringLiteral("debrid/realDebridToken")).toString().trimmed();
     if(token.isEmpty()){fail(error,QStringLiteral("no Real-Debrid token configured"));return false;}
     QNetworkAccessManager manager;
@@ -34,7 +35,13 @@ bool RealDebrid::request(const QString& path,const QByteArray* form,QJsonObject*
     QObject::connect(&timer,&QTimer::timeout,&loop,[&]{timedOut=true;reply->abort();});
     QObject::connect(reply,&QNetworkReply::readyRead,&loop,[&]{bytes+=reply->readAll();if(bytes.size()>4*1024*1024){tooLarge=true;reply->abort();}});
     QObject::connect(reply,&QNetworkReply::finished,&loop,&QEventLoop::quit);
-    timer.start(30000); loop.exec(); bytes+=reply->readAll();
+    QTimer cancellation;
+    QObject::connect(&cancellation,&QTimer::timeout,&loop,[&]{if(cancel_->load())reply->abort();});
+    if(cancel_)cancellation.start(100);
+    timer.start(30000);
+    if(!reply->isFinished())loop.exec();
+    if(cancel_ && cancel_->load()){fail(error,QStringLiteral("Download cancelled"));return false;}
+    bytes+=reply->readAll();
     const int status=reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
     const auto document=QJsonDocument::fromJson(bytes); const auto object=document.object();
     if(timedOut){fail(error,QStringLiteral("Real-Debrid request timed out"));return false;}

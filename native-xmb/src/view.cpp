@@ -2824,7 +2824,20 @@ void View::drawScene(QPainter& p) {
         }
         p.restore();
     };
-    if(shell_.mediaOpen()) {
+    if(shell_.jellyfinVideoSelected() && mediaFrame_.isNull() && shell_.message().isEmpty()) {
+        previousMediaOpen_=false;
+        const auto now=clock_.elapsed();
+        p.fillRect(QRectF(0,0,1920,1080),Qt::black);
+        text({220,430,1480,52},shell_.mediaTitle(),38,Qt::white,Qt::AlignCenter);
+        p.save();
+        p.setPen(QPen(QColor(255,255,255,180),3,Qt::SolidLine,Qt::RoundCap));
+        p.drawArc(QRectF(943,502,34,34),-int((now%1000)*5760/1000),125*16);
+        p.restore();
+        text({220,554,1480,40},tr("Buffering…"),25,QColor(225,225,225),Qt::AlignCenter);
+        const auto& back=assets_.image("videoplayer_plugin","tex_cp_help_circle");
+        if(!back.isNull())p.drawImage(QRectF(110,1026,86,30),back);
+        text({205,1021,420,42},tr("Back"),21,QColor(230,230,230));
+    } else if(shell_.mediaOpen()) {
         const auto now=clock_.elapsed();
         if(!previousMediaOpen_ || previousMediaTitle_!=shell_.mediaTitle()) {
             mediaControls_.opened(now);
@@ -3255,6 +3268,12 @@ void View::drawScene(QPainter& p) {
                 const double cardHeight=72+focus*104;
                 double iconWidth=tile?cardHeight*(320./176.)*entryScale:size,iconHeight=tile?cardHeight*entryScale:size;
                 if(behind>.001 && tile){iconWidth=size;iconHeight=size;}
+                const bool seerrPoster=behind<.001 && entry.artwork.width()<entry.artwork.height() &&
+                    (entry.id.startsWith(QLatin1String("seerr:result:")) || entry.id==QLatin1String("seerr:media-status"));
+                if(seerrPoster) {
+                    iconHeight=(58.+focus*96.)*entryScale;
+                    iconWidth=iconHeight*(2./3.);
+                }
                 // Captured parent-column brightness (_Ambiant.w 0.698 focused, 0.247 unfocused, RPCS3 fpdump7): it
                 // belongs to the column, not to the glass row class, or the card behind a page stays at full strength.
                 // A row this build still lists but cannot act on - the Continue Watching entry whose file is
@@ -3271,12 +3290,10 @@ void View::drawScene(QPainter& p) {
                     const QRectF card(iconX-iconWidth/2,y-iconHeight/2,iconWidth,iconHeight);
                     if(entry.artwork.isNull())drawItemGlyph(p,entry.container,itemTexture,card,iconAlpha);
                     else {
-                        // Every installed game has the same ICON0 canvas,
-                        // independent of the provider's capsule dimensions.
-                        // Crop centrally rather than stretching or letterboxing.
-                        QSizeF crop=QSizeF(card.size()).scaled(entry.artwork.size(),Qt::KeepAspectRatio);
-                        const QRectF source(QPointF((entry.artwork.width()-crop.width())/2.,(entry.artwork.height()-crop.height())/2.),crop);
-                        p.save();p.setOpacity(iconAlpha);p.drawImage(card,entry.artwork,source);p.restore();
+                        // Keep every edge of the supplied cover inside the ICON0 envelope.
+                        const QSizeF fitted=QSizeF(entry.artwork.size()).scaled(card.size()*.95,Qt::KeepAspectRatio);
+                        const QRectF artwork(card.center()-QPointF(fitted.width()/2.,fitted.height()/2.),fitted);
+                        p.save();p.setOpacity(iconAlpha);p.drawImage(artwork,entry.artwork);p.restore();
                     }
                 }
                 else if(!entry.artwork.isNull()) {
@@ -5010,7 +5027,7 @@ void View::drawMusicPage(QPainter& p) {
 }
 // A local audio item is what the XMB panel belongs to: no video track, and not the photo viewer.
 bool View::mediaAudioOnly() const {
-    return shell_.mediaOpen() && !shell_.videoOpen() && !shell_.photoOpen();
+    return shell_.mediaOpen() && !shell_.videoOpen() && !shell_.photoOpen() && !shell_.jellyfinVideoSelected();
 }
 void View::toggleMusicPanel() {
     if(!mediaAudioOnly())return;

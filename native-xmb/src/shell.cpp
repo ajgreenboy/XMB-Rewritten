@@ -1247,7 +1247,7 @@ QVector<Entry> Shell::steamDownloadRows(QString& error) {
     QVector<SteamDownload> downloads=scanSteamDownloads(QString(),&error);
     // SteamCMD's own jobs come first. While one exists the page is not an error page, even when the Steam client's
     // files cannot be read: the job is still real.
-    QVector<Entry> rows=steamCmdJobRows();
+    QVector<Entry> rows=releaseJobRows()+steamCmdJobRows()+seerrDownloadRows();
     if(!rows.isEmpty())error.clear();
     const int jobRowCount=int(rows.size());
     rows.reserve(rows.size()+downloads.size());
@@ -1308,6 +1308,7 @@ QVector<Entry> Shell::steamDownloadRows(QString& error) {
     return rows;
 }
 void Shell::openSteamDownloads() {
+    refreshSeerrDownloads();
     QString error;
     auto rows=steamDownloadRows(error);
     const QString title=QObject::tr("Download Management");
@@ -1383,7 +1384,8 @@ void Shell::refreshContent() {
             QVector<Entry> providers,installed,steam;
             QVector<Entry> trailing;   // rows that go after the column's own (Music > Jellyfin Music, under Spotify)
             if(category.id=="tv" && qEnvironmentVariable("XMB_NO_SETUP_ROWS")!=QLatin1String("1")) {
-                auto e=item("seerr-home",tr("Media Requests"),"tex_video","explore_plugin_full",Action::Seerr,"open");
+                auto e=item("seerr-home",tr("Seerr"),"tex_video","explore_plugin_full",Action::Seerr,"open");
+                e.artwork=serviceIcons::seerr();e.iconSized=!e.artwork.isNull();
                 e.detail=tr("Find and request movies and TV shows through Seerr");
                 trailing.push_back(std::move(e));
             }
@@ -1976,6 +1978,7 @@ Shell::Shell(QString dataDirectory,Assets& assets,QObject* parent):QObject(paren
     // nothing is drawn over it (an information page, the options panel, a wait page) and no media is open.
     connect(&downloadsRefresh_,&QTimer::timeout,this,[this]{
         if(pages_.isEmpty() || !pages_.last().downloads || !message_.isEmpty() || optionsOpen_ || mediaOpen_ || busy())return;
+        refreshSeerrDownloads();
         reloadSteamDownloads();
     });
     downloadsRefresh_.start(5000);
@@ -2264,7 +2267,7 @@ Shell::Shell(QString dataDirectory,Assets& assets,QObject* parent):QObject(paren
         refreshJellyfinSignInPage();emit changed();
     });
 }
-Shell::~Shell(){host::holdDisplayAwake(false);jellyfinRequest_=0;finishJellyfinPlayback();jellyfin_.signOut();disconnect(&discordFriends_,nullptr,this,nullptr);disconnect(steamArtwork_.get(),nullptr,this,nullptr);}
+Shell::~Shell(){stopReleaseJobs();host::holdDisplayAwake(false);jellyfinRequest_=0;finishJellyfinPlayback();jellyfin_.signOut();disconnect(&discordFriends_,nullptr,this,nullptr);disconnect(steamArtwork_.get(),nullptr,this,nullptr);}
 // --- Notifications --------------------------------------------------------------------------------
 // One pop-up on screen at a time; the rest wait in order. The lifetime starts when an entry reaches the
 // front, so a burst of events each gets its own 4 s instead of the last one starving the others.
@@ -2723,7 +2726,7 @@ void Shell::activate() {
     case Action::BrowseGames:openBrowseGames();break;
     case Action::DownloadHub:openDownloadHub();break;
     case Action::ManageHub:openManageHub();break;
-    case Action::SearchGames:openGameSearch();break;
+    case Action::SearchGames:openGameSearch(entry.value);break;
     case Action::GameSearchResult:pickGameResult(entry.value.toInt());break;
     case Action::GameSourcePick:pickGameSource(entry.value);break;
     case Action::GameDownloadDrive:completeGameDownload(entry.value);break;
@@ -2744,6 +2747,7 @@ void Shell::activate() {
         break;
     case Action::SteamFolder:openSteamFolder(entry.value);break;
     case Action::SteamDownloads:openSteamDownloads();break;
+    case Action::ReleaseGameJob:activateReleaseJob(entry);break;
     case Action::SteamHub: {
         // The folded Steam hub: Store plus All Games, one level under the Game column's Steam folder.
         Page page;page.title=QObject::tr("Steam");
@@ -3236,7 +3240,7 @@ OptionLabel Shell::activateLabel(const Entry& entry) const {
     switch(entry.action) {
     case Action::Folder:case Action::SteamFolder:case Action::JellyfinFolder:case Action::JellyfinMusicApp:case Action::JellyfinMusicNode:
     case Action::Library:case Action::SteamStoreBrowse:case Action::SteamStoreSection:
-    case Action::SteamDownloads:
+    case Action::SteamDownloads:case Action::ReleaseGameJob:
         return {"msg_open","Open"};
     case Action::File:
         return categories_[category_].id=="photo"?OptionLabel{"msg_display","View"}:OptionLabel{"msg_play","Play"};
@@ -3362,6 +3366,11 @@ void Shell::buildOptions() {
     resetOptions();
     if(entries().isEmpty())return;
     const auto& entry=entries()[std::clamp(selection(),0,int(entries().size())-1)];
+    if(!pages_.isEmpty() && pages_.last().downloads && entry.id.startsWith(QLatin1String("download:"))) {
+        addOption({"",tr("Status")},OptionCommand::Information,"download-status");
+        if(entry.action==Action::ReleaseGameJob)addReleaseDownloadOptions(entry);
+        return;
+    }
     // ---- A user row: explore_plugin's own table (FUN_0008cdf4, TRACED) ----------------------------------
     // With two or more users (user.num >= 2) the menu is table 0x27dc40: msg_logout, msg_auto_login (an On/Off
     // level, table 0x27dc50), msg_del, msg_info. With one user it is table 0x27dc58: msg_info alone.
@@ -3805,6 +3814,14 @@ void Shell::optionsActivate() {
         interactionAudio_.play(InteractionAudio::Cue::Confirm);
         emit changed();
         break;
+    case OptionCommand::ReleaseDownloadCancel:
+    case OptionCommand::ReleaseDownloadRetry: {
+        resetOptions();
+        auto job=entry;
+        job.value=option.command==OptionCommand::ReleaseDownloadCancel?QStringLiteral("cancel"):QStringLiteral("retry");
+        activateReleaseJob(job);
+        break;
+    }
     case OptionCommand::SortMenu: {
         // The firmware's sort rows are six date pairs with the direction glyph in the string itself
         // (ITEM-MENU-INFO-FIRMWARE A3): msg_created_date_time_f/_r, msg_updated_date_f/_r,
@@ -4874,7 +4891,7 @@ void Shell::showEntryInformation(const Entry& entry) {
     // A Download Management row already carries its own information page (State, Progress, the pause/
     // resume note), so the panel shows that page rather than wrapping it in the generic rows.
     if(entry.id.startsWith("download:")) {
-        showMessage(entry.action==Action::SteamCmd?entry.setting:entry.value,MessageKind::Info);
+        showMessage(!entry.setting.isEmpty()?entry.setting:entry.id.startsWith(QLatin1String("download:release:"))?entry.title:entry.value,MessageKind::Info);
         qInfo().noquote()<<"shell: options information title="<<entry.title<<"(download page)";
         return;
     }
@@ -6989,7 +7006,7 @@ void Shell::setJellyfinSignInField(const QString& field,const QString& value) {
     if(field==QStringLiteral("jfsetup:address")){setJellyfinSetupAddress(value);return;}
     if(field==QStringLiteral("debrid:token")){saveDebridToken(value);return;}
     if(field==QStringLiteral("flaresolverr:url")){saveFlareSolverrUrl(value);return;}
-    if(field==QStringLiteral("game:search")){runGameSearch(value);return;}
+    if(field.startsWith(QStringLiteral("game:search:"))){runGameSearch(value,field.mid(12));return;}
     if(field==QStringLiteral("release:url")) {
         QString raw=value.trimmed();
         if(!raw.isEmpty()) {

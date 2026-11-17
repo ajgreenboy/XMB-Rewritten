@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
-project(RePS3Native VERSION 0.3.10 LANGUAGES CXX)
+project(RePS3Native VERSION 0.3.11 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
@@ -72,10 +72,11 @@ qt_add_executable(re-ps3-native
     src/seerr_client.cpp src/seerr_client.h src/seerr_shell.cpp src/seerr_config.cpp src/seerr_config.h
     src/jellyfin_player.cpp src/jellyfin_player.h src/jellyfin_shell.cpp src/jellyfin_music_shell.cpp src/jellyfin_setup.cpp src/jellyfin_setup.h src/jellyfin_setup_shell.cpp
     src/rsx_program.cpp src/rsx_program.h src/ribbon.cpp src/ribbon.h src/uniform_cache.cpp src/uniform_cache.h src/render_gate.cpp src/render_gate.h src/idle_profile.h src/frame_trace.h src/hdr.cpp src/hdr.h src/icons.cpp src/icons.h src/particles.cpp src/particles.h src/coldboot.cpp src/coldboot.h
-    src/setup.cpp src/setup.h src/setup_shell.cpp src/release_shell.cpp
+    src/setup.cpp src/setup.h src/setup_shell.cpp src/release_shell.cpp src/release_jobs.cpp
     src/autostart.cpp src/autostart.h src/autologon.cpp src/autologon.h src/cec.cpp src/cec.h src/display_mode.cpp src/display_mode.h src/display_spec.h src/diagnostics.cpp src/diagnostics.h src/game_capture.cpp src/game_capture.h src/elevation.cpp src/elevation.h src/text_entry.cpp src/text_entry.h src/shell.cpp src/shell.h src/host.cpp src/host.h src/pad.cpp src/pad.h src/ps_watcher.cpp src/ps_watcher.h src/web_adopt.cpp src/web_adopt.h src/desktop_mode.cpp src/desktop_mode.h src/desktop_pad.cpp src/desktop_pad_win.cpp src/desktop_pad.h src/view.cpp src/view.h src/dialogs.cpp)
 target_link_libraries(re-ps3-native PRIVATE Qt6::Widgets Qt6::OpenGLWidgets Qt6::Multimedia Qt6::Concurrent Qt6::Network)
 target_link_libraries(re-ps3-native PRIVATE Qt6::ZlibPrivate)
+qt_add_resources(re-ps3-native seerr_icon PREFIX "/service-icons" BASE "src" FILES "src/seerr.png" "src/seerr-icon-LICENSE.txt")
 # The app reports this version to the updater; set it only in project(VERSION ...) above.
 target_compile_definitions(re-ps3-native PRIVATE XMB_APP_VERSION="${PROJECT_VERSION}")
 option(XMB_FIRMWARE_BUILD_TESTS "Build firmware synthetic fixture tests" OFF)

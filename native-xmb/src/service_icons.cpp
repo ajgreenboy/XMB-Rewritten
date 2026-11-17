@@ -81,6 +81,12 @@ const QImage& spotify() {
     return icon.isNull() ? glyphs::spotifyLogo() : icon;
 }
 
+const QImage& seerr() {
+    // Seerr's official app icon, bundled under the upstream MIT license.
+    static const QImage icon=squared(QImage(QStringLiteral(":/service-icons/seerr.png")));
+    return icon;
+}
+
 const QImage& steam(const QString& steamRoot) {
     Q_UNUSED(steamRoot)
     // The drawn circular mark is the official Steam logo. steam.exe's embedded icon varies by client build

@@ -15,6 +15,7 @@ class QNetworkAccessManager;
 
 namespace xmb::serviceIcons {
 const QImage& spotify();
+const QImage& seerr();
 const QImage& steam(const QString& steamRoot);
 const QImage& jellyfin();   // the user's own server's icon once fetched, else the embedded official icon (jellyfin_icon_data.cpp)
 const QImage& tailscale();

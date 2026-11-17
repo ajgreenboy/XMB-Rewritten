@@ -1,6 +1,15 @@
 #include "shell.h"
 #include "seerr_client.h"
 #include "seerr_config.h"
+#include "diagnostics.h"
+#include "service_icons.h"
+
+#include <QBuffer>
+#include <QImageReader>
+#include <QNetworkAccessManager>
+#include <QNetworkReply>
+#include <QNetworkRequest>
+#include <QRegularExpression>
 
 #include <QJsonArray>
 #include <QJsonObject>
@@ -12,6 +21,14 @@ namespace xmb {
 
 struct SeerrUi {
     SeerrClient client;
+    SeerrClient downloadClient;
+    QVector<Entry> downloadRows;
+    QHash<QString,QImage> posters;
+    QSet<QString> posterPending, downloadDetails;
+    bool downloadPending=false;
+    bool downloadLoaded=false;
+    QUrl downloadServer;
+    QString downloadApiKey;
     QString server;
     QString apiKey;
     QString searchTerm;
@@ -102,6 +119,152 @@ QString seerrTrackedStatus(const QJsonObject& media,const QList<int>& seasons={}
 }
 }
 
+QVector<Entry> Shell::seerrDownloadRows() const {
+    return seerr_?seerr_->downloadRows:QVector<Entry>{};
+}
+
+void Shell::refreshSeerrDownloads() {
+    if(diagnostics::safeMode())return;
+    const auto config=seerrConfig::load(dataDirectory_);
+    const auto server=SeerrClient::normalizeServer(config.server);
+    if(server.isEmpty() || config.apiKey.isEmpty()) {
+        if(seerr_)seerr_->downloadRows.clear();
+        return;
+    }
+    if(!seerr_) {
+        seerr_=std::make_shared<SeerrUi>();
+        seerr_->server=config.server;
+        seerr_->apiKey=config.apiKey;
+        seerr_->client.configure(server,config.apiKey);
+    }
+    auto& ui=*seerr_;
+    if(ui.downloadPending)return;
+    if(!ui.downloadLoaded) {
+        auto row=seerrItem(QStringLiteral("download:seerr:loading"),tr("Seerr"),QStringLiteral("tex_video"),QStringLiteral("explore_plugin_full"));
+        row.artwork=serviceIcons::seerr();
+        row.detail=tr("Checking for active downloads...");
+        row.action=Action::Unavailable;
+        ui.downloadRows={row};
+    }
+    ui.downloadPending=true;
+    if(ui.downloadServer!=server || ui.downloadApiKey!=config.apiKey) {
+        ui.downloadServer=server;
+        ui.downloadApiKey=config.apiKey;
+        ui.downloadDetails.clear();
+        ui.downloadClient.configure(server,config.apiKey);
+    }
+    QPointer<Shell> self(this);
+    ui.downloadClient.requests(0,[self](QJsonObject response,QString error){
+        if(!self || !self->seerr_)return;
+        auto& state=*self->seerr_;
+        state.downloadPending=false;
+        state.downloadLoaded=true;
+        QVector<Entry> rows;
+        if(!error.isEmpty()) {
+            auto row=seerrItem(QStringLiteral("download:seerr:error"),self->tr("Seerr Downloads Unavailable"));
+            row.detail=error;
+            row.value=error;
+            row.action=Action::Information;
+            rows.append(std::move(row));
+        }
+        for(const auto value:response.value(QStringLiteral("results")).toArray()) {
+            const auto request=value.toObject();
+            const int requestId=request.value(QStringLiteral("id")).toInt();
+            if(requestId<=0 || request.value(QStringLiteral("status")).toInt()!=2)continue;
+            const auto media=seerrMedia(request);
+            const auto type=seerrMediaType(media);
+            const int id=media.value(QStringLiteral("tmdbId")).toInt();
+            if(type.isEmpty() || id<=0)continue;
+            const bool is4k=request.value(QStringLiteral("is4k")).toBool();
+            const int status=seerrInt(media.value(is4k?QStringLiteral("status4k"):QStringLiteral("status")));
+            if(status>=5)continue;
+            const QString key=type+QLatin1Char(':')+QString::number(id);
+            const QString identifier=QStringLiteral("download:seerr:%1").arg(requestId);
+            const QString title=state.titles.value(key,seerrTitle(request));
+            auto row=seerrItem(identifier,title==self->tr("Untitled")?self->tr("Seerr Request #%1").arg(requestId):title,
+                QStringLiteral("tex_video"),QStringLiteral("explore_plugin_full"));
+            QList<int> seasons;
+            for(const auto season:request.value(QStringLiteral("seasons")).toArray())
+                seasons.push_back(season.toObject().value(QStringLiteral("seasonNumber")).toInt(-1));
+            const auto tracked=seerrTrackedStatus(media,seasons,is4k);
+            row.detail=tracked.isEmpty()?self->tr("Seerr · %1").arg(seerrMediaStatus(status)):self->tr("Seerr · %1").arg(tracked);
+            row.value=row.title+QStringLiteral("\n\n")+row.detail+QStringLiteral("\n")+self->tr("Managed by Seerr and the configured download client.");
+            row.action=Action::Information;
+            row.artwork=state.posters.value(identifier,serviceIcons::seerr());
+            rows.append(std::move(row));
+            if(state.titles.contains(key) || state.downloadDetails.contains(key))continue;
+            state.downloadDetails.insert(key);
+            state.downloadClient.details(type,id,[self,key,identifier](QJsonObject details,QString error){
+                if(!self || !self->seerr_)return;
+                auto& state=*self->seerr_;
+                state.downloadDetails.remove(key);
+                if(!error.isEmpty())return;
+                const QString name=seerrTitle(details);
+                if(!name.isEmpty() && name!=self->tr("Untitled"))state.titles.insert(key,name);
+                const QString path=details.value(QStringLiteral("posterPath")).toString();
+                for(auto& row:state.downloadRows)if(row.id==identifier) {
+                    row.title=name;
+                    row.value=name+QStringLiteral("\n\n")+row.detail;
+                }
+                self->loadSeerrPoster(identifier,path);
+                if(!self->pages_.isEmpty() && self->pages_.last().downloads && self->message_.isEmpty() && !self->optionsOpen_)
+                    self->reloadSteamDownloads();
+            });
+        }
+        if(rows.isEmpty()) {
+            auto row=seerrItem(QStringLiteral("download:seerr:empty"),self->tr("Seerr"),QStringLiteral("tex_video"),QStringLiteral("explore_plugin_full"));
+            row.artwork=serviceIcons::seerr();
+            row.detail=self->tr("No active Seerr downloads");
+            row.action=Action::Unavailable;
+            rows.append(std::move(row));
+        }
+        state.downloadRows=std::move(rows);
+        if(!self->pages_.isEmpty() && self->pages_.last().downloads && self->message_.isEmpty() && !self->optionsOpen_)
+            self->reloadSteamDownloads();
+    },true);
+}
+
+void Shell::loadSeerrPoster(const QString& rowId,const QString& path) {
+    static const QRegularExpression valid(QStringLiteral("^/[A-Za-z0-9_-]{1,100}\\.(?:jpg|jpeg|png)$"));
+    if(!seerr_ || !dlnaNetwork_ || !valid.match(path).hasMatch())return;
+    auto& state=*seerr_;
+    if(state.posters.contains(rowId) || state.posterPending.contains(rowId) || state.posterPending.size()>=24)return;
+    state.posterPending.insert(rowId);
+    QNetworkRequest request(QUrl(QStringLiteral("https://image.tmdb.org/t/p/w185")+path));
+    request.setTransferTimeout(8000);
+    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,QNetworkRequest::ManualRedirectPolicy);
+    auto* reply=dlnaNetwork_->get(request);
+    constexpr qint64 limit=1024*1024;
+    auto bytes=std::make_shared<QByteArray>();
+    const auto consume=[reply,bytes]{
+        bytes->append(reply->read(limit+1-bytes->size()));
+        if(bytes->size()>limit)reply->abort();
+    };
+    connect(reply,&QNetworkReply::readyRead,this,consume);
+    connect(reply,&QNetworkReply::finished,this,[this,reply,bytes,consume,rowId]{
+        consume();
+        reply->deleteLater();
+        if(!seerr_)return;
+        auto& state=*seerr_;state.posterPending.remove(rowId);
+        if(reply->error()!=QNetworkReply::NoError || bytes->size()>limit ||
+            reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt()!=200)return;
+        QBuffer buffer(bytes.get());
+        if(!buffer.open(QIODevice::ReadOnly))return;
+        QImageReader reader(&buffer);
+        const auto size=reader.size();
+        if(size.isEmpty() || size.width()>800 || size.height()>1200)return;
+        reader.setScaledSize(size.scaled(192,288,Qt::KeepAspectRatio));
+        const auto image=reader.read();
+        if(image.isNull())return;
+        if(state.posters.size()>=128)state.posters.erase(state.posters.begin());
+        state.posters.insert(rowId,image);
+        for(auto& page:pages_)for(auto& row:page.entries)
+            if(row.id==rowId || row.id+page.seerr==rowId)row.artwork=image;
+        for(auto& row:state.downloadRows)if(row.id==rowId)row.artwork=image;
+        emit changed();
+    });
+}
+
 void Shell::activateSeerr(const Entry& entry) {
     if(!seerr_) {
         seerr_=std::make_shared<SeerrUi>();
@@ -117,7 +280,7 @@ void Shell::activateSeerr(const Entry& entry) {
         if(!ui.configDirty)ui.connection=ui.server.isEmpty()||ui.apiKey.isEmpty()?QString():tr("Saved configuration");
         bool hasPage=false;
         for(const auto& page:pages_)if(page.seerr.startsWith(QStringLiteral("home:")))hasPage=true;
-        if(!hasPage) { Page page;page.title=tr("Media Requests");page.seerr=QStringLiteral("home:%1").arg(++ui.generation);pages_.push_back(std::move(page)); }
+        if(!hasPage) { Page page;page.title=tr("Seerr");page.seerr=QStringLiteral("home:%1").arg(++ui.generation);pages_.push_back(std::move(page)); }
         refreshSeerrPage();emit changed();return;
     }
     if(pages_.isEmpty() || pages_.last().seerr.isEmpty())return;
@@ -204,7 +367,7 @@ void Shell::refreshSeerrPage() {
         row.detail=detail;page.entries.push_back(std::move(row));
     };
     if(token.startsWith(QStringLiteral("home:"))) {
-        page.title=tr("Media Requests");
+        page.title=tr("Seerr");
         add(QStringLiteral("seerr:search"),tr("Search"),QStringLiteral("search"),tr("Find a movie or TV series."));
         page.entries.last().disabled=ui.configDirty || ui.server.isEmpty() || ui.apiKey.isEmpty();
         add(QStringLiteral("seerr:requests"),tr("My Requests"),QStringLiteral("requests"),tr("View request and media availability states."));
@@ -231,6 +394,8 @@ void Shell::refreshSeerrPage() {
             row.detail=type==QStringLiteral("tv")?tr("TV"):tr("Movie");
             if(!date.isEmpty())row.detail+=QStringLiteral("  •  ")+date.left(4);
             if(!mediaInfo.isEmpty())row.detail+=QStringLiteral("  •  ")+seerrMediaStatus(seerrInt(mediaInfo.value(QStringLiteral("status"))));
+            row.artwork=ui.posters.value(row.id);
+            loadSeerrPoster(row.id,object.value(QStringLiteral("posterPath")).toString());
             page.entries.push_back(std::move(row));
         }
         const int pageNumber=token.section(':',1,1).toInt();
@@ -241,9 +406,25 @@ void Shell::refreshSeerrPage() {
         page.title=ui.title;
         const auto mediaInfo=ui.detail.value(QStringLiteral("mediaInfo")).toObject();
         const QString tracked=seerrTrackedStatus(ui.detail);
-        add(QStringLiteral("seerr:media-status"),tr("Media Status"),QString(),tracked.isEmpty()?seerrMediaStatus(seerrInt(mediaInfo.value(QStringLiteral("status")))):tracked);
+        add(QStringLiteral("seerr:media-status"),ui.title.isEmpty()?tr("Media Status"):ui.title,QString(),
+            tracked.isEmpty()?seerrMediaStatus(seerrInt(mediaInfo.value(QStringLiteral("status")))):tracked);
         const auto overview=ui.detail.value(QStringLiteral("overview")).toString();
-        if(!overview.isEmpty())add(QStringLiteral("seerr:overview"),tr("Overview"),QString(),overview);
+        auto& mediaRow=page.entries.last();
+        mediaRow.artwork=ui.posters.value(mediaRow.id+token);
+        loadSeerrPoster(mediaRow.id+token,ui.detail.value(QStringLiteral("posterPath")).toString());
+        if(!overview.isEmpty()) {
+            QStringList metadata;
+            const QString date=ui.detail.value(ui.mediaType==QStringLiteral("tv")?QStringLiteral("firstAirDate"):QStringLiteral("releaseDate")).toString();
+            if(date.size()>=4)metadata.append(date.left(4));
+            const int runtime=ui.detail.value(QStringLiteral("runtime")).toInt();
+            if(runtime>0)metadata.append(tr("%1 min").arg(runtime));
+            for(const auto genre:ui.detail.value(QStringLiteral("genres")).toArray()) {
+                const QString name=genre.toObject().value(QStringLiteral("name")).toString();
+                if(!name.isEmpty())metadata.append(name);
+            }
+            const QString description=metadata.isEmpty()?overview:metadata.join(QStringLiteral(" · "))+QStringLiteral("\n\n")+overview;
+            add(QStringLiteral("seerr:overview"),tr("Overview"),QString(),description);
+        }
         if(ui.mediaType==QStringLiteral("tv")) {
             const auto seasons=ui.detail.value(QStringLiteral("seasons")).toArray();
             QHash<int,int> statuses;

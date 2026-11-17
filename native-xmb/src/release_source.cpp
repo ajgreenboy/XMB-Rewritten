@@ -4,6 +4,7 @@
 #include "preferences.h"
 #include <QBuffer>
 #include <QCryptographicHash>
+#include <QDateTime>
 #include <QDir>
 #include <QElapsedTimer>
 #include <QEventLoop>
@@ -22,6 +23,7 @@
 
 namespace xmb {
 namespace {
+constexpr qint64 kRefreshCooldownMs=15LL*60*1000;
 void fail(QString* error,const QString& message) { if(error)*error=message; }
 bool looksLikeHtml(const QByteArray& bytes) {
     const QString head=QString::fromLatin1(bytes.left(512)).trimmed().toLower();
@@ -46,17 +48,19 @@ QString slugFor(const QString& name,const QUrl& url) {
 // file: is allowed only for importing a local index, never for resolved downloads.
 bool fetch(const QUrl& url,QIODevice* output,qint64 limit,int timeoutMs,QString* error,
            const ReleaseProgress& progress={},bool localIndex=false,const std::atomic_bool* cancel=nullptr) {
+    if(cancel && cancel->load()){fail(error,QStringLiteral("Download cancelled"));return false;}
     if(localIndex && url.isLocalFile()) {
         QFile file(url.toLocalFile());
         if(!file.open(QIODevice::ReadOnly)){fail(error,QStringLiteral("Cannot read local source: ")+file.errorString());return false;}
         if(file.size()>limit){fail(error,QStringLiteral("Source index too large"));return false;}
         while(!file.atEnd()) {
+            if(cancel && cancel->load()){fail(error,QStringLiteral("Download cancelled"));return false;}
             const auto bytes=file.read(65536);
             if(file.error()!=QFileDevice::NoError || output->write(bytes)!=bytes.size()){fail(error,QStringLiteral("Cannot read or write source index"));return false;}
         }
         return true;
     }
-    if(!url.isValid() || url.host().isEmpty() || (url.scheme()!=QStringLiteral("http") && url.scheme()!=QStringLiteral("https"))) {
+    if(!url.isValid() || url.host().isEmpty() || !url.userInfo().isEmpty() || (url.scheme()!=QStringLiteral("http") && url.scheme()!=QStringLiteral("https"))) {
         fail(error,QStringLiteral("Invalid HTTP(S) URL"));return false;
     }
     QNetworkAccessManager manager; QNetworkRequest request(url);
@@ -67,6 +71,7 @@ bool fetch(const QUrl& url,QIODevice* output,qint64 limit,int timeoutMs,QString*
     bool timedOut=false,failedWrite=false; qint64 received=0;
     const auto consume=[&] {
         if(cancel && cancel->load()) { reply->abort(); return; }
+        if(reply->bytesAvailable()==0)return;
         const auto bytes=reply->readAll();
         if(bytes.size()>limit-received || output->write(bytes)!=bytes.size()){failedWrite=true;reply->abort();return;}
         received+=bytes.size();
@@ -75,7 +80,12 @@ bool fetch(const QUrl& url,QIODevice* output,qint64 limit,int timeoutMs,QString*
     QObject::connect(reply,&QNetworkReply::readyRead,&loop,consume);
     QObject::connect(reply,&QNetworkReply::downloadProgress,&loop,[&](qint64 a,qint64 b){timer.start(timeoutMs);if(progress)progress(a,b);});
     QObject::connect(reply,&QNetworkReply::finished,&loop,&QEventLoop::quit);
-    timer.start(timeoutMs);loop.exec();consume();
+    QTimer cancellation;
+    QObject::connect(&cancellation,&QTimer::timeout,&loop,[&]{if(cancel->load())reply->abort();});
+    if(cancel)cancellation.start(100);
+    timer.start(timeoutMs);
+    if(!reply->isFinished())loop.exec();
+    consume();
     const int status=reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
     if(cancel && cancel->load())fail(error,QStringLiteral("Download cancelled"));
     else if(timedOut)fail(error,QStringLiteral("Download timed out"));
@@ -93,15 +103,16 @@ void pause(int milliseconds) {
 }
 ReleaseSources::ReleaseSources(const QString& dataDirectory,const Preferences& preferences)
     :dataDirectory_(dataDirectory),preferences_(preferences) {}
-bool ReleaseSources::fetchSourceJson(const QUrl& jsonUrl,QVector<IndexedRelease>* releases,QString* name,QString* error) const {
+bool ReleaseSources::fetchSourceJson(const QUrl& jsonUrl,QVector<IndexedRelease>* releases,QString* name,QString* error,const std::atomic_bool* cancel) const {
     if(error)error->clear();
     QByteArray bytes; QBuffer buffer(&bytes);buffer.open(QIODevice::WriteOnly);
     QString directError;
-    const bool fetched=fetch(jsonUrl,&buffer,64LL*1024*1024,30000,&directError,{},true);
+    const bool fetched=fetch(jsonUrl,&buffer,64LL*1024*1024,30000,&directError,{},true,cancel);
+    if(cancel && cancel->load()){fail(error,QStringLiteral("Download cancelled"));return false;}
     const QString solver=preferences_.value(QStringLiteral("debrid/flareSolverrUrl")).toString().trimmed();
     if(!solver.isEmpty() && (!fetched || looksLikeHtml(bytes))) {
         QString solverError;
-        if(!FlareSolverr(solver).request(jsonUrl,&bytes,&solverError)) {
+        if(!FlareSolverr(solver).request(jsonUrl,&bytes,&solverError,cancel)) {
             fail(error,fetched?QStringLiteral("Source returned an HTML challenge (FlareSolverr: %1)").arg(solverError)
                                :QStringLiteral("%1 (FlareSolverr: %2)").arg(directError,solverError));
             return false;
@@ -131,13 +142,61 @@ bool ReleaseSources::importSource(const QUrl& jsonUrl,QString* error) {
     if(!QDir().mkpath(directory.path())){fail(error,QStringLiteral("Cannot create sources directory"));return false;}
     QJsonArray records;for(const auto& release:releases)records.append(releaseToJson(release));
     const QJsonObject root{{QStringLiteral("version"),1},{QStringLiteral("slug"),slug},{QStringLiteral("name"),name},
-        {QStringLiteral("url"),jsonUrl.toString(QUrl::FullyEncoded)},{QStringLiteral("releases"),records}};
+        {QStringLiteral("url"),jsonUrl.toString(QUrl::FullyEncoded)},{QStringLiteral("releases"),records},
+        {QStringLiteral("refreshedAt"),QDateTime::currentDateTimeUtc().toMSecsSinceEpoch()}};
     QSaveFile file(directory.filePath(slug+QStringLiteral(".json")));file.setDirectWriteFallback(false);
     const auto saved=QJsonDocument(root).toJson(QJsonDocument::Compact);
     if(!file.open(QIODevice::WriteOnly) || file.write(saved)!=saved.size() || !file.commit()) {
         fail(error,QStringLiteral("Cannot save source: ")+file.errorString());return false;
     }
     return true;
+}
+int ReleaseSources::refreshSources(QStringList* errors,bool force) {
+    if(errors)errors->clear();
+    const QDir directory(QDir(dataDirectory_).filePath(QStringLiteral("sources")));
+    int refreshed=0;
+    for(const auto& entry:directory.entryInfoList({QStringLiteral("*.json")},QDir::Files,QDir::Name)) {
+        QFile stored(entry.filePath());
+        if(!stored.open(QIODevice::ReadOnly) || stored.size()>256LL*1024*1024) {
+            if(errors)errors->append(QStringLiteral("%1: cannot read stored source").arg(entry.fileName()));
+            continue;
+        }
+        QJsonParseError parse; const auto oldDocument=QJsonDocument::fromJson(stored.readAll(),&parse);
+        // The old handle must be closed before QSaveFile replaces the same path on Windows.
+        stored.close();
+        const QJsonObject old=oldDocument.object();
+        if(parse.error!=QJsonParseError::NoError || old.value(QStringLiteral("version")).toInt()!=1 ||
+           !old.value(QStringLiteral("releases")).isArray()) {
+            if(errors)errors->append(QStringLiteral("%1: invalid stored source").arg(entry.fileName()));
+            continue;
+        }
+        const QUrl url(old.value(QStringLiteral("url")).toString());
+        if(url.isLocalFile())continue;
+        const qint64 last=old.value(QStringLiteral("refreshedAt")).toVariant().toLongLong();
+        const qint64 now=QDateTime::currentDateTimeUtc().toMSecsSinceEpoch();
+        if(!force && last>0 && now-last<kRefreshCooldownMs)continue;
+        QVector<IndexedRelease> releases; QString name,error;
+        if(!fetchSourceJson(url,&releases,&name,&error)) {
+            if(errors)errors->append(QStringLiteral("%1: %2").arg(entry.fileName(),error));
+            continue;
+        }
+        // Keep the original slug and source URL; an upstream name change must not
+        // orphan existing downloads or the shell's selected source.
+        const QString savedName=name.isEmpty()?old.value(QStringLiteral("name")).toString():name;
+        QJsonArray records; for(const auto& release:releases)records.append(releaseToJson(release));
+        QJsonObject next=old;
+        next.insert(QStringLiteral("name"),savedName);
+        next.insert(QStringLiteral("releases"),records);
+        next.insert(QStringLiteral("refreshedAt"),now);
+        QSaveFile file(entry.filePath()); file.setDirectWriteFallback(false);
+        const auto bytes=QJsonDocument(next).toJson(QJsonDocument::Compact);
+        if(!file.open(QIODevice::WriteOnly) || file.write(bytes)!=bytes.size() || !file.commit()) {
+            if(errors)errors->append(QStringLiteral("%1: cannot save refreshed source: %2").arg(entry.fileName(),file.errorString()));
+            continue;
+        }
+        ++refreshed;
+    }
+    return refreshed;
 }
 bool ReleaseSources::removeSource(const QString& slug,QString* error) {
     if(error)error->clear();
@@ -176,13 +235,14 @@ QString ReleaseSources::downloadedPath(const QString& source,const QString& titl
     return {};
 }
 QString ReleaseSources::downloadResolved(const QVector<Download>& candidates,const QString& title,const QString& destDir,
-                                         QString* error,const ReleaseProgress& progress) const {
+                                         QString* error,const ReleaseProgress& progress,const std::atomic_bool* cancel) const {
+    if(cancel && cancel->load()){fail(error,QStringLiteral("Download cancelled"));return {};}
     QString direct,magnet;
     for(const auto& download:candidates) {
         if(direct.isEmpty() && download.kind==QStringLiteral("direct"))direct=download.uri;
         if(magnet.isEmpty() && download.kind==QStringLiteral("magnet"))magnet=download.uri;
     }
-    RealDebrid debrid(preferences_);QUrl resolved;
+    RealDebrid debrid(preferences_,cancel);QUrl resolved;
     QString debridError;
     if(!direct.isEmpty()) {
         // The spec permits ordinary HTTP downloads when no manager token was configured.
@@ -191,7 +251,7 @@ QString ReleaseSources::downloadResolved(const QVector<Download>& candidates,con
         const QString id=debrid.addMagnet(magnet,&debridError);
         if(id.isEmpty()){fail(error,debridError);return {};}
         QElapsedTimer polling;polling.start();bool selected=false;
-        while(polling.elapsed()<10*60*1000) {
+        while(polling.elapsed()<10*60*1000 && !(cancel && cancel->load())) {
             const auto info=debrid.torrentInfo(id,&debridError);
             if(!debridError.isEmpty())break;
             if(info.status==QStringLiteral("waiting_files_selection") && !selected) {
@@ -210,6 +270,7 @@ QString ReleaseSources::downloadResolved(const QVector<Download>& candidates,con
     } else {
         fail(error,QStringLiteral("No direct download or supported magnet for this release"));return {};
     }
+    if(cancel && cancel->load()){fail(error,QStringLiteral("Download cancelled"));return {};}
     if(!debridError.isEmpty()){fail(error,debridError);return {};}
     QString extension=QFileInfo(safeName(resolved.fileName())).suffix();
     if(extension.isEmpty())extension=QStringLiteral("bin");
@@ -218,7 +279,8 @@ QString ReleaseSources::downloadResolved(const QVector<Download>& candidates,con
     const QString path=directory.filePath(safeName(title)+QLatin1Char('.')+extension);
     QSaveFile file(path);file.setDirectWriteFallback(false);
     if(!file.open(QIODevice::WriteOnly)){fail(error,QStringLiteral("Cannot open download: ")+file.errorString());return {};}
-    if(!fetch(resolved,&file,std::numeric_limits<qint64>::max(),60000,error,progress))return {};
+    if(!fetch(resolved,&file,std::numeric_limits<qint64>::max(),60000,error,progress,false,cancel))return {};
+    if(cancel && cancel->load()){fail(error,QStringLiteral("Download cancelled"));return {};}
     if(!file.commit()){fail(error,QStringLiteral("Cannot save download: ")+file.errorString());return {};}
     return path;
 }
@@ -254,4 +316,33 @@ QString ReleaseSources::downloadGameByUrl(const QString& title,const QUrl& sourc
     const QString titleForFile=found->title.isEmpty()?title:found->title;
     return downloadResolved(candidates,titleForFile,destDir,error,progress);
 }
+QString ReleaseSources::downloadGame(const QString& sourceSlug,const QUrl& sourceUrl,const QString& releaseTitle,
+                                     const QVector<Download>& reviewed,const QString& destDir,QString* error,
+                                     const ReleaseProgress& progress,const std::atomic_bool* cancel) const {
+    if(error)error->clear();
+    if(!reviewed.isEmpty()) {
+        return downloadResolved(reviewed,releaseTitle,destDir,error,progress,cancel);
+    }
+    QVector<IndexedRelease> releases;
+    if(!sourceSlug.isEmpty()) {
+        QString storeError;
+        for(const auto& stored:listSources(&storeError)) {
+            if(stored.slug==sourceSlug){releases=stored.releases;break;}
+        }
+        if(releases.isEmpty() && !storeError.isEmpty()){fail(error,storeError);return {};}
+    } else if(!fetchSourceJson(sourceUrl,&releases,nullptr,error,cancel)) {
+        return {};
+    }
+    for(const auto& release:releases) {
+        if(release.title.compare(releaseTitle,Qt::CaseInsensitive)!=0)continue;
+        QVector<Download> candidates=release.downloads;
+        for(const auto& mirror:release.mirrors) {
+            if(mirror.parts.size()==1)candidates.append(mirror.parts.first());
+        }
+        return downloadResolved(candidates,releaseTitle,destDir,error,progress,cancel);
+    }
+    fail(error,QStringLiteral("Release not found in the selected source"));
+    return {};
+}
+
 }

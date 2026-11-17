@@ -51,6 +51,7 @@ namespace xmb {
 class MusicTap;
 class Assets;
 class SteamArtwork;
+struct ReleaseGameQueue;
 struct SteamCmdUi;   // steamcmd_shell.cpp
 struct SeerrUi;
 class RawgArtwork;
@@ -158,7 +159,7 @@ enum class Action { Unavailable, SettingsPage, SettingChoices, SetSetting, EditN
     // Game > Download Games: the folded hub that lists Browse, Import Source and the imported source folders.
     DownloadHub,
     // Game > Manage: the folded hub that lists Refresh Game Library and Import Games and Apps.
-    ManageHub, Seerr };
+    ManageHub, Seerr, ReleaseGameJob };
 struct Entry {
     QString id,title,detail,container,texture;
     Action action=Action::Unavailable;
@@ -273,7 +274,7 @@ enum class OptionCommand { Activate, Information,
     UserAutoLoginTarget,
     // A Jellyfin image subtitle the client cannot draw: re-open the title with that stream burned into a
     // server transcode (MenuOption::index is the server's stream index).
-    SubtitleBurnIn };
+    SubtitleBurnIn, ReleaseDownloadCancel, ReleaseDownloadRetry };
 // A label read from the RCO text table: the key plus the English string it should resolve to. The fallback
 // is used only when the local flash image has no table; whenever the RCO is present, its value is the label.
 struct OptionLabel { const char* key=nullptr; QString fallback; };
@@ -503,6 +504,7 @@ public:
     QString mediaProvider() const { return jellyfinQueue_?QString("Jellyfin"):QString("Local"); }
     QString mediaPlayMethod() const { return jellyfinQueue_?jellyfinPlayback_.playMethod:QString{}; }
     const JellyfinPlayback& jellyfinPlayback() const { return jellyfinPlayback_; }
+    bool jellyfinVideoSelected() const;
     JellyfinClient& jellyfinClient() { return jellyfin_; }
     QString mediaQueueSummary() const;
     int mediaRepeatMode() const;
@@ -778,11 +780,11 @@ private:
     QSet<QString> releaseRawgArt_;
     QSet<QString> releaseArtRequested_;
     std::unique_ptr<RawgArtwork> releaseArtwork_;
-    QVector<GameResult> gameSearch_;
-    QString pendingGameTitle_;
-    QUrl pendingGameUrl_;
+    bool releaseFeedsRefreshing_=false;
+    quint64 releaseSourcesGeneration_=0;
     bool gameArtHooked_=false;
     void refreshReleaseSources(const QUrl& importUrl={});
+    void refreshGameFeeds();
     void rebuildReleaseSources();
     void openReleaseSource(const QString& slug);
     void activateRelease(const Entry& entry);
@@ -792,15 +794,15 @@ private:
     void saveDebridToken(const QString& token);
     void editFlareSolverrUrl();
     void saveFlareSolverrUrl(const QString& url);
-    void openGameSearch();
+    void openGameSearch(const QString& scope={});
     void openBrowseGames();
     void openDownloadHub();
     void openManageHub();
-    void runGameSearch(const QString& query);
+    void runGameSearch(const QString& query,const QString& scope);
     void pickGameResult(int index);
-    void openGameSources(int index);
+    void openGameSources(const GameResult& game);
     void pickGameSource(const QString& value);
-    void beginGameDownload(const QString& title,const QUrl& sourceUrl);
+    void beginGameDownload(const QString& title,const GameSourceOption& option);
     void completeGameDownload(const QString& drive);
     void fetchGameArtwork(const QString& id,const QString& title);
     Assets& assets_;
@@ -1068,6 +1070,9 @@ private:
     void activateSeerr(const Entry& entry);
     void seerrField(const QString& field,const QString& value);
     void refreshSeerrPage();
+    void refreshSeerrDownloads();
+    QVector<Entry> seerrDownloadRows() const;
+    void loadSeerrPoster(const QString& rowId,const QString& path);
     void loadSeerrSearch(const QString& term,int page);
     void loadSeerrDetails(const QString& type,int id,const QString& title);
     void openSeerrRequests(int skip);
@@ -1231,6 +1236,15 @@ private:
     QVector<Entry> steamDownloadRows(QString& error);
     void openSteamDownloads();
     void reloadSteamDownloads();
+    std::shared_ptr<ReleaseGameQueue> releaseJobs_;
+    void enqueueReleaseGame(const QString& title,const QString& releaseTitle,const QUrl& sourceUrl,
+                            const QString& sourceSlug,const QString& gamesDirectory,const QVector<Download>& candidates={});
+    void pumpReleaseJobs();
+    void stopReleaseJobs();
+    QVector<Entry> releaseJobRows() const;
+    void addReleaseDownloadOptions(const Entry& entry);
+    void refreshReleaseJobRows();
+    void activateReleaseJob(const Entry& entry);
     quint64 scanRequest_=0,photoRequest_=0;
     bool loading_=false;
     // The settings-chain proceed stage holds the busy page (see busy()). Separate from loading_ so a scan
@@ -1260,7 +1274,7 @@ private:
     int columnSink_=0;
     // `grouped` is a page the item menu's Group Content level rebuilt into letter folders: `groupedSource` keeps
     // the ungrouped rows so All can put them back without a rescan, and the folders' rows are the same entries.
-    struct Page { QString title; QVector<Entry> entries; int selection=0; QString directory; bool jellyfin=false,jellyfinViews=false,jellyfinSearch=false; QString jellyfinParent; QString jellyfinMusic,jellyfinLibrary; QString jellyfinHome; int jellyfinStart=0; bool downloads=false; QString steamCmd,seerr; bool continuePage=false; bool signIn=false; bool jfSetup=false; bool steamAccounts=false; bool grouped=false; QString groupKey; QVector<Entry> groupedSource; bool sysconfPlugin=false; QString playlistsType,playlistId; QString spotify,spotifyContext; QString dlna; int dlnaServer=-1; QString tailscale; QString wol,ha; bool weather=false; bool systemCheck=false; QString userInfo; int userInfoStep=0; bool browse=false; QString browsePath; QString browseFiles; bool libraryRoot=false; };
+    struct Page { QString title; QVector<Entry> entries; int selection=0; QString directory; bool jellyfin=false,jellyfinViews=false,jellyfinSearch=false; QString jellyfinParent; QString jellyfinMusic,jellyfinLibrary; QString jellyfinHome; int jellyfinStart=0; bool downloads=false; QString steamCmd,seerr; bool continuePage=false; bool signIn=false; bool jfSetup=false; bool steamAccounts=false; bool grouped=false; QString groupKey; QVector<Entry> groupedSource; bool sysconfPlugin=false; QString playlistsType,playlistId; QString spotify,spotifyContext; QString dlna; int dlnaServer=-1; QString tailscale; QString wol,ha; bool weather=false; bool systemCheck=false; QString userInfo; int userInfoStep=0; bool browse=false; QString browsePath; QString browseFiles; bool libraryRoot=false; QVector<GameResult> downloadResults; bool downloadHub=false; };
     QVector<Page> pages_;
     bool psMenu_=false;              // the PS-button system menu is showing
     bool desktopMode_=false;         // the XMB window is hidden for Desktop Mode (main.cpp DesktopMode)

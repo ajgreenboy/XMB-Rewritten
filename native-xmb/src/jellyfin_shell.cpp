@@ -577,6 +577,11 @@ void Shell::chooseJellyfinQuality(int index) {
     interactionAudio_.play(InteractionAudio::Cue::Confirm);
     emit changed();
 }
+bool Shell::jellyfinVideoSelected() const {
+    const auto* media=mediaQueue_.current();
+    return mediaOpen_ && jellyfinQueue_ && media && !jellyfinAudio_.value(media->path);
+}
+
 void Shell::startJellyfinMedia() {
     const auto* current=mediaQueue_.current();if(!current)return;const auto media=*current;
     cancelNextOffer();nextLookup_=0;

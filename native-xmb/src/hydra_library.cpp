@@ -133,6 +133,8 @@ bool HydraLibrary::searchGames(const QString& query, QVector<GameResult>* out, Q
             option.sourceUrl=game.value(QStringLiteral("sourceUrl")).toString();
             option.fileSize=game.value(QStringLiteral("fileSize")).toString();
             option.sourceStatus=game.value(QStringLiteral("sourceStatus")).toString();
+            option.releaseTitle=game.value(QStringLiteral("originalTitle")).toString();
+            if(option.releaseTitle.isEmpty())option.releaseTitle=game.value(QStringLiteral("title")).toString();
             const auto existing=byName.find(key);
             if(existing==byName.end()) {
                 GameResult result;
@@ -199,6 +201,8 @@ bool HydraLibrary::popularGames(QVector<GameResult>* out, QString* error) const 
             option.sourceUrl=game.value(QStringLiteral("sourceUrl")).toString();
             option.fileSize=game.value(QStringLiteral("fileSize")).toString();
             option.sourceStatus=game.value(QStringLiteral("sourceStatus")).toString();
+            option.releaseTitle=game.value(QStringLiteral("originalTitle")).toString();
+            if(option.releaseTitle.isEmpty())option.releaseTitle=game.value(QStringLiteral("title")).toString();
             if(result.originalTitle.isEmpty())
                 result.originalTitle=game.value(QStringLiteral("originalTitle")).toString();
             result.options.append(option);

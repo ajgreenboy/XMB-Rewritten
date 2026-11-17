@@ -1,4 +1,5 @@
 #pragma once
+#include "release_index.h"
 #include <QString>
 #include <QStringList>
 #include <QUrl>
@@ -17,6 +18,10 @@ struct GameSourceOption {
     QString sourceUrl;      // the source's release-index JSON, to resolve download links
     QString fileSize;
     QString sourceStatus;   // Trusted / Safe For Use / ...
+    QString releaseTitle;   // Exact title in the provider's feed
+    QString sourceSlug;      // Local imported source identifier
+    QString mirror;          // Display label for a selected single-file link
+    QVector<Download> downloads;
 };
 // One search hit from /games, filtered to the extract-and-play sources and deduplicated by name.
 struct GameResult {

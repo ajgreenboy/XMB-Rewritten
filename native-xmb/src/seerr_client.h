@@ -24,7 +24,7 @@ public:
     static QUrl normalizeServer(QString server);
     void search(QString query, int page, Result cb);
     void details(QString type, int tmdbId, Result cb);
-    void requests(int skip, Result cb);
+    void requests(int skip, Result cb, bool processingOnly=false);
     void submit(QString type, int tmdbId, QList<int> seasons, Result cb);
     void check(Result cb);
 
