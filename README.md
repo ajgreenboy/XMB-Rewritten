@@ -88,12 +88,12 @@ You need Windows 10 or 11, Visual Studio 2022 with the C++ workload, Qt 6 (MSVC 
 
 ## Status
 
-Version **0.3.7**. It builds cleanly, and its own checks pass. Real-hardware testing on a living-room PC is still in progress, so treat anything that depends on a physical TV, remote or game as unverified until you try it.
+Version **0.3.8**. It builds cleanly, and its own checks pass. Real-hardware testing on a living-room PC is still in progress, so treat anything that depends on a physical TV, remote or game as unverified until you try it.
 
 | Measure | Result | Where |
 |---|---|---|
 | Render gate | 6 layers and 28 named states pass against their stored baselines | `bun work/ab-layers.ts --all` |
-| Unit tests | 19 runners in CI: Steam (including account switch and Quit Game), setup, firmware, Jellyfin setup, playback, music and others | [tests.yml](.github/workflows/tests.yml) |
+| Unit tests | 22 runners in CI: Steam (including account switch and Quit Game), setup, firmware, Jellyfin setup, playback, music and others | [tests.yml](.github/workflows/tests.yml) |
 | Console parity | Compared against the real 4.93 firmware in RPCS3, with differences recorded | [native-xmb/audit/README.md](native-xmb/audit/README.md) |
 | Release hygiene | Credentials, firmware data and broken links are checked before a release | `work/release-check.ps1` |
 | Real-hardware run | In progress on a living-room PC | [RELEASE-CHECKLIST.md](native-xmb/audit/RELEASE-CHECKLIST.md) |
