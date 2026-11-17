@@ -8,6 +8,10 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QFutureWatcher>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QSaveFile>
+#include <QSet>
 #include <QProcess>
 #include <QProcessEnvironment>
 #include <QRegularExpression>
@@ -18,6 +22,17 @@
 #include <algorithm>
 #include <atomic>
 #include <mutex>
+#ifdef Q_OS_WIN
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#include <dpapi.h>
+#pragma comment(lib, "crypt32.lib")
+#endif
 
 namespace xmb {
 namespace {
@@ -32,6 +47,7 @@ struct Request {
     QString sourceSlug;
     QString gamesDirectory;
     QVector<Download> candidates;
+    QString volume;
 };
 
 struct Result {
@@ -62,6 +78,14 @@ struct JobControl {
         return true;
     }
 
+    void requestShutdown() {
+        std::lock_guard lock(extractionMutex);
+        if(!cancel.load()) {
+            pausing.store(true);
+            cancel.store(true);
+        }
+    }
+
     bool beginExtraction() {
         std::lock_guard lock(extractionMutex);
         if(cancel.load())return false;
@@ -89,6 +113,164 @@ bool active(State state) {
 
 QString gameArchiveDirectory(const Request& request,const QString& id) {
     return QDir(request.gamesDirectory).filePath(QStringLiteral("Download Archives/") + id);
+}
+
+constexpr qint64 MaxQueueBytes=2*1024*1024;
+const QString InstallReceipt=QStringLiteral(".xmb-release-install.json");
+
+QString queuePath(const QString& data) {
+    return QDir(data).filePath(QStringLiteral("release-download-queue.bin"));
+}
+
+QString installedDirectory(const Job& job) {
+    return QDir(job.request.gamesDirectory).filePath(QStringLiteral("game-")+job.id);
+}
+
+QString finalWindowsPath(const QString& path) {
+#ifdef Q_OS_WIN
+    const auto native=QDir::toNativeSeparators(path).toStdWString();
+    const HANDLE directory=CreateFileW(native.c_str(),0,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,
+                                       nullptr,OPEN_EXISTING,FILE_FLAG_BACKUP_SEMANTICS,nullptr);
+    if(directory==INVALID_HANDLE_VALUE)return {};
+    wchar_t resolved[32768];
+    const DWORD count=GetFinalPathNameByHandleW(directory,resolved,DWORD(std::size(resolved)),FILE_NAME_NORMALIZED);
+    CloseHandle(directory);
+    if(count==0 || count>=std::size(resolved))return {};
+    const QString value=QDir::fromNativeSeparators(QString::fromWCharArray(resolved,int(count)));
+    return value.endsWith(QLatin1Char('/'))?value:value+QLatin1Char('/');
+#else
+    Q_UNUSED(path)
+    return {};
+#endif
+}
+
+// Match both the backing volume and the drive's resolved mount path. A reused
+// drive letter or redirected library must never receive another drive's job.
+QString libraryVolume(const QString& path) {
+#ifdef Q_OS_WIN
+    const QString clean=QDir::cleanPath(QDir::fromNativeSeparators(path));
+    if(clean.size()<3 || !clean[0].isLetter() || clean.mid(1,2)!=QLatin1String(":/"))return {};
+    const QString root=clean.left(3);
+    const auto nativeRoot=QDir::toNativeSeparators(root).toStdWString();
+    DWORD serial=0;
+    if(!GetVolumeInformationW(nativeRoot.c_str(),nullptr,0,&serial,nullptr,nullptr,nullptr,0))return {};
+    const QString mount=finalWindowsPath(root);
+    if(mount.isEmpty())return {};
+    // Check the deepest existing ancestor before creating any missing children.
+    QString existing=clean;
+    while(existing!=root && !QFileInfo::exists(existing))
+        existing=QFileInfo(existing).absolutePath();
+    const QString expected=mount+(existing==root?QString():existing.mid(3)+QLatin1Char('/'));
+    if(finalWindowsPath(existing).compare(expected,Qt::CaseInsensitive)!=0)return {};
+    return mount.toCaseFolded()+QLatin1Char('#')+QString::number(serial,16);
+#else
+    Q_UNUSED(path)
+    return {};
+#endif
+}
+
+bool destinationReady(const Request& request,const QString& path) {
+    return !request.volume.isEmpty() && libraryVolume(path)==request.volume;
+}
+
+QByteArray protectQueue(const QByteArray& input,bool encrypt) {
+#ifdef Q_OS_WIN
+    if(input.isEmpty() || input.size()>MaxQueueBytes)return {};
+    QByteArray entropy=QByteArrayLiteral("xmb-release-download-queue-v1");
+    DATA_BLOB source{DWORD(input.size()),reinterpret_cast<BYTE*>(const_cast<char*>(input.constData()))};
+    DATA_BLOB additional{DWORD(entropy.size()),reinterpret_cast<BYTE*>(entropy.data())};
+    DATA_BLOB output{};
+    const BOOL ok=encrypt
+        ? CryptProtectData(&source,L"XMB download queue",&additional,nullptr,nullptr,CRYPTPROTECT_UI_FORBIDDEN,&output)
+        : CryptUnprotectData(&source,nullptr,&additional,nullptr,nullptr,CRYPTPROTECT_UI_FORBIDDEN,&output);
+    if(!ok)return {};
+    const QByteArray result(reinterpret_cast<const char*>(output.pbData),output.cbData);
+    SecureZeroMemory(output.pbData,output.cbData);
+    LocalFree(output.pbData);
+    return result;
+#else
+    Q_UNUSED(input)
+    Q_UNUSED(encrypt)
+    return {};
+#endif
+}
+
+bool saveAtomic(const QString& path,const QByteArray& bytes) {
+    QSaveFile file(path);
+    file.setDirectWriteFallback(false);
+    return file.open(QIODevice::WriteOnly) && file.write(bytes)==bytes.size() && file.commit();
+}
+
+QJsonObject storedJob(const Job& job) {
+    QJsonArray links;
+    for(const auto& candidate:job.request.candidates)links.append(candidate.uri);
+    return {{"id",job.id},{"state",int(job.state)},{"title",job.request.title},
+            {"release",job.request.releaseTitle},{"source",job.request.sourceUrl.toString(QUrl::FullyEncoded)},
+            {"slug",job.request.sourceSlug},{"directory",job.request.gamesDirectory},{"volume",job.request.volume},
+            {"links",links},{"error",job.result.error.left(1024)}};
+}
+
+Job recoveredJob(const QJsonObject& entry) {
+    Job job;
+    static const QRegularExpression idFormat(QStringLiteral("^[a-f0-9]{32}$"));
+    job.id=entry.value("id").toString();
+    if(!idFormat.match(job.id).hasMatch())return {};
+    auto& request=job.request;
+    request.title=entry.value("title").toString();
+    request.releaseTitle=entry.value("release").toString();
+    request.sourceUrl=QUrl(entry.value("source").toString(),QUrl::StrictMode);
+    request.sourceSlug=entry.value("slug").toString();
+    request.gamesDirectory=entry.value("directory").toString();
+    request.volume=entry.value("volume").toString();
+    for(const auto item:entry.value("links").toArray()) {
+        const QString link=item.toString();
+        if(link.isEmpty() || link.size()>32768 || request.candidates.size()>=32)return {};
+        request.candidates.append(normalizeDownload(link));
+    }
+    if(request.title.isEmpty() || request.releaseTitle.isEmpty() || request.volume.isEmpty() ||
+       !QDir::isAbsolutePath(request.gamesDirectory) ||
+       (request.sourceUrl.isEmpty() && request.sourceSlug.isEmpty() && request.candidates.isEmpty()))return {};
+    const int state=entry.value("state").toInt(-1);
+    if(state<0 || state>int(State::Cancelled))return {};
+    job.state=State(state);
+    job.result.error=entry.value("error").toString().left(1024);
+    return job;
+}
+
+QString completedArchive(const Job& job) {
+    const QString archiveDir=gameArchiveDirectory(job.request,job.id);
+    if(!destinationReady(job.request,archiveDir))return {};
+    const auto files=QDir(archiveDir).entryInfoList(QDir::Files|QDir::NoSymLinks);
+    if(files.size()!=1 || files.first().size()<=0 || files.first().fileName().startsWith(QLatin1Char('.')))return {};
+    return files.first().absoluteFilePath();
+}
+
+bool registerDownloadedGame(const QString& data,const Job& job,const QString& executable,QString& error) {
+    const QDir installed(installedDirectory(job));
+    const QFileInfo file(installed.filePath(executable));
+    const QString canonical=QDir(installed.canonicalPath()).absolutePath();
+    if(executable.isEmpty() || QDir::isAbsolutePath(executable) || !file.isFile() || file.isSymLink() ||
+       file.suffix().compare(QLatin1String("exe"),Qt::CaseInsensitive)!=0 || installed.canonicalPath().isEmpty() ||
+       !file.canonicalFilePath().startsWith(canonical+QLatin1Char('/'),Qt::CaseInsensitive)) {
+        error=QObject::tr("Could not verify the installed game executable.");
+        return false;
+    }
+    ContentApp app;
+    app.id=QStringLiteral("release-game-")+job.id;
+    app.title=job.request.title;
+    app.kind=app.category=QStringLiteral("game");
+    app.executable=file.absoluteFilePath();
+    app.workingDirectory=file.absolutePath();
+    return ContentRegistry::upsert(QDir(data).filePath(QStringLiteral("apps.json")),app,error);
+}
+
+// This receipt moves atomically with the staged folder. If the app exits before
+// updating apps.json, it can finish that transaction without extracting again.
+QString readInstallReceipt(const Job& job) {
+    QFile receipt(QDir(installedDirectory(job)).filePath(InstallReceipt));
+    if(QFileInfo(receipt).isSymLink() || !receipt.open(QIODevice::ReadOnly) || receipt.size()>65536)return {};
+    const auto data=QJsonDocument::fromJson(receipt.readAll()).object();
+    return data.value("id").toString()==job.id?data.value("executable").toString():QString{};
 }
 
 QString statusText(const Job& job) {
@@ -342,6 +524,10 @@ try {
 Result prepareGame(const QString& data,const Request& request,const QString& id,
                    const QString& archiveForResume,JobControl& control,QPromise<Result>& promise) {
     Result result;
+    if(!destinationReady(request,gameArchiveDirectory(request,id))) {
+        result.error=QObject::tr("Reconnect the original game library drive and retry.");
+        return result;
+    }
     const QDir library(request.gamesDirectory);
     promise.setProgressRange(0,1002);
     if(QFileInfo(archiveForResume).isFile()) {
@@ -359,6 +545,10 @@ Result prepareGame(const QString& data,const Request& request,const QString& id,
                                              progress,&control.cancel,&control.pausing);
     }
     if(result.archive.isEmpty() || !control.beginExtraction())return result;
+    if(!destinationReady(request,result.archive)) {
+        result.error=QObject::tr("Reconnect the original game library drive and retry.");
+        return result;
+    }
     promise.setProgressValue(1002);
     auto stage = std::make_shared<QTemporaryDir>(library.filePath(QStringLiteral(".xmb-install-XXXXXX")));
     if(!stage->isValid()) {
@@ -369,6 +559,13 @@ Result prepareGame(const QString& data,const Request& request,const QString& id,
     const QString executable = findGameExecutable(stage->path(),&result.error);
     if(executable.isEmpty())return result;
     result.relativeExecutable = QDir(stage->path()).relativeFilePath(executable);
+    const QString receipt=QDir(stage->path()).filePath(InstallReceipt);
+    const auto bytes=QJsonDocument(QJsonObject{{"id",id},{"executable",result.relativeExecutable}})
+        .toJson(QJsonDocument::Compact);
+    if(QFileInfo::exists(receipt) || !saveAtomic(receipt,bytes)) {
+        result.error=QObject::tr("Could not write the game installation receipt.");
+        return result;
+    }
     result.folder = std::move(stage);
     return result;
 }
@@ -377,7 +574,123 @@ Result prepareGame(const QString& data,const Request& request,const QString& id,
 struct ReleaseGameQueue {
     QVector<Job> jobs;
     std::shared_ptr<JobControl> control;
+    bool shuttingDown=false;
+    bool storageBlocked=false;
 };
+
+bool Shell::saveReleaseJobs() const {
+    if(!releaseJobs_ || releaseJobs_->storageBlocked)return false;
+    QJsonArray records;
+    for(const auto& job:releaseJobs_->jobs)records.append(storedJob(job));
+    auto clear=QJsonDocument(QJsonObject{{"version",1},{"jobs",records}}).toJson(QJsonDocument::Compact);
+    const QByteArray protectedBytes=protectQueue(clear,true);
+    clear.fill('\0');
+    if(protectedBytes.isEmpty() || protectedBytes.size()>MaxQueueBytes || !QDir().mkpath(dataDirectory_) ||
+       !saveAtomic(queuePath(dataDirectory_),protectedBytes)) {
+        qWarning("Could not save the XMB download queue");
+        return false;
+    }
+    return true;
+}
+
+void Shell::restoreReleaseJobs() {
+    if(releaseJobs_ || diagnostics::safeMode())return;
+    releaseJobs_=std::make_shared<ReleaseGameQueue>();
+    QFile file(queuePath(dataDirectory_));
+    if(!file.exists())return;
+    if(!file.open(QIODevice::ReadOnly) || file.size()<=0 || file.size()>MaxQueueBytes) {
+        releaseJobs_->storageBlocked=true;
+        qWarning("Could not read the XMB download queue");
+        return;
+    }
+    auto clear=protectQueue(file.read(MaxQueueBytes+1),false);
+    file.close();
+    const auto saved=QJsonDocument::fromJson(clear).object();
+    clear.fill('\0');
+    if(saved.value("version").toInt()!=1 || !saved.value("jobs").isArray() ||
+       saved.value("jobs").toArray().size()>MaxReleaseJobs) {
+        releaseJobs_->storageBlocked=true;
+        qWarning("Could not decrypt or validate the XMB download queue");
+        return;
+    }
+    QSet<QString> ids;
+    for(const auto value:saved.value("jobs").toArray()) {
+        auto job=recoveredJob(value.toObject());
+        if(job.id.isEmpty() || ids.contains(job.id)) {
+            releaseJobs_->storageBlocked=true;
+            releaseJobs_->jobs.clear();
+            qWarning("Invalid job in the XMB download queue");
+            return;
+        }
+        ids.insert(job.id);
+        releaseJobs_->jobs.append(std::move(job));
+    }
+    bool installedAny=false;
+    for(auto& job:releaseJobs_->jobs) {
+        job.result.archive=completedArchive(job);
+        if(job.state==State::Cancelling)job.state=State::Cancelled;
+        const bool runnable=job.state==State::Queued || job.state==State::Resolving ||
+            job.state==State::Downloading || job.state==State::Extracting;
+        if((runnable || job.state==State::Failed) &&
+           destinationReady(job.request,installedDirectory(job)) && QFileInfo::exists(installedDirectory(job))) {
+            if(registerDownloadedGame(dataDirectory_,job,readInstallReceipt(job),job.result.error)) {
+                job.state=State::Finished;
+                job.result.error.clear();
+                installedAny=true;
+            } else job.state=State::Failed;
+        } else if(job.state==State::Pausing) {
+            job.state=State::Paused;
+        } else if(runnable) {
+            job.state=State::Queued;
+            job.result.error.clear();
+            job.archiveForResume=job.result.archive;
+        } else if(job.state==State::Paused) {
+            job.archiveForResume=job.result.archive;
+        }
+    }
+    if(!saveReleaseJobs())releaseJobs_->storageBlocked=true;
+    if(installedAny)refreshContent();
+    refreshReleaseJobRows();
+    pumpReleaseJobs();
+}
+
+bool Shell::hasPausableReleaseJobs() const {
+    if(!releaseJobs_ || releaseJobs_->storageBlocked)return false;
+    return std::any_of(releaseJobs_->jobs.cbegin(),releaseJobs_->jobs.cend(),[](const Job& job){return canPause(job.state);});
+}
+
+bool Shell::hasPausedReleaseJobs() const {
+    if(!releaseJobs_ || releaseJobs_->storageBlocked || diagnostics::safeMode())return false;
+    return std::any_of(releaseJobs_->jobs.cbegin(),releaseJobs_->jobs.cend(),[](const Job& job){return job.state==State::Paused;});
+}
+
+void Shell::pauseAllReleaseJobs() {
+    if(!hasPausableReleaseJobs())return;
+    for(auto& job:releaseJobs_->jobs) {
+        if(job.state==State::Queued)job.state=State::Paused;
+        else if(canPause(job.state) && releaseJobs_->control && releaseJobs_->control->requestPause())
+            job.state=State::Pausing;
+    }
+    if(!saveReleaseJobs())notify(tr("Download Management"),tr("Could not save the paused queue."));
+    refreshReleaseJobRows();
+}
+
+void Shell::resumeAllReleaseJobs() {
+    if(!hasPausedReleaseJobs())return;
+    QVector<Job*> resumed;
+    for(auto& job:releaseJobs_->jobs) {
+        if(job.state!=State::Paused)continue;
+        resumed.append(&job);
+        job.state=State::Queued;
+    }
+    if(!saveReleaseJobs()) {
+        for(auto* job:resumed)job->state=State::Paused;
+        notify(tr("Download Management"),tr("Could not save the resumed queue."));
+        return;
+    }
+    refreshReleaseJobRows();
+    pumpReleaseJobs();
+}
 
 QVector<Entry> Shell::releaseJobRows() const {
     QVector<Entry> rows;
@@ -449,6 +762,13 @@ void Shell::enqueueReleaseGame(const QString& title,const QString& releaseTitle,
     }
     if(!releaseJobs_)releaseJobs_ = std::make_shared<ReleaseGameQueue>();
     const QString library = QDir::cleanPath(gamesDirectory);
+    const QString volume=libraryVolume(library);
+    if(volume.isEmpty() || releaseJobs_->storageBlocked) {
+        showMessage(tr("Downloads"),volume.isEmpty()?tr("Choose an available game library drive.")
+            :tr("The saved download queue is unavailable."),MessageKind::Page);
+        emit changed();
+        return;
+    }
     for(const auto& job:releaseJobs_->jobs) {
         if(job.request.releaseTitle==releaseTitle && job.request.sourceSlug==sourceSlug && job.request.sourceUrl==sourceUrl &&
            job.request.gamesDirectory==library && (job.state==State::Queued || job.state==State::Paused || active(job.state))) {
@@ -464,19 +784,30 @@ void Shell::enqueueReleaseGame(const QString& title,const QString& releaseTitle,
     }
     Job job;
     job.id = QUuid::createUuid().toString(QUuid::Id128);
-    job.request = {title,releaseTitle,sourceUrl,sourceSlug,library,candidates};
+    job.request = {title,releaseTitle,sourceUrl,sourceSlug,library,candidates,volume};
     releaseJobs_->jobs.prepend(std::move(job));
+    if(!saveReleaseJobs()) {
+        releaseJobs_->jobs.removeFirst();
+        showMessage(tr("Downloads"),tr("Could not save the download queue."),MessageKind::Page);
+        emit changed();
+        return;
+    }
     notify(tr("Download Management"),tr("%1 queued").arg(title));
     refreshReleaseJobRows();
     pumpReleaseJobs();
 }
 
 void Shell::pumpReleaseJobs() {
-    if(releaseJobs_->control)return;
+    if(!releaseJobs_ || releaseJobs_->control || releaseJobs_->shuttingDown || releaseJobs_->storageBlocked || diagnostics::safeMode())return;
     auto& jobs = releaseJobs_->jobs;
     const auto next = std::find_if(jobs.rbegin(),jobs.rend(),[](const Job& job) { return job.state==State::Queued; });
     if(next==jobs.rend())return;
     next->state = State::Resolving;
+    if(!saveReleaseJobs()) {
+        next->state=State::Queued;
+        notify(tr("Download Management"),tr("Could not save the download queue."));
+        return;
+    }
     const QString id = next->id;
     const Request request = next->request;
     const QString archiveForResume = next->archiveForResume;
@@ -498,6 +829,7 @@ void Shell::pumpReleaseJobs() {
         Result result = watcher->result();
         watcher->deleteLater();
         releaseJobs_->control.reset();
+        if(releaseJobs_->shuttingDown)return;
         auto& jobs = releaseJobs_->jobs;
         const auto job = std::find_if(jobs.begin(),jobs.end(),[&](const Job& job) { return job.id==id; });
         if(job==jobs.end()) {
@@ -509,31 +841,23 @@ void Shell::pumpReleaseJobs() {
         job->state = paused ? State::Paused : cancelled ? State::Cancelled : State::Failed;
         job->archiveForResume = paused ? result.archive : QString();
         if(!cancelled && result.folder) {
-            const QString installed = QDir(job->request.gamesDirectory).filePath(QStringLiteral("game-") + id);
-            if(!QDir().rename(result.folder->path(),installed)) {
-                result.error = tr("Could not move the game files into the selected library.");
+            const QString installed=installedDirectory(*job);
+            if(!destinationReady(job->request,installed) || !QDir().rename(result.folder->path(),installed)) {
+                result.error=tr("Could not move the game files into the selected library.");
             } else {
-                ContentApp app;
-                app.id = QStringLiteral("release-game-") + id;
-                app.title = job->request.title;
-                app.kind = app.category = QStringLiteral("game");
-                app.executable = QDir(installed).filePath(result.relativeExecutable);
-                app.workingDirectory = QFileInfo(app.executable).absolutePath();
-                if(ContentRegistry::upsert(QDir(dataDirectory_).filePath(QStringLiteral("apps.json")),app,result.error)) {
-                    result.folder->setAutoRemove(false);
-                    job->state = State::Finished;
+                result.folder->setAutoRemove(false);
+                if(registerDownloadedGame(dataDirectory_,*job,result.relativeExecutable,result.error)) {
+                    job->state=State::Finished;
                     refreshContent();
-                    fetchGameArtwork(app.id,app.title);
-                } else if(!QDir().rename(installed,result.folder->path())) {
-                    result.folder->setAutoRemove(false);
-                    result.error += "\n" + tr("Game files are still in %1.").arg(QDir::toNativeSeparators(installed));
-                }
+                    fetchGameArtwork(QStringLiteral("release-game-")+id,job->request.title);
+                } else result.error+="\n"+tr("Game files are still in %1.").arg(QDir::toNativeSeparators(installed));
             }
         }
         if(paused || cancelled)result.error.clear();
         if(job->state==State::Failed && result.error.isEmpty())result.error = tr("Could not prepare the game.");
         job->result.archive = result.archive.isEmpty() ? job->result.archive : result.archive;
         job->result.error = result.error;
+        if(!saveReleaseJobs())notify(tr("Download Management"),tr("Could not save the download queue."));
         notify(tr("Download Management"),tr("%1 · %2").arg(job->request.title,statusText(*job)));
         refreshReleaseJobRows();
         pumpReleaseJobs();
@@ -545,7 +869,9 @@ void Shell::pumpReleaseJobs() {
 }
 
 void Shell::stopReleaseJobs() {
-    if(releaseJobs_ && releaseJobs_->control)releaseJobs_->control->cancel.store(true);
+    if(!releaseJobs_ || releaseJobs_->shuttingDown)return;
+    releaseJobs_->shuttingDown=true;
+    if(releaseJobs_->control)releaseJobs_->control->requestShutdown();
 }
 
 void Shell::activateReleaseJob(const Entry& entry) {
@@ -570,7 +896,8 @@ void Shell::activateReleaseJob(const Entry& entry) {
     } else if(entry.value==QLatin1String("cancel")) {
         if(!canCancel(job->state))return;
         if(job->state==State::Queued || job->state==State::Paused) {
-            ReleaseSources::discardGamePartial(gameArchiveDirectory(job->request,id));
+            const QString archiveDir=gameArchiveDirectory(job->request,id);
+            if(destinationReady(job->request,archiveDir))ReleaseSources::discardGamePartial(archiveDir);
             job->archiveForResume.clear();
             job->state = State::Cancelled;
         } else if(releaseJobs_->control) {
@@ -579,9 +906,20 @@ void Shell::activateReleaseJob(const Entry& entry) {
         }
     } else if(entry.value==QLatin1String("retry")) {
         if(!retryable || diagnostics::safeMode())return;
-        job->state = State::Queued;
+        if(destinationReady(job->request,installedDirectory(*job)) && QFileInfo::exists(installedDirectory(*job))) {
+            if(!registerDownloadedGame(dataDirectory_,*job,readInstallReceipt(*job),job->result.error)) {
+                notify(tr("Download Management"),job->result.error);
+                refreshReleaseJobRows();
+                return;
+            }
+            job->state=State::Finished;
+            refreshContent();
+        } else {
+            job->state=State::Queued;
+            job->archiveForResume.clear();
+        }
         job->result.error.clear();
-        job->progress = 0;
+        job->progress=0;
     } else if(entry.value==QLatin1String("dismiss")) {
         if(!retryable && job->state!=State::Finished)return;
         jobs.erase(job);
@@ -603,6 +941,7 @@ void Shell::activateReleaseJob(const Entry& entry) {
         emit changed();
         return;
     }
+    if(!saveReleaseJobs())notify(tr("Download Management"),tr("Could not save the download queue."));
     if(!pages_.isEmpty() && !pages_.last().downloads)pages_.removeLast();
     refreshReleaseJobRows();
     pumpReleaseJobs();

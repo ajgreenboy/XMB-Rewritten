@@ -1,6 +1,7 @@
 #include "shell.h"
 #include "seerr_client.h"
 #include "seerr_config.h"
+#include "sabnzbd_client.h"
 #include "diagnostics.h"
 #include "service_icons.h"
 
@@ -22,6 +23,12 @@ namespace xmb {
 struct SeerrUi {
     SeerrClient client;
     SeerrClient downloadClient;
+    SabnzbdClient sabClient;
+    seerrConfig::SabConfig sabEdit,sabActive;
+    QHash<QString,QStringList> sabIds;
+    QHash<QString,bool> sabStates;
+    quint64 sabEpoch=0;
+    bool sabBusy=false;
     QVector<Entry> downloadRows;
     QHash<QString,QImage> posters;
     QSet<QString> posterPending, downloadDetails;
@@ -101,10 +108,28 @@ bool seerrHasNext(const QJsonObject& response,int pageNumber) {
     if(pages>=0)return pageNumber<pages;
     return response.value(QStringLiteral("results")).toArray().size()>=20;
 }
+QJsonArray seerrTrackedItems(const QJsonObject& media,bool is4k) {
+    const auto info=media.value(QStringLiteral("mediaInfo")).toObject();
+    const auto& source=info.isEmpty()?media:info;
+    return source.value(is4k?QStringLiteral("downloadStatus4k"):QStringLiteral("downloadStatus")).toArray();
+}
+QStringList seerrSabIds(const QJsonObject& media,const QList<int>& seasons,bool is4k,bool tv) {
+    if(tv && seasons.isEmpty())return {};
+    static const QRegularExpression sabId(QStringLiteral("^SABnzbd_nzo_[A-Za-z0-9_-]{1,80}$"));
+    QStringList ids;
+    for(const auto value:seerrTrackedItems(media,is4k)) {
+        const auto queue=value.toObject();
+        if(tv && !seasons.contains(queue.value(QStringLiteral("episode")).toObject().value(QStringLiteral("seasonNumber")).toInt(-1)))continue;
+        const auto id=queue.value(QStringLiteral("downloadId")).toString();
+        if(!sabId.match(id).hasMatch())return {};
+        if(!ids.contains(id))ids.append(id);
+        if(ids.size()>32)return {};
+    }
+    ids.sort();
+    return ids;
+}
 QString seerrTrackedStatus(const QJsonObject& media,const QList<int>& seasons={},bool is4k=false) {
-    const auto mediaInfo=media.value(QStringLiteral("mediaInfo")).toObject();
-    const auto& trackedSource=mediaInfo.isEmpty()?media:mediaInfo;
-    const auto statuses=trackedSource.value(is4k?QStringLiteral("downloadStatus4k"):QStringLiteral("downloadStatus")).toArray();
+    const auto statuses=seerrTrackedItems(media,is4k);
     for(const auto value:statuses) {
         const auto queue=value.toObject();
         if(!seasons.isEmpty() && !seasons.contains(queue.value(QStringLiteral("episode")).toObject().value(QStringLiteral("seasonNumber")).toInt(-1)))continue;
@@ -128,7 +153,7 @@ void Shell::refreshSeerrDownloads() {
     const auto config=seerrConfig::load(dataDirectory_);
     const auto server=SeerrClient::normalizeServer(config.server);
     if(server.isEmpty() || config.apiKey.isEmpty()) {
-        if(seerr_)seerr_->downloadRows.clear();
+        if(seerr_){seerr_->downloadRows.clear();seerr_->sabIds.clear();seerr_->sabStates.clear();++seerr_->sabEpoch;}
         return;
     }
     if(!seerr_) {
@@ -160,6 +185,7 @@ void Shell::refreshSeerrDownloads() {
         state.downloadPending=false;
         state.downloadLoaded=true;
         QVector<Entry> rows;
+        QHash<QString,QStringList> sabIds;
         if(!error.isEmpty()) {
             auto row=seerrItem(QStringLiteral("download:seerr:error"),self->tr("Seerr Downloads Unavailable"));
             row.detail=error;
@@ -186,6 +212,8 @@ void Shell::refreshSeerrDownloads() {
             QList<int> seasons;
             for(const auto season:request.value(QStringLiteral("seasons")).toArray())
                 seasons.push_back(season.toObject().value(QStringLiteral("seasonNumber")).toInt(-1));
+            const auto ids=seerrSabIds(media,seasons,is4k,type==QLatin1String("tv"));
+            if(!ids.isEmpty())sabIds.insert(identifier,ids);
             const auto tracked=seerrTrackedStatus(media,seasons,is4k);
             row.detail=tracked.isEmpty()?self->tr("Seerr · %1").arg(seerrMediaStatus(status)):self->tr("Seerr · %1").arg(tracked);
             row.value=row.title+QStringLiteral("\n\n")+row.detail+QStringLiteral("\n")+self->tr("Managed by Seerr and the configured download client.");
@@ -219,9 +247,94 @@ void Shell::refreshSeerrDownloads() {
             rows.append(std::move(row));
         }
         state.downloadRows=std::move(rows);
+        state.sabIds=std::move(sabIds);
+        self->refreshSeerrSabStatus();
         if(!self->pages_.isEmpty() && self->pages_.last().downloads && self->message_.isEmpty() && !self->optionsOpen_)
             self->reloadSteamDownloads();
     },true);
+}
+
+
+void Shell::refreshSeerrSabStatus() {
+    if(!seerr_ || diagnostics::safeMode())return;
+    auto& state=*seerr_;
+    if(state.sabBusy)return;
+    const auto config=seerrConfig::loadSab(dataDirectory_);
+    if(config!=state.sabActive) {
+        state.sabActive=config;
+        state.sabStates.clear();
+        state.sabClient.configure(SeerrClient::normalizeServer(config.server),config.apiKey);
+    }
+    const auto epoch=++state.sabEpoch;
+    if(config.server.isEmpty())return;
+    QSet<QString> unique;
+    for(const auto& ids:state.sabIds)for(const auto& id:ids)unique.insert(id);
+    if(unique.isEmpty()){state.sabStates.clear();return;}
+    QPointer<Shell> self(this);
+    state.sabClient.status(unique.values(),[self,epoch](QHash<QString,bool> states,QString error){
+        if(!self || !self->seerr_ || self->seerr_->sabEpoch!=epoch)return;
+        auto& ui=*self->seerr_;
+        ui.sabStates=error.isEmpty()?std::move(states):QHash<QString,bool>{};
+        for(auto& row:ui.downloadRows) {
+            const auto ids=ui.sabIds.value(row.id);
+            const bool paused=!ids.isEmpty() && std::all_of(ids.cbegin(),ids.cend(),[&](const QString& id){
+                return ui.sabStates.value(id,false);
+            });
+            if(!paused)continue;
+            row.detail=self->tr("Seerr · Paused in SABnzbd");
+            row.value=row.title+QStringLiteral("\n\n")+row.detail;
+        }
+        if(!self->pages_.isEmpty() && self->pages_.last().downloads && self->message_.isEmpty() && !self->optionsOpen_)
+            self->reloadSteamDownloads();
+    });
+}
+
+void Shell::addSeerrDownloadOptions(const Entry& entry) {
+    if(!seerr_ || seerr_->sabBusy || diagnostics::safeMode())return;
+    const auto& ui=*seerr_;
+    const auto ids=ui.sabIds.value(entry.id);
+    if(ids.isEmpty())return;
+    bool anyPaused=false,anyRunning=false;
+    for(const auto& id:ids) {
+        const auto state=ui.sabStates.constFind(id);
+        if(state==ui.sabStates.cend())return;
+        if(*state)anyPaused=true;else anyRunning=true;
+    }
+    if(anyRunning)addOption({"",tr("Pause")},OptionCommand::SeerrDownloadPause,"seerr-sabnzbd");
+    if(anyPaused)addOption({"",tr("Resume")},OptionCommand::SeerrDownloadResume,"seerr-sabnzbd");
+    addOption({"",tr("Cancel")},OptionCommand::SeerrDownloadCancel,"seerr-sabnzbd");
+}
+
+void Shell::controlSeerrDownload(const Entry& entry,OptionCommand command) {
+    if(!seerr_ || seerr_->sabBusy || diagnostics::safeMode())return;
+    auto& ui=*seerr_;
+    const auto ids=ui.sabIds.value(entry.id);
+    const auto config=seerrConfig::loadSab(dataDirectory_);
+    if(ids.isEmpty() || config.server.isEmpty() || config!=ui.sabActive ||
+       std::any_of(ids.cbegin(),ids.cend(),[&](const QString& id){return !ui.sabStates.contains(id);})) {
+        notify(tr("Download Management"),tr("The transfer changed. Wait for its status to refresh."));
+        return;
+    }
+    const auto perform=[this,entry,ids,config,command]{
+        if(!seerr_ || seerr_->sabBusy || diagnostics::safeMode() ||
+           seerr_->sabIds.value(entry.id)!=ids || seerrConfig::loadSab(dataDirectory_)!=config)return;
+        auto& state=*seerr_;state.sabBusy=true;++state.sabEpoch;
+        QPointer<Shell> self(this);
+        const auto done=[self](QString error){
+            if(!self || !self->seerr_)return;
+            self->seerr_->sabBusy=false;
+            self->seerr_->sabStates.clear();
+            self->notify(self->tr("Download Management"),error.isEmpty()?self->tr("Download client updated"):error);
+            self->refreshSeerrDownloads();
+            emit self->changed();
+        };
+        if(command==OptionCommand::SeerrDownloadCancel)state.sabClient.cancel(ids,done);
+        else state.sabClient.setPaused(ids,command==OptionCommand::SeerrDownloadPause,done);
+    };
+    if(command==OptionCommand::SeerrDownloadCancel) {
+        const auto title=tr("Cancel %1?").arg(entry.title);
+        showConfirm(title,title+QStringLiteral("\n\n")+tr("SABnzbd keeps downloaded files and may clear temporary data. Seerr keeps the request, and the server may grab a replacement."),perform);
+    } else perform();
 }
 
 void Shell::loadSeerrPoster(const QString& rowId,const QString& path) {
@@ -285,6 +398,28 @@ void Shell::activateSeerr(const Entry& entry) {
     }
     if(pages_.isEmpty() || pages_.last().seerr.isEmpty())return;
     const QString active=pages_.last().seerr;
+    if(command==QLatin1String("sab")) {
+        if(pages_.size()>=32)return;
+        ui.sabEdit=seerrConfig::loadSab(dataDirectory_);ui.error.clear();
+        Page page;page.title=tr("Download Client");page.seerr=QStringLiteral("sab:config");
+        pages_.push_back(std::move(page));refreshSeerrPage();emit changed();return;
+    }
+    if(command.startsWith(QLatin1String("sab-field:"))) {
+        const auto field=command.section(':',1,1);
+        const bool secret=field==QLatin1String("api-key");
+        emit requestJellyfinFieldEdit(QStringLiteral("seerr:sab-")+field,entry.title,
+            secret?QString():ui.sabEdit.server,secret);
+        return;
+    }
+    if(command==QLatin1String("sab-save") || command==QLatin1String("sab-disable")) {
+        const bool disable=command==QLatin1String("sab-disable");
+        if(seerrConfig::saveSab(dataDirectory_,disable?seerrConfig::SabConfig{}:ui.sabEdit,ui.error)) {
+            if(disable)ui.sabEdit={};
+            ++ui.sabEpoch;ui.sabStates.clear();
+            ui.error=disable?tr("Download client disabled"):tr("Download client saved");
+        }
+        refreshSeerrPage();emit changed();return;
+    }
     if(command.startsWith(QStringLiteral("field:"))) {
         const auto field=command.section(':',1,1);
         const bool secret=field==QStringLiteral("apiKey");
@@ -333,6 +468,18 @@ void Shell::seerrField(const QString& field,const QString& value) {
     if(!seerr_)activateSeerr(Entry{.value=QStringLiteral("open")});
     auto& ui=*seerr_;
     const QString key=field.startsWith(QStringLiteral("seerr:"))?field.mid(6):field;
+    if(key.startsWith(QLatin1String("sab-"))) {
+        if(key==QLatin1String("sab-server")) {
+            const auto url=SeerrClient::normalizeServer(value);
+            if(!value.trimmed().isEmpty() && url.isEmpty())ui.error=tr("Enter a SABnzbd address without credentials or query parameters.");
+            else {
+                if(url!=SeerrClient::normalizeServer(ui.sabEdit.server))ui.sabEdit.apiKey.clear();
+                ui.sabEdit.server=url.toString(QUrl::FullyEncoded);
+                ui.error.clear();
+            }
+        } else if(key==QLatin1String("sab-api-key")) {ui.sabEdit.apiKey=value.trimmed();ui.error.clear();}
+        refreshSeerrPage();emit changed();return;
+    }
     if(key==QStringLiteral("search")) {
         const auto term=value.trimmed();if(term.isEmpty())return;
         ui.searchTerm=term;ui.error.clear();loadSeerrSearch(term,1);return;
@@ -366,7 +513,18 @@ void Shell::refreshSeerrPage() {
         }
         row.detail=detail;page.entries.push_back(std::move(row));
     };
-    if(token.startsWith(QStringLiteral("home:"))) {
+    if(token==QLatin1String("sab:config")) {
+        page.title=tr("Download Client");
+        add(QStringLiteral("seerr:sab-server"),tr("SABnzbd Web UI"),QStringLiteral("sab-field:server"));
+        page.entries.last().fieldValue=ui.sabEdit.server;
+        add(QStringLiteral("seerr:sab-api-key"),tr("API Key"),QStringLiteral("sab-field:api-key"));
+        page.entries.last().fieldValue=ui.sabEdit.apiKey.isEmpty()?tr("Not set"):tr("Set");
+        add(QStringLiteral("seerr:sab-save"),tr("Save"),QStringLiteral("sab-save"),
+            tr("Enable Pause, Resume, and Cancel for matching SABnzbd transfers."));
+        if(!seerrConfig::loadSab(dataDirectory_).server.isEmpty())
+            add(QStringLiteral("seerr:sab-disable"),tr("Disable"),QStringLiteral("sab-disable"));
+        if(!ui.error.isEmpty())add(QStringLiteral("seerr:sab-status"),tr("Status"),QString(),ui.error);
+    } else if(token.startsWith(QStringLiteral("home:"))) {
         page.title=tr("Seerr");
         add(QStringLiteral("seerr:search"),tr("Search"),QStringLiteral("search"),tr("Find a movie or TV series."));
         page.entries.last().disabled=ui.configDirty || ui.server.isEmpty() || ui.apiKey.isEmpty();
@@ -380,6 +538,7 @@ void Shell::refreshSeerrPage() {
         add(QStringLiteral("seerr:save"),tr("Save Configuration"),QStringLiteral("save"),tr("Save the server and API key securely on this device."));
         if(!ui.connection.isEmpty())add(QStringLiteral("seerr:connection"),tr("Connection"),QString(),ui.connection);
         if(!ui.error.isEmpty())add(QStringLiteral("seerr:error"),tr("Status"),QString(),ui.error);
+        add(QStringLiteral("seerr:download-client"),tr("Download Client"),QStringLiteral("sab"),tr("Optional SABnzbd controls for Seerr transfers."));
     } else if(token.startsWith(QStringLiteral("search:"))) {
         page.title=tr("Search: %1").arg(ui.searchTerm);
         add(QStringLiteral("seerr:search-again"),tr("Search Again"),QStringLiteral("search"));

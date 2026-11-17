@@ -274,7 +274,7 @@ enum class OptionCommand { Activate, Information,
     UserAutoLoginTarget,
     // A Jellyfin image subtitle the client cannot draw: re-open the title with that stream burned into a
     // server transcode (MenuOption::index is the server's stream index).
-    SubtitleBurnIn, ReleaseDownloadCancel, ReleaseDownloadRetry, ReleaseDownloadPause, ReleaseDownloadResume };
+    SubtitleBurnIn, ReleaseDownloadCancel, ReleaseDownloadRetry, ReleaseDownloadPause, ReleaseDownloadResume, ReleaseDownloadPauseAll, ReleaseDownloadResumeAll, SeerrDownloadPause, SeerrDownloadResume, SeerrDownloadCancel };
 // A label read from the RCO text table: the key plus the English string it should resolve to. The fallback
 // is used only when the local flash image has no table; whenever the RCO is present, its value is the label.
 struct OptionLabel { const char* key=nullptr; QString fallback; };
@@ -584,6 +584,8 @@ public:
     bool steamCmdReady() const;                            // steamcmd.exe is found and an account name is saved
     void steamCmdStartJob(const QString& appId,const QString& title,int kind);
     void steamCmdPump();
+    bool hasSteamCmdJobsToToggle(bool paused);
+    void setSteamCmdJobsPaused(bool paused);
     QVector<Entry> steamCmdJobRows();
     void steamCmdRefreshJobRows();
     void openSaveData(const QString& kind);
@@ -1071,6 +1073,9 @@ private:
     void seerrField(const QString& field,const QString& value);
     void refreshSeerrPage();
     void refreshSeerrDownloads();
+    void refreshSeerrSabStatus();
+    void addSeerrDownloadOptions(const Entry& entry);
+    void controlSeerrDownload(const Entry& entry,OptionCommand command);
     QVector<Entry> seerrDownloadRows() const;
     void loadSeerrPoster(const QString& rowId,const QString& path);
     void loadSeerrSearch(const QString& term,int page);
@@ -1241,6 +1246,12 @@ private:
                             const QString& sourceSlug,const QString& gamesDirectory,const QVector<Download>& candidates={});
     void pumpReleaseJobs();
     void stopReleaseJobs();
+    void restoreReleaseJobs();
+    bool saveReleaseJobs() const;
+    bool hasPausableReleaseJobs() const;
+    bool hasPausedReleaseJobs() const;
+    void pauseAllReleaseJobs();
+    void resumeAllReleaseJobs();
     QVector<Entry> releaseJobRows() const;
     void addReleaseDownloadOptions(const Entry& entry);
     void refreshReleaseJobRows();

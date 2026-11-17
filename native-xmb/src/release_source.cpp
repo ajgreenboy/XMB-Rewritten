@@ -116,6 +116,7 @@ struct Checkpoint {
     QString resource;
     QByteArray validator;
     qint64 length=-1;
+    qint64 written=0;
 };
 
 Checkpoint readCheckpoint(const QString& path,const QString& resource) {
@@ -125,14 +126,19 @@ Checkpoint readCheckpoint(const QString& path,const QString& resource) {
     const auto validator=QByteArray::fromBase64(data.value(QStringLiteral("etag")).toString().toLatin1());
     bool valid=false;
     const qint64 length=data.value(QStringLiteral("length")).toString().toLongLong(&valid);
-    if(!valid || length < -1 || length==0 || !strongValidator(validator) || data.value(QStringLiteral("resource")).toString()!=resource)return {};
-    return {resource,validator,length};
+    bool offsetValid=false;
+    const qint64 written=data.value(QStringLiteral("written")).toString().toLongLong(&offsetValid);
+    if(!valid || !offsetValid || written<=0 || length < -1 || length==0 ||
+       (length>0 && written>=length) || !strongValidator(validator) ||
+       data.value(QStringLiteral("resource")).toString()!=resource)return {};
+    return {resource,validator,length,written};
 }
 
 bool writeCheckpoint(const QString& path,const Checkpoint& checkpoint) {
     const QJsonObject data{{QStringLiteral("resource"),checkpoint.resource},
         {QStringLiteral("etag"),QString::fromLatin1(checkpoint.validator.toBase64())},
-        {QStringLiteral("length"),QString::number(checkpoint.length)}};
+        {QStringLiteral("length"),QString::number(checkpoint.length)},
+        {QStringLiteral("written"),QString::number(checkpoint.written)}};
     const auto bytes=QJsonDocument(data).toJson(QJsonDocument::Compact);
     QSaveFile file(path);
     file.setDirectWriteFallback(false);
@@ -186,8 +192,8 @@ bool downloadGameArchive(const QUrl& url,const QString& path,QString* error,cons
         if(partialInfo.isSymLink() || QFileInfo(metadata).isSymLink()) {
             fail(error,QStringLiteral("Invalid download staging file"));return false;
         }
-        qint64 offset=partialInfo.size();
-        if(offset<=0 || checkpoint.validator.isEmpty() || (checkpoint.length>=0 && offset>=checkpoint.length)) {offset=0;checkpoint={};}
+        if(partialInfo.size()<checkpoint.written)checkpoint={};
+        qint64 offset=checkpoint.written;
         const bool ranged=offset>0;
         QNetworkRequest request(url);
         request.setRawHeader("Accept-Encoding","identity");
@@ -206,6 +212,18 @@ bool downloadGameArchive(const QUrl& url,const QString& path,QString* error,cons
         bool checked=false;
         QString failure;
         qint64 expected=-1;
+        QElapsedTimer checkpointTimer;
+        const auto flushCheckpoint=[&] {
+            if(!file.isOpen() || checkpoint.validator.isEmpty() || offset<=0 ||
+               (checkpoint.length>=0 && offset>=checkpoint.length))return false;
+            if(!file.flush())return false;
+            auto saved=checkpoint;
+            saved.written=offset;
+            if(!writeCheckpoint(metadata,saved))return false;
+            checkpoint=saved;
+            checkpointTimer.start();
+            return true;
+        };
         const auto consume=[&]{
             if(stopped())return;
             if(!checked) {
@@ -233,8 +251,14 @@ bool downloadGameArchive(const QUrl& url,const QString& path,QString* error,cons
                 } else {
                     failure=QStringLiteral("Server returned HTTP %1").arg(status);reply->abort();return;
                 }
+                // Drop the old validator before truncating for a new response. A crash between
+                // these operations can lose progress but cannot validate bytes of a different file.
+                if(offset==0 && QFileInfo::exists(metadata) && !QFile::remove(metadata)) {
+                    failure=QStringLiteral("Could not replace the old download checkpoint");reply->abort();return;
+                }
                 if((!encoding.isEmpty() && encoding!="identity") || expected==0 ||
-                   !file.open(QIODevice::WriteOnly | (offset>0?QIODevice::Append:QIODevice::Truncate))) {
+                   !file.open(QIODevice::WriteOnly | (offset>0?QIODevice::Append:QIODevice::Truncate)) ||
+                   (offset>0 && !file.resize(offset))) {
                     failure=QStringLiteral("Could not open a valid download stream");reply->abort();return;
                 }
             }
@@ -244,6 +268,10 @@ bool downloadGameArchive(const QUrl& url,const QString& path,QString* error,cons
                 failure=QStringLiteral("Download exceeds its reported size or could not be written");reply->abort();return;
             }
             offset+=bytes.size();
+            if(!bytes.isEmpty() && (checkpoint.written==0 || !checkpointTimer.isValid() ||
+               checkpointTimer.elapsed()>=2000 || offset-checkpoint.written>=4*1024*1024)) {
+                if(!flushCheckpoint())checkpointTimer.start();
+            }
             if(progress && !bytes.isEmpty())progress(offset,expected);
         };
         QObject::connect(reply,&QNetworkReply::readyRead,&loop,consume);
@@ -252,15 +280,15 @@ bool downloadGameArchive(const QUrl& url,const QString& path,QString* error,cons
         if(cancel)interrupt.start(100);
         if(!reply->isFinished())loop.exec();
         consume();
+        const bool stoppedForPause=stopped() && pausing && pausing->load() && failure.isEmpty();
+        if(stoppedForPause)flushCheckpoint();
         const bool flushed=!file.isOpen() || file.flush();
         file.close();
         const auto networkError=reply->error();
         const auto networkMessage=reply->errorString();
         reply->deleteLater();
         if(stopped()) {
-            if(pausing && pausing->load() && failure.isEmpty() && flushed && offset>0 && !checkpoint.validator.isEmpty() &&
-               (checkpoint.length<0 || offset<checkpoint.length) &&
-               writeCheckpoint(metadata,checkpoint)) {
+            if(stoppedForPause && checkpoint.written>0 && flushed) {
                 fail(error,QStringLiteral("Download paused"));return false;
             }
             break;

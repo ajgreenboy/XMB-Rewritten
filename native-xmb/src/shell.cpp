@@ -2036,6 +2036,8 @@ Shell::Shell(QString dataDirectory,Assets& assets,QObject* parent):QObject(paren
     refreshReleaseSources();
     xmb::bootprof::mark("Shell refreshReleaseSources");
     QTimer::singleShot(0,this,&Shell::refreshContent);
+    QTimer::singleShot(0,this,&Shell::restoreReleaseJobs);
+    connect(qApp,&QCoreApplication::aboutToQuit,this,&Shell::stopReleaseJobs);
     connect(&profiles_,&Profiles::changed,this,[this]{rebuildUsers();emit changed();});
     connect(&profiles_,&Profiles::failed,this,[this](const QString& error){showMessage(error,MessageKind::Page);emit changed();});
     xmb::bootprof::mark("Shell profiles connects");
@@ -3369,6 +3371,11 @@ void Shell::buildOptions() {
     if(!pages_.isEmpty() && pages_.last().downloads && entry.id.startsWith(QLatin1String("download:"))) {
         addOption({"",tr("Status")},OptionCommand::Information,"download-status");
         if(entry.action==Action::ReleaseGameJob)addReleaseDownloadOptions(entry);
+        if(entry.id.startsWith(QLatin1String("download:seerr:")))addSeerrDownloadOptions(entry);
+        if(hasPausableReleaseJobs() || hasSteamCmdJobsToToggle(true))
+            addOption({"",tr("Pause All")},OptionCommand::ReleaseDownloadPauseAll,"download-job");
+        if(hasPausedReleaseJobs() || hasSteamCmdJobsToToggle(false))
+            addOption({"",tr("Resume All")},OptionCommand::ReleaseDownloadResumeAll,"download-job");
         return;
     }
     // ---- A user row: explore_plugin's own table (FUN_0008cdf4, TRACED) ----------------------------------
@@ -3812,6 +3819,23 @@ void Shell::optionsActivate() {
         }
         showEntryInformation(entry);
         interactionAudio_.play(InteractionAudio::Cue::Confirm);
+        emit changed();
+        break;
+    case OptionCommand::ReleaseDownloadPauseAll:
+        resetOptions();
+        pauseAllReleaseJobs();
+        setSteamCmdJobsPaused(true);
+        break;
+    case OptionCommand::ReleaseDownloadResumeAll:
+        resetOptions();
+        resumeAllReleaseJobs();
+        setSteamCmdJobsPaused(false);
+        break;
+    case OptionCommand::SeerrDownloadPause:
+    case OptionCommand::SeerrDownloadResume:
+    case OptionCommand::SeerrDownloadCancel:
+        resetOptions();
+        controlSeerrDownload(entry,option.command);
         emit changed();
         break;
     case OptionCommand::ReleaseDownloadCancel:

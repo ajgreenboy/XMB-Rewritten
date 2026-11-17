@@ -47,7 +47,7 @@ struct SteamCmdUi {
         quint64 id = 0;
         QString appId, title, folder, library;
         int kind = 0;                                   // 0 install, 1 update, 2 validate
-        enum class State { Queued, Running, Done, Failed, Cancelled, Interrupted } state = State::Queued;
+        enum class State { Queued, Running, Pausing, Paused, Done, Failed, Cancelled, Interrupted } state = State::Queued;
         steamcmd::Progress progress;
         QString message;
         bool needsSignIn = false;
@@ -144,7 +144,7 @@ void SteamCmdUi::loadBacklog(const QString& dataDirectory) {
             job.library.size() > 4096 || job.folder.size() > 4096 || !isJobFolder(job.library, job.folder)) continue;
         if (std::any_of(jobs.cbegin(), jobs.cend(), [&job](const Job& other) { return other.appId == job.appId; })) continue;
         job.id = nextJob++;
-        job.state = Job::State::Interrupted;
+        job.state = job.kind != 2 && entry.value(QStringLiteral("paused")).toBool() ? Job::State::Paused : Job::State::Interrupted;
         jobs.push_back(std::move(job));
     }
 }
@@ -157,6 +157,7 @@ bool SteamCmdUi::saveBacklog(const QString& dataDirectory) const {
             {QStringLiteral("appId"), job.appId}, {QStringLiteral("title"), job.title},
             {QStringLiteral("library"), job.library}, {QStringLiteral("folder"), job.folder},
             {QStringLiteral("kind"), job.kind},
+            {QStringLiteral("paused"), job.state == Job::State::Paused || job.state == Job::State::Pausing},
         });
     }
     QSaveFile file(backlogPath(dataDirectory));
@@ -380,6 +381,8 @@ QVector<Entry> Shell::steamCmdJobRows() {
             else state = kindWord(job.kind) + QStringLiteral("...");
             hint = QObject::tr("Cross stops it.");
             break;
+        case State::Pausing: state = QObject::tr("Pausing"); break;
+        case State::Paused: state = QObject::tr("Paused"); hint = QObject::tr("Triangle opens Resume All."); break;
         case State::Done: state = QObject::tr("Finished"); if (!job.message.isEmpty()) state += QStringLiteral(" - ") + job.message; hint = QObject::tr("Cross dismisses this."); break;
         case State::Failed: state = QObject::tr("Failed: %1").arg(job.message); hint = QObject::tr("Cross opens retry and removal options."); break;
         case State::Cancelled: state = QObject::tr("Stopped"); hint = QObject::tr("Cross opens retry and removal options."); break;
@@ -453,6 +456,44 @@ void Shell::steamCmdStartJob(const QString& appId, const QString& title, int kin
     emit changed();
 }
 
+bool Shell::hasSteamCmdJobsToToggle(bool paused) {
+    using State = SteamCmdUi::Job::State;
+    const auto& jobs = steamCmdState().jobs;
+    return std::any_of(jobs.cbegin(), jobs.cend(), [paused](const auto& job) {
+        return job.kind != 2 && (paused ? (job.state == State::Queued || job.state == State::Running)
+                                       : (job.state == State::Paused || job.state == State::Pausing));
+    });
+}
+
+void Shell::setSteamCmdJobsPaused(bool paused) {
+    using State = SteamCmdUi::Job::State;
+    if (!hasSteamCmdJobsToToggle(paused)) return;
+    auto& ui = steamCmdState();
+    const auto previous = ui.jobs;
+    bool stopActiveJob = false;
+    for (auto& job : ui.jobs) {
+        if (job.kind == 2) continue;
+        if (paused && job.state == State::Running) {
+            job.state = State::Pausing;
+            stopActiveJob = true;
+        } else if (paused && job.state == State::Queued) {
+            job.state = State::Paused;
+        } else if (!paused && (job.state == State::Paused || job.state == State::Pausing)) {
+            job.state = State::Queued;
+            job.progress = {};
+        }
+    }
+    if (!ui.saveBacklog(dataDirectory_)) {
+        ui.jobs = previous;
+        notify(tr("SteamCMD"), tr("Could not update the saved jobs."));
+        return;
+    }
+    if (stopActiveJob && ui.jobRun) ui.jobRun->cancel();
+    if (!paused) steamCmdPump();
+    steamCmdRefreshJobRows();
+    emit changed();
+}
+
 // Starts the next waiting job when SteamCMD is idle. SteamCMD runs one job at a time.
 void Shell::steamCmdPump() {
     auto& ui = steamCmdState();
@@ -506,7 +547,11 @@ void Shell::steamCmdPump() {
                     relist = true;
                     break;
                 }
-                case O::Cancelled: x.state = S::Cancelled; qInfo().noquote() << QStringLiteral("steamcmd: job %1 stopped").arg(id); break;
+                case O::Cancelled:
+                    if (x.state == S::Pausing) x.state = S::Paused;
+                    else if (x.state != S::Queued) x.state = S::Cancelled;
+                    qInfo().noquote() << QStringLiteral("steamcmd: job %1 stopped").arg(id);
+                    break;
                 case O::NeedsSignIn:
                     x.state = S::Failed;
                     x.message = tr("SteamCMD's saved sign-in is missing or has expired. Sign in again in Users > Steam Account > SteamCMD; this job then runs again.");

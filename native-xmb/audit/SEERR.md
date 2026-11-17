@@ -9,6 +9,12 @@ Search for a movie or series, select a result for its details, and confirm the r
 for television. Seerr uses its configured default Sonarr or Radarr server and quality policy. **My Requests** shows
 the requests visible to the configured key. Network → Download Management refreshes approved, active requests every five seconds while the page is open. It shows progress when Seerr reports it. The Seerr-managed rows provide Status in their Triangle menu.
 
+For SABnzbd controls, open **TV/Video Services → Seerr → Download Client**. Save the SABnzbd base URL,
+including any reverse proxy prefix, and its full API key from **Config → General**. XMB encrypts these settings
+in the native data directory. Pause, Resume and Cancel appear in Download Management when SABnzbd confirms
+the transfer IDs for the request. Cancel keeps downloaded files and can clear temporary data. Seerr retains the
+request and may find a replacement.
+
 Seerr handles approval, release selection, the download client, and library import. Playback uses your Jellyfin
 library once Jellyfin has indexed the imported title.
 

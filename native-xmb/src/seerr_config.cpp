@@ -79,4 +79,38 @@ bool save(const QString& dataDir, const Config& config, QString& error) {
     }
     return true;
 }
+
+SabConfig loadSab(const QString& dataDir) {
+    QFile file(QDir(dataDir).filePath(QStringLiteral("seerr-download-client.bin")));
+    if(!file.open(QIODevice::ReadOnly) || file.size()>MaxFile)return {};
+    const auto values=QJsonDocument::fromJson(protect(file.read(MaxFile+1),false)).object();
+    if(values.value(QStringLiteral("kind")).toString()!=QLatin1String("sabnzbd-v1"))return {};
+    const SabConfig config{values.value(QStringLiteral("server")).toString(),values.value(QStringLiteral("key")).toString()};
+    return validKey(config.apiKey) && !SeerrClient::normalizeServer(config.server).isEmpty()?config:SabConfig{};
+}
+
+bool saveSab(const QString& dataDir,const SabConfig& config,QString& error) {
+    error.clear();
+    const auto url=SeerrClient::normalizeServer(config.server);
+    const bool disabled=config.server.isEmpty() && config.apiKey.isEmpty();
+    if(!disabled && (url.isEmpty() || !validKey(config.apiKey))) {
+        error=QObject::tr("Enter the SABnzbd address and API key.");
+        return false;
+    }
+    const auto bytes=protect(QJsonDocument(QJsonObject{{QStringLiteral("kind"),QStringLiteral("sabnzbd-v1")},
+        {QStringLiteral("server"),url.toString(QUrl::FullyEncoded)},
+        {QStringLiteral("key"),config.apiKey}}).toJson(QJsonDocument::Compact),true);
+    if(bytes.isEmpty()) {
+        error=QObject::tr("Could not protect the download client configuration for this Windows user.");
+        return false;
+    }
+    QSaveFile file(QDir(dataDir).filePath(QStringLiteral("seerr-download-client.bin")));
+    file.setDirectWriteFallback(false);
+    if(!QDir().mkpath(dataDir) || !file.open(QIODevice::WriteOnly) || file.write(bytes)!=bytes.size() || !file.commit()) {
+        error=QObject::tr("Could not save the download client configuration.");
+        return false;
+    }
+    return true;
+}
+
 }
