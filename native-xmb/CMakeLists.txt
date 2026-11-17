@@ -62,6 +62,7 @@ qt_add_executable(re-ps3-native
     src/steam_artwork.cpp src/steam_artwork.h src/steam_store.cpp src/steam_store.h src/steam_owned.cpp src/steam_owned.h src/steam_collections.cpp src/steam_collections.h src/steam_overrides.cpp src/steam_overrides.h src/steam_family.cpp src/steam_family.h
     src/content_registry.cpp src/content_registry.h src/web_launch.cpp src/web_launch.h src/app_editor.cpp src/app_editor.h
     src/rawg_client.cpp src/rawg_client.h src/rawg_artwork.cpp src/rawg_artwork.h
+    src/imported_art_match.cpp src/imported_art_match.h src/imported_art.cpp src/imported_art.h
     src/artwork_settings.cpp src/artwork_settings.h
     src/media_controls.cpp src/media_controls.h
     src/media_keys.cpp src/media_keys.h
@@ -177,6 +178,15 @@ if(XMB_DISCORD_BUILD_TESTS)
     target_link_libraries(xmb-discord-tests PRIVATE Qt6::Core Qt6::Gui Qt6::Network)
     if(WIN32)
         target_link_libraries(xmb-discord-tests PRIVATE crypt32)
+    endif()
+endif()
+option(XMB_IMPORTED_ART_BUILD_TESTS "Build the imported-game artwork (Steam store title matching, cache metadata) tests" OFF)
+if(XMB_IMPORTED_ART_BUILD_TESTS)
+    qt_add_executable(xmb-imported-art-tests tests/imported_art_tests.cpp src/imported_art_match.cpp src/imported_art_match.h)
+    target_include_directories(xmb-imported-art-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(xmb-imported-art-tests PRIVATE Qt6::Core Qt6::Gui)
+    if(MSVC)
+        target_compile_options(xmb-imported-art-tests PRIVATE /W4 /permissive- /utf-8)
     endif()
 endif()
 option(XMB_JELLYFIN_SETUP_BUILD_TESTS "Build the Jellyfin setup (address, discovery reply, apps.json save) tests" OFF)

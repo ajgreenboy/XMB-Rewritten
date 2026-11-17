@@ -21,6 +21,8 @@
 #include "steam_library.h"
 #include "steam_artwork.h"
 #include "rawg_artwork.h"
+#include "imported_art.h"
+#include "imported_art_match.h"
 #include "steam_collections.h"
 #include "steam_overrides.h"
 #include "steam_family.h"
@@ -942,6 +944,7 @@ void Shell::refreshOwnedGames() {
 }
 void Shell::retryArtwork() {
     rawgArtwork_->resetBackoff();
+    importedArt_->resetBackoff();
     refreshContent();
 }
 // Distinct titles the Steam library knows about: installed, owned and family-shared.
@@ -1355,7 +1358,7 @@ void Shell::reloadSteamDownloads() {
 void Shell::refreshContent() {
     if(contentScanning_){contentRefreshPending_=true;return;}
     contentScanning_=true;
-    struct Result { SteamInstallation steam; QVector<ContentApp> apps; QHash<QString,QImage> art; QHash<QString,QString> rawgPaths; QString error; };
+    struct Result { SteamInstallation steam; QVector<ContentApp> apps; QHash<QString,QImage> art; QHash<QString,QString> rawgPaths; QHash<QString,QString> importedPaths; QHash<QString,QString> importedHeroPaths; QSet<QString> fetchable; QString error; };
     auto* watcher=new QFutureWatcher<Result>(this);
     connect(watcher,&QFutureWatcher<Result>::finished,this,[this,watcher]{
         auto result=watcher->result();watcher->deleteLater();contentScanning_=false;
@@ -1363,6 +1366,7 @@ void Shell::refreshContent() {
         steamInstalled_=result.steam;
         if(steamBackgroundStartPending_)QTimer::singleShot(0,this,[this]{startSteamClientInBackground();});
         rawgArtworkPaths_=result.rawgPaths;
+        importedArtPaths_=result.importedPaths;importedHeroPaths_=result.importedHeroPaths;fetchableApps_=result.fetchable;
         family_=scanSteamFamily(steamInstalled_.steamId);
         { QString familyError; familyGames_=scanFamilySharedGames(dataDirectory_,&familyError);
           if(!familyError.isEmpty())qWarning().noquote()<<"steam family:"<<familyError; }
@@ -1490,6 +1494,13 @@ void Shell::refreshContent() {
         for(auto it=rawgArtworkPaths_.begin();it!=rawgArtworkPaths_.end();)
             if(!liveRawgIds.contains(it.key()))it=rawgArtworkPaths_.erase(it);else ++it;
         if(!diagnostics::safeMode())rawgArtwork_->refresh(rawgTargets);   // D6: safe mode fetches no artwork
+        // Imported games without real art (none, or the manager's generated card) get a key-free Steam store
+        // match; cached matches are delivered from disk, and the network is touched only for unknown titles.
+        QVector<QPair<QString,QString>> importedTargets;
+        for(const auto& app:contentApps_)
+            if(app.kind==QStringLiteral("game") && fetchableApps_.contains(app.id) && !rawgArtworkPaths_.contains(QStringLiteral("custom:")+app.id))
+                importedTargets.push_back({QStringLiteral("custom:")+app.id,app.title});
+        if(!diagnostics::safeMode())importedArt_->refresh(importedTargets);
         if(stageOwnedForRefresh() && !diagnostics::safeMode())refreshOwnedGames();
         QStringList missingArt;
         for(const auto& category:categories_)for(const auto& e:category.entries)
@@ -1557,10 +1568,35 @@ void Shell::refreshContent() {
             if(!override.isEmpty() && qEnvironmentVariableIsSet("XMB_STEAM_ARTWORK_LOG"))qInfo().noquote()<<"artwork override"<<appId<<override;
         }
         for(const auto& app:result.apps)if(app.kind==QStringLiteral("game")) {
+            // Source order for an imported game's art: real art in the manifest (the user's own) > RAWG (key set) >
+            // the Steam store match (key-free, cached) > the manager's generated card > the default icon. The
+            // manager writes a generated 512x288 card when an import found no art, so a card is not "real art".
             const QString rowId=QStringLiteral("custom:")+app.id;
+            QImage manifest;
+            if(!app.artwork.isEmpty()) {
+                QImageReader reader(app.artwork);reader.setDecideFormatFromContent(true);reader.setAutoTransform(true);
+                const auto size=reader.size();
+                if(size.isValid() && size.width()<=16384 && size.height()<=16384) {
+                    reader.setScaledSize(size.scaled(512,288,Qt::KeepAspectRatio));manifest=reader.read();
+                }
+            }
+            const bool realManifest=!manifest.isNull() && !importedArt::isGeneratedPlaceholder(manifest);
+            if(realManifest) {
+                if(result.art.size()<128 && !result.art.contains(rowId))result.art.insert(rowId,manifest);
+                continue;
+            }
+            result.fetchable.insert(app.id);
             const QString rawg=RawgArtwork::cachedArtwork(rawgCache,rowId,app.title);
-            if(app.artwork.isEmpty() && !rawg.isEmpty())result.rawgPaths.insert(rowId,rawg);
-            read(rowId,!app.artwork.isEmpty()?app.artwork:rawg);
+            const QString steamHeader=importedArt::cachedHeader(rawgCache,app.title);
+            if(!rawg.isEmpty()) {
+                result.rawgPaths.insert(rowId,rawg);read(rowId,rawg);
+            } else if(!steamHeader.isEmpty()) {
+                result.importedPaths.insert(rowId,steamHeader);
+                const QString hero=importedArt::cachedHero(rawgCache,app.title);
+                if(!hero.isEmpty())result.importedHeroPaths.insert(rowId,hero);
+                read(rowId,steamHeader);
+            }
+            if(!result.art.contains(rowId) && !manifest.isNull() && result.art.size()<128)result.art.insert(rowId,manifest);
         }
         for(const auto& app:result.apps)if(app.kind!=QStringLiteral("game"))read(QStringLiteral("custom:")+app.id,app.artwork);
         return result;
@@ -1613,6 +1649,7 @@ Shell::Shell(QString dataDirectory,Assets& assets,QObject* parent):QObject(paren
     dataDirectory_(dataDirectory),
     steamArtwork_(std::make_unique<SteamArtwork>(QDir(dataDirectory).filePath("cache/steam"))),
     rawgArtwork_(std::make_unique<RawgArtwork>(QDir(dataDirectory).filePath("cache"))),
+    importedArt_(std::make_unique<ImportedArt>(QDir(dataDirectory).filePath("cache"))),
     player_(std::make_unique<QMediaPlayer>()),audio_(std::make_unique<QAudioOutput>()),video_(std::make_unique<QVideoSink>()) {
     xmb::bootprof::mark("Shell members");
     QDir().mkpath(dataDirectory);
@@ -1850,7 +1887,7 @@ Shell::Shell(QString dataDirectory,Assets& assets,QObject* parent):QObject(paren
             }
             if(id.startsWith(QStringLiteral("custom:"))) {
                 const QString appId=id.mid(7);
-                for(const auto& app:contentApps_)if(app.id==appId)return app.kind==QStringLiteral("game") && app.artwork.isEmpty();
+                for(const auto& app:contentApps_)if(app.id==appId)return app.kind==QStringLiteral("game") && fetchableApps_.contains(appId);
             }
             return false;
         };
@@ -1866,6 +1903,31 @@ Shell::Shell(QString dataDirectory,Assets& assets,QObject* parent):QObject(paren
         if(touched)emit changed();
     });
     connect(rawgArtwork_.get(),&RawgArtwork::status,this,[this](const QString& status){
+        artworkStatus_=status;
+    });
+    // Imported games: the key-free Steam store match (imported_art.h). RAWG art, when present, already won.
+    connect(importedArt_.get(),&ImportedArt::ready,this,[this](const QString& id,const QString& title,const QString& header,const QString& hero,const QImage& preview){
+        if(!id.startsWith(QStringLiteral("custom:")) || rawgArtworkPaths_.contains(id))return;
+        const QString appId=id.mid(7);
+        bool eligible=false;
+        for(const auto& app:contentApps_)if(app.id==appId)eligible=app.kind==QStringLiteral("game") && app.title==title && fetchableApps_.contains(appId);
+        if(!eligible)return;
+        importedArtPaths_.insert(id,header);
+        if(!hero.isEmpty())importedHeroPaths_.insert(id,hero);
+        bool touched=false;
+        const auto apply=[&](Entry& entry){
+            if(entry.id!=id || entry.title!=title || !entry.gameTile)return;
+            entry.artwork=preview;touched=true;
+        };
+        for(auto& category:categories_)for(auto& entry:category.entries)apply(entry);
+        for(auto& page:pages_)for(auto& entry:page.entries)apply(entry);
+        if(touched)emit changed();
+    });
+    connect(importedArt_.get(),&ImportedArt::heroReady,this,[this](const QString& id,const QString& hero){
+        importedHeroPaths_.insert(id,hero);
+        emit changed();
+    });
+    connect(importedArt_.get(),&ImportedArt::status,this,[this](const QString& status){
         artworkStatus_=status;
     });
     // Steam Store: the browse page is an ordinary XMB page, and every row hands off to Steam for
@@ -6826,8 +6888,13 @@ QString Shell::focusedBackgroundPath() {
     if(!entry.backgroundPath.isEmpty())return entry.backgroundPath;
     if(entry.id.startsWith(QStringLiteral("custom:"))) {
         const QString appId=entry.id.mid(7);
-        for(const auto& app:contentApps_)if(app.id==appId && !app.artwork.isEmpty())return app.artwork;
-        return rawgArtworkPaths_.value(entry.id);
+        // Real manifest art > RAWG > the Steam store match's hero (else its header) > the manager's generated card.
+        for(const auto& app:contentApps_)if(app.id==appId && !app.artwork.isEmpty() && !fetchableApps_.contains(appId))return app.artwork;
+        if(const auto rawg=rawgArtworkPaths_.value(entry.id);!rawg.isEmpty())return rawg;
+        if(const auto hero=importedHeroPaths_.value(entry.id);!hero.isEmpty())return hero;
+        if(const auto header=importedArtPaths_.value(entry.id);!header.isEmpty())return header;
+        for(const auto& app:contentApps_)if(app.id==appId)return app.artwork;
+        return {};
     }
     if(!entry.id.startsWith(QStringLiteral("steam:")))return {};
     const QString appId=entry.id.mid(6);

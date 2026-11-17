@@ -53,6 +53,7 @@ class Assets;
 class SteamArtwork;
 struct SteamCmdUi;   // steamcmd_shell.cpp
 class RawgArtwork;
+class ImportedArt;
 enum class Action { Unavailable, SettingsPage, SettingChoices, SetSetting, EditName, CreateUser, SelectUser, Wallpaper, Theme, Information, Library, ChooseLibrary, File, Folder, Launch, LaunchSteam, InstallSteam, SteamFolder, SteamStoreBrowse, SteamStoreSection, LaunchApp, OpenUrl, RefreshContent, RefreshFriends, ImportApps, ArtworkSettings, JellyfinApp, JellyfinFolder, JellyfinPlay, JellyfinMore, JellyfinSignOut, SteamDownloads,
     // A free-text search of the signed-in server's own library: the row asks the view for the XMB
     // keyboard (through requestJellyfinFieldEdit with the field key "search") and pushes a result
@@ -1159,6 +1160,10 @@ private:
     std::unique_ptr<SteamArtwork> steamArtwork_;
     std::unique_ptr<RawgArtwork> rawgArtwork_;
     QHash<QString,QString> rawgArtworkPaths_; // resolved cached RAWG art by row id; read without filesystem I/O while drawing
+    std::unique_ptr<ImportedArt> importedArt_;   // key-free Steam store art for imported games (imported_art.h)
+    QHash<QString,QString> importedArtPaths_;    // row id -> cached Steam header
+    QHash<QString,QString> importedHeroPaths_;   // row id -> cached Steam library hero (backdrop)
+    QSet<QString> fetchableApps_;                // imported game ids with no real manifest art (none, or the manager's generated card)
     QString artworkStatus_;
     QTimer steamRefresh_;
     QTimer downloadsRefresh_;        // re-reads Steam's queue while the Download Management page is the top page

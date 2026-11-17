@@ -12,10 +12,10 @@ bool configureArtwork(QWidget* parent, const QString& status) {
     QDialog dialog(parent);
     dialog.setWindowTitle("Game Artwork");
     auto* layout = new QVBoxLayout(&dialog);
-    auto* description = new QLabel("Fetch cards and backgrounds automatically for installed Steam games and imported games. Your custom artwork takes priority.");
+    auto* description = new QLabel("Imported games without artwork are matched by title against the public Steam store automatically (no key needed, cached on this PC). Add a RAWG API key to also fill installed Steam games and other titles. Your own artwork always takes priority.");
     description->setWordWrap(true);
     layout->addWidget(description);
-    auto* label = new QLabel("RAWG API &key");
+    auto* label = new QLabel("RAWG API &key (optional)");
     auto* key = new QLineEdit;
     label->setBuddy(key);
     key->setEchoMode(QLineEdit::Password);
@@ -47,10 +47,6 @@ bool configureArtwork(QWidget* parent, const QString& status) {
         QString message;
         if (!key->text().isEmpty() && !RawgClient::saveApiKey(key->text().trimmed(), message)) {
             error->setText(message);
-            return;
-        }
-        if (!RawgClient::hasApiKey()) {
-            error->setText("Enter a RAWG API key to start fetching artwork.");
             return;
         }
         dialog.accept();

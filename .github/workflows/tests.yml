@@ -65,7 +65,7 @@ jobs:
             -DCMAKE_PREFIX_PATH="$env:QT_ROOT_DIR" `
             -DXMB_STEAM_VDF_BUILD_TESTS=ON -DXMB_STEAM_SWITCH_BUILD_TESTS=ON -DXMB_SETUP_BUILD_TESTS=ON -DXMB_AUTOLOGON_BUILD_TESTS=ON `
             -DXMB_UPDATER_BUILD_TESTS=ON -DXMB_FIRMWARE_BUILD_TESTS=ON -DXMB_RELEASE_BUILD_TESTS=ON `
-            -DXMB_MANAGER_BUILD_TESTS=ON -DXMB_FILE_OPS_BUILD_TESTS=ON -DXMB_DISCORD_BUILD_TESTS=ON -DXMB_FOLDER_BROWSER_BUILD_TESTS=ON -DXMB_OSK_PASTE_BUILD_TESTS=ON -DXMB_JELLYFIN_SETUP_BUILD_TESTS=ON -DXMB_JELLYFIN_PLAYBACK_BUILD_TESTS=ON -DXMB_JELLYFIN_PLAYER_BUILD_TESTS=ON -DXMB_STEAM_QUIT_BUILD_TESTS=ON -DXMB_STEAM_HIDE_BUILD_TESTS=ON -DXMB_JELLYFIN_MUSIC_BUILD_TESTS=ON -DXMB_FRAME_PACER_BUILD_TESTS=ON -DXMB_VIDEO_PANEL_BUILD_TESTS=ON -DXMB_STEAMCMD_BUILD_TESTS=ON -DXMB_RAF_BUILD_TESTS=ON
+            -DXMB_MANAGER_BUILD_TESTS=ON -DXMB_FILE_OPS_BUILD_TESTS=ON -DXMB_DISCORD_BUILD_TESTS=ON -DXMB_FOLDER_BROWSER_BUILD_TESTS=ON -DXMB_OSK_PASTE_BUILD_TESTS=ON -DXMB_JELLYFIN_SETUP_BUILD_TESTS=ON -DXMB_JELLYFIN_PLAYBACK_BUILD_TESTS=ON -DXMB_JELLYFIN_PLAYER_BUILD_TESTS=ON -DXMB_STEAM_QUIT_BUILD_TESTS=ON -DXMB_STEAM_HIDE_BUILD_TESTS=ON -DXMB_JELLYFIN_MUSIC_BUILD_TESTS=ON -DXMB_FRAME_PACER_BUILD_TESTS=ON -DXMB_VIDEO_PANEL_BUILD_TESTS=ON -DXMB_STEAMCMD_BUILD_TESTS=ON -DXMB_RAF_BUILD_TESTS=ON -DXMB_IMPORTED_ART_BUILD_TESTS=ON
           if ($LASTEXITCODE) { throw 'CMake configuration failed.' }
 
       - name: Build the test runners (and xmb-manager, which the manager tests drive)
@@ -73,7 +73,7 @@ jobs:
         run: |
           cmake --build "$env:BUILD_DIR" --parallel --target `
             xmb-steam-vdf-tests xmb-steam-switch-tests xmb-setup-tests xmb-autologon-tests xmb-updater-tests `
-            xmb-firmware-tests xmb-release-tests xmb-file-ops-tests xmb-folder-browser-tests xmb-osk-paste-tests xmb-discord-tests xmb-jellyfin-setup-tests xmb-jellyfin-playback-tests xmb-jellyfin-player-tests xmb-jellyfin-music-tests xmb-frame-pacer-tests xmb-video-panel-tests xmb-steam-quit-tests xmb-steam-quit-standin xmb-steam-hide-tests xmb-steam-hide-standin xmb-manager-tests xmb-manager xmb-steamcmd-tests xmb-steamcmd-standin xmb-raf-tests
+            xmb-firmware-tests xmb-release-tests xmb-file-ops-tests xmb-folder-browser-tests xmb-osk-paste-tests xmb-discord-tests xmb-jellyfin-setup-tests xmb-jellyfin-playback-tests xmb-jellyfin-player-tests xmb-jellyfin-music-tests xmb-frame-pacer-tests xmb-video-panel-tests xmb-steam-quit-tests xmb-steam-quit-standin xmb-steam-hide-tests xmb-steam-hide-standin xmb-manager-tests xmb-manager xmb-steamcmd-tests xmb-steamcmd-standin xmb-raf-tests xmb-imported-art-tests
           if ($LASTEXITCODE) { throw 'Test build failed.' }
 
       - name: Run the test runners
@@ -104,6 +104,7 @@ jobs:
             @{ Name = 'frame-pacer'; Exe = 'xmb-frame-pacer-tests.exe'; Args = @() },
             @{ Name = 'video-panel'; Exe = 'xmb-video-panel-tests.exe'; Args = @() },
             @{ Name = 'raf'; Exe = 'xmb-raf-tests.exe'; Args = @() },
+            @{ Name = 'imported-art'; Exe = 'xmb-imported-art-tests.exe'; Args = @((Join-Path $scratch 'imported-art')) },
             @{ Name = 'file-ops';  Exe = 'xmb-file-ops-tests.exe';  Args = @((Join-Path $scratch 'file-ops')) },
             @{ Name = 'folder-browser'; Exe = 'xmb-folder-browser-tests.exe'; Args = @((Join-Path $scratch 'folder-browser')) },
             @{ Name = 'osk-paste'; Exe = 'xmb-osk-paste-tests.exe'; Args = @() },
