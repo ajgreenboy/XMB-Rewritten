@@ -208,21 +208,18 @@ bool downloadGameArchive(const QUrl& url,const QString& path,QString* error,cons
         QFile file(partial);
         QEventLoop loop;
         QTimer interrupt;
+        QTimer checkpointTimer;
         bool restart=false;
         bool checked=false;
         QString failure;
         qint64 expected=-1;
-        QElapsedTimer checkpointTimer;
         const auto flushCheckpoint=[&] {
-            if(!file.isOpen() || checkpoint.validator.isEmpty() || offset<=0 ||
-               (checkpoint.length>=0 && offset>=checkpoint.length))return false;
-            if(!file.flush())return false;
+            if(!file.isOpen() || checkpoint.validator.isEmpty() || offset<=checkpoint.written ||
+               (checkpoint.length>=0 && offset>=checkpoint.length))return;
+            if(!file.flush())return;
             auto saved=checkpoint;
             saved.written=offset;
-            if(!writeCheckpoint(metadata,saved))return false;
-            checkpoint=saved;
-            checkpointTimer.start();
-            return true;
+            if(writeCheckpoint(metadata,saved))checkpoint=saved;
         };
         const auto consume=[&]{
             if(stopped())return;
@@ -268,15 +265,15 @@ bool downloadGameArchive(const QUrl& url,const QString& path,QString* error,cons
                 failure=QStringLiteral("Download exceeds its reported size or could not be written");reply->abort();return;
             }
             offset+=bytes.size();
-            if(!bytes.isEmpty() && (checkpoint.written==0 || !checkpointTimer.isValid() ||
-               checkpointTimer.elapsed()>=2000 || offset-checkpoint.written>=4*1024*1024)) {
-                if(!flushCheckpoint())checkpointTimer.start();
-            }
+            if(!bytes.isEmpty() && (checkpoint.written==0 || offset-checkpoint.written>=4*1024*1024))
+                flushCheckpoint();
             if(progress && !bytes.isEmpty())progress(offset,expected);
         };
         QObject::connect(reply,&QNetworkReply::readyRead,&loop,consume);
         QObject::connect(reply,&QNetworkReply::finished,&loop,&QEventLoop::quit);
         QObject::connect(&interrupt,&QTimer::timeout,&loop,[&]{if(stopped())reply->abort();});
+        QObject::connect(&checkpointTimer,&QTimer::timeout,&loop,flushCheckpoint);
+        checkpointTimer.start(2000);
         if(cancel)interrupt.start(100);
         if(!reply->isFinished())loop.exec();
         consume();
