@@ -180,6 +180,28 @@ View::View(Shell& shell,Assets& assets,QWidget* parent):QOpenGLWidget(parent),sh
         else if(shell_.photoOpen())photoViewport_.reset(frame.size(),{1920,1080},shell_.photoFill());
         update();
     });
+    auto& jellyfin=shell_.jellyfinClient();
+    connect(&jellyfin,&JellyfinClient::trickplayInfoReady,this,[this](quint64 request,QString itemId,QString sourceId,JellyfinTrickplayInfo info){
+        const QString key=itemId+QLatin1Char('#')+sourceId;
+        if(request!=trickplayInfoRequest_ || key!=trickplayKey_ || key!=trickplayKey())return;
+        trickplayInfoRequest_=0;
+        trickplayInfo_=info;
+        if(!info.valid())trickplayVisibleUntil_=0;
+        else requestTrickplaySheet();
+        update();
+    });
+    connect(&jellyfin,&JellyfinClient::trickplaySheetReady,this,[this](quint64 request,QString itemId,QString sourceId,int width,int sheetIndex,QImage image){
+        const QString key=itemId+QLatin1Char('#')+sourceId;
+        if(request!=trickplaySheetRequest_ || key!=trickplayKey_ || key!=trickplayKey() || width!=trickplayInfo_.width)return;
+        trickplaySheetRequest_=0;trickplaySheetRequestIndex_=-1;
+        if(!image.isNull()){
+            trickplaySheet_=std::move(image);trickplaySheetIndex_=sheetIndex;
+            trickplayVisibleUntil_=clock_.elapsed()+1600;
+        }
+        else trickplayFailedSheets_.insert(sheetIndex);
+        requestTrickplaySheet();
+        update();
+    });
     connect(&shell_,&Shell::requestPhotoGallery,this,[this]{openGallery();});
     connect(&shell_,&Shell::requestImportApps,this,[this]{AppEditor editor(shell_.appRegistryPath(),this);connect(&editor,&AppEditor::registryChanged,&shell_,&Shell::refreshContent);editor.exec();shell_.noteActivity();});
     connect(&shell_, &Shell::requestArtworkSettings, this, [this] {
@@ -272,6 +294,7 @@ View::View(Shell& shell,Assets& assets,QWidget* parent):QOpenGLWidget(parent),sh
     xmb::bootprof::mark("View psWatcher");
     // Phone Remote (D11): the paired LAN remote drives the same key path a scripted or keyboard press takes, so
     // its input behaves identically. The PS button goes through the tap handler.
+    connect(&shell_,&Shell::mediaSeeked,this,&View::requestTrickplayPreview);
     connect(&shell_.phoneRemote(),&PhoneRemote::keyRequested,this,&View::replayKeyTap);
     connect(&shell_.phoneRemote(),&PhoneRemote::psRequested,this,[this]{psTappedEvent(120);});
     // Text from the phone lands in the on-screen keyboard while it is open (search, name, sign-in fields); with
@@ -2862,7 +2885,7 @@ void View::drawScene(QPainter& p) {
         // The title sits above the hint row. Only the video player needs 984: its 16x16 digit row ends at
         // 979. The photo viewer and the audio player have no such row and keep the 970 this build had, so
         // surface D and the audio chrome are unchanged down to the pixel of their text layout.
-        if(!mediaAudioOnly())text({110,shell_.videoOpen()?984.:970.,1500,38},shell_.mediaTitle(),27,Qt::white);
+        if(!mediaAudioOnly() && !(shell_.videoOpen() && videoPanelOpen_))text({110,shell_.videoOpen()?984.:970.,1500,38},shell_.mediaTitle(),27,Qt::white);
         if(shell_.photoOpen())
             text({110,1020,1700,35},QString("Circle Back   Cross ")+(shell_.slideshowActive()?"Pause":"Slideshow")+"   L1/R1 or +/- Zoom   Square/0 Reset   Triangle/Q/E Rotate   Arrows Pan when zoomed   [/] Photo",21,QColor(230,230,230));
         else if(!shell_.videoOpen() && !mediaAudioOnly())
@@ -2896,6 +2919,7 @@ void View::drawScene(QPainter& p) {
             if(gotoActive_)mediaControls_.activity(now);   // Go To keeps the chrome up while it is being typed
             if(shell_.mediaDuration()>0)
                 drawVideoTimeBar(p,shell_.mediaPosition(),shell_.mediaDuration(),controlOpacity);
+            drawTrickplayPreview(p,controlOpacity);
             drawVideoHelpStrip(p);
             if(shell_.mediaDisplayPinned())drawVideoInfoBar(p);
         } else if(mediaAudioOnly()) {
@@ -4227,6 +4251,76 @@ void View::drawTimeCells(QPainter& p,const QString& value,qreal edge,qreal top,b
     const qreal left=rightAligned?edge-count*cell:edge;
     for(int i=0;i<count;++i)
         mediaPanelText(p,QRectF(left+i*cell,top,cell,cell),value.mid(i,1),cellSize,QColor(255,255,255,int(std::lround(255.*opacity))),Qt::AlignCenter);
+}
+QString View::trickplayKey() const {
+    if(!shell_.videoOpen() || shell_.mediaProvider()!=QLatin1String("Jellyfin"))return {};
+    const auto& playback=shell_.jellyfinPlayback();
+    if(playback.itemId.isEmpty() || playback.mediaSourceId.isEmpty())return {};
+    return playback.itemId+QLatin1Char('#')+playback.mediaSourceId;
+}
+void View::requestTrickplayPreview(qint64 targetMs) {
+    const QString key=trickplayKey();
+    if(key.isEmpty())return;
+    if(key!=trickplayKey_) {
+        trickplayKey_=key;trickplayInfo_={};trickplaySheet_={};trickplaySheetIndex_=-1;
+        trickplayInfoRequest_=0;trickplaySheetRequest_=0;trickplaySheetRequestIndex_=-1;
+        trickplayInfoAttempted_=false;trickplayFailedSheets_.clear();trickplayVisibleUntil_=0;
+    }
+    const qint64 duration=shell_.mediaDuration();
+    if(duration<=0)return;
+    trickplayTargetMs_=std::clamp(targetMs,qint64(0),duration);
+    trickplayVisibleUntil_=clock_.elapsed()+1800;
+    if(!trickplayInfo_.valid() && !trickplayInfoAttempted_ && trickplayInfoRequest_==0) {
+        trickplayInfoAttempted_=true;
+        const auto& playback=shell_.jellyfinPlayback();
+        trickplayInfoRequest_=shell_.jellyfinClient().trickplayInfo(playback.itemId,playback.mediaSourceId);
+    } else requestTrickplaySheet();
+    update();
+}
+void View::requestTrickplaySheet() {
+    if(!trickplayInfo_.valid() || trickplayKey_.isEmpty() || trickplayKey_!=trickplayKey() ||
+       clock_.elapsed()>trickplayVisibleUntil_)return;
+    const qint64 frame=std::clamp(trickplayTargetMs_/trickplayInfo_.intervalMs,qint64(0),qint64(trickplayInfo_.thumbnailCount-1));
+    const int capacity=trickplayInfo_.tileWidth*trickplayInfo_.tileHeight;
+    if(capacity<=0)return;
+    const int sheet=int(frame/capacity);
+    if(sheet==trickplaySheetIndex_ && !trickplaySheet_.isNull())return;
+    if(trickplayFailedSheets_.contains(sheet) || trickplaySheetRequest_!=0)return;
+    trickplaySheetRequestIndex_=sheet;
+    const auto& playback=shell_.jellyfinPlayback();
+    trickplaySheetRequest_=shell_.jellyfinClient().trickplaySheet(playback.itemId,playback.mediaSourceId,trickplayInfo_.width,sheet);
+}
+void View::drawTrickplayPreview(QPainter& p,double opacity) {
+    if(clock_.elapsed()>trickplayVisibleUntil_ || trickplayVisibleUntil_==0 || trickplayKey_.isEmpty() ||
+       trickplayKey_!=trickplayKey() || videoPanelOpen_ || gotoActive_ || !shell_.message().isEmpty() ||
+       !trickplayInfo_.valid() || trickplaySheet_.isNull())return;
+    const qint64 duration=shell_.mediaDuration();
+    if(duration<=0 || trickplayTargetMs_<0 || trickplayTargetMs_>duration)return;
+    // Refuse a stale result after the source changed or after a later seek moved elsewhere. The short
+    // allowance covers player position updates that land a frame or two after the input event.
+    const qint64 tolerance=std::max<qint64>(5000,qint64(trickplayInfo_.intervalMs)*2);
+    if(qAbs(shell_.mediaPosition()-trickplayTargetMs_)>tolerance)return;
+    const qint64 frame=std::clamp(trickplayTargetMs_/trickplayInfo_.intervalMs,qint64(0),qint64(trickplayInfo_.thumbnailCount-1));
+    const int capacity=trickplayInfo_.tileWidth*trickplayInfo_.tileHeight;
+    if(capacity<=0 || int(frame/capacity)!=trickplaySheetIndex_)return;
+    const int cell=int(frame%capacity);
+    const QRect source((cell%trickplayInfo_.tileWidth)*trickplayInfo_.width,
+                       (cell/trickplayInfo_.tileWidth)*trickplayInfo_.height,
+                       trickplayInfo_.width,trickplayInfo_.height);
+    if(!trickplaySheet_.rect().contains(source))return;
+    const qreal scale=std::min(260./trickplayInfo_.width,138./trickplayInfo_.height);
+    const qreal imageW=trickplayInfo_.width*scale,imageH=trickplayInfo_.height*scale;
+    const qreal panelW=imageW+16,panelH=imageH+34;
+    const qreal center=110.+1700.*std::clamp(double(trickplayTargetMs_)/double(duration),0.,1.);
+    const qreal left=std::clamp(center-panelW/2.,110.,1810.-panelW);
+    const QRectF panel(left,460.,panelW,panelH);
+    const QRectF image(panel.left()+8,panel.top()+7,imageW,imageH);
+    p.save();p.setOpacity(std::clamp(opacity,0.,1.));
+    p.setPen(QPen(QColor(255,255,255,155),1));p.setBrush(QColor(8,11,16,226));p.drawRoundedRect(panel,7,7);
+    p.drawImage(image,trickplaySheet_,source);
+    const QString time=MediaControls::formatTime(trickplayTargetMs_);
+    mediaPanelText(p,QRectF(panel.left()+8,image.bottom()+3,panelW-16,21),time,17,Qt::white,Qt::AlignCenter);
+    p.restore();
 }
 // Surface A, the direct-key hint strip. The firmware's panel hint is one 86x30 tex_cp_help_* key icon plus
 // the focused control's own name from videoplayer_plugin's text table (videoplayer_cp_help and

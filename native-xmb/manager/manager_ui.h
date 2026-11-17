@@ -222,7 +222,7 @@ private:
     void setImportProgress(int value, int maximum, const QString& text);
     void setImportBusy(bool busy);
     void startRealPkgImport(const QString& path);
-    void finishImport();
+    void finishImport(const QVector<int>& batch);
     void finishRealPkgImport(bool ok, const QString& error, const QStringList& notes,
                              const QString& path);
 

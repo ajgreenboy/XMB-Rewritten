@@ -24,8 +24,8 @@ its Steamworks. Hiding the client is out of scope. Uninstall stays a Steam-clien
   - status (where steamcmd.exe is, or "Not set up");
   - **Choose SteamCMD Folder** (the in-XMB folder browser, with Type a Path), **Look for SteamCMD** (usual folders:
     `C:\steamcmd`, `C:\SteamCMD`, `D:\SteamCMD`, Program Files, the user's `steamcmd` folders, PATH), **Download SteamCMD**;
-  - **Sign In** / **Account**, **Sign Out of SteamCMD**, **Install Location** (the Steam library new games go to, cycled
-    through the client's `libraryfolders.vdf` entries);
+  - **Sign In** / **Account**, **Sign Out of SteamCMD**, **Install Location** (opens a list of Steam libraries, starting
+    on the active destination. Cross selects a library for new games and Circle returns);
   - **About Your Password** (the rules below, in words).
   Nothing is found or set implicitly: SteamCMD is "set up" only after an explicit choice (so a fresh install behaves
   exactly as before). `steamcmd/path`, `steamcmd/account` (the name only) and `steamcmd/library` are the only settings.
@@ -40,6 +40,10 @@ its Steamworks. Hiding the client is out of scope. Uninstall stays a Steam-clien
 - **Download Management** gets one row per SteamCMD job above the Steam client's own rows: "SteamCMD - Downloading 43%
   (410.1 MB of 953.7 MB)", queued/finished/failed/stopped states, the real failure text. Cross on a running job stops it
   (terminate, then kill 1.5 s later), on a waiting or finished one removes it. Jobs run one at a time.
+  Unfinished jobs are saved per XMB data directory in `steamcmd-jobs.json`, with the game, operation and destination.
+  After restarting XMB they appear under **Network > Download Management** as **Saved for Retry**. Cross opens
+  **Retry** or **Remove Job**. Retry runs SteamCMD again in the original folder, so SteamCMD can reuse compatible
+  partial files. Remove Job keeps the files. Restoring the list starts no process, and the list contains no credentials.
 
 ## SteamCMD behaviour the code relies on, with sources
 
@@ -162,8 +166,8 @@ The stand-in never contacts Steam, never reads the registry and is addressed onl
 - **Uninstall**: no SteamCMD command for it that I could confirm, so Delete stays the `steam://uninstall` hand-off (the
   client asks to confirm).
 - **Choosing the library per install** other than through the Install Location row.
-- **A queue across restarts**: jobs live in memory; a job in progress ends when the XMB exits.
-- Pause/resume of a SteamCMD job (stop and install again resumes where SteamCMD's own files allow).
+- A running SteamCMD process ends with XMB. Restarting the saved job is explicit; byte-level download resumption
+  depends on SteamCMD's on-disk state.
 
 ## Unverified (the owner tests these)
 
@@ -174,3 +178,21 @@ pseudo-console, not built), that its prompt and output are flushed to a pipe in 
 cached login, where the manifest lands for a forced directory, that the Steam client picks the game up after a restart or
 rescan, that `+@sSteamCmdForcePlatformType windows` is accepted, and the download URL and the unpack/first-run steps of
 Download SteamCMD (no network access was made to Valve in development).
+
+## Headless Steam implementations
+
+- [WindowsGSM SteamCMD.ConPTY](https://github.com/WindowsGSM/SteamCMD.ConPTY) runs SteamCMD under a Windows
+  pseudoconsole for live output. If SteamCMD's real login prompts require a console, this is the closest existing
+  implementation to compare with XMB's pipe-based runner. Microsoft documents the process and handle lifecycle in
+  [Creating a pseudoconsole session](https://learn.microsoft.com/en-us/windows/console/creating-a-pseudoconsole-session).
+  A local native prototype stalled at the stand-in's first password prompt. It reached the outer stdout while the
+  XMB parser waited for it. Keep the pipe transport until a pseudoconsole can pass the same prompt, cancellation
+  and credential-redaction checks.
+- [steamie](https://github.com/LargeModGames/steamie) launches with the installed Steam client and starts it
+  minimized using `-silent -applaunch`. This is close to XMB's existing Windows background mode for playing games.
+- [Aurelia](https://github.com/Drackrath/Aurelia) exposes a JSON CLI, a session daemon and an install backlog that can
+  resume. Its Windows launch path can use the installed Steam client. [DepotDownloader](https://github.com/SteamRE/DepotDownloader)
+  is a narrower reference for downloading depots and choosing authentication methods.
+- [Steam Headless](https://steamheadless.com/docs/) and [Wolf](https://games-on-whales.github.io/wolf/stable/apps/steam.html)
+  run a graphical Steam client with a virtual display and stream games from Linux. They are references for a future
+  streaming integration. The current Windows XMB already runs games locally through the installed client.

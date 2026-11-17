@@ -52,6 +52,7 @@ class MusicTap;
 class Assets;
 class SteamArtwork;
 struct SteamCmdUi;   // steamcmd_shell.cpp
+struct SeerrUi;
 class RawgArtwork;
 class ImportedArt;
 enum class Action { Unavailable, SettingsPage, SettingChoices, SetSetting, EditName, CreateUser, SelectUser, Wallpaper, Theme, Information, Library, ChooseLibrary, File, Folder, Launch, LaunchSteam, InstallSteam, SteamFolder, SteamStoreBrowse, SteamStoreSection, LaunchApp, OpenUrl, RefreshContent, RefreshFriends, ImportApps, ArtworkSettings, JellyfinApp, JellyfinFolder, JellyfinPlay, JellyfinMore, JellyfinSignOut, SteamDownloads,
@@ -157,7 +158,7 @@ enum class Action { Unavailable, SettingsPage, SettingChoices, SetSetting, EditN
     // Game > Download Games: the folded hub that lists Browse, Import Source and the imported source folders.
     DownloadHub,
     // Game > Manage: the folded hub that lists Refresh Game Library and Import Games and Apps.
-    ManageHub };
+    ManageHub, Seerr };
 struct Entry {
     QString id,title,detail,container,texture;
     Action action=Action::Unavailable;
@@ -501,6 +502,8 @@ public:
     bool mediaShuffle() const;
     QString mediaProvider() const { return jellyfinQueue_?QString("Jellyfin"):QString("Local"); }
     QString mediaPlayMethod() const { return jellyfinQueue_?jellyfinPlayback_.playMethod:QString{}; }
+    const JellyfinPlayback& jellyfinPlayback() const { return jellyfinPlayback_; }
+    JellyfinClient& jellyfinClient() { return jellyfin_; }
     QString mediaQueueSummary() const;
     int mediaRepeatMode() const;
     void skipMedia(int direction);
@@ -579,7 +582,7 @@ public:
     bool steamCmdReady() const;                            // steamcmd.exe is found and an account name is saved
     void steamCmdStartJob(const QString& appId,const QString& title,int kind);
     void steamCmdPump();
-    QVector<Entry> steamCmdJobRows() const;
+    QVector<Entry> steamCmdJobRows();
     void steamCmdRefreshJobRows();
     void openSaveData(const QString& kind);
     bool steamAccountsOpen() const;
@@ -738,6 +741,7 @@ public:
     qint64 notificationRemainingMs() const; // of the pop-up on screen, 0 when there is none
 signals:
     void changed();
+    void mediaSeeked(qint64 targetMs);
     // Cross on Photo > Photo Gallery: the view opens the gallery.
     void requestPhotoGallery();
     void mediaFrame(const QImage& frame);
@@ -1061,6 +1065,15 @@ private:
     void closeJellyfinSignInPage();    // pop it and forget the password
     void initJellyfin();
     void openJellyfin(const Entry& entry);
+    void activateSeerr(const Entry& entry);
+    void seerrField(const QString& field,const QString& value);
+    void refreshSeerrPage();
+    void loadSeerrSearch(const QString& term,int page);
+    void loadSeerrDetails(const QString& type,int id,const QString& title);
+    void openSeerrRequests(int skip);
+    void testSeerrConnection();
+    void saveSeerrConfig();
+    void submitSeerrRequest(const QString& type,int id,const QList<int>& seasons);
     void loadJellyfinPage(const QString& parent,const QString& title,int start=0,bool views=false,bool replace=false);
     void openJellyfinSearch(const QString& term);
     // ---- Music > Jellyfin Music (jellyfin_music_shell.cpp, audit/JELLYFIN-MUSIC.md) ----
@@ -1215,7 +1228,7 @@ private:
     // Download Management (the firmware's seg_dlctrl row): the page's rows are Steam's own download
     // queue through scanSteamDownloads(), kept in the scanner's order and rebuilt in place by F5
     // (audit/STEAM-DOWNLOADS.md section 10).
-    QVector<Entry> steamDownloadRows(QString& error) const;
+    QVector<Entry> steamDownloadRows(QString& error);
     void openSteamDownloads();
     void reloadSteamDownloads();
     quint64 scanRequest_=0,photoRequest_=0;
@@ -1247,7 +1260,7 @@ private:
     int columnSink_=0;
     // `grouped` is a page the item menu's Group Content level rebuilt into letter folders: `groupedSource` keeps
     // the ungrouped rows so All can put them back without a rescan, and the folders' rows are the same entries.
-    struct Page { QString title; QVector<Entry> entries; int selection=0; QString directory; bool jellyfin=false,jellyfinViews=false,jellyfinSearch=false; QString jellyfinParent; QString jellyfinMusic,jellyfinLibrary; QString jellyfinHome; int jellyfinStart=0; bool downloads=false; QString steamCmd; bool continuePage=false; bool signIn=false; bool jfSetup=false; bool steamAccounts=false; bool grouped=false; QString groupKey; QVector<Entry> groupedSource; bool sysconfPlugin=false; QString playlistsType,playlistId; QString spotify,spotifyContext; QString dlna; int dlnaServer=-1; QString tailscale; QString wol,ha; bool weather=false; bool systemCheck=false; QString userInfo; int userInfoStep=0; bool browse=false; QString browsePath; QString browseFiles; bool libraryRoot=false; };
+    struct Page { QString title; QVector<Entry> entries; int selection=0; QString directory; bool jellyfin=false,jellyfinViews=false,jellyfinSearch=false; QString jellyfinParent; QString jellyfinMusic,jellyfinLibrary; QString jellyfinHome; int jellyfinStart=0; bool downloads=false; QString steamCmd,seerr; bool continuePage=false; bool signIn=false; bool jfSetup=false; bool steamAccounts=false; bool grouped=false; QString groupKey; QVector<Entry> groupedSource; bool sysconfPlugin=false; QString playlistsType,playlistId; QString spotify,spotifyContext; QString dlna; int dlnaServer=-1; QString tailscale; QString wol,ha; bool weather=false; bool systemCheck=false; QString userInfo; int userInfoStep=0; bool browse=false; QString browsePath; QString browseFiles; bool libraryRoot=false; };
     QVector<Page> pages_;
     bool psMenu_=false;              // the PS-button system menu is showing
     bool desktopMode_=false;         // the XMB window is hidden for Desktop Mode (main.cpp DesktopMode)
@@ -1402,6 +1415,7 @@ private:
     // ---- Steam accounts page state (Users > Steam Account) --------------------------------------------
     QVector<SteamAccount> steamAccounts_;
     std::shared_ptr<SteamCmdUi> steamCmd_;   // created on first use; its Secret members wipe themselves
+    std::shared_ptr<SeerrUi> seerr_;
     SteamCmdUi& steamCmdState();
     QString steamAccountsError_;
     SteamSwitchPrompt steamSwitch_;

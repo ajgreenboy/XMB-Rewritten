@@ -303,6 +303,13 @@ redirect URI `http://127.0.0.1:8888/callback`, and put the client id in `<native
 with these steps. Code: `src/spotify_client.*`, `src/spotify_shell.cpp`; details, limits and the real-account run:
 [audit/SPOTIFY.md](audit/SPOTIFY.md).
 
+### Media Requests through Seerr
+
+Open **TV/Video Services → Media Requests**. Enter your Seerr server address and its API key from **Settings → General**,
+then choose **Test Connection** and **Save**. Search for a movie or TV series, inspect the results, and confirm your
+request. For TV, choose the seasons you want first. **My Requests** shows Seerr's request and availability states.
+Seerr manages approval and handles Sonarr or Radarr using its existing configuration. See [Seerr setup](audit/SEERR.md).
+
 ### Jellyfin player (home rows, Play Next Episode, watched and favourite marks, speed)
 
 The Jellyfin libraries page starts with `Continue Watching` and `Next Up`, read from the server, so a title started on another
@@ -310,6 +317,9 @@ Jellyfin client resumes here at the server's position. Playback reports start, p
 percent. The Playback (Triangle) panel picks the audio track (on a transcode the server re-opens the title with that stream), lists
 chapters and jumps; L1/R1 skip chapters, then items. Audio and subtitle choices are remembered per title. Details and what is not
 yet verified on a real server.
+
+During Jellyfin video playback, Left/Right or L2/R2 shows a thumbnail above the timeline after a seek when
+Jellyfin has generated Trickplay images for the playing version. Titles without Trickplay still seek normally.
 
 Phase 2 adds: `Favourites` and one `Latest in <library>` row beside Continue Watching and Next Up; Mark as Watched/Unwatched and
 Add to/Remove from Favourites in a video's (or a series') Triangle menu, changing the row only after the server answered;

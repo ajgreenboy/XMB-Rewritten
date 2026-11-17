@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
-project(RePS3Native VERSION 0.3.9 LANGUAGES CXX)
+project(RePS3Native VERSION 0.3.10 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
@@ -69,6 +69,7 @@ qt_add_executable(re-ps3-native
     src/subtitles.cpp src/subtitles.h
     src/image_subtitles.cpp src/image_subtitles.h
     src/jellyfin_client.cpp src/jellyfin_client.h src/jellyfin_stream.cpp src/jellyfin_stream.h
+    src/seerr_client.cpp src/seerr_client.h src/seerr_shell.cpp src/seerr_config.cpp src/seerr_config.h
     src/jellyfin_player.cpp src/jellyfin_player.h src/jellyfin_shell.cpp src/jellyfin_music_shell.cpp src/jellyfin_setup.cpp src/jellyfin_setup.h src/jellyfin_setup_shell.cpp
     src/rsx_program.cpp src/rsx_program.h src/ribbon.cpp src/ribbon.h src/uniform_cache.cpp src/uniform_cache.h src/render_gate.cpp src/render_gate.h src/idle_profile.h src/frame_trace.h src/hdr.cpp src/hdr.h src/icons.cpp src/icons.h src/particles.cpp src/particles.h src/coldboot.cpp src/coldboot.h
     src/setup.cpp src/setup.h src/setup_shell.cpp src/release_shell.cpp

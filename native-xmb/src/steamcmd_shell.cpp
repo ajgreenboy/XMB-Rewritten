@@ -18,13 +18,18 @@
 #include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QProcess>
+#include <QSaveFile>
 #include <QStandardPaths>
 #include <QTimer>
 #include <algorithm>
+#include <iterator>
 
 namespace xmb {
 
@@ -42,7 +47,7 @@ struct SteamCmdUi {
         quint64 id = 0;
         QString appId, title, folder, library;
         int kind = 0;                                   // 0 install, 1 update, 2 validate
-        enum class State { Queued, Running, Done, Failed, Cancelled } state = State::Queued;
+        enum class State { Queued, Running, Done, Failed, Cancelled, Interrupted } state = State::Queued;
         steamcmd::Progress progress;
         QString message;
         bool needsSignIn = false;
@@ -59,12 +64,29 @@ struct SteamCmdUi {
     QString setupStatus;
     // the folder chooser
     QString browsePath;
+
+    void loadBacklog(const QString& dataDirectory);
+    bool saveBacklog(const QString& dataDirectory) const;
 };
 
 namespace {
 constexpr const char* kPathKey = "steamcmd/path";
 constexpr const char* kAccountKey = "steamcmd/account";
 constexpr const char* kLibraryKey = "steamcmd/library";
+constexpr qsizetype MaxJobs = 32;
+constexpr qint64 MaxBacklogBytes = 512 * 1024;
+
+QString backlogPath(const QString& dataDirectory) {
+    return QDir(dataDirectory).filePath(QStringLiteral("steamcmd-jobs.json"));
+}
+
+bool isJobFolder(const QString& library, const QString& folder) {
+    if (!QDir::isAbsolutePath(library) || !QDir::isAbsolutePath(folder) ||
+        library.contains(QChar::Null) || folder.contains(QChar::Null)) return false;
+    const QString common = QDir(library).filePath(QStringLiteral("steamapps/common"));
+    const QFileInfo info(QDir::cleanPath(folder));
+    return !info.fileName().isEmpty() && QDir::cleanPath(info.path()).compare(QDir::cleanPath(common), Qt::CaseInsensitive) == 0;
+}
 
 Entry makeRow(const QString& id, const QString& title, const QString& detail, const QString& value = {}) {
     Entry e;
@@ -103,8 +125,54 @@ QString kindWord(int kind) { return kind == 0 ? QStringLiteral("Installing") : k
 QString capitalised(QString s) { if (!s.isEmpty()) s[0] = s[0].toUpper(); return s; }
 }   // namespace
 
+void SteamCmdUi::loadBacklog(const QString& dataDirectory) {
+    QFile file(backlogPath(dataDirectory));
+    if (!file.open(QIODevice::ReadOnly) || file.size() > MaxBacklogBytes) return;
+    const QJsonObject saved = QJsonDocument::fromJson(file.read(MaxBacklogBytes)).object();
+    if (saved.value(QStringLiteral("version")).toInt() != 1) return;
+    const auto entries = saved.value(QStringLiteral("jobs")).toArray();
+    for (const auto& value : entries) {
+        if (jobs.size() >= MaxJobs) break;
+        const auto entry = value.toObject();
+        Job job;
+        job.appId = entry.value(QStringLiteral("appId")).toString();
+        job.title = entry.value(QStringLiteral("title")).toString().left(256);
+        job.library = entry.value(QStringLiteral("library")).toString();
+        job.folder = entry.value(QStringLiteral("folder")).toString();
+        job.kind = entry.value(QStringLiteral("kind")).toInt(-1);
+        if (!steamcmd::validAppId(job.appId) || job.title.isEmpty() || job.kind < 0 || job.kind > 2 ||
+            job.library.size() > 4096 || job.folder.size() > 4096 || !isJobFolder(job.library, job.folder)) continue;
+        if (std::any_of(jobs.cbegin(), jobs.cend(), [&job](const Job& other) { return other.appId == job.appId; })) continue;
+        job.id = nextJob++;
+        job.state = Job::State::Interrupted;
+        jobs.push_back(std::move(job));
+    }
+}
+
+bool SteamCmdUi::saveBacklog(const QString& dataDirectory) const {
+    QJsonArray entries;
+    for (const auto& job : jobs) {
+        if (job.state == Job::State::Done) continue;
+        entries.append(QJsonObject{
+            {QStringLiteral("appId"), job.appId}, {QStringLiteral("title"), job.title},
+            {QStringLiteral("library"), job.library}, {QStringLiteral("folder"), job.folder},
+            {QStringLiteral("kind"), job.kind},
+        });
+    }
+    QSaveFile file(backlogPath(dataDirectory));
+    const auto bytes = QJsonDocument(QJsonObject{{QStringLiteral("version"), 1}, {QStringLiteral("jobs"), entries}})
+                           .toJson(QJsonDocument::Compact);
+    if (bytes.size() <= MaxBacklogBytes && file.open(QIODevice::WriteOnly) && file.write(bytes) == bytes.size() && file.commit())
+        return true;
+    qWarning("steamcmd: could not save job backlog");
+    return false;
+}
+
 SteamCmdUi& Shell::steamCmdState() {
-    if (!steamCmd_) steamCmd_ = std::make_shared<SteamCmdUi>();
+    if (!steamCmd_) {
+        steamCmd_ = std::make_shared<SteamCmdUi>();
+        steamCmd_->loadBacklog(dataDirectory_);
+    }
     return *steamCmd_;
 }
 
@@ -157,7 +225,7 @@ static QVector<Entry> mainRows(const SteamCmdUi& ui, const QString& exe, const Q
         }
         if (!libraries.isEmpty()) {
             rows.push_back(fieldRow(QStringLiteral("steamcmd:library"), QObject::tr("Install Location"),
-                QObject::tr("The Steam library new games go to. Cross picks the next one."), QStringLiteral("library"),
+                QObject::tr("Choose the Steam library for new installs."), QStringLiteral("library"),
                 nativePath(chosenLibrary)));
         }
     }
@@ -191,6 +259,20 @@ static QVector<Entry> steamCmdBrowseRows(const QString& here) {
         const QString label = here.isEmpty() ? nativePath(folder) : QFileInfo(folder).fileName();
         rows.push_back(makeRow(QStringLiteral("steamcmd:dir:") + folder, label, QObject::tr("Opens %1.").arg(nativePath(folder)), QStringLiteral("cd|") + folder));
     }
+    return rows;
+}
+
+static QVector<Entry> steamCmdLibraryRows(const QStringList& libraries, const QString& selected) {
+    QVector<Entry> rows;
+    for (const QString& library : libraries) {
+        rows.push_back(makeRow(QStringLiteral("steamcmd:library:") + library, nativePath(library),
+                               library == selected ? QObject::tr("Current install location")
+                                                   : QObject::tr("Use this library for new installs"),
+                               QStringLiteral("select-library|") + library));
+    }
+    if (rows.isEmpty())
+        rows.push_back(makeRow(QStringLiteral("steamcmd:no-libraries"), QObject::tr("No Steam Libraries"),
+                               QObject::tr("Open Steam once to set up a library, then try again.")));
     return rows;
 }
 
@@ -273,15 +355,15 @@ void Shell::steamCmdRefreshJobRows() {
         if (page.steamCmd == QLatin1String("main")) page.entries = mainRows(ui, exe, account, libraries, chosen, signBusy);
         else if (page.steamCmd == QLatin1String("signin")) page.entries = signInRows(ui);
         else if (page.steamCmd == QLatin1String("browse")) page.entries = steamCmdBrowseRows(ui.browsePath);
+        else if (page.steamCmd == QLatin1String("library")) page.entries = steamCmdLibraryRows(libraries, chosen);
         for (int i = 0; i < page.entries.size(); ++i) if (page.entries[i].id == focused) { page.selection = i; break; }
         page.selection = std::clamp(page.selection, 0, std::max(0, int(page.entries.size()) - 1));
     }
 }
 
-QVector<Entry> Shell::steamCmdJobRows() const {
+QVector<Entry> Shell::steamCmdJobRows() {
     QVector<Entry> rows;
-    if (!steamCmd_) return rows;
-    for (const auto& job : steamCmd_->jobs) {
+    for (const auto& job : steamCmdState().jobs) {
         using State = SteamCmdUi::Job::State;
         Entry e = makeRow(QStringLiteral("download:steamcmd:") + QString::number(job.id), job.title, {},
                           QStringLiteral("job|") + QString::number(job.id));
@@ -299,8 +381,9 @@ QVector<Entry> Shell::steamCmdJobRows() const {
             hint = QObject::tr("Cross stops it.");
             break;
         case State::Done: state = QObject::tr("Finished"); if (!job.message.isEmpty()) state += QStringLiteral(" - ") + job.message; hint = QObject::tr("Cross dismisses this."); break;
-        case State::Failed: state = QObject::tr("Failed: %1").arg(job.message); hint = QObject::tr("Cross dismisses this."); break;
-        case State::Cancelled: state = QObject::tr("Stopped"); hint = QObject::tr("Cross dismisses this."); break;
+        case State::Failed: state = QObject::tr("Failed: %1").arg(job.message); hint = QObject::tr("Cross opens retry and removal options."); break;
+        case State::Cancelled: state = QObject::tr("Stopped"); hint = QObject::tr("Cross opens retry and removal options."); break;
+        case State::Interrupted: state = QObject::tr("Saved for Retry"); hint = QObject::tr("Cross opens retry and removal options."); break;
         }
         e.detail = QStringLiteral("SteamCMD - ") + state;
         e.setting = job.title + QStringLiteral("\n\nStatus: ") + state + QStringLiteral("\nTask: ") + kindWord(job.kind) + QStringLiteral(" with SteamCMD")
@@ -317,13 +400,18 @@ void Shell::steamCmdStartJob(const QString& appId, const QString& title, int kin
     if (!steamCmdReady()) { openSteamCmdPage(); return; }
     if (diagnostics::safeMode()) { showMessage(tr("SteamCMD"), tr("Safe mode does not use the network."), MessageKind::Page); emit changed(); return; }
     for (const auto& j : ui.jobs)
-        if (j.appId == appId && (j.state == SteamCmdUi::Job::State::Queued || j.state == SteamCmdUi::Job::State::Running)) {
-            showMessage(title, tr("SteamCMD is already working on this game."), MessageKind::Page); emit changed(); return;
+        if (j.appId == appId && j.state != SteamCmdUi::Job::State::Done) {
+            showMessage(title, tr("This game already has a SteamCMD job in Download Management."), MessageKind::Page); emit changed(); return;
         }
+    if (ui.jobs.size() >= MaxJobs) {
+        showMessage(tr("SteamCMD"), tr("Download Management is full. Remove a job before adding another."), MessageKind::Page);
+        emit changed();
+        return;
+    }
     SteamCmdUi::Job job;
     job.id = ui.nextJob++;
     job.appId = appId;
-    job.title = title.isEmpty() ? QStringLiteral("Steam app ") + appId : title;
+    job.title = title.isEmpty() ? QStringLiteral("Steam app ") + appId : title.left(256);
     job.kind = kind;
     QString installed;
     for (const auto& g : steamInstalled_.games) if (g.appId == appId) { installed = g.installDirectory; break; }
@@ -343,6 +431,12 @@ void Shell::steamCmdStartJob(const QString& appId, const QString& title, int kin
         job.folder = steamcmd::installFolderFor(job.library, steamcmd::safeFolderName(job.title, appId));
     }
     ui.jobs.push_back(job);
+    if (!ui.saveBacklog(dataDirectory_)) {
+        ui.jobs.removeLast();
+        showMessage(tr("SteamCMD"), tr("Could not save the new job."), MessageKind::Page);
+        emit changed();
+        return;
+    }
     qInfo().noquote() << QStringLiteral("steamcmd: job %1 queued (%2, app %3)").arg(job.id).arg(kindWord(kind), appId);
     // Show where it goes: the Download Management page, with the job on top.
     if ((pages_.isEmpty() || !pages_.last().downloads) && pages_.size() < 32) {
@@ -362,7 +456,8 @@ void Shell::steamCmdStartJob(const QString& appId, const QString& title, int kin
 // Starts the next waiting job when SteamCMD is idle. SteamCMD runs one job at a time.
 void Shell::steamCmdPump() {
     auto& ui = steamCmdState();
-    if (ui.jobRun) return;
+    if (ui.jobRun || diagnostics::safeMode()) return;
+    const QStringList libraries = steamcmd::steamLibraries(steamRoot_);
     for (auto& j : ui.jobs) {
         if (j.state != SteamCmdUi::Job::State::Queued) continue;
         const QString exe = steamcmd::resolveExecutable(preferences_.value(kPathKey).toString());
@@ -373,7 +468,12 @@ void Shell::steamCmdPump() {
             j.needsSignIn = true;
             continue;
         }
-        QDir().mkpath(j.folder);
+        if (!libraries.contains(j.library, Qt::CaseInsensitive) || !isJobFolder(j.library, j.folder) ||
+            !QDir().mkpath(j.folder)) {
+            j.state = SteamCmdUi::Job::State::Failed;
+            j.message = tr("The saved install folder is unavailable. Reconnect the Steam library or remove this job.");
+            continue;
+        }
         auto* run = new steamcmd::Run(this);
         ui.jobRun = run;
         ui.runningJob = j.id;
@@ -426,6 +526,8 @@ void Shell::steamCmdPump() {
                 u.username = preferences_.value(kAccountKey).toString();
                 preferences_.setValue(kAccountKey, QString());
             }
+            if (!u.saveBacklog(dataDirectory_))
+                notify(tr("SteamCMD"), tr("Could not update the saved jobs."));
             steamCmdRefreshJobRows();
             if (relist) QTimer::singleShot(1500, this, &Shell::refreshContent);
             QTimer::singleShot(0, this, &Shell::steamCmdPump);
@@ -435,6 +537,8 @@ void Shell::steamCmdPump() {
         run->start(steamcmd::Run::Mode::Job, exe, steamcmd::jobArguments(account, j.appId, j.folder, j.kind != 1));
         return;
     }
+    steamCmdRefreshJobRows();
+    emit changed();
 }
 
 // ---- sign-in -------------------------------------------------------------------------------------------------
@@ -480,12 +584,30 @@ void Shell::activateSteamCmd(const Entry& entry) {
         refresh(); return;
     }
     if (command == QLatin1String("library")) {
+        if (pages_.size() >= 32) return;
         const QStringList libraries = steamcmd::steamLibraries(steamRoot_);
-        if (libraries.isEmpty()) return;
-        const QString current = libraryChoice(preferences_.value(kLibraryKey).toString(), libraries);
-        const int next = (int(libraries.indexOf(current)) + 1) % int(libraries.size());
-        preferences_.setValue(kLibraryKey, libraries.value(next));
-        refresh(); return;
+        const QString selected = libraryChoice(preferences_.value(kLibraryKey).toString(), libraries);
+        Page page;
+        page.title = tr("Install Location");
+        page.steamCmd = QStringLiteral("library");
+        page.entries = steamCmdLibraryRows(libraries, selected);
+        page.selection = std::max(0, int(libraries.indexOf(selected)));
+        pages_.push_back(std::move(page));
+        emit changed();
+        return;
+    }
+    if (command == QLatin1String("select-library")) {
+        if (pages_.isEmpty() || pages_.last().steamCmd != QLatin1String("library")) return;
+        const QStringList libraries = steamcmd::steamLibraries(steamRoot_);
+        if (!libraries.contains(argument, Qt::CaseInsensitive)) {
+            showMessage(tr("Install Location"), tr("That Steam library is no longer available."), MessageKind::Page);
+        } else if (!preferences_.setValue(kLibraryKey, argument)) {
+            showMessage(tr("Install Location"), tr("Could not save the selected library."), MessageKind::Page);
+        } else {
+            pages_.removeLast();
+        }
+        refresh();
+        return;
     }
     if (command == QLatin1String("signin")) {
         if (exe.isEmpty()) { showMessage(tr("SteamCMD"), tr("Set up SteamCMD first."), MessageKind::Page); emit changed(); return; }
@@ -709,14 +831,53 @@ void Shell::activateSteamCmd(const Entry& entry) {
             });
         emit changed(); return;
     }
-    if (command == QLatin1String("job")) {
+    if (command == QLatin1String("job") || command == QLatin1String("job-retry") || command == QLatin1String("job-remove")) {
         const quint64 id = argument.toULongLong();
-        for (auto& j : ui.jobs) {
-            if (j.id != id) continue;
-            using S = SteamCmdUi::Job::State;
-            if (j.state == S::Running && ui.jobRun) { ui.jobRun->cancel(); notify(tr("SteamCMD"), tr("Stopping %1").arg(j.title)); }
-            else ui.jobs.removeIf([id](const SteamCmdUi::Job& x) { return x.id == id; });
-            break;
+        const auto position = std::find_if(ui.jobs.begin(), ui.jobs.end(), [id](const SteamCmdUi::Job& job) { return job.id == id; });
+        if (position == ui.jobs.end()) return;
+        auto& job = *position;
+        using State = SteamCmdUi::Job::State;
+        const bool canRetry = job.state == State::Failed || job.state == State::Cancelled || job.state == State::Interrupted;
+        if (command == QLatin1String("job") && job.state == State::Running) {
+            if (ui.jobRun) {
+                const QString title = job.title;
+                ui.jobRun->cancel();
+                notify(tr("SteamCMD"), tr("Stopping %1").arg(title));
+            }
+        } else if (command == QLatin1String("job") && canRetry) {
+            if (pages_.size() >= 32) return;
+            Page options;
+            options.title = job.title;
+            options.steamCmd = QStringLiteral("job-options");
+            options.entries.push_back(makeRow(QStringLiteral("steamcmd:retry"), tr("Retry"),
+                tr("Run this job again in the same folder."), QStringLiteral("job-retry|") + argument));
+            options.entries.push_back(makeRow(QStringLiteral("steamcmd:remove"), tr("Remove Job"),
+                tr("Remove this job from the list and keep its files."), QStringLiteral("job-remove|") + argument));
+            pages_.push_back(std::move(options));
+        } else if (command == QLatin1String("job-retry") && canRetry) {
+            if (diagnostics::safeMode()) {
+                showMessage(tr("SteamCMD"), tr("Safe mode does not use the network."), MessageKind::Page);
+            } else if (!steamCmdReady()) {
+                showMessage(tr("SteamCMD"), tr("Sign in under Users > Steam Account > SteamCMD, then retry this job."), MessageKind::Page);
+            } else {
+                job.state = State::Queued;
+                job.progress = {};
+                job.message.clear();
+                job.needsSignIn = false;
+                if (!pages_.isEmpty() && pages_.last().steamCmd == QLatin1String("job-options"))
+                    pages_.removeLast();
+                steamCmdPump();
+            }
+        } else if ((command == QLatin1String("job-remove") && canRetry) ||
+                   (command == QLatin1String("job") && (job.state == State::Queued || job.state == State::Done))) {
+            const qsizetype index = std::distance(ui.jobs.begin(), position);
+            const auto removed = ui.jobs.takeAt(index);
+            if (!ui.saveBacklog(dataDirectory_)) {
+                ui.jobs.insert(index, removed);
+                showMessage(tr("SteamCMD"), tr("Could not remove the saved job."), MessageKind::Page);
+            } else if (!pages_.isEmpty() && pages_.last().steamCmd == QLatin1String("job-options")) {
+                pages_.removeLast();
+            }
         }
         steamCmdRefreshJobRows();
         // A page with nothing left on it is closed rather than left empty.

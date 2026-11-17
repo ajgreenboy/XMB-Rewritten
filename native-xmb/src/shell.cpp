@@ -1241,7 +1241,7 @@ QString downloadInformationText(const SteamDownload& download) {
     return download.title+QStringLiteral("\n\n")+rows.join('\n');
 }
 }
-QVector<Entry> Shell::steamDownloadRows(QString& error) const {
+QVector<Entry> Shell::steamDownloadRows(QString& error) {
     error.clear();
     QElapsedTimer timer;timer.start();
     QVector<SteamDownload> downloads=scanSteamDownloads(QString(),&error);
@@ -1378,10 +1378,15 @@ void Shell::refreshContent() {
             auto& category=categories_[c];
             const auto selected=category.entries.isEmpty()?QString{}:category.entries[selections_[c]].id;
             category.entries.erase(std::remove_if(category.entries.begin(),category.entries.end(),[](const Entry& e){
-                return e.id.startsWith("steam:") || e.id.startsWith("steam-folder-") || e.id.startsWith("steam-store") || e.id.startsWith("steam-hub") || e.id.startsWith("custom:") || e.id.startsWith("jellyfin-music:") || e.id=="jellyfin-setup";
+                return e.id.startsWith("steam:") || e.id.startsWith("steam-folder-") || e.id.startsWith("steam-store") || e.id.startsWith("steam-hub") || e.id.startsWith("custom:") || e.id.startsWith("jellyfin-music:") || e.id=="jellyfin-setup" || e.id=="seerr-home";
             }),category.entries.end());
             QVector<Entry> providers,installed,steam;
             QVector<Entry> trailing;   // rows that go after the column's own (Music > Jellyfin Music, under Spotify)
+            if(category.id=="tv" && qEnvironmentVariable("XMB_NO_SETUP_ROWS")!=QLatin1String("1")) {
+                auto e=item("seerr-home",tr("Media Requests"),"tex_video","explore_plugin_full",Action::Seerr,"open");
+                e.detail=tr("Find and request movies and TV shows through Seerr");
+                trailing.push_back(std::move(e));
+            }
             // TV/Video Services with no Jellyfin registered: a row that says Jellyfin exists and sets it up, so a
             // fresh install does not need a hand-edited apps.json (jellyfin_setup_shell.cpp). It goes where the
             // registered Jellyfin app's row goes and is gone once one is registered.
@@ -2533,7 +2538,7 @@ void Shell::activate() {
         case Action::TailscaleApp:case Action::TailscaleToggle:case Action::TailscaleExitNodes:case Action::TailscaleExitNode:case Action::TailscalePeer:
         case Action::WolApp:case Action::WolWake:case Action::WolAddPage:case Action::WolAdd:
         case Action::HaApp:case Action::HaGroup:case Action::HaEntity:
-        case Action::WeatherApp:case Action::WeatherUnits:case Action::SteamStoreBrowse:case Action::SteamStoreSection:
+        case Action::WeatherApp:case Action::WeatherUnits:case Action::SteamStoreBrowse:case Action::SteamStoreSection:case Action::Seerr:
             network=true;break;
         default:break;
         }
@@ -2834,6 +2839,7 @@ void Shell::activate() {
     case Action::Setup:activateSetup(entry);break;
     case Action::SystemCheck:openSystemCheck();break;
     case Action::JellyfinApp:openJellyfin(entry);break;
+    case Action::Seerr:activateSeerr(entry);break;
     case Action::JellyfinSetup:case Action::JellyfinSetupField:case Action::JellyfinSetupCheck:case Action::JellyfinSetupSave:
     case Action::JellyfinSetupFind:case Action::JellyfinSetupPick:
         activateJellyfinSetup(entry);break;
@@ -5108,7 +5114,8 @@ void Shell::back() {
     else if(steamCmdBack());   // Circle on the SteamCMD sign-in page stops SteamCMD and wipes the password
     else if(multiSelect_)exitMultiSelect();   // Circle leaves the marking mode before it leaves the page
     else if(browseUp());   // Circle in the folder browser goes up one folder; at This PC it leaves the page
-    else if(!pages_.isEmpty()){library_.cancel();scanRequest_=0;jellyfinRequest_=0;loading_=false;status_.clear();pages_.removeLast();}
+    else if(!pages_.isEmpty()){library_.cancel();scanRequest_=0;jellyfinRequest_=0;loading_=false;status_.clear();pages_.removeLast();
+        if(!pages_.isEmpty() && !pages_.last().seerr.isEmpty())refreshSeerrPage();}
     emit changed();
 }
 void Shell::chooseLibrary(const QString& folder) {
@@ -5968,7 +5975,9 @@ void Shell::seekMedia(qint64 delta){
     if(!mediaOpen_ || photoOpen() || !player_->isSeekable())return;
     touch();
     const qint64 from=player_->position();
-    player_->setPosition(MediaControls::seekTarget(from,player_->duration()>0?player_->duration():-1,delta));
+    const qint64 target=MediaControls::seekTarget(from,player_->duration()>0?player_->duration():-1,delta);
+    player_->setPosition(target);
+    emit mediaSeeked(target);
     // XMB_MEDIA_TRACE=1: the seek pair's actual result, so a scripted run can prove what the input did
     // without reading pixels. The video player's L2/R2 binding (the firmware's Fast Reverse/Forward,
     // MEDIA-PANELS-FIRMWARE 3.4/3.6) drives this same method; Left/Right keeps the keyboard binding.
@@ -6975,6 +6984,7 @@ void Shell::refreshJellyfinSignInPage() {
     page.selection=std::clamp(page.selection,0,std::max(0,int(page.entries.size())-1));
 }
 void Shell::setJellyfinSignInField(const QString& field,const QString& value) {
+    if(field.startsWith(QStringLiteral("seerr:"))){seerrField(field,value);return;}
     if(field.startsWith(QStringLiteral("steamcmd:"))){steamCmdField(field,value);return;}   // the password and the Steam Guard code go straight to a zeroed Secret
     if(field==QStringLiteral("jfsetup:address")){setJellyfinSetupAddress(value);return;}
     if(field==QStringLiteral("debrid:token")){saveDebridToken(value);return;}

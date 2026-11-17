@@ -83,6 +83,7 @@ constexpr int kResultPending = 0;
 constexpr int kResultImported = 1;
 constexpr int kResultDuplicate = 2;
 constexpr int kResultError = 3;
+constexpr int kResultCancelled = 4;
 
 const char* const kCardStyle = "card";
 const char* const kMutedStyle = "muted";
@@ -5759,6 +5760,8 @@ void MainWindow::rebuildImportTable() {
             resultItem->setForeground(QColor(QStringLiteral("#e8bd6a")));
         else if (entry.resultKind == kResultError)
             resultItem->setForeground(QColor(QStringLiteral("#e58a8a")));
+        else if (entry.resultKind == kResultCancelled)
+            resultItem->setForeground(QColor(QStringLiteral("#a9bed6")));
         resultItem->setToolTip(entry.result);
         importTable_->setItem(row, 6, resultItem);
     }
@@ -5902,7 +5905,7 @@ void MainWindow::importSelected() {
     const QVector<EmulatorProfile> profiles = profiles_;
     const int total = jobs.size();
     const QVector<Job> queued = jobs;
-    importThread_ = QThread::create([this, queued, settings, profiles, collection, total] {
+    importThread_ = QThread::create([this, queued, selected, settings, profiles, collection, total] {
         Settings workerSettings = settings;
         for (int position = 0; position < queued.size(); ++position) {
             const Job job = queued.at(position);
@@ -5910,9 +5913,17 @@ void MainWindow::importSelected() {
                 QMetaObject::invokeMethod(
                     this,
                     [this, index = job.index, position, total] {
-                        importRows_[index].resultKind = kResultError;
-                        importRows_[index].result = QStringLiteral("Cancelled");
+                        ImportRow& row = importRows_[index];
+                        row.resultKind = kResultCancelled;
+                        row.result = QStringLiteral("Cancelled");
+                        if (QTableWidgetItem* item = importTable_->item(index, 6)) {
+                            item->setText(row.result);
+                            item->setToolTip(row.result);
+                            item->setForeground(QColor(QStringLiteral("#a9bed6")));
+                        }
                         importProgress_->setValue(position + 1);
+                        importMessage_->setText(QStringLiteral("Cancelling import (%1 of %2)...")
+                                                    .arg(position + 1).arg(total));
                     },
                     Qt::QueuedConnection);
                 continue;
@@ -5985,7 +5996,7 @@ void MainWindow::importSelected() {
                 Qt::QueuedConnection);
         }
         QMetaObject::invokeMethod(
-            this, [this, total] { finishImport(); }, Qt::QueuedConnection);
+            this, [this, selected] { finishImport(selected); }, Qt::QueuedConnection);
     });
     connect(importThread_.data(), &QThread::finished, importThread_.data(),
             &QObject::deleteLater);
@@ -6029,7 +6040,7 @@ void MainWindow::startRealPkgImport(const QString& path) {
     importThread_->start();
 }
 
-void MainWindow::finishImport() {
+void MainWindow::finishImport(const QVector<int>& batch) {
     importRunning_ = false;
     importProgress_->setVisible(false);
     updateBusyUi();
@@ -6038,19 +6049,23 @@ void MainWindow::finishImport() {
     int imported = 0;
     int duplicates = 0;
     int errors = 0;
-    for (const ImportRow& row : importRows_) {
+    int cancelled = 0;
+    for (int index : batch) {
+        const ImportRow& row = importRows_.at(index);
         if (row.resultKind == kResultImported)
             ++imported;
         else if (row.resultKind == kResultDuplicate)
             ++duplicates;
         else if (row.resultKind == kResultError)
             ++errors;
+        else if (row.resultKind == kResultCancelled)
+            ++cancelled;
     }
-    importMessage_->setText(
-        QStringLiteral("Import finished: %1 imported, %2 duplicate, %3 error(s).")
-            .arg(imported)
-            .arg(duplicates)
-            .arg(errors));
+    importMessage_->setText(cancelled
+        ? QStringLiteral("Import cancelled: %1 imported, %2 duplicate, %3 error(s), %4 cancelled. Cancelled items can be retried.")
+              .arg(imported).arg(duplicates).arg(errors).arg(cancelled)
+        : QStringLiteral("Import finished: %1 imported, %2 duplicate, %3 error(s).")
+              .arg(imported).arg(duplicates).arg(errors));
     setStatusMessage(importMessage_->text());
 }
 

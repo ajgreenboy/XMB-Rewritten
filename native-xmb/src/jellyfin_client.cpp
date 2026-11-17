@@ -7,6 +7,7 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QFutureWatcher>
 #include <QImageReader>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -18,6 +19,7 @@
 #include <QTimer>
 #include <QUuid>
 #include <QUrlQuery>
+#include <QtConcurrent/QtConcurrentRun>
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -45,6 +47,7 @@ constexpr qsizetype MaxResponseBytes = 4 * 1024 * 1024;
 // server may first have to demux it out of the container, so it gets the decoder's own 64 MB input cap
 // (image_subtitles.h) and a longer deadline.
 constexpr qsizetype MaxImageSubtitleBytes = 64 * 1024 * 1024;
+constexpr qsizetype MaxTrickplayBytes = 12 * 1024 * 1024;
 constexpr int ImageSubtitleTimeoutMs = 180000;   // the server extracts every subtitle stream of the file before it answers (measured: 64 s on a 1080p remux)
 constexpr int ProbeTimeoutMs = 8000;
 constexpr qsizetype ProbeBytes = 2048;
@@ -81,6 +84,19 @@ QImage decodeBoundedArtwork(const QByteArray& bytes) {
     const QImage image = reader.read();
     if (image.isNull() || image.width() > ImageDecodeLimit || image.height() > ImageDecodeLimit) return {};
     return image;
+}
+
+QImage decodeBoundedTrickplay(const QByteArray& bytes) {
+    QBuffer buffer;
+    buffer.setData(bytes);
+    if (!buffer.open(QIODevice::ReadOnly)) return {};
+    QImageReader reader(&buffer);
+    reader.setDecideFormatFromContent(true);
+    const QSize size = reader.size();
+    if (!size.isValid() || size.width() <= 0 || size.height() <= 0 ||
+        size.width() > 4096 || size.height() > 4096 || qint64(size.width()) * size.height() > 16 * 1024 * 1024) return {};
+    const QImage image = reader.read();
+    return image.isNull() ? QImage{} : image;
 }
 
 #ifdef Q_OS_WIN
@@ -235,6 +251,44 @@ JellyfinItem parseItem(const QJsonObject& json) {
     }
     return result;
 }
+
+JellyfinTrickplayInfo parseTrickplayInfo(const QByteArray& bytes, const QString& mediaSourceId) {
+    JellyfinTrickplayInfo best;
+    const QJsonObject root = QJsonDocument::fromJson(bytes).object();
+    const QJsonObject allSources = root.value(QStringLiteral("Trickplay")).toObject();
+    QJsonObject sourceWidths = allSources.value(mediaSourceId).toObject();
+    // A source id is required: even a lone different key can describe an alternate media version.
+    if (sourceWidths.isEmpty()) return best;
+    QVector<QPair<int, JellyfinTrickplayInfo>> candidates;
+    for (auto it = sourceWidths.constBegin(); it != sourceWidths.constEnd(); ++it) {
+        bool keyOk = false;
+        const int keyWidth = it.key().toInt(&keyOk);
+        if (!keyOk || keyWidth < 32 || keyWidth > 2048 || !it.value().isObject()) continue;
+        const QJsonObject entry = it.value().toObject();
+        JellyfinTrickplayInfo info;
+        info.width = entry.value(QStringLiteral("Width")).toInt(keyWidth);
+        info.height = entry.value(QStringLiteral("Height")).toInt();
+        info.tileWidth = entry.value(QStringLiteral("TileWidth")).toInt();
+        info.tileHeight = entry.value(QStringLiteral("TileHeight")).toInt();
+        info.thumbnailCount = entry.value(QStringLiteral("ThumbnailCount")).toInt();
+        info.intervalMs = entry.value(QStringLiteral("Interval")).toInt();
+        const qint64 capacity = qint64(info.tileWidth) * info.tileHeight;
+        if (info.width < 32 || info.width > 2048 || info.height < 16 || info.height > 2048 ||
+            info.tileWidth < 1 || info.tileWidth > 100 || info.tileHeight < 1 || info.tileHeight > 100 ||
+            capacity > 10000 || info.thumbnailCount < 1 || info.thumbnailCount > 100000 ||
+            info.intervalMs < 100 || info.intervalMs > 600000) continue;
+        if (qint64(info.width)*info.tileWidth>4096 || qint64(info.height)*info.tileHeight>4096 ||
+            (qint64(info.thumbnailCount)+capacity-1)/capacity>10001) continue;
+        candidates.push_back({keyWidth, info});
+    }
+    if (candidates.isEmpty()) return best;
+    std::stable_sort(candidates.begin(), candidates.end(), [](const auto& a, const auto& b) {
+        const int da = a.first >= 240 ? a.first - 240 : 10000 + (240 - a.first);
+        const int db = b.first >= 240 ? b.first - 240 : 10000 + (240 - b.first);
+        return da < db;
+    });
+    return candidates.first().second;
+}
 }
 
 JellyfinClient::JellyfinClient(QObject* parent)
@@ -243,6 +297,7 @@ JellyfinClient::JellyfinClient(QObject* parent)
     qRegisterMetaType<xmb::JellyfinItem>();
     qRegisterMetaType<xmb::JellyfinPage>();
     qRegisterMetaType<xmb::JellyfinPlayback>();
+    qRegisterMetaType<xmb::JellyfinTrickplayInfo>();
 }
 
 JellyfinClient::~JellyfinClient() {
@@ -299,6 +354,16 @@ QNetworkReply* JellyfinClient::get(const QUrl& url, int transferTimeoutMs) {
     return network_->get(request);
 }
 
+QNetworkReply* JellyfinClient::getImage(const QUrl& url, int transferTimeoutMs) {
+    QNetworkRequest request(url);
+    request.setRawHeader("User-Agent", "XMB/1.0");
+    request.setRawHeader("Authorization", authorizationHeader());
+    request.setRawHeader("Accept", "image/jpeg");
+    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::ManualRedirectPolicy);
+    request.setTransferTimeout(transferTimeoutMs);
+    return network_->get(request);
+}
+
 QNetworkReply* JellyfinClient::post(const QUrl& url, const QByteArray& body) {
     QNetworkRequest request(url);
     request.setRawHeader("User-Agent", "XMB/1.0");
@@ -325,7 +390,8 @@ quint64 JellyfinClient::send(Operation operation, QNetworkReply* reply, QString 
     const quint64 generation = generation_;
     replies_.push_back(reply);
     if (operation == Operation::Report) reportReplies_.insert(reply);
-    const qsizetype limit = operation == Operation::SubtitleImage ? MaxImageSubtitleBytes : MaxResponseBytes;
+    const qsizetype limit = operation == Operation::SubtitleImage ? MaxImageSubtitleBytes
+        : operation == Operation::TrickplaySheet ? MaxTrickplayBytes : MaxResponseBytes;
     reply->setReadBufferSize(limit + 1);
     auto* timeout = new QTimer(reply);
     timeout->setSingleShot(true);
@@ -914,6 +980,39 @@ quint64 JellyfinClient::subtitleImage(QString itemId, QString mediaSourceId, int
     return send(Operation::SubtitleImage, get(url, ImageSubtitleTimeoutMs), QString::number(streamIndex));
 }
 
+quint64 JellyfinClient::trickplayInfo(QString itemId, QString mediaSourceId) {
+    if (!signedIn() || !validId(itemId) || !validId(mediaSourceId)) {
+        const quint64 request = ++nextRequest_;
+        QTimer::singleShot(0, this, [this, request, itemId, mediaSourceId] {
+            emit trickplayInfoReady(request, itemId, mediaSourceId, JellyfinTrickplayInfo{});
+        });
+        return request;
+    }
+    QUrl url = apiUrl(QStringLiteral("Items/") + itemId);
+    QUrlQuery query;
+    query.addQueryItem(QStringLiteral("UserId"), userId_);
+    url.setQuery(query);
+    return send(Operation::TrickplayInfo, get(url), itemId + QLatin1Char('#') + mediaSourceId);
+}
+
+quint64 JellyfinClient::trickplaySheet(QString itemId, QString mediaSourceId, int width, int sheetIndex) {
+    if (!signedIn() || !validId(itemId) || !validId(mediaSourceId) || width < 32 || width > 2048 || sheetIndex < 0 || sheetIndex > 10000) {
+        const quint64 request = ++nextRequest_;
+        QTimer::singleShot(0, this, [this, request, itemId, mediaSourceId, width, sheetIndex] {
+            emit trickplaySheetReady(request, itemId, mediaSourceId, width, sheetIndex, QImage{});
+        });
+        return request;
+    }
+    QUrl url = apiUrl(QStringLiteral("Videos/") + itemId + QStringLiteral("/Trickplay/") +
+                      QString::number(width) + QLatin1Char('/') + QString::number(sheetIndex) + QStringLiteral(".jpg"));
+    QUrlQuery query;
+    query.addQueryItem(QStringLiteral("MediaSourceId"), mediaSourceId);
+    url.setQuery(query);
+    const QString context = itemId + QLatin1Char('#') + mediaSourceId + QLatin1Char('#') +
+                            QString::number(width) + QLatin1Char('#') + QString::number(sheetIndex);
+    return send(Operation::TrickplaySheet, getImage(url), context);
+}
+
 void JellyfinClient::setSessionStore(QString path) { sessionPath_ = std::move(path); }
 
 bool JellyfinClient::hasStoredSession() const {
@@ -1006,7 +1105,8 @@ void JellyfinClient::finish(QNetworkReply* reply, Operation operation, quint64 r
     const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
     const QByteArray bytes = reply->readAll();
     const bool ok = reply->error() == QNetworkReply::NoError && status >= 200 && status < 300 &&
-                    bytes.size() <= (operation == Operation::SubtitleImage ? MaxImageSubtitleBytes : MaxResponseBytes);
+                    bytes.size() <= (operation == Operation::SubtitleImage ? MaxImageSubtitleBytes :
+                                     operation == Operation::TrickplaySheet ? MaxTrickplayBytes : MaxResponseBytes);
     reply->deleteLater();
     if (operation == Operation::Report) {flushLogouts();return;}
     if (operation == Operation::Probe) {
@@ -1028,6 +1128,30 @@ void JellyfinClient::finish(QNetworkReply* reply, Operation operation, quint64 r
             if (!image.isNull()) writeImageCache(cachedImagePath(itemId, tag, backdrop), bytes);
         }
         emit artworkReady(request, itemId, backdrop, image);
+        return;
+    }
+    if (operation == Operation::TrickplayInfo) {
+        const auto parts = context.split(QLatin1Char('#'));
+        const QString itemId = parts.value(0), sourceId = parts.value(1);
+        const JellyfinTrickplayInfo info = ok ? parseTrickplayInfo(bytes, sourceId) : JellyfinTrickplayInfo{};
+        emit trickplayInfoReady(request, itemId, sourceId, info);
+        return;
+    }
+    if (operation == Operation::TrickplaySheet) {
+        const auto parts = context.split(QLatin1Char('#'));
+        const QString itemId = parts.value(0), sourceId = parts.value(1);
+        const int width = parts.value(2).toInt(), sheetIndex = parts.value(3).toInt();
+        if(!ok) {
+            emit trickplaySheetReady(request,itemId,sourceId,width,sheetIndex,QImage{});
+            return;
+        }
+        auto* watcher=new QFutureWatcher<QImage>(this);
+        connect(watcher,&QFutureWatcher<QImage>::finished,this,[this,watcher,request,itemId,sourceId,width,sheetIndex,generation]{
+            const QImage image=watcher->result();
+            watcher->deleteLater();
+            if(isCurrent(generation))emit trickplaySheetReady(request,itemId,sourceId,width,sheetIndex,image);
+        });
+        watcher->setFuture(QtConcurrent::run([bytes]{return decodeBoundedTrickplay(bytes);}));
         return;
     }
     if (operation == Operation::Lyrics) {

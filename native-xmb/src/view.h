@@ -444,6 +444,18 @@ private:
     // progression pair tex_progress_bar / tex_progress_bar_in (30x20) plus the tex_progress_bar_jump_indi
     // marker (20x12), and the 16x16 time-digit cells with the digits from MediaControls::formatTime.
     void drawVideoTimeBar(QPainter& painter,qint64 position,qint64 duration,double opacity=1.);
+    void requestTrickplayPreview(qint64 targetMs);
+    void requestTrickplaySheet();
+    void drawTrickplayPreview(QPainter& painter,double opacity);
+    QString trickplayKey() const;
+    QString trickplayKey_;
+    JellyfinTrickplayInfo trickplayInfo_;
+    QImage trickplaySheet_;
+    qint64 trickplayTargetMs_=0,trickplayVisibleUntil_=0;
+    int trickplaySheetIndex_=-1,trickplaySheetRequestIndex_=-1;
+    quint64 trickplayInfoRequest_=0,trickplaySheetRequest_=0;
+    bool trickplayInfoAttempted_=false;
+    QSet<int> trickplayFailedSheets_;
     void drawTimeCells(QPainter& painter,const QString& value,qreal edge,qreal top,bool rightAligned,double opacity=1.);
     // Surface A, the direct-key hint: the eight tex_cp_help_* 86x30 icons paired with the container's own
     // msg_*_with_icon strings, in place of the advice sentence this build wrote out in ASCII.

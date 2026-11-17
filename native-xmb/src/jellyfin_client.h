@@ -59,6 +59,13 @@ struct JellyfinLyricLine {
     qint64 startMs = 0;
     QString text;
 };
+// One server-generated trickplay sheet layout (the dimensions describe an individual thumbnail and
+// the number of thumbnails in each sheet row/column).
+struct JellyfinTrickplayInfo {
+    int width = 0, height = 0, tileWidth = 0, tileHeight = 0;
+    int thumbnailCount = 0, intervalMs = 0;
+    bool valid() const { return width > 0 && height > 0 && tileWidth > 0 && tileHeight > 0 && thumbnailCount > 0 && intervalMs > 0; }
+};
 struct JellyfinPlayback {
     QUrl url;
     QString itemId, mediaSourceId, playSessionId, playMethod;
@@ -153,6 +160,12 @@ public:
     // An image-based (PGS) stream in its own format: GET .../Subtitles/{streamIndex}/Stream.sup.
     // Bounded at 64 MB with a 120 s deadline; answers through subtitleReady like subtitle().
     quint64 subtitleImage(QString itemId, QString mediaSourceId, int streamIndex);
+    // Trickplay metadata is optional (GET /Items/{id}?Fields=Trickplay). Missing or malformed
+    // data answers with an invalid info record; it is intentionally silent for servers without it.
+    quint64 trickplayInfo(QString itemId, QString mediaSourceId);
+    // One authenticated JPEG sprite sheet from /Videos/{item}/Trickplay/{width}/{index}.jpg.
+    // The image is bounded before decode and answers with a null image on an unsupported server.
+    quint64 trickplaySheet(QString itemId, QString mediaSourceId, int width, int sheetIndex);
     void reportPlayback(const JellyfinPlayback& playback, qint64 positionMs, bool paused, QString event);
     // Diagnostics for a stream the player could not open: the same URL, asked for with the same headers (the
     // Authorization header, the XMB user agent), one GET capped at a few KB with a short deadline. The answer
@@ -177,17 +190,20 @@ signals:
     void playbackReady(quint64 request, xmb::JellyfinPlayback playback);
     void artworkReady(quint64 request, QString itemId, bool backdrop, QImage image);
     void subtitleReady(quint64 request, int streamIndex, QByteArray bytes);
+    void trickplayInfoReady(quint64 request, QString itemId, QString mediaSourceId, xmb::JellyfinTrickplayInfo info);
+    void trickplaySheetReady(quint64 request, QString itemId, QString mediaSourceId, int width, int sheetIndex, QImage image);
     void probeFinished(quint64 request, int status, QString detail);
     void chaptersReady(quint64 request, QString itemId, QVector<xmb::JellyfinChapter> chapters);
     void lyricsReady(quint64 request, QString itemId, QVector<xmb::JellyfinLyricLine> lines, bool synced);
     void userFlagChanged(quint64 request, QString itemId, int flag, bool value, bool ok);
     void nextEpisodeReady(quint64 request, xmb::JellyfinItem item, bool found);
 private:
-    enum class Operation { SignIn, Views, Items, Search, Playback, Artwork, Report, Subtitle, SubtitleImage, Probe, Home, Chapters, UserFlag, NextEpisode, Lyrics };
+    enum class Operation { SignIn, Views, Items, Search, Playback, Artwork, Report, Subtitle, SubtitleImage, TrickplayInfo, TrickplaySheet, Probe, Home, Chapters, UserFlag, NextEpisode, Lyrics };
     quint64 send(Operation operation, QNetworkReply* reply, QString context = {}, bool audio = false);
     void finish(QNetworkReply* reply, Operation operation, quint64 request,
                 quint64 generation, QString context = {}, bool audio = false);
     QNetworkReply* get(const QUrl& url, int transferTimeoutMs = 15000);
+    QNetworkReply* getImage(const QUrl& url, int transferTimeoutMs = 15000);
     QNetworkReply* post(const QUrl& url, const QByteArray& body);
     QNetworkReply* deleteResource(const QUrl& url);
     QUrl apiUrl(const QString& route) const;
@@ -225,3 +241,4 @@ Q_DECLARE_METATYPE(xmb::JellyfinLyricLine)
 Q_DECLARE_METATYPE(xmb::JellyfinItem)
 Q_DECLARE_METATYPE(xmb::JellyfinPage)
 Q_DECLARE_METATYPE(xmb::JellyfinPlayback)
+Q_DECLARE_METATYPE(xmb::JellyfinTrickplayInfo)
