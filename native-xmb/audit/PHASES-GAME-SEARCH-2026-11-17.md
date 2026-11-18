@@ -171,6 +171,34 @@ regression this affordance introduces.
 - Full `re-ps3-native` build (Qt 6.12.0, MSVC 19.44) exits 0; `release_jobs.cpp` and `shell.cpp` compile clean.
 - Routing by code: Esc and pad Circle share `Shell::back`. `view.cpp` maps `Qt::Key_Escape`/`Qt::Key_Backspace` to
   `shell_.back()`, and the XInput `B` (Circle) edge to `shell_.back()`; `desktop_pad.cpp` maps Circle to Escape. The
-  affordance therefore fires for both Esc and the pad's Circle. A scripted loopback Back E2E was not run: it needs an
-  external `dev_flash` and an uncommitted loopback harness, so the list/detail focus decode and the page pop are verified by
-  the unit tests above plus the full build, not by a UI replay.
+  affordance therefore fires for both Esc and the pad's Circle.
+
+### Scripted loopback Back/Esc E2E (2026-11-18)
+
+A scratch harness (`%TEMP%\xmb-p-cancel\p-cancel.ts`, not committed; `verify-restart.ts` drives the restart pass) runs the
+real loopback route against a build of revision `6a3ddd5`
+(`out/release-tests-backesc-6a3ddd5/re-ps3-native.exe`). The feed is a `file://` import; only the archive streams from a
+loopback server that throttles a 32 MB body at ~16 KB / 30 ms, so the job stays Downloading through the whole navigation to
+Download Management. `XMB_GAME_LIBRARY_ROOT` points at the scratch `library` tree. Observed, all in scratch:
+
+- Back/Esc on the focused active row → Yes → Cancelled. With Download Management open (depth 1, `pageKind=downloads`,
+  focused row `download:release:f6ef9df0bb704ca9bff89ed2691f117a`, title "Cancel Target Deluxe", still Downloading), Esc
+  pops the page first (capture `f-confirm` is back at the root, depth 0, before the confirm is answered), then `RIGHT` +
+  `ENTER` answers Yes; the job settles `Cancelled` and the Download Management notification reappears (`g-afteryes`,
+  `h-final`).
+- `apps.json` is never written (`data/apps.json` absent) — no registration, since the download never completed.
+- The partial archive is discarded, not orphaned: `library/XMB Games/Download Archives/f6ef9df0bb704ca9bff89ed2691f117a/`
+  exists and is empty (0 entries) — the in-progress archive was cleaned up (contrast the cancel-during-pause race above,
+  which can leave the file behind).
+- Restart / queue restore (`verify-restart.ts`): reopening Download Management and the job's detail page reads the persisted
+  `Cancelled` state and offers Retry to re-enqueue; `data/release-download-queue.bin` holds the serialized job.
+
+Shot sidecars (`%TEMP%\xmb-p-cancel\shots\*.png.json`) carry the page kind, depth, and focused row for each step:
+`a-enqueued` (source page, enqueue notification), `b-root`, `c-network`, `d-dlrow` (Download Management row selected),
+`e-dlmgmt` (list open, active job focused), `f-confirm` (Esc popped to root, confirm up), `g-afteryes` (Yes answered),
+`h-final` (settled). `verify-restart.ts` writes its captures to `shots2\` when run.
+
+Not replayed in this run: the No branch (box default — the download keeps running), Back on a non-active row (queued /
+paused / finished / failed / cancelled), and Back on the already-open confirm before answering (pre-confirm dismiss). Those
+paths remain covered by the state-predicate table and the `releaseJobBackTarget()` / `cancelReleaseJob()` unit tests above,
+not by a UI replay.
