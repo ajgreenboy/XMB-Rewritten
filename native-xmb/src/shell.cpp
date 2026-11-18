@@ -5175,6 +5175,7 @@ void Shell::back() {
     else if(steamCmdBack());   // Circle on the SteamCMD sign-in page stops SteamCMD and wipes the password
     else if(multiSelect_)exitMultiSelect();   // Circle leaves the marking mode before it leaves the page
     else if(browseUp());   // Circle in the folder browser goes up one folder; at This PC it leaves the page
+    else if(releaseJobBack());   // Circle on an active release job (list focus or detail page) leaves the page and offers to cancel
     else if(!pages_.isEmpty()){library_.cancel();scanRequest_=0;jellyfinRequest_=0;loading_=false;status_.clear();pages_.removeLast();
         if(!pages_.isEmpty() && !pages_.last().seerr.isEmpty())refreshSeerrPage();}
     emit changed();
@@ -6942,6 +6943,7 @@ QString Shell::pageKind() const {
     if(page.steamAccounts)return QStringLiteral("steamAccounts");
     if(page.jellyfin && !page.jellyfinMusic.isEmpty())return QStringLiteral("jellyfinMusic");
     if(page.jellyfin)return page.jellyfinViews?QStringLiteral("jellyfinViews"):page.jellyfinSearch?QStringLiteral("jellyfinSearch"):QStringLiteral("jellyfinFolder");
+    if(!releaseJobDetailId().isEmpty())return QStringLiteral("releaseJob");
     if(page.downloads)return QStringLiteral("downloads");
     if(page.continuePage)return QStringLiteral("continueWatching");
     if(!page.directory.isEmpty())return QStringLiteral("folder");

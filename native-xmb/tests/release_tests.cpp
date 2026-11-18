@@ -2,6 +2,7 @@
 #include "release_source.h"
 #include "real_debrid.h"
 #include "preferences.h"
+#include "release_job_state.h"
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
@@ -107,5 +108,60 @@ int main(int argc,char** argv) {
     }
     check(preferences.setValue(QStringLiteral("debrid/realDebridToken"),QStringLiteral("synthetic-test-value")),"token preference accepted");
     Preferences reloaded(temporary.path());check(reloaded.value(QStringLiteral("debrid/realDebridToken")).toString()==QStringLiteral("synthetic-test-value"),"token preference survives reload");
+    // Background game transfer state machine (release_job_state.h): the Back/Esc cancellation affordance and
+    // the detail-page Cancel row reuse these predicates. Pausing must be cancellable (the pause already raised
+    // the cancel flag; cancelling then drops the pause flag so the job lands Cancelled, not Paused).
+    for(int s=0;s<=int(xmb::ReleaseJobState::Cancelled);++s) {
+        const auto st=static_cast<xmb::ReleaseJobState>(s);
+        const bool pausable=xmb::releaseJobCanPause(st);
+        const bool cancellable=xmb::releaseJobCanCancel(st);
+        const bool isActive=xmb::releaseJobActive(st);
+        check(pausable==(st==xmb::ReleaseJobState::Queued || st==xmb::ReleaseJobState::Resolving ||
+                         st==xmb::ReleaseJobState::Downloading),"releaseJobCanPause set");
+        check(cancellable==(pausable || st==xmb::ReleaseJobState::Paused || st==xmb::ReleaseJobState::Extracting ||
+                            st==xmb::ReleaseJobState::Pausing),"releaseJobCanCancel set (Pausing cancellable)");
+        check(isActive==(st==xmb::ReleaseJobState::Resolving || st==xmb::ReleaseJobState::Downloading ||
+                         st==xmb::ReleaseJobState::Pausing || st==xmb::ReleaseJobState::Extracting ||
+                         st==xmb::ReleaseJobState::Cancelling),"releaseJobActive set");
+    }
+    check(xmb::releaseJobCanCancel(xmb::ReleaseJobState::Pausing),"Pausing is cancellable (Back/Esc + Triangle Cancel)");
+    check(!xmb::releaseJobCanPause(xmb::ReleaseJobState::Pausing),"Pausing is not re-pausable");
+    check(!xmb::releaseJobCanCancel(xmb::ReleaseJobState::Cancelling),"Cancelling is not re-cancellable");
+    check(!xmb::releaseJobCanCancel(xmb::ReleaseJobState::Finished) &&
+          !xmb::releaseJobCanCancel(xmb::ReleaseJobState::Failed) &&
+          !xmb::releaseJobCanCancel(xmb::ReleaseJobState::Cancelled),"terminal states are not cancellable");
+    // JobControl flag semantics + the production settle decision (releaseJobSettledState, the mapping
+    // pumpReleaseJobs()'s finished handler uses). Cancelling after a pause request must clear the pause
+    // flag so the worker settles to Cancelled, not Paused.
+    check(xmb::releaseJobSettledState(false,false)==xmb::ReleaseJobState::Failed,"settle: neither -> Failed");
+    check(xmb::releaseJobSettledState(true,false)==xmb::ReleaseJobState::Paused,"settle: paused -> Paused");
+    check(xmb::releaseJobSettledState(true,true)==xmb::ReleaseJobState::Paused,"settle: pause wins over cancel");
+    check(xmb::releaseJobSettledState(false,true)==xmb::ReleaseJobState::Cancelled,"settle: cancel -> Cancelled");
+    xmb::JobControl control;
+    check(!control.cancel.load() && !control.pausing.load(),"control starts clear");
+    check(control.requestPause(),"pause requested");
+    check(control.cancel.load() && control.pausing.load(),"pause raises cancel and pausing");
+    check(xmb::releaseJobSettledState(control.pausing.load(),control.cancel.load())==xmb::ReleaseJobState::Paused,
+          "Pausing worker settles to Paused while the pause stands");
+    control.requestCancel();   // the Back/Esc or detail Cancel during Pausing
+    check(control.cancel.load() && !control.pausing.load(),"cancel after pause drops the pause flag");
+    check(xmb::releaseJobSettledState(control.pausing.load(),control.cancel.load())==xmb::ReleaseJobState::Cancelled,
+          "Pausing -> requestCancel settles to Cancelled");
+    xmb::JobControl directControl;directControl.requestCancel();
+    check(directControl.cancel.load() && !directControl.pausing.load(),"direct cancel sets cancel only");
+    check(!directControl.beginExtraction(),"a cancelled control refuses extraction");
+    xmb::JobControl freshControl;
+    check(freshControl.beginExtraction(),"a fresh control begins extraction");
+    check(!freshControl.requestPause(),"pause is refused once extraction began");
+    // Row-id decoding (releaseJobIdFromRow): the list row and the detail page's status row both decode to
+    // the job id; foreign prefixes and an empty id are rejected, so the Back/Esc list focus can never pick
+    // up a SteamCMD row, a Steam queue row or a malformed id.
+    const QString uuid=QStringLiteral("0123456789abcdef0123456789abcdef");
+    check(xmb::releaseJobIdFromRow(QStringLiteral("download:release:")+uuid)==uuid,"list row decodes to job id");
+    check(xmb::releaseJobIdFromRow(QStringLiteral("download:release:")+uuid+QStringLiteral(":status"))==uuid,"detail status row decodes to job id");
+    check(xmb::releaseJobIdFromRow(QStringLiteral("download:steamcmd:7")).isEmpty(),"SteamCMD row is not a release job");
+    check(xmb::releaseJobIdFromRow(QStringLiteral("download:1001")).isEmpty(),"Steam queue row is not a release job");
+    check(xmb::releaseJobIdFromRow(QStringLiteral("download:release:")).isEmpty(),"empty job id rejected");
+    check(xmb::releaseJobIdFromRow(QString()).isEmpty(),"empty row id rejected");
     std::printf("Release backend: %d checks, %d failures\n",checks,failures);return failures?2:0;
 }

@@ -1,4 +1,5 @@
 #include "shell.h"
+#include "release_job_state.h"
 #include "archive_extract.h"
 #include "content_registry.h"
 #include "diagnostics.h"
@@ -37,9 +38,9 @@
 namespace xmb {
 namespace {
 constexpr qsizetype MaxReleaseJobs = 32;
-const QString JobPrefix = QStringLiteral("download:release:");
+const QString& JobPrefix = xmb::releaseJobRowPrefix();
 
-enum class State { Queued, Paused, Resolving, Downloading, Pausing, Extracting, Cancelling, Finished, Failed, Cancelled };
+using State = xmb::ReleaseJobState;
 struct Request {
     QString title;
     QString releaseTitle;
@@ -66,49 +67,16 @@ struct Job {
     QString archiveForResume;
 };
 
-struct JobControl {
-    std::atomic_bool cancel{false};
-    std::atomic_bool pausing{false};
-
-    bool requestPause() {
-        std::lock_guard lock(extractionMutex);
-        if(extracting)return false;
-        pausing.store(true);
-        cancel.store(true);
-        return true;
-    }
-
-    void requestShutdown() {
-        std::lock_guard lock(extractionMutex);
-        if(!cancel.load()) {
-            pausing.store(true);
-            cancel.store(true);
-        }
-    }
-
-    bool beginExtraction() {
-        std::lock_guard lock(extractionMutex);
-        if(cancel.load())return false;
-        extracting = true;
-        return true;
-    }
-
-private:
-    std::mutex extractionMutex;
-    bool extracting = false;
-};
-
 bool canPause(State state) {
-    return state == State::Queued || state == State::Resolving || state == State::Downloading;
+    return xmb::releaseJobCanPause(state);
 }
 
 bool canCancel(State state) {
-    return canPause(state) || state == State::Paused || state == State::Extracting;
+    return xmb::releaseJobCanCancel(state);
 }
 
 bool active(State state) {
-    return state == State::Resolving || state == State::Downloading || state == State::Pausing ||
-           state == State::Extracting || state == State::Cancelling;
+    return xmb::releaseJobActive(state);
 }
 
 QString gameArchiveDirectory(const Request& request,const QString& id) {
@@ -838,7 +806,7 @@ void Shell::pumpReleaseJobs() {
         }
         const bool paused = control->pausing.load();
         const bool cancelled = control->cancel.load();
-        job->state = paused ? State::Paused : cancelled ? State::Cancelled : State::Failed;
+        job->state = xmb::releaseJobSettledState(paused, cancelled);
         job->archiveForResume = paused ? result.archive : QString();
         if(!cancelled && result.folder) {
             const QString installed=installedDirectory(*job);
@@ -894,16 +862,7 @@ void Shell::activateReleaseJob(const Entry& entry) {
         if(job->state!=State::Paused || diagnostics::safeMode())return;
         job->state = State::Queued;
     } else if(entry.value==QLatin1String("cancel")) {
-        if(!canCancel(job->state))return;
-        if(job->state==State::Queued || job->state==State::Paused) {
-            const QString archiveDir=gameArchiveDirectory(job->request,id);
-            if(destinationReady(job->request,archiveDir))ReleaseSources::discardGamePartial(archiveDir);
-            job->archiveForResume.clear();
-            job->state = State::Cancelled;
-        } else if(releaseJobs_->control) {
-            job->state = State::Cancelling;
-            releaseJobs_->control->cancel.store(true);
-        }
+        if(!cancelReleaseJob(id))return;   // the tail below persists, pops back and refreshes
     } else if(entry.value==QLatin1String("retry")) {
         if(!retryable || diagnostics::safeMode())return;
         if(destinationReady(job->request,installedDirectory(*job)) && QFileInfo::exists(installedDirectory(*job))) {
@@ -945,5 +904,86 @@ void Shell::activateReleaseJob(const Entry& entry) {
     if(!pages_.isEmpty() && !pages_.last().downloads)pages_.removeLast();
     refreshReleaseJobRows();
     pumpReleaseJobs();
+}
+
+// The release job whose detail page is the top page, or empty. A release-job detail page is the one
+// activateReleaseJob() pushes for a job's "details" row: its first row is the status row, id
+// `download:release:<id>:status`. The Download Management list (page.downloads) and every other page
+// return empty.
+QString Shell::releaseJobDetailId() const {
+    if(pages_.isEmpty() || pages_.last().downloads)return {};
+    const auto& rows = pages_.last().entries;
+    if(rows.isEmpty())return {};
+    if(!rows.first().id.endsWith(QLatin1String(":status")))return {};
+    return xmb::releaseJobIdFromRow(rows.first().id);
+}
+
+// The release job id Back/Esc should offer to cancel, or empty: the detail page's job, or, on the
+// Download Management list, the focused row when it is a release job. The caller re-checks active +
+// canCancel, so a queued/paused/finished row (or a SteamCMD / Steam row) still falls through to the
+// ordinary pop. The list decode clamps the selection and rejects any row id that is not a release job.
+QString Shell::releaseJobBackTarget() const {
+    const QString detail = releaseJobDetailId();
+    if(!detail.isEmpty())return detail;
+    if(pages_.isEmpty() || !pages_.last().downloads)return {};
+    const auto& rows = pages_.last().entries;
+    if(rows.isEmpty())return {};
+    const int idx = std::clamp(pages_.last().selection, 0, int(rows.size()) - 1);
+    return xmb::releaseJobIdFromRow(rows.value(idx).id);
+}
+
+// The single source of a release job's cancellation state change. Both the detail page's Cancel row
+// (activateReleaseJob) and the Back/Esc affordance (releaseJobBack) go through here, so the mutation is
+// written once. Mutates only: callers own saveReleaseJobs / refreshReleaseJobRows / pumpReleaseJobs.
+// Returns true when a cancellation was applied.
+bool Shell::cancelReleaseJob(const QString& id) {
+    if(!releaseJobs_)return false;
+    auto& jobs = releaseJobs_->jobs;
+    const auto job = std::find_if(jobs.begin(),jobs.end(),[&](const Job& value) { return value.id==id; });
+    if(job==jobs.end() || !canCancel(job->state))return false;
+    const State prior = job->state;
+    if(prior==State::Queued || prior==State::Paused) {
+        const QString archiveDir = gameArchiveDirectory(job->request,id);
+        if(destinationReady(job->request,archiveDir))ReleaseSources::discardGamePartial(archiveDir);
+        job->archiveForResume.clear();
+        job->state = State::Cancelled;
+    } else if(releaseJobs_->control) {
+        job->state = State::Cancelling;
+        // requestCancel() also clears pausing, so a job cancelled during Pausing settles to Cancelled
+        // rather than Paused. If the pause's wind-down already flushed its checkpoint first, the partial
+        // archive stays in Download Archives/<id>/ (orphaned but harmless: the job is Cancelled and
+        // archiveForResume is cleared). That residue is a pre-existing cancel-during-pause limitation,
+        // not something this path introduces.
+        releaseJobs_->control->requestCancel();
+    } else {
+        // Defensive: an active job with no in-flight control cannot be cancelled cleanly.
+        return false;
+    }
+    return true;
+}
+
+// Circle/Esc on an active, still-cancellable release job: the focused row of the Download Management
+// list, or the job of its detail page. The console's Circle always navigates, so Back leaves the page
+// first, then offers to cancel the focused transfer: Yes cancels it, No (the box's default) leaves it
+// running in the background. Non-active and non-release rows (and a job already cancelling) return false
+// and fall through to ordinary Back navigation, so queued/paused/finished jobs and every other page keep
+// their existing behaviour and other background jobs keep running.
+bool Shell::releaseJobBack() {
+    const QString id = releaseJobBackTarget();
+    if(id.isEmpty() || !releaseJobs_)return false;
+    const auto& jobs = releaseJobs_->jobs;
+    const auto job = std::find_if(jobs.cbegin(),jobs.cend(),[&](const Job& value) { return value.id==id; });
+    if(job==jobs.cend() || !active(job->state) || !canCancel(job->state))return false;
+    const QString title = job->request.title;
+    library_.cancel();scanRequest_=0;jellyfinRequest_=0;loading_=false;status_.clear();
+    pages_.removeLast();
+    if(!pages_.isEmpty() && !pages_.last().seerr.isEmpty())refreshSeerrPage();
+    showConfirm(tr("Cancel Download"),tr("Cancel the download of \"%1\"?").arg(title),[this,id]{
+        if(!cancelReleaseJob(id))return;   // the job finished, was dismissed, or is no longer cancellable
+        if(!saveReleaseJobs())notify(tr("Download Management"),tr("Could not save the download queue."));
+        refreshReleaseJobRows();
+        pumpReleaseJobs();
+    });
+    return true;
 }
 }

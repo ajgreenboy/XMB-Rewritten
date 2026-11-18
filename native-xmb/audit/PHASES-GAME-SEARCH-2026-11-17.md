@@ -121,3 +121,56 @@ Observed:
 The one acceptance element not separately driven is a live `all`/`online` scope against the Hydra library (needs the
 public API), and the retained-artwork assertion with a cover-URL feed entry; both are covered by design rather than a
 new capture.
+
+## 8. Back/Esc cancellation on a focused release job (2026-11-18)
+
+Circle/Esc (`Shell::back`) previously only popped the page on the Download Management list and a release job's detail
+page; cancellation lived solely in the detail page's "Cancel Download" row and the Triangle option. An active background
+transfer now gets a Back/Esc affordance on **both** surfaces — the focused row of the Download Management list and the
+detail page:
+
+- `releaseJobDetailId()` recognises a release-job detail page by its first row (`download:release:<id>:status`);
+  `releaseJobBackTarget()` extends that to the Download Management list's focused row (clamped selection, decoded through
+  the shared `releaseJobIdFromRow`, which rejects SteamCMD rows, Steam's own queue and malformed ids). The Download
+  Management list and every other non-release page/row return empty.
+- `cancelReleaseJob(id)` is the single source of the cancellation mutation, reused by the detail-page Cancel row
+  (`activateReleaseJob`) and the Back handler, so no state change is duplicated. Queued/Paused jobs cancel immediately
+  (discard partial, `Cancelled`); active jobs become `Cancelling` and raise the worker's cancel flag. An active job with no
+  in-flight control is refused defensively (returns false, no state change).
+- `releaseJobBack()` handles Circle/Esc when the target is active and still cancellable (Resolving / Downloading / Pausing /
+  Extracting). It always leaves the page first (the console's Circle never strands a page), then raises
+  `showConfirm("Cancel Download", ...)`. Yes cancels the focused job; No (the box default) dismisses it with the download
+  still running in the background. Non-active rows (queued, paused, finished, failed, cancelled) and non-release rows return
+  false and fall through to the ordinary pop, so Back still navigates away and other background jobs keep running.
+- `pageKind()` reports `releaseJob` for the detail page, so a scripted capture can assert the state.
+
+Because `showConfirm` carries only an `accepted` (Yes) callback — there is no distinct No path — the handler cannot run
+"No navigates away while Yes cancels and closes" through two callbacks. The chosen deterministic behaviour: **Back leaves
+the page on both answers**, then Yes cancels and No leaves it running. That satisfies "No leaves the page to XMB with the
+download continuing" and cannot trap the user on the page behind a confirm.
+
+### Pausing state fix
+
+`canCancel` excluded `Pausing` (a job between "pause requested" and "paused" could not be cancelled, and its detail page
+offered no Cancel row). It now includes `Pausing`. Cancelling a Pausing job must also clear the pause flag, or the worker's
+finished handler would still land it on `Paused` — so `JobControl::requestCancel()` clears `pausing` and raises `cancel`.
+The finished handler's settle decision (`paused ? Paused : cancelled ? Cancelled : Failed`) is hoisted into
+`releaseJobSettledState(paused, cancelled)` and used in production, so the Pausing → cancel → Cancelled path is testable.
+
+**Known limitation (pre-existing, documented rather than papered over):** if the pause's wind-down already flushed its
+checkpoint before the cancel request landed, the partial archive remains in `Download Archives/<id>/` — the job is still
+`Cancelled` and `archiveForResume` is cleared, but the file is orphaned. This is a cancel-during-pause race, not a
+regression this affordance introduces.
+
+### Verification
+
+- `xmb-release-tests` gains checks over the state-predicate table, the production `releaseJobSettledState` mapping, the
+  Pausing → `requestCancel()` → Cancelled flow (driven through `JobControl`), and `releaseJobIdFromRow` decoding (list row,
+  detail status row, and the SteamCMD / Steam / empty rejections); all pass. The release backend's pre-existing
+  temp-directory/network section fails in this sandbox (a `QTemporaryDir` environment issue, untouched by this change).
+- Full `re-ps3-native` build (Qt 6.12.0, MSVC 19.44) exits 0; `release_jobs.cpp` and `shell.cpp` compile clean.
+- Routing by code: Esc and pad Circle share `Shell::back`. `view.cpp` maps `Qt::Key_Escape`/`Qt::Key_Backspace` to
+  `shell_.back()`, and the XInput `B` (Circle) edge to `shell_.back()`; `desktop_pad.cpp` maps Circle to Escape. The
+  affordance therefore fires for both Esc and the pad's Circle. A scripted loopback Back E2E was not run: it needs an
+  external `dev_flash` and an uncommitted loopback harness, so the list/detail focus decode and the page pop are verified by
+  the unit tests above plus the full build, not by a UI replay.
