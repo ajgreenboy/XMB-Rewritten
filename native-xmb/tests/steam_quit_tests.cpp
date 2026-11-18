@@ -12,6 +12,14 @@
 #include <functional>
 #include <memory>
 
+#ifdef Q_OS_WIN
+#define WIN32_LEAN_AND_MEAN
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+
 // Quit Game for a Steam title: process selection (pure) and the three-stage driver against a harmless stand-in
 // game (audit/STEAM-QUIT.md). Only copies of the stand-in that this runner starts are ever closed or killed.
 // Usage: xmb-steam-quit-tests [<stand-in exe> <scratch folder>]; without arguments only the pure tests run.
@@ -122,6 +130,32 @@ static QList<ProcessInfo> running(const QString& dir) {
     return selectGameProcesses(snapshotProcesses(), dir, {quint32(QCoreApplication::applicationPid())});
 }
 
+// The visible, unowned, top-level window of a pid, or null. This is the window a running game would show in front
+// of the XMB, so Quit Game must remove it: WM_CLOSE for a cooperative title, terminate/kill for a stubborn one. It
+// is a simplified mirror of findMainWindow (game_capture.cpp): it omits the DWM cloak check and the
+// WS_EX_TOOLWINDOW filter, and it never calls GetForegroundWindow(), so "gone" asserts the window was destroyed,
+// not that any window regained the foreground. findMainWindow is not linked into this runner.
+static void* windowForPid(quint32 pid) {
+#ifdef Q_OS_WIN
+    struct Ctx { DWORD pid; HWND best; qint64 area; } c{pid, nullptr, 0};
+    EnumWindows([](HWND h, LPARAM lp) -> BOOL {
+        auto* c = reinterpret_cast<Ctx*>(lp);
+        DWORD p = 0;
+        GetWindowThreadProcessId(h, &p);
+        if (p != c->pid || !IsWindowVisible(h) || GetWindow(h, GW_OWNER)) return TRUE;
+        RECT r{};
+        GetWindowRect(h, &r);
+        const qint64 a = qint64(r.right - r.left) * (r.bottom - r.top);
+        if (a > c->area) { c->area = a; c->best = h; }
+        return TRUE;
+    }, reinterpret_cast<LPARAM>(&c));
+    return c.best;
+#else
+    Q_UNUSED(pid);
+    return nullptr;
+#endif
+}
+
 struct Run {
     int stage = -1;
     bool done = false;
@@ -180,9 +214,12 @@ static void liveTests(const QString& standIn, const QString& scratch) {
     {
         std::unique_ptr<QProcess> game(launch({QStringLiteral("--children"), QStringLiteral("2"), QStringLiteral("--children-follow")}));
         CHECK(settled(3));
+        const quint32 gamePid = quint32(game->processId());
+        CHECK(waitFor(5000, [&] { return windowForPid(gamePid) != nullptr; }));   // the game's visible top-level window is up
         const auto run = quitScenario(dir, QStringLiteral("cooperative+followers"), 1, 6000);
         CHECK(run.ms < 4000);
         game->waitForFinished(2000);
+        CHECK(windowForPid(gamePid) == nullptr);   // WM_CLOSE was posted and handled: the window is destroyed
     }
     // 2. A stubborn title (ignores WM_CLOSE) with one helper: stage 2 terminates the root, the helper follows.
     {
@@ -205,8 +242,11 @@ static void liveTests(const QString& standIn, const QString& scratch) {
     {
         std::unique_ptr<QProcess> game(launch({QStringLiteral("--ignore-close"), QStringLiteral("--children"), QStringLiteral("2")}));
         CHECK(settled(3));
+        const quint32 gamePid = quint32(game->processId());
+        CHECK(waitFor(5000, [&] { return windowForPid(gamePid) != nullptr; }));
         quitScenario(dir, QStringLiteral("stubborn+orphans"), 3, 700);
         game->waitForFinished(2000);
+        CHECK(windowForPid(gamePid) == nullptr);   // the root was terminated at stage 2 (its window died with it); the windowless orphans fell to stage 3
     }
     // 5. Nothing running from the folder: the driver reports it so the shell can fall back.
     {
@@ -216,6 +256,7 @@ static void liveTests(const QString& standIn, const QString& scratch) {
         CHECK(!quitter.active());
     }
     CHECK(bystanderAlive());   // the process outside the folder was never touched
+    CHECK(windowForPid(quint32(bystander.processId())) != nullptr);   // and neither was its window
     bystander.kill();
     bystander.waitForFinished(2000);
 }

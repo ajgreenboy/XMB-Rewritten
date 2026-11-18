@@ -85,6 +85,31 @@ running). The fallback in this mode cannot start steam.exe because the fake root
   with `returned from The Quarry`, `inGame=false`, the same row (`steam:208650`) focused, fullscreen true, and no
   stand-in process left.
 
+## Return-focus evidence (2026-11-17, stand-in only, no Steam touched)
+
+The "return focus" leg of the launch -> Quit Game -> return lifecycle is the one the process tests above did not
+touch: they assert the game's *processes* are gone, never the game's *window*. `tests/steam_quit_tests.cpp` now also
+asserts, against `steam_quit_standin.cpp`, that the game's visible top-level window is up while the title runs and is
+destroyed after Quit Game: WM_CLOSE is posted and handled at stage 1 for a cooperative title, and for a stubborn
+title the root is terminated at stage 2 (its window dies with it) while the windowless helper orphans fall to stage 3.
+A bystander copy's window is still present at the end. It uses a local `windowForPid` (a mirror of
+`game_capture.cpp`'s `findMainWindow`, minus the DWM cloak check and the WS_EX_TOOLWINDOW filter, and never
+consulting GetForegroundWindow, because that file is not linked into this small runner), and each live scenario also
+reports `windows posted 1` - the quit driver posted WM_CLOSE to the game's visible window, not just to its processes.
+
+```
+cmake -S native-xmb -B <out> -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=C:/Qt/6.12.0/msvc2022_64 -DXMB_STEAM_QUIT_BUILD_TESTS=ON
+cmake --build <out> --parallel --target xmb-steam-quit-tests xmb-steam-quit-standin
+<out>/xmb-steam-quit-tests.exe <out>/xmb-steam-quit-standin.exe <scratch>
+```
+
+Result (this PC, `PASSED (0 failure(s))`): `pure tests: ok`, then the four live scenarios - cooperative+followers
+`ended by stage 1 after 265 ms, windows posted 1`, stubborn+follower stage 2, cooperative+orphans stage 2,
+stubborn+orphans `stage 3 after 1772 ms` - all with the game window present before and destroyed after, and the
+bystander window untouched. This evidences the window-destruction half of "return focus" at the stand-in level;
+whether the XMB window actually returns to the foreground over a *real exclusive-fullscreen* game remains unverified
+below.
+
 ## Not verified
 
 A real Steam game: anti-cheat or protected processes, games that respawn a launcher, whether the real
