@@ -42,7 +42,8 @@ at a scratch folder holding a stub `Game.exe` and a `cover.png`:
 4. **Cancel returns safely.** From the page press Circle (or Cancel), and from inside either browser press
    Circle back to This PC then Circle again: the page closes, no `apps.json` change, no crash.
 5. **Persist and launch.** Cross on Add Game. The Game column shows the new title; Cross on it launches
-   `Game.exe` (the tracked `startTracked` path), and it appears again after a restart (it is in `apps.json`).
+   the saved executable through the tracked `startTracked` path, and it appears again after a restart (it
+   is in `apps.json`). Verified 2026-11-18 by the isolated launch run below.
 
 Targeted unit test: `xmb-folder-browser-tests` now also asserts the `.exe` filter is case-insensitive and
 lists only executables in natural order (`tests/folder_browser_tests.cpp`).
@@ -61,6 +62,27 @@ The flow was driven end-to-end by a scripted controller (`--script`, isolated `-
 - Circle and the Cancel row both left `apps.json` unchanged (no save).
 
 This was a synthetic pad (scripted inputs), not a physical controller, and it did not launch the saved game.
+
+## Isolated launch run (controller-scripted, 2026-11-18)
+
+Acceptance test 5's launch step was exercised in isolation against a build of current `main`
+(`C:\dev\xmb\out\wt-addgame-launch`). The saved executable was a disposable known-safe PE stand-in
+(`standin/xmb-launch-standin.exe`, source `standin/xmb-launch-standin.cpp`) that writes a
+`pid=...`/`started=...` marker, keeps a window up for `--max-seconds`, and exits 0. An isolated `apps.json`
+registered it as id `launch-probe-001` ("Launch Probe Game") with an empty Steam root. Evidence in
+`C:\dev\out\wt-addgame-launch\run\` (`launch.stderr.txt`, `marker.txt`, `watcher.log`).
+
+- ENTER on the custom row started the gameboot animation and, when it finished at 2.8 s, launched the
+  stand-in through the tracked `startTracked` path (`gameboot: Finished event at 2.8 s; launching`).
+- The stand-in's own marker records `pid=7740`; an external watcher saw the same pid `running` and then
+  `none` ~6 s later, matching the process' `--max-seconds 6`.
+- The XMB log shows the title foreground (`pid=7740`) with render paused while it was up, then
+  `returned from Launch Probe Game exit 0 normal` and render resumed.
+- The `titleRunning` sidecar went `true` → `false` across the launch, and the selection was preserved
+  (`selection at return=... kept=1`, `selection after rescan=... kept=1`).
+
+This was again a synthetic pad (scripted inputs) and a stand-in PE, not a physical controller or a real
+title, so it proves the add → launch → return wiring end-to-end without claiming real-game behaviour.
 
 ## Remaining gaps (honest)
 
