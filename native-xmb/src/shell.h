@@ -159,7 +159,12 @@ enum class Action { Unavailable, SettingsPage, SettingChoices, SetSetting, EditN
     // Game > Download Games: the folded hub that lists Browse, Import Source and the imported source folders.
     DownloadHub,
     // Game > Manage: the folded hub that lists Refresh Game Library and Import Games and Apps.
-    ManageHub, Seerr, ReleaseGameJob };
+    ManageHub, Seerr, ReleaseGameJob,
+    // Game > Manage > Add a Game (add_game_shell.cpp, audit/LOCAL-GAME-ADD.md): the controller-driven local-game
+    // add flow. AddGame opens the page; AddGameChooseExe / AddGameChooseArtwork open the in-XMB file browser in
+    // .exe / image mode; AddGameField is a field row (Entry::value names it: "title", "artwork"); AddGameSave
+    // writes the registration into apps.json and AddGameCancel (and Circle) leave without saving anything.
+    AddGame, AddGameChooseExe, AddGameField, AddGameChooseArtwork, AddGameSave, AddGameCancel };
 struct Entry {
     QString id,title,detail,container,texture;
     Action action=Action::Unavailable;
@@ -743,6 +748,16 @@ public:
     const Notification* notification() const { return notifications_.isEmpty()?nullptr:&notifications_.first(); }
     int notificationCount() const { return notifications_.size(); }
     qint64 notificationRemainingMs() const; // of the pop-up on screen, 0 when there is none
+    // ---- Game > Manage > Add a Game (add_game_shell.cpp, audit/LOCAL-GAME-ADD.md) ---------------------
+    // The controller-driven local-game add flow: browse to an .exe, rename it, attach artwork (browse or an
+    // existing metadata path), then save. The draft lives in memory only; nothing is written until Add Game.
+    void openAddGamePage();
+    bool addGameOpen() const;
+    void setAddGameField(const QString& field,const QString& value);
+    void chooseAddGameExe(const QString& file);
+    void chooseAddGameArtwork(const QString& file);
+    void saveAddGame();
+    void cancelAddGame();
 signals:
     void changed();
     void mediaSeeked(qint64 targetMs);
@@ -800,6 +815,11 @@ private:
     void openBrowseGames();
     void openDownloadHub();
     void openManageHub();
+    // Add a Game (add_game_shell.cpp): the page rows, the in-place rebuild, the activation dispatch and close.
+    QVector<Entry> addGameRows() const;
+    void refreshAddGamePage();
+    void activateAddGame(const Entry& entry);
+    void closeAddGamePage();
     void runGameSearch(const QString& query,const QString& scope);
     void pickGameResult(int index);
     void openGameSources(const GameResult& game);
@@ -962,6 +982,10 @@ private:
     PlaylistStore playlists_;   // the active user's playlists (playlists.h); reopened on a user switch
     QString dataDirectory_,steamRoot_,steamId_;
     QVector<ContentApp> contentApps_;
+    // The Add a Game draft (add_game_shell.cpp): held in memory until saved; addGameTitleEdited_ stops a
+    // second executable pick from overwriting a name the user already typed.
+    ContentApp addGameDraft_;
+    bool addGameTitleEdited_=false;
     JellyfinClient jellyfin_;
     JellyfinStream jellyfinStream_;
     JellyfinPlayback jellyfinPlayback_;
@@ -1289,7 +1313,7 @@ private:
     int columnSink_=0;
     // `grouped` is a page the item menu's Group Content level rebuilt into letter folders: `groupedSource` keeps
     // the ungrouped rows so All can put them back without a rescan, and the folders' rows are the same entries.
-    struct Page { QString title; QVector<Entry> entries; int selection=0; QString directory; bool jellyfin=false,jellyfinViews=false,jellyfinSearch=false; QString jellyfinParent; QString jellyfinMusic,jellyfinLibrary; QString jellyfinHome; int jellyfinStart=0; bool downloads=false; QString steamCmd,seerr; bool continuePage=false; bool signIn=false; bool jfSetup=false; bool steamAccounts=false; bool grouped=false; QString groupKey; QVector<Entry> groupedSource; bool sysconfPlugin=false; QString playlistsType,playlistId; QString spotify,spotifyContext; QString dlna; int dlnaServer=-1; QString tailscale; QString wol,ha; bool weather=false; bool systemCheck=false; QString userInfo; int userInfoStep=0; bool browse=false; QString browsePath; QString browseFiles; bool libraryRoot=false; QVector<GameResult> downloadResults; bool downloadHub=false; };
+    struct Page { QString title; QVector<Entry> entries; int selection=0; QString directory; bool jellyfin=false,jellyfinViews=false,jellyfinSearch=false; QString jellyfinParent; QString jellyfinMusic,jellyfinLibrary; QString jellyfinHome; int jellyfinStart=0; bool downloads=false; QString steamCmd,seerr; bool continuePage=false; bool signIn=false; bool jfSetup=false; bool steamAccounts=false; bool grouped=false; QString groupKey; QVector<Entry> groupedSource; bool sysconfPlugin=false; QString playlistsType,playlistId; QString spotify,spotifyContext; QString dlna; int dlnaServer=-1; QString tailscale; QString wol,ha; bool weather=false; bool systemCheck=false; QString userInfo; int userInfoStep=0; bool browse=false; QString browsePath; QString browseFiles; bool libraryRoot=false; QVector<GameResult> downloadResults; bool downloadHub=false; bool addGame=false; };
     QVector<Page> pages_;
     bool psMenu_=false;              // the PS-button system menu is showing
     bool desktopMode_=false;         // the XMB window is hidden for Desktop Mode (main.cpp DesktopMode)

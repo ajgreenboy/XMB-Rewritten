@@ -27,11 +27,16 @@ Entry browseRow(QString id,QString title,Action action,QString value={},QString 
     return e;
 }
 const QStringList& filePatterns(const QString& picker) {
-    // The filters the native dialogs had: "Images (*.png *.jpg *.jpeg *.bmp *.webp)" and "PS3 Themes (*.p3t)".
+    // The filters the native dialogs had: "Images (*.png *.jpg *.jpeg *.bmp *.webp)" and "PS3 Themes (*.p3t)",
+    // plus the Add a Game pickers: "Applications (*.exe)" and the same image set for artwork.
     static const QStringList wallpaper{QStringLiteral("*.png"),QStringLiteral("*.jpg"),QStringLiteral("*.jpeg"),QStringLiteral("*.bmp"),QStringLiteral("*.webp")};
     static const QStringList theme{QStringLiteral("*.p3t")};
+    static const QStringList game{QStringLiteral("*.exe")};
     static const QStringList none;
-    return picker==QLatin1String("wallpaper")?wallpaper:picker==QLatin1String("theme")?theme:none;
+    if(picker==QLatin1String("wallpaper")||picker==QLatin1String("artwork"))return wallpaper;
+    if(picker==QLatin1String("theme"))return theme;
+    if(picker==QLatin1String("game"))return game;
+    return none;
 }
 }
 
@@ -61,12 +66,13 @@ QVector<Entry> Shell::browseRows(const QString& path) const {
     for(const auto& folder:listing.items) {
         if(!folder.isFile){rows.push_back(browseRow(QStringLiteral("browse:")+folder.path,folder.name,Action::BrowseOpen,folder.path));continue;}
         auto row=browseRow(QStringLiteral("browse:")+folder.path,folder.name,Action::BrowseFile,folder.path,folder.note);
-        row.artwork=picker==QLatin1String("theme")?glyphs::document():glyphs::picture();row.iconSized=true;
+        row.artwork=(picker==QLatin1String("theme")||picker==QLatin1String("game"))?glyphs::document():glyphs::picture();row.iconSized=true;
         rows.push_back(std::move(row));
     }
     if(fileMode && listing.problem.isEmpty() && listing.items.isEmpty())
         rows.push_back(browseRow(QStringLiteral("browse:empty"),tr("No Matching Files"),Action::Information,
             picker==QLatin1String("theme")?tr("This folder has no theme files (.p3t) and no folders inside it. Circle goes back up one folder.")
+            :picker==QLatin1String("game")?tr("This folder has no executables (.exe) and no folders inside it. Circle goes back up one folder.")
                 :tr("This folder has no images (png, jpg, bmp or webp) and no folders inside it. Circle goes back up one folder."),QString()));
     else if(listing.problem.isEmpty() && listing.items.isEmpty())
         rows.push_back(browseRow(QStringLiteral("browse:empty"),tr("No Folders Inside"),Action::Information,
@@ -102,17 +108,23 @@ void Shell::openFolderBrowser() {
     browseGo(start,QString());
 }
 
-// Choose Wallpaper and Choose Theme: the file picker page ("wallpaper" or "theme"). It opens where the current
-// choice lives (its folder), otherwise Pictures or Downloads; XMB_FOLDER_START overrides it for scripted runs.
+// Choose Wallpaper, Choose Theme, and Add a Game's Choose Executable / Choose Artwork: the file picker page
+// ("wallpaper", "theme", "game" or "artwork"). It opens where the current choice lives (its folder), otherwise
+// Pictures or Downloads; a fresh .exe pick starts at This PC. XMB_FOLDER_START overrides it for scripted runs.
 void Shell::openFilePicker(const QString& picker,bool replaceChoices) {
     // From a Theme or Background choice band the band is replaced, so it does not stay drawn beside the picker.
     if(replaceChoices && !pages_.isEmpty() && !pages_.last().browse)pages_.removeLast();
     if(pages_.size()>=32){showMessage("The maximum folder depth has been reached.",MessageKind::Page);return;}
     const bool theme=picker==QLatin1String("theme");
-    const QString current=preferences_.value(theme?"appearance/theme":"appearance/wallpaper").toString();
-    const QString fallback=QStandardPaths::writableLocation(theme?QStandardPaths::DownloadLocation:QStandardPaths::PicturesLocation);
+    const bool game=picker==QLatin1String("game");
+    const bool artwork=picker==QLatin1String("artwork");
+    QString title,current,fallback;
+    if(game){title=tr("Choose Game Executable");}          // a fresh pick starts at the drive list
+    else if(artwork){title=tr("Choose Artwork");fallback=QStandardPaths::writableLocation(QStandardPaths::PicturesLocation);}
+    else if(theme){title=tr("Choose Theme");current=preferences_.value("appearance/theme").toString();fallback=QStandardPaths::writableLocation(QStandardPaths::DownloadLocation);}
+    else {title=tr("Choose Wallpaper");current=preferences_.value("appearance/wallpaper").toString();fallback=QStandardPaths::writableLocation(QStandardPaths::PicturesLocation);}
     const QString start=folderbrowser::startPath(qEnvironmentVariable("XMB_FOLDER_START"),current,fallback);
-    Page page;page.title=theme?tr("Choose Theme"):tr("Choose Wallpaper");page.browse=true;page.browsePath=start;page.browseFiles=picker;
+    Page page;page.title=title;page.browse=true;page.browsePath=start;page.browseFiles=picker;
     pages_.push_back(std::move(page));
     browseGo(start,QString());
 }
@@ -133,7 +145,10 @@ bool Shell::activateBrowse(const Entry& entry) {
         qInfo().noquote()<<QStringLiteral("file picker: chose \"%1\" for %2").arg(QDir::toNativeSeparators(chosen),picker);
         pages_.removeLast();
         noteActivity();
-        if(picker==QLatin1String("theme"))chooseTheme(chosen);else chooseWallpaper(chosen);
+        if(picker==QLatin1String("theme"))chooseTheme(chosen);
+        else if(picker==QLatin1String("game"))chooseAddGameExe(chosen);
+        else if(picker==QLatin1String("artwork"))chooseAddGameArtwork(chosen);
+        else chooseWallpaper(chosen);
         return true;
     }
     // Use This Folder: the page closes and the choice goes where the dialog's answer went.

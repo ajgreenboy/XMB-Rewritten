@@ -1177,6 +1177,14 @@ void Shell::openManageHub() {
             QStringLiteral("explore_plugin_full"),Action::ImportApps);
         page.entries.push_back(std::move(e));
     }
+    {
+        // Add a Game (add_game_shell.cpp): the controller-driven local-game add flow, so a game can be added
+        // from the couch without the desktop registration dialog (which a pad cannot drive).
+        auto e=item("content:addgame",QObject::tr("Add a Game"),"item_tex_plain_folder",
+            QStringLiteral("explore_plugin_full"),Action::AddGame);
+        e.detail=QObject::tr("Choose an .exe, name it and add it to the Game column");
+        page.entries.push_back(std::move(e));
+    }
     pages_.push_back(std::move(page));
     emit changed();
 }
@@ -2826,6 +2834,9 @@ void Shell::activate() {
     case Action::RefreshFriends:refreshDiscordFriends(true);break;
     case Action::ImportApps:emit requestImportApps();break;
     case Action::ArtworkSettings:emit requestArtworkSettings();break;
+    case Action::AddGame:case Action::AddGameChooseExe:case Action::AddGameField:
+    case Action::AddGameChooseArtwork:case Action::AddGameSave:case Action::AddGameCancel:
+        activateAddGame(entry);break;
     case Action::SpotifyApp:case Action::SpotifySignIn:case Action::SpotifySignOut:case Action::SpotifyNowPlaying:
     case Action::SpotifyLiked:case Action::SpotifyPlaylist:case Action::SpotifyTrack:case Action::SpotifyDevice:
         activateSpotify(entry);break;
@@ -6927,6 +6938,7 @@ QString Shell::pageKind() const {
     const auto& page=pages_.last();
     if(!page.entries.isEmpty() && page.entries.first().id.startsWith("savedata:"))return QStringLiteral("saveData");
     if(page.signIn)return QStringLiteral("jellyfinSignIn");
+    if(page.addGame)return QStringLiteral("addGame");
     if(page.steamAccounts)return QStringLiteral("steamAccounts");
     if(page.jellyfin && !page.jellyfinMusic.isEmpty())return QStringLiteral("jellyfinMusic");
     if(page.jellyfin)return page.jellyfinViews?QStringLiteral("jellyfinViews"):page.jellyfinSearch?QStringLiteral("jellyfinSearch"):QStringLiteral("jellyfinFolder");
@@ -7040,6 +7052,7 @@ void Shell::setJellyfinSignInField(const QString& field,const QString& value) {
     if(field==QStringLiteral("debrid:token")){saveDebridToken(value);return;}
     if(field==QStringLiteral("flaresolverr:url")){saveFlareSolverrUrl(value);return;}
     if(field.startsWith(QStringLiteral("game:search:"))){runGameSearch(value,field.mid(12));return;}
+    if(field.startsWith(QStringLiteral("addgame:"))){setAddGameField(field.mid(8),value);return;}   // Add a Game's name and artwork fields
     if(field==QStringLiteral("release:url")) {
         QString raw=value.trimmed();
         if(!raw.isEmpty()) {

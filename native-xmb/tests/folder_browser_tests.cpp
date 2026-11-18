@@ -142,6 +142,15 @@ int main(int argc,char** argv) {
     check(fb::fileSizeText(0)==QStringLiteral("0 B") && fb::fileSizeText(1023)==QStringLiteral("1023 B") && fb::fileSizeText(1024)==QStringLiteral("1 KB")
         && fb::fileSizeText(3*1024*1024+400000)==QStringLiteral("3.4 MB"),"file sizes read as B, KB or MB");
 
+    // file mode: the .exe filter the "Add a Game" picker uses
+    const QString exes=root+QStringLiteral("/Exes");
+    QDir().mkpath(exes);
+    for(const char* n:{"Launcher.EXE","helper.exe","notes.txt","setup.exe"}){QFile f(exes+QLatin1Char('/')+QLatin1String(n));if(f.open(QIODevice::WriteOnly)){f.write(QByteArray(100,'x'));f.close();}}
+    check(fb::matchesFilter(QStringLiteral("Launcher.EXE"),{QStringLiteral("*.exe")}) && !fb::matchesFilter(QStringLiteral("notes.txt"),{QStringLiteral("*.exe")}),
+        "the .exe filter ignores case and rejects non-executables");
+    check(names(fb::list(exes,2000,{QStringLiteral("*.exe")}))==QStringList({"helper.exe","Launcher.EXE","setup.exe"}),
+        "the .exe filter lists only executables, in natural case-blind order");
+
     std::printf("%s (%d failure%s)\n",failures?"FAILED":"ALL PASS",failures,failures==1?"":"s");
     return failures?1:0;
 }
