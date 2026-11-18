@@ -47,6 +47,21 @@ at a scratch folder holding a stub `Game.exe` and a `cover.png`:
 Targeted unit test: `xmb-folder-browser-tests` now also asserts the `.exe` filter is case-insensitive and
 lists only executables in natural order (`tests/folder_browser_tests.cpp`).
 
+## E2E run (controller-scripted, 2026-11-18)
+
+The flow was driven end-to-end by a scripted controller (`--script`, isolated `--data-dir`) against a build at
+`e82f6a4`. Evidence in `C:\dev\out\wt-addgame-e2e\run\` (`run3.log`, `entries-after-save.json`,
+`run4-circle.log`, `run5-cancelrow.log`).
+
+- The Executable browser listed only `TestGame.exe`; the scratch folder also held `cover.png`, which the
+  `.exe` filter excluded.
+- The OSK rename and Choose Artwork (picking `cover.png`) both populated the draft.
+- Add Game wrote `apps.json` with a custom id (`828aabca-56b7-4afc-8b47-bd667e4d7858`), the artwork path, and
+  the renamed title; the Game column count went 19 → 20 with the new `custom:` row plus artwork.
+- Circle and the Cancel row both left `apps.json` unchanged (no save).
+
+This was a synthetic pad (scripted inputs), not a physical controller, and it did not launch the saved game.
+
 ## Remaining gaps (honest)
 
 - **Editing an existing game.** The flow only *adds*; there is no controller-driven edit/remove of a game once
