@@ -9,6 +9,7 @@
 #include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
+#include <QFuture>
 #include <QFutureWatcher>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -543,6 +544,7 @@ Result prepareGame(const QString& data,const Request& request,const QString& id,
 struct ReleaseGameQueue {
     QVector<Job> jobs;
     std::shared_ptr<JobControl> control;
+    QFuture<Result> future;
     bool shuttingDown=false;
     bool storageBlocked=false;
 };
@@ -808,6 +810,7 @@ void Shell::pumpReleaseJobs() {
         Result result = watcher->result();
         watcher->deleteLater();
         releaseJobs_->control.reset();
+        releaseJobs_->future = QFuture<Result>();
         if(releaseJobs_->shuttingDown)return;
         auto& jobs = releaseJobs_->jobs;
         const auto job = std::find_if(jobs.begin(),jobs.end(),[&](const Job& job) { return job.id==id; });
@@ -850,6 +853,7 @@ void Shell::pumpReleaseJobs() {
     watcher->setFuture(QtConcurrent::run([data=dataDirectory_,request,id,archiveForResume,control](QPromise<Result>& promise) {
         promise.addResult(prepareGame(data,request,id,archiveForResume,*control,promise));
     }));
+    releaseJobs_->future = watcher->future();
     refreshReleaseJobRows();
 }
 
@@ -857,6 +861,14 @@ void Shell::stopReleaseJobs() {
     if(!releaseJobs_ || releaseJobs_->shuttingDown)return;
     releaseJobs_->shuttingDown=true;
     if(releaseJobs_->control)releaseJobs_->control->requestShutdown();
+    // Defensively join the in-flight worker before the process tears the global thread pool down: the
+    // transfer is cancelled (or paused) here, and waiting on its future makes app.quit() exit
+    // deterministically instead of leaving the worker to wind down against QThreadPool's waitForDone()
+    // at static destruction. The worker is self-contained (its download loop runs its own nested event
+    // loop and QNetworkAccessManager in the worker thread), and its cancel checks bound the wind-down to
+    // at most a few seconds (debrid polling and archive extraction check less often than the download
+    // loop), so the join cannot deadlock the GUI thread.
+    if(releaseJobs_->future.isRunning())releaseJobs_->future.waitForFinished();
 }
 
 void Shell::activateReleaseJob(const Entry& entry) {
