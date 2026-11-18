@@ -1862,6 +1862,10 @@ int main(int argc,char** argv) {
                 QKeyEvent press(QEvent::KeyPress,Qt::Key_Insert,Qt::ShiftModifier);QCoreApplication::sendEvent(view,&press);
             } else if(token.startsWith("type=")) {
                 for(const QChar c:token.mid(5)){QKeyEvent event(QEvent::KeyPress,0,Qt::NoModifier,QString(c));QCoreApplication::sendEvent(view,&event);}
+            } else if(token=="OSKENTER") {
+                // Accept the on-screen keyboard (Ctrl+Return is its confirm chord, view.cpp oskClose); a plain
+                // Return presses the focused key. This closes the gap for scripted search/sign-in verification.
+                QKeyEvent press(QEvent::KeyPress,Qt::Key_Return,Qt::ControlModifier,QStringLiteral("\r"));QCoreApplication::sendEvent(view,&press);
             } else if(keys.contains(token)) {
                 tap(keys[token]);
             }

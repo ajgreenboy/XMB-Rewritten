@@ -76,20 +76,39 @@ row 0 (a Steam title), `Download Games` is row 17, `Manage` row 18. The route to
 
 ```
 17 x DOWN -> Cross on Download Games (hub) -> Cross on Search Games (scope picker) ->
-DOWN -> Cross on Imported feeds -> type <query> -> keyboard ENTER -> Cross on the result ->
-Cross on the source -> drive picker
+DOWN -> Cross on Imported feeds -> type <query> -> OSK accept -> Cross on the result ->
+Cross on the source -> drive picker -> Cross -> RIGHT (No -> Yes) -> Cross (commit)
 ```
 
-with extra `wait` tokens around each search/artwork round-trip. Verified this far with a local `file://` feed
-(`--import-source` accepted "2 releases from P1 Scratch Feed", `Download Games` detail reads "1 source", and the
-scope picker lands on "Imported feeds"). The search keyboard and the download/register/restart leg are not yet driven
-to completion in this pass.
+The search term is confirmed on the on-screen keyboard with `OSKENTER` (Ctrl+Return), a new script token added in
+`main.cpp` because the script had no way to accept the OSK — a plain Return presses the focused key (the firmware
+keyboard's Enter action is what commits, and Ctrl+Return maps to `oskClose(true)` in `view.cpp:5668`). It sits next to
+the existing `PASTE`/`SHIFTINSERT` tokens.
 
-## 6. Open
+## 6. End-to-end download -> register -> restart (verified)
 
-Remaining Phase 1 acceptance items still to reach: the full end-to-end "overlapping game, distinct editions, multiple
-mirrors, an unknown size, and a failing source" fixture pass across all three scopes, back navigation with the scope
-and query retained on return, and a real download to a scratch drive with one registered Game entry, retained artwork,
-and a restart that shows it once. The scratch destination and the route are now in place (sections 4 and 5); what is
-left is the loopback HTTP fixture (a ZIP carrying a stub `.exe`, served beside the feed) and the wait-for-register
-assertions. See `audit/PHASES-MANIFEST-DOWNLOAD-2026-11-11.md` for the registration/integrity reference.
+A scratch Bun harness (`%TEMP%\xmb-p1-e2e\p1-e2e.ts`, not committed) stands up a loopback HTTP server serving a
+28-byte ZIP whose single entry `OverlapGame.exe` is the stub `findGameExecutable` needs, imports a `file://` feed whose
+direct URL points back at the loopback, and drives the route above with `XMB_GAME_LIBRARY_ROOT` pointing at a scratch
+folder. Results, all in scratch, no real drive touched:
+
+- Import: `Imported 1 releases from P1 E2E Feed`.
+- Download → extract → register: `apps.json` gains
+  `id=release-game-<uuid> title="Overlap Game Deluxe" kind=game exe=<scratch>/XMB Games/game-<uuid>/OverlapGame.exe`;
+  the ZIP lands in `Download Archives/<uuid>/` and the install receipt `.xmb-release-install.json` beside the exe.
+- Restart: a second boot dumps the catalogue; the Game column holds exactly one
+  `custom:release-game-<uuid>` row titled "Overlap Game Deluxe" (row id prefixed `custom:`, shell.cpp:1441).
+
+Extraction-failure recovery (`%TEMP%\xmb-p1-e2e\p1-fail.ts`, same harness against a non-archive body): the download
+completes, `extractGameArchive` rejects the non-ZIP signature, `apps.json` is never written, and the downloaded file is
+retained as `Download Archives/<uuid>/Broken Archive.zip`. The job's `Failed` row keeps `result.archive`, so the Phase
+2 retry reuses the validated archive (the recovery path the acceptance asks to "record").
+
+## 7. Open
+
+What remains to reach the full Phase 1 acceptance: the multi-release fixture across all three scopes (an overlapping
+game, distinct editions, multiple mirrors, an unknown size, and a failing source in one feed), the explicit
+scope-and-query-retained-on-return check (the result page already persists in the stack with its `Search: <query>`
+title), and the retained-artwork assertion (increment 1 fetches the cover; a feed entry carrying a cover URL would
+exercise it — the e2e fixture omitted one). See `audit/PHASES-MANIFEST-DOWNLOAD-2026-11-11.md` for the
+registration/integrity reference.
