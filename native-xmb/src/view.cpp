@@ -3227,16 +3227,25 @@ void View::drawScene(QPainter& p) {
                     p.restore();
                     continue;
                 }
+                // Depth-1 item rows (level>0, non-bullet, non-tile) sit 64 px right of the column origin and take
+                // the level-0 icon sizes. Sweep 8 item 2 measured the console's focused depth-1 icon at centre x 629
+                // (= 565 + 64) in a 128 px box, where this build drew it at 565. The settings bullets and the wide
+                // media tiles keep their own classes: a tile's card width and its 173 px label gutter are untouched,
+                // so a card and its label keep their alignment.
+                const bool bullet=entry.container=="qgl/icontex" && entry.texture=="23n";
+                const bool tile=isTile(entry);
+                const bool itemRow=level>0 && !bullet && !tile;
+                const double itemShift=itemRow?64.:0.;
                 // The icon wind's widget: this row's icon centre, keyed by its column set, level and row.
                 windSites_.push_back({(quint64(active?shell_.category():outgoingCategory_)<<40)|(quint64(level)<<20)|quint64(i),
-                    QPointF(kColumnX-behind*(109.46+152*focus)+ahead*210+offset,y)});
+                    QPointF(kColumnX-behind*(109.46+152*focus)+ahead*210+offset+itemShift,y)});
                 // The incoming page column is one slot right and 10.223% larger in the decoded transition
                 // (fp_0174..fp_0181: 774.09 = 565+210; 85.554 = 77.616*1.10223, 203.700 = 184.8*1.10227),
                 // easing to zero offset and 1.0 with the depth move. The scale is on the icons only: the
                 // decoded incoming rows keep their 80 px y grid (fp_0175/0176 at screen 120/40), so `y`
                 // and the row pitch are not scaled. [TRACED offset and scale; the ease is the depth PafEase.]
                 const double entryScale=1.+.10223*ahead;
-                const double iconX=kColumnX-behind*(109.46+152*focus)+ahead*210+offset;
+                const double iconX=kColumnX-behind*(109.46+152*focus)+ahead*210+offset+itemShift;
                 // Reference (RPCS3 4.x video): square icons ~60 px, ~105 px when focused; utility folders are icons too.
                 // Only media thumbnails (album art) keep a wide tile.
                 // Setting rows carry the small round settings bullet: 18 px, 39 px focused (reference 95 s).
@@ -3247,8 +3256,9 @@ void View::drawScene(QPainter& p) {
                 // box is set to the two measured ink widths directly. The firmware quads stay on `quad` below, which
                 // is what the glass icon path draws, so the category icons and their material are untouched.
                 // [TRACED: both ink widths and their quads. FIT: nothing - the box equals the measured ink.]
-                const bool bullet=entry.container=="qgl/icontex" && entry.texture=="23n";
-                const double size=(bullet?18+focus*21:level==0?50+focus*78:40+focus*16)*entryScale;
+                // Sweep 8 item 2: the depth-1 item row reuses the level-0 pair (50 unfocused / 128 focused), so the
+                // non-bullet branch is 50+78*focus at every depth now, not the smaller 40+16*focus this build had.
+                const double size=(bullet?18+focus*21:50+focus*78)*entryScale;
                 // Firmware folder glyphs: a folder row in the Game column carries the emblem of what it holds - the
                 // captured Game Data Utility row is item_tex_ps3game_folder (folder + gamepad, explore_category_game.rco
                 // and explore_plugin_full.rco), not the bare storage folder. Steam's All Games / collection / Not
@@ -3257,7 +3267,6 @@ void View::drawScene(QPainter& p) {
                 // library folders keep.
                 const QString itemTexture=entry.texture=="item_tex_plain_folder" && entry.action==Action::SteamFolder?
                     QStringLiteral("item_tex_ps3game_folder"):entry.texture;
-                const bool tile=isTile(entry);
                 // A row behind an open page is the parent column, and every captured parent-column row is an item icon
                 // (77.616 unfocused / 184.800 focused, 2857.2/0.247 below focus). Keeping the wide album/ICON0 card
                 // there drew a 320x180 placeholder on the same spot as the open category icon (Video Library over the
@@ -3347,7 +3356,9 @@ void View::drawScene(QPainter& p) {
                 // Wide cards need their own label gutter at every depth,
                 // including Continue Watching. Parent rows have receded to
                 // icon size and keep the narrow column gutter.
-                const double labelX=kColumnX+((tile && behind<.001)?173:level==0?113:60)+ahead*210+offset;
+                // Sweep 8 item 2: a depth-1 item row's label sits icon-centre+111 (740 = 629+111), not the top
+                // level's +113, so the item-row gutter is the 64 px icon shift plus 111.
+                const double labelX=kColumnX+((tile && behind<.001)?173:level==0?113:(itemRow?itemShift+111.:60.))+ahead*210+offset;
                 const double alpha=(.455+.545*focus)*(entry.disabled?.55:1.);
                 // A row's own value wins when it sets one (the sign-in page's fields: server URL, user name and
                 // the password as dots). Every other row leaves Entry::fieldValue empty, so this falls through to
@@ -3487,8 +3498,10 @@ void View::drawScene(QPainter& p) {
                 // the peak at 248 against the frame's 238, and 0.89 minimises the residual over the glyph).
                 // [TRACED: the rect, and the identification - the fit residual is two orders below the
                 // rejected candidate's. FIT: the 0.89 alpha.]
+                // Sweep 8 item 2 re-measured the arrow ~20 px left of that on a depth-1 item page (x ~410), so
+                // it draws at 410 below.
                 p.save();p.setOpacity(columnAlpha*(1.-behind)*.89);
-                p.drawImage(QRectF(430,490,30,30),assets_.image("explore_plugin_full","tex_arrow_anim"),
+                p.drawImage(QRectF(410,490,30,30),assets_.image("explore_plugin_full","tex_arrow_anim"),
                             QRectF(0,0,30,30));
                 p.restore();
             }
