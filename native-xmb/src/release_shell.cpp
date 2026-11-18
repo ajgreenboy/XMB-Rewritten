@@ -547,6 +547,23 @@ void Shell::pickGameSource(const QString& value) {
     beginGameDownload(game.name,game.options[option]);
 }
 
+// The destinations the drive picker offers. XMB_GAME_LIBRARY_ROOT (local verification only,
+// like XMB_STEAM_ROOT) replaces the real drive list with one scratch root, so a replay can install
+// into a temporary folder without touching any real library. Its value is the folder whose child
+// "XMB Games" receives the install.
+QVector<QPair<QString,QString>> gameLibraryRoots() {
+    const QString override=qEnvironmentVariable("XMB_GAME_LIBRARY_ROOT");
+    if(!override.isEmpty()) {
+        const QString root=QDir::cleanPath(override);
+        const QFileInfo info(root);
+        if(info.isDir() && QDir::isAbsolutePath(root))
+            return {qMakePair(QDir::toNativeSeparators(root),root)};
+    }
+    QVector<QPair<QString,QString>> roots;
+    for(const auto& drive:QDir::drives())roots.append(qMakePair(QDir::toNativeSeparators(drive.absolutePath()),drive.absolutePath()));
+    return roots;
+}
+
 void Shell::beginGameDownload(const QString& title,const GameSourceOption& option) {
     if(pages_.size()>=32)return;
     Page page;page.title=tr("Choose a drive");
@@ -554,10 +571,9 @@ void Shell::beginGameDownload(const QString& title,const GameSourceOption& optio
     game.name=title;
     game.options={option};
     page.downloadResults={std::move(game)};
-    for(const auto& drive:QDir::drives()) {
-        const QString path=drive.absolutePath();
-        Entry entry=releaseRow(QStringLiteral("drive:")+path,QDir::toNativeSeparators(path),Action::GameDownloadDrive,path);
-        entry.detail=tr("Install in %1").arg(QDir::toNativeSeparators(QDir(path).filePath(QStringLiteral("XMB Games"))));
+    for(const auto& root:gameLibraryRoots()) {
+        Entry entry=releaseRow(QStringLiteral("drive:")+root.second,QDir::toNativeSeparators(root.second),Action::GameDownloadDrive,root.second);
+        entry.detail=tr("Install in %1").arg(QDir::toNativeSeparators(QDir(root.second).filePath(QStringLiteral("XMB Games"))));
         page.entries.append(std::move(entry));
     }
     if(page.entries.isEmpty())

@@ -58,10 +58,38 @@ Layer gate `bun work/ab-layers.ts --all --exe out/phase-candidate/re-ps3-native.
   drawing change". None of the surfaces this increment touches are in any gated state, and the diff is confined to
   release search/browse, so the failure is the known machine-pinned compositor drift, not this change.
 
-## 4. Open
+## 4. Scratch install destination (`XMB_GAME_LIBRARY_ROOT`)
+
+The drive picker builds its list from `QDir::drives()` and always installs to `<drive>:\XMB Games`, so a replay on a
+real machine would write to a real library. The handoff requires "a separate app data directory and scratch install
+destination for each replay", and there was no seam for one. `beginGameDownload()` now resolves its list through a
+file-local `gameLibraryRoots()`: when `XMB_GAME_LIBRARY_ROOT` names an existing absolute directory it replaces the
+drive list with that single root (whose child `XMB Games` receives the install); otherwise the real drives are listed,
+unchanged. This follows the `XMB_STEAM_ROOT` / `XMB_INSTALL_REFRESH_MS` convention of env-gated local-verification
+seams. The existing `libraryVolume()` validation in `release_jobs.cpp` accepts a scratch root under any real volume
+(e.g. `%TEMP%\...`), so enqueueing to it exercises the same code path as a real drive.
+
+## 5. Scripted route (determined empirically)
+
+`XMB_DUMP_ENTRIES` dumps the catalogue, and it pins the Game column layout: boot selects the Game column (index 6) at
+row 0 (a Steam title), `Download Games` is row 17, `Manage` row 18. The route to the drive picker is therefore:
+
+```
+17 x DOWN -> Cross on Download Games (hub) -> Cross on Search Games (scope picker) ->
+DOWN -> Cross on Imported feeds -> type <query> -> keyboard ENTER -> Cross on the result ->
+Cross on the source -> drive picker
+```
+
+with extra `wait` tokens around each search/artwork round-trip. Verified this far with a local `file://` feed
+(`--import-source` accepted "2 releases from P1 Scratch Feed", `Download Games` detail reads "1 source", and the
+scope picker lands on "Imported feeds"). The search keyboard and the download/register/restart leg are not yet driven
+to completion in this pass.
+
+## 6. Open
 
 Remaining Phase 1 acceptance items still to reach: the full end-to-end "overlapping game, distinct editions, multiple
 mirrors, an unknown size, and a failing source" fixture pass across all three scopes, back navigation with the scope
 and query retained on return, and a real download to a scratch drive with one registered Game entry, retained artwork,
-and a restart that shows it once. Those need local feed fixtures and a scratch install destination, which are the next
-increment (see `audit/PHASES-MANIFEST-DOWNLOAD-2026-11-11.md` for the registration/integrity reference).
+and a restart that shows it once. The scratch destination and the route are now in place (sections 4 and 5); what is
+left is the loopback HTTP fixture (a ZIP carrying a stub `.exe`, served beside the feed) and the wait-for-register
+assertions. See `audit/PHASES-MANIFEST-DOWNLOAD-2026-11-11.md` for the registration/integrity reference.
