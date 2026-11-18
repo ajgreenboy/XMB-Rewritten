@@ -23,7 +23,7 @@ Parsing bounds cover file size, tokens, nesting, library/manifests and a global 
 
 Account selection prefers a matching Steam installation's active registry account, then MostRecent, a sole valid account, then the newest recorded timestamp. It never reads session tokens or passwords. Ambiguous accounts require `XMB_STEAM_ID`. An explicit `--steam-root` or `XMB_STEAM_ROOT` is exclusive and does not select a different host installation's active account.
 
-F5 at the root, or **Refresh Game Library**, rescans asynchronously and preserves selection by entry ID. **Import Games and Apps** selects a JSON manifest and refreshes after a successful import. Concurrent refresh/import requests are coalesced.
+F5 at the root, or **Refresh Game Library**, rescans asynchronously and preserves selection by entry ID. **Import Games and Apps** selects a JSON manifest and refreshes after a successful import. **Add a Game** (landed 2026-11-17, commit `cf71db2`) registers a single already-installed local executable through a controller-driven page; it only adds - editing or removing an already-added game still needs the desktop `AppEditor`, with no controller-driven edit/remove (audit/LOCAL-GAME-ADD.md). Concurrent refresh/import requests are coalesced.
 
 ## Owned games and collections
 

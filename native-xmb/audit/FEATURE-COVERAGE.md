@@ -427,7 +427,10 @@ stays partial.
 > (fixtures, disabled-row frame, gates). Also since this audit: resume points (`media/resume` records) and
 > the Video column's Continue Watching page (audit/MEDIA-CONTROLS.md "Continue Watching"). Still absent and
 > why the criterion stays partial: embedded `QMediaPlayer::subtitleTracks` streams, disc/BD subtitle options,
-> Jellyfin-side subtitles, and a proven switch between two real audio tracks.
+> Jellyfin-side subtitles, and a proven switch between two real audio tracks. The parser is now unit-tested
+> (commit `e82f6a4`, `tests/subtitle_tests.cpp`: two same-timed sidecar SRT files stay two distinct tracks with two
+> distinct cue sets), but that is a pure-function regression surface - the shell's live subtitle-track switch
+> (`Shell::chooseSubtitleTrack`) needs `QMediaPlayer` and stays unverified.
 
 **Where implemented.**
 
@@ -550,7 +553,10 @@ return lifecycle.
 - Quit Game now exists in the PS menu (`Shell::psMenuActivate`). Still absent:
   game settings consumption (PS upscaler/smoothing absent, catalog XMB-014/015),
   process priority, exclusive display/fullscreen handoff and a game-running
-  window state.
+  window state. Quit Game's process termination and the stand-in window-destruction
+  leg are now test-verified (commit `063c0fe`, `tests/steam_quit_tests.cpp` against
+  `steam_quit_standin`), but whether the XMB window actually returns to the foreground
+  over a real exclusive-fullscreen title remains unverified (audit/STEAM-QUIT.md).
 - Disc copies without an `EBOOT.BIN` and without a `games.yml` entry cannot
   launch (`src/shell.cpp:100-101,109`).
 - ~~Idle auto-close keeps running while a game is up: only `mediaOpen_` is exempt
