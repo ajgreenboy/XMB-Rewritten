@@ -216,6 +216,14 @@ JellyfinItem parseItem(const QJsonObject& json) {
     result.playCount = std::clamp(userData.value(QStringLiteral("PlayCount")).toInt(0), 0, 1000000);
     const QString seriesId = json.value(QStringLiteral("SeriesId")).toString();
     if (validId(seriesId)) result.seriesId = seriesId;
+    // External provider ids are optional and bounded; only the two cross-service keys the shell resolves
+    // against (TMDB and IMDb) are kept, and an id must look like the provider's own (numeric for TMDB).
+    const QJsonObject providerIds = json.value(QStringLiteral("ProviderIds")).toObject();
+    const QString tmdbId = providerIds.value(QStringLiteral("Tmdb")).toString().trimmed();
+    if (validId(tmdbId) && tmdbId.size() <= 32 && std::all_of(tmdbId.cbegin(), tmdbId.cend(), [](const QChar ch) { return ch.isDigit(); }))
+        result.tmdbId = tmdbId;
+    const QString imdbId = providerIds.value(QStringLiteral("Imdb")).toString().trimmed();
+    if (validId(imdbId) && imdbId.size() <= 32) result.imdbId = imdbId;
     result.resumeMs = millisecondsFromTicks(userData.value(QStringLiteral("PlaybackPositionTicks")));
     if (result.played || (result.durationMs > 0 && result.resumeMs >= result.durationMs))
         result.resumeMs = 0;
@@ -517,7 +525,7 @@ quint64 JellyfinClient::items(QString parentId, int startIndex) {
     query.addQueryItem(QStringLiteral("SortBy"), QStringLiteral("SortName"));
     query.addQueryItem(QStringLiteral("SortOrder"), QStringLiteral("Ascending"));
     query.addQueryItem(QStringLiteral("EnableUserData"), QStringLiteral("true"));
-    query.addQueryItem(QStringLiteral("Fields"), QStringLiteral("Overview"));
+    query.addQueryItem(QStringLiteral("Fields"), QStringLiteral("Overview,ProviderIds"));
     url.setQuery(query);
     return send(Operation::Items, get(url), QString::number(startIndex));
 }
@@ -544,7 +552,7 @@ quint64 JellyfinClient::search(QString term, int startIndex) {
     query.addQueryItem(QStringLiteral("SortBy"), QStringLiteral("SortName"));
     query.addQueryItem(QStringLiteral("SortOrder"), QStringLiteral("Ascending"));
     query.addQueryItem(QStringLiteral("EnableUserData"), QStringLiteral("true"));
-    query.addQueryItem(QStringLiteral("Fields"), QStringLiteral("Overview"));
+    query.addQueryItem(QStringLiteral("Fields"), QStringLiteral("Overview,ProviderIds"));
     url.setQuery(query);
     return send(Operation::Search, get(url), QString::number(startIndex));
 }

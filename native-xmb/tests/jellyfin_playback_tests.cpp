@@ -428,6 +428,7 @@ int main(int argc, char** argv) {
     const QString user = QString::fromLatin1(kUser);
     const QJsonObject resumeItem{{"Id", "dddddddddddddddddddddddddddddd01"}, {"Name", "Half Watched"}, {"Type", "Episode"}, {"IsFolder", false},
         {"SeriesName", "Test Show"}, {"ParentIndexNumber", 2}, {"IndexNumber", 5}, {"RunTimeTicks", 36000000000LL},
+        {"ProviderIds", QJsonObject{{"Tmdb", "1399"}, {"Imdb", "tt0944947"}, {"Tvdb", "333"}}},
         {"UserData", QJsonObject{{"Played", false}, {"PlaybackPositionTicks", 6000000000LL}}}};
     const QJsonObject latestItem{{"Id", "dddddddddddddddddddddddddddddd03"}, {"Name", "Fresh Episode"}, {"Type", "Episode"}, {"IsFolder", false}, {"SeriesId", "eeeeeeeeeeeeeeeeeeeeeeeeeeeeee01"},
         {"SeriesName", "Test Show"}, {"ParentIndexNumber", 2}, {"IndexNumber", 6}, {"RunTimeTicks", 36000000000LL}, {"UserData", QJsonObject{{"Played", true}, {"IsFavorite", true}, {"PlaybackPositionTicks", 0}}}};
@@ -519,6 +520,7 @@ int main(int argc, char** argv) {
             const auto item = firstPage().items.first();
             check(item.resumeMs == 600000 && item.durationMs == 3600000 && !item.played, "home: the server's PlaybackPositionTicks is the resume point (100 ns ticks to ms)");
             check(item.seriesName == QLatin1String("Test Show") && item.seasonNumber == 2 && item.episodeNumber == 5, "home: an episode names its show, season and number");
+            check(item.tmdbId == QLatin1String("1399") && item.imdbId == QLatin1String("tt0944947"), "home: ProviderIds.Tmdb/Imdb are parsed for cross-service resolution");
         } else check(false, "home: the page carries the resume item");
 
         // 10.9+ route missing, older route present: the page arrives under the original request id.

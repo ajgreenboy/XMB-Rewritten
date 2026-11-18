@@ -33,6 +33,9 @@ struct JellyfinItem {
     int seasonNumber = 0, episodeNumber = 0;
     // The episode's series (SeriesId), for the Play Next Episode prompt, and the user's favourite flag (UserData.IsFavorite).
     QString seriesId;
+    // External provider identifiers (ProviderIds.Tmdb / ProviderIds.Imdb), for cross-service resolution:
+    // a Seerr request carries a TMDB id, so the matching Jellyfin library item is recognised through these.
+    QString tmdbId, imdbId;
     bool favorite = false;
     int playCount = 0;   // UserData.PlayCount (the Most Played list)
 };
