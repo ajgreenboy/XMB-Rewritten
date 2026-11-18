@@ -368,6 +368,11 @@ Discovery discover(const QString& mediaPath) {
 }
 
 bool parse(const QByteArray& bytes,const QString& format,Track& track,QString* reason) {
+    // A failed parse must not leave an earlier parse's cues (or counts) in the track: the Jellyfin flow
+    // parses into a live subtitleTracks_ element, and a re-parse that kept old cues would render the wrong
+    // text. Cleared up front so every failure path below returns with the track cue-less. `path`, `name`,
+    // `language` and `format` are the caller's (format is set before the call), so they are left alone.
+    track.cues.clear();track.skipped=0;track.bytes=0;
     const QString kind=format.toLower();
     if(!supportedFormat(kind)){if(reason)*reason=QString("format %1 is not SRT or WebVTT").arg(format);return false;}
     if(bytes.isEmpty()){if(reason)*reason="stream is empty";return false;}
