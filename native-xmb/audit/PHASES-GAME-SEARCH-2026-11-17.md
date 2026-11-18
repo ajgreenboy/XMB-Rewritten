@@ -198,7 +198,31 @@ Shot sidecars (`%TEMP%\xmb-p-cancel\shots\*.png.json`) carry the page kind, dept
 `e-dlmgmt` (list open, active job focused), `f-confirm` (Esc popped to root, confirm up), `g-afteryes` (Yes answered),
 `h-final` (settled). `verify-restart.ts` writes its captures to `shots2\` when run.
 
-Not replayed in this run: the No branch (box default — the download keeps running), Back on a non-active row (queued /
-paused / finished / failed / cancelled), and Back on the already-open confirm before answering (pre-confirm dismiss). Those
-paths remain covered by the state-predicate table and the `releaseJobBackTarget()` / `cancelReleaseJob()` unit tests above,
-not by a UI replay.
+### Replayed omitted paths: No branch and non-active (queued) row (2026-11-18)
+
+A second scratch harness (`%TEMP%\xmb-p-cancel2\p-cancel2.ts`, not committed) replays the two omitted paths against the same
+revision `6a3ddd5` build. The loopback serves a 64 MB body at ~16 KB / 30 ms (~120 s drain) so any active job stays
+Downloading through the whole navigation, and `XMB_GAME_LIBRARY_ROOT` points at a fresh scratch `library` tree. Two cases,
+all in scratch:
+
+- **Case 1 — No on the active confirm preserves the download.** One release is enqueued and reaches Downloading. Esc on the
+  focused active row pops Download Management to the root (depth 0) and raises the confirm (`f-confirm`); the box default is
+  No, so `ENTER` answers No (`g-afterno`). Reopening the job's detail page reads its status row as `Downloading`
+  (`i-status-downloading`, `pageKind=releaseJob`) — the transfer kept running. The job is then cleanly cancelled (Esc → Yes)
+  and settles `Cancelled` (`m-status-cancelled`).
+- **Case 2 — Esc on a non-active (queued) row pops with no prompt while the active job continues.** Two releases are
+  enqueued; one transfer runs at a time, so the Deluxe release is Downloading and the Standard release is Queued. The list's
+  default focus (row 0) is the queued Standard row; Esc pops to the root with no cancel prompt (`d2-afteresc`, `modalWidget`
+  empty, no confirm) — an ordinary Back. Focusing the Deluxe row (row 1) and opening its detail reads `Downloading`
+  (`f2-a-status`): the active transfer was unaffected. Both jobs are then cancelled in turn (Esc → Yes on each) so nothing is
+  left running (`j2-final`).
+- In both cases `apps.json` is never written, and each cancelled job leaves `Download Archives/<id>/` as an empty directory
+  (0 entries) — the in-progress archive is discarded, not orphaned, matching the existing E2E above.
+
+Unrelated observation, not root-caused: quitting with a release download still active was observed to hang, so both scripts
+cancel every job before the final `quit`. The hang is outside this affordance's scope and is recorded here only as observed
+behaviour, not a diagnosed defect of the Back/Esc change.
+
+Still not replayed: Back on a non-release row, Back on the remaining non-active states (paused / finished / failed /
+cancelled), and Back on the already-open confirm before answering (pre-confirm dismiss). Those paths remain covered by the
+state-predicate table and the `releaseJobBackTarget()` / `cancelReleaseJob()` unit tests above, not by a UI replay.
