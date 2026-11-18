@@ -14,8 +14,9 @@ from-scratch native renderer and services, not an emulator.
 
 ## 2. Start here, in this order
 
-1. `native-xmb/HANDOFF-2026-11-09.md` - current state, build/run/verify, what landed, config files,
-   open work. This is the newest handoff and takes precedence over everything else.
+1. `native-xmb/HANDOFF-2026-11-17.md` - current state, what landed 11-13 to 11-17, open work, branch
+   status. This is the newest handoff and takes precedence over everything else. For build/run/verify
+   mechanics and gotchas, read `native-xmb/HANDOFF-2026-11-13.md` (still accurate).
 2. `native-xmb/audit/PHASES-2026-11-07.md` - the plan of record: done work, ranked backlog (Tier 1
    HTPC product, Tier 2 product gaps, Tier 3 fidelity), parallel workstreams and their write fences.
 3. `native-xmb/ISA.md` - the completion checklist. An unchecked box stays open until the behaviour

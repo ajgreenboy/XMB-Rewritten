@@ -2,10 +2,16 @@
 task: Complete native C++ recreation of PS3 XMB
 phase: execute
 progress: in-progress
-updated: 2026-10-27
+updated: 2026-11-17
 ---
 
 # Native XMB ideal state
+
+> **Staleness note (2026-11-17):** this checklist was last reconciled on 2026-10-27 and has **not** been
+> re-run against the work since (six releases, v0.3.7–v0.3.12, and the 11-13 → 11-17 features). The box
+> states below are therefore out of date; the current state is in
+> [HANDOFF-2026-11-17.md](HANDOFF-2026-11-17.md). Re-tick only with runtime evidence, per the rule in the
+> Criteria section.
 
 ## Problem
 
