@@ -304,11 +304,16 @@ Integration integrateManifest(const QString& library, const QString& forcedFolde
 Run::Run(QObject* parent) : QObject(parent) {
     process_.setProcessChannelMode(QProcess::MergedChannels);
     killTimer_.setSingleShot(true);
+    promptTimer_.setSingleShot(true);
     connect(&process_, &QProcess::readyRead, this, &Run::onOutput);
     connect(&process_, &QProcess::finished, this, &Run::onFinished);
     connect(&killTimer_, &QTimer::timeout, this, [this] {
         if (process_.state() == QProcess::NotRunning) return;
         process_.kill();
+    });
+    connect(&promptTimer_, &QTimer::timeout, this, [this] {
+        if (process_.state() == QProcess::NotRunning) return;
+        finish(Outcome::TimedOut, QStringLiteral("SteamCMD did not ask for the password or a code in time (it may still be starting up, or its prompt is not reaching this program's pipe)."));
     });
 }
 Run::~Run() {
@@ -350,6 +355,7 @@ bool Run::start(Mode mode, const QString& exe, const QStringList& arguments, con
         finish(Outcome::NotStarted, process_.errorString());
         return false;
     }
+    if (mode_ == Mode::SignIn) promptTimer_.start(promptTimeoutMs_);
     return true;
 }
 
@@ -377,6 +383,7 @@ bool Run::provide(Secret& secret) {
 void Run::cancel() {
     if (state_ == State::Done || process_.state() == QProcess::NotRunning) { if (!finishedOnce_) finish(Outcome::Cancelled, QString()); return; }
     cancelling_ = true;
+    promptTimer_.stop();                  // a pending prompt timeout must not override the cancel
     process_.terminate();                 // a console child without windows ignores this on Windows ...
     killTimer_.start(1500);               // ... so it is killed if it is still there shortly after
 }
@@ -426,6 +433,7 @@ void Run::checkTail() {
     // A new prompt after a failure line (a wrong code that SteamCMD asks again for) is not the end of the run.
     if (lineOutcome_ == Outcome::BadGuardCode || lineOutcome_ == Outcome::BadPassword) { message_ = lineMessage_; lineOutcome_ = Outcome::None; killTimer_.stop(); }
     pending_ = prompt;
+    promptTimer_.stop();                 // the first prompt arrived; stop waiting for it
     scanner_.clearTail();
     setState(prompt == Prompt::Password ? State::WantPassword : State::WantGuard);
     emit promptRequested(int(prompt));
@@ -448,6 +456,7 @@ void Run::finish(Outcome outcome, const QString& message) {
     if (finishedOnce_) return;
     finishedOnce_ = true;
     killTimer_.stop();
+    promptTimer_.stop();
     if (!held_.isEmpty()) { held_.detach(); volatile char* p = held_.data(); for (qsizetype i = 0; i < held_.size(); ++i) p[i] = 0; held_.clear(); }
     pending_ = Prompt::None;
     message_ = message;

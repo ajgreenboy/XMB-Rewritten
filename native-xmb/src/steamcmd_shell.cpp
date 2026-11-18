@@ -760,6 +760,7 @@ void Shell::activateSteamCmd(const Entry& entry) {
             case O::RateLimited: u.signMessage = tr("Steam is limiting sign-ins right now (%1). Wait a while, then try once.").arg(message); break;
             case O::MobileTimedOut: u.signMessage = tr("The sign-in was not approved on the phone in time. Try again."); break;
             case O::NotStarted: u.signMessage = tr("SteamCMD could not be started: %1").arg(message); break;
+            case O::TimedOut: u.signMessage = tr("SteamCMD did not ask for the password or a code in time. It may still be starting up, or its prompt may be held in its own buffer instead of reaching this program's pipe."); break;
             default: u.signMessage = message.isEmpty() ? tr("SteamCMD ended without signing in.") : message; break;
             }
             steamCmdRefreshJobRows();

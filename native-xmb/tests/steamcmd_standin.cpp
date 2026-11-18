@@ -29,6 +29,10 @@ static FILE* g_capture = nullptr;
 
 static void out(const char* text) { std::fwrite(text, 1, std::strlen(text), stdout); std::fflush(stdout); }
 static void outSlow(const char* a, const char* b) { out(a); Sleep(120); out(b); }
+// Writes without flushing: because stdout is a pipe (not a console) the C runtime fully buffers it, so this
+// text stays in the process's own buffer until it fills or the process exits. Reproduces the gap where a real
+// SteamCMD prompt written without a trailing newline and without a flush never reaches the reader's pipe.
+static void outNoFlush(const char* text) { std::fwrite(text, 1, std::strlen(text), stdout); }
 static void note(const std::string& s) { if (g_capture) { std::fwrite(s.data(), 1, s.size(), g_capture); std::fputc('\n', g_capture); std::fflush(g_capture); } }
 
 static std::string readLine() {
@@ -74,6 +78,11 @@ static bool signIn(const std::string& user) {
     out(banner);
     Sleep(60);
     if (user == "ratelimit_user") { out("FAILED (Rate Limit Exceeded)\r\n"); return false; }
+    if (user == "buffered_user") {
+        outNoFlush("\r\npassword: ");   // held in the full-buffered pipe; never reaches the reader
+        readLine();                     // blocks forever; the reader's prompt timeout kills this process
+        return false;
+    }
     outSlow("\r\npass", "word: ");
     const std::string pw = readLine();
     note(std::string("stdin: password length=") + std::to_string(pw.size()) + (pw == kPassword ? " match=1" : " match=0"));

@@ -233,9 +233,11 @@ struct Result {
 };
 
 // Runs `exe` with `args`. `onPrompt` answers a prompt (return false to leave it unanswered), `onProgress` can cancel.
+// `cancelAfterMs` > 0 calls run.cancel() that long after start (for the cancel-vs-prompt-timeout regression).
 static Result drive(Run& run, Run::Mode mode, const QString& exe, const QStringList& args,
                     const std::function<bool(Run&, int prompt, int count)>& onPrompt = {},
-                    const std::function<void(Run&)>& onProgress = {}) {
+                    const std::function<void(Run&)>& onProgress = {},
+                    int cancelAfterMs = 0) {
     Result r;
     QEventLoop loop;
     QTimer timeout;
@@ -256,6 +258,7 @@ static Result drive(Run& run, Run::Mode mode, const QString& exe, const QStringL
     QObject::connect(&run, &Run::finished, &loop, [&](int o, QString m) { r.outcome = o; r.message = m; loop.quit(); });
     timeout.start(kWaitMs);
     if (!run.start(mode, exe, args)) return r;
+    if (cancelAfterMs > 0) QTimer::singleShot(cancelAfterMs, &loop, [&run] { run.cancel(); });
     loop.exec();
     timeout.stop();
     return r;
@@ -372,6 +375,28 @@ static void processTests(const QString& exe, const QString& scratch) {
         Secret s(kPassword);
         CHECK(!run.provide(s));
         CHECK(s.isEmpty());
+    }
+    // 13. a prompt that never arrives (SteamCMD's own buffer swallows it): bounded by the prompt timeout
+    {
+        Run run;
+        run.setPromptTimeout(2000);
+        const auto r = drive(run, Run::Mode::SignIn, exe, signInArguments(QStringLiteral("buffered_user")));
+        CHECK(!r.timedOut);                       // Run ended on its own, not the harness 30 s guard
+        CHECK(r.outcome == O(Run::Outcome::TimedOut));
+        CHECK(r.prompts.isEmpty());               // no prompt was ever delivered
+        CHECK(!run.running());
+        CHECK(r.message.contains(QStringLiteral("pipe")));
+    }
+    // 14. cancel just before the prompt timeout still ends Cancelled, not TimedOut. The child ignores terminate
+    //     (a console app with no message loop), so only the 1.5 s kill timer would end it; without cancel()
+    //     stopping the prompt timer, the 1 s prompt timeout would fire first and win with TimedOut.
+    {
+        Run run;
+        run.setPromptTimeout(1000);
+        const auto r = drive(run, Run::Mode::SignIn, exe, signInArguments(QStringLiteral("buffered_user")), {}, {}, 600);
+        CHECK(!r.timedOut);
+        CHECK(r.outcome == O(Run::Outcome::Cancelled));
+        CHECK(!run.running());
     }
 
     // Jobs -----------------------------------------------------------------------------------------------------

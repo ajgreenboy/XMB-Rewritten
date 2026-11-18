@@ -140,12 +140,18 @@ public:
     enum class Outcome {
         None, SignedIn, JobDone, NeedsSignIn, BadPassword, BadGuardCode, RateLimited, MobileTimedOut,
         Failed, Cancelled, NotStarted, ExitedEarly,
+        TimedOut,    // the sign-in never asked for the password or a code within the prompt timeout
     };
     explicit Run(QObject* parent = nullptr);
     ~Run() override;
     // Starts the child. Nothing about the account but its name is in `arguments`; the environment is the app's own
     // (no variable is added). Returns false when the process cannot start (Outcome::NotStarted follows at once).
     bool start(Mode mode, const QString& exe, const QStringList& arguments, const QString& workDir = {});
+    // How long a sign-in may wait for SteamCMD to ask for the password or a code before giving up (default 60 s,
+    // generous because a first run updates SteamCMD itself before it can prompt). A real SteamCMD writes its
+    // prompt to the pipe; if the prompt stays in SteamCMD's own buffer (or SteamCMD reads a console instead of
+    // stdin) it never arrives and the run must not wait forever. Tests shorten it.
+    void setPromptTimeout(int ms) { promptTimeoutMs_ = ms; }
     // Writes one line to the child's stdin, then wipes the secret. Only valid for the prompt that was asked for.
     bool provide(Secret& secret);
     // Ends the child: terminate, a short wait, then kill. finished(Cancelled) follows.
@@ -181,6 +187,8 @@ private:
     QString message_;
     QByteArray held_;                         // the one secret currently being sent, for scrubbing, wiped after
     QTimer killTimer_;
+    QTimer promptTimer_;
+    int promptTimeoutMs_ = 60000;
     bool cancelling_ = false, sawLoginOk_ = false, finishedOnce_ = false, sawMobile_ = false;
     Outcome lineOutcome_ = Outcome::None;
     QString lineMessage_;

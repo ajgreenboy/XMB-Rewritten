@@ -158,8 +158,35 @@ SteamCMD updates itself (no account involved). Then the path is saved. Safe mode
   (length and verdict, not the value); the runner asserts the secrets are in none of the arguments or environment
   variables, that they did arrive on stdin, that none of the secrets is in any `qDebug`/`qInfo` line produced, and that
   no file under the scratch folder contains them.
+- a **prompt that never arrives** (the pipe-flush gap below): the stand-in's `buffered_user` writes `password:` with
+  no flush, so it stays in the child's own buffer; the `Run` state machine ends `TimedOut` on its prompt timeout.
+- a **cancel just before that timeout**: `cancel()` stops the prompt timer, so a sign-in cancelled while waiting for a
+  prompt it never got still ends `Cancelled`, never `TimedOut` (the stand-in ignores terminate, so only the 1.5 s kill
+  timer would otherwise lose the race to the prompt timeout).
 
 The stand-in never contacts Steam, never reads the registry and is addressed only by path. Runs use 30 s waits.
+
+## The pipe-flush gap (reproduced, bounded)
+
+One timing gap in the "unverified" list is reproducible without a real SteamCMD, and is now bounded. When a
+program's stdout is a **pipe** — which is how `Run` reads SteamCMD (`QProcess`, merged channels) — the C runtime
+switches stdout from line-buffered to **fully buffered** (4 KB). A prompt written with no trailing newline and no
+explicit flush, which is exactly what `password:` looks like, then sits in the child's own buffer and never reaches
+the reader until the buffer fills or the process exits. The stand-in's `buffered_user` reproduces this; against it
+the `Run` state machine previously waited forever in "Signing In...".
+
+`Run` now starts a prompt timeout for a sign-in (`setPromptTimeout`, default 60 s, generous because a first run
+updates SteamCMD itself before it can prompt). If SteamCMD has not asked for the password or a code in that time the
+run ends `TimedOut` and the sign-in page says it may still be starting up, or that its prompt may be held in its own
+buffer instead of reaching this program's pipe. The timeout is **first-prompt-only**: it stops on the first prompt, so
+the phone-approval wait (no further prompt) is not cut short, and `cancel()` also stops it. Test #13 drives
+`buffered_user` with an explicit 2 s timeout and asserts the `TimedOut` outcome, that no prompt was delivered, that the
+process is gone, and the "pipe" message; test #14 cancels `buffered_user` 0.6 s into a 1 s timeout and asserts
+`Cancelled`, not `TimedOut`.
+
+This does **not** verify SteamCMD's real behaviour: whether a real SteamCMD flushes its prompt, or prompts on a pipe
+at all rather than a console, is still the owner's to test against a real account. What is now guaranteed is that a
+sign-in whose prompt never arrives can no longer hang the XMB forever.
 
 ## Not done, and why
 
@@ -173,7 +200,8 @@ The stand-in never contacts Steam, never reads the registry and is addressed onl
 
 Everything against a real SteamCMD and a real account: that `+login <name>` without a password prompts on a **pipe**
 (SteamCMD may read a console rather than stdin; if so the sign-in cannot be driven this way and the fallback is a hidden
-pseudo-console, not built), that its prompt and output are flushed to a pipe in time, the exact texts in the table's
+pseudo-console, not built), that its prompt and output are flushed to a pipe in time (the buffering side of this is now
+reproduced by the stand-in and bounded by a prompt timeout, see above), the exact texts in the table's
 "assumed" rows, how the cached login behaves with `+@NoPromptForPassword 1`, that `config\config.vdf` is what holds the
 cached login, where the manifest lands for a forced directory, that the Steam client picks the game up after a restart or
 rescan, that `+@sSteamCmdForcePlatformType windows` is accepted, and the download URL and the unpack/first-run steps of
