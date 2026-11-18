@@ -1,5 +1,6 @@
 #include "shell.h"
 #include "release_job_state.h"
+#include "release_archive_cleanup.h"
 #include "archive_extract.h"
 #include "content_registry.h"
 #include "diagnostics.h"
@@ -596,7 +597,17 @@ void Shell::restoreReleaseJobs() {
     bool installedAny=false;
     for(auto& job:releaseJobs_->jobs) {
         job.result.archive=completedArchive(job);
-        if(job.state==State::Cancelling)job.state=State::Cancelled;
+        if(job.state==State::Cancelling) {
+            job.state=State::Cancelled;
+            // The worker was interrupted (shutdown or crash) before its finished handler ran, so the
+            // cancellation never got its cleanup pass. It is now definitive: discard the orphan
+            // rather than leave it behind. A pause/failure/queued job keeps its archive below. The
+            // delete is gated on the drive still being the job's own volume, so a reused drive letter
+            // or a redirected library never receives another drive's cleanup.
+            if(destinationReady(job.request,gameArchiveDirectory(job.request,job.id)) &&
+               releaseJobDiscardArchive(job.request.gamesDirectory,job.id,job.result.archive))
+                job.result.archive.clear();
+        }
         const bool runnable=job.state==State::Queued || job.state==State::Resolving ||
             job.state==State::Downloading || job.state==State::Extracting;
         if((runnable || job.state==State::Failed) &&
@@ -824,6 +835,12 @@ void Shell::pumpReleaseJobs() {
         if(paused || cancelled)result.error.clear();
         if(job->state==State::Failed && result.error.isEmpty())result.error = tr("Could not prepare the game.");
         job->result.archive = result.archive.isEmpty() ? job->result.archive : result.archive;
+        // Definitive cancellation only (a cancel with no standing pause): the worker has finished
+        // and the completed archive is no longer resumable, so discard it rather than leave an
+        // orphan in Download Archives/<id>/. A pause or failure keeps the archive for resume/retry.
+        if(cancelled && !paused &&
+           releaseJobDiscardArchive(job->request.gamesDirectory,id,result.archive))
+            job->result.archive.clear();
         job->result.error = result.error;
         if(!saveReleaseJobs())notify(tr("Download Management"),tr("Could not save the download queue."));
         notify(tr("Download Management"),tr("%1 · %2").arg(job->request.title,statusText(*job)));
@@ -950,10 +967,9 @@ bool Shell::cancelReleaseJob(const QString& id) {
     } else if(releaseJobs_->control) {
         job->state = State::Cancelling;
         // requestCancel() also clears pausing, so a job cancelled during Pausing settles to Cancelled
-        // rather than Paused. If the pause's wind-down already flushed its checkpoint first, the partial
-        // archive stays in Download Archives/<id>/ (orphaned but harmless: the job is Cancelled and
-        // archiveForResume is cleared). That residue is a pre-existing cancel-during-pause limitation,
-        // not something this path introduces.
+        // rather than Paused. If the pause's wind-down already flushed its checkpoint first, the
+        // archive (completed or partial) remains in Download Archives/<id>/ until the worker's
+        // finished handler discards it as part of the definitive cancellation (see pumpReleaseJobs).
         releaseJobs_->control->requestCancel();
     } else {
         // Defensive: an active job with no in-flight control cannot be cancelled cleanly.

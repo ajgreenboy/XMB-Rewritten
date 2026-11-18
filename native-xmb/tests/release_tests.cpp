@@ -3,6 +3,7 @@
 #include "real_debrid.h"
 #include "preferences.h"
 #include "release_job_state.h"
+#include "release_archive_cleanup.h"
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
@@ -10,6 +11,7 @@
 #include <QTcpServer>
 #include <QTcpSocket>
 #include <QTemporaryDir>
+#include <QProcess>
 #include <cmath>
 #include <cstdio>
 
@@ -163,5 +165,74 @@ int main(int argc,char** argv) {
     check(xmb::releaseJobIdFromRow(QStringLiteral("download:1001")).isEmpty(),"Steam queue row is not a release job");
     check(xmb::releaseJobIdFromRow(QStringLiteral("download:release:")).isEmpty(),"empty job id rejected");
     check(xmb::releaseJobIdFromRow(QString()).isEmpty(),"empty row id rejected");
+    // Definitive-cancel archive cleanup (release_archive_cleanup.h): a cancelled job must not leave its
+    // completed archive orphaned in Download Archives/<id>/. The helper removes only the job-owned
+    // artifacts and preserves unrelated content; a pause/failure keeps the archive (the caller never
+    // invokes it then), so nothing here affects resume/retry. The scratch root is created directly
+    // (QTemporaryDir is unreliable in some sandboxes) so these checks run deterministically.
+    {
+        const QString games = QDir::tempPath() + QStringLiteral("/xmb-release-cleanup-") +
+            QString::number(QCoreApplication::applicationPid());
+        QDir(games).removeRecursively();
+        check(QDir().mkpath(games),"archive cleanup scratch root");
+        const QString id=QStringLiteral("0123456789abcdef0123456789abcdef");
+        const QDir dir(QDir(games).filePath(QStringLiteral("Download Archives/")+id));
+        check(QDir().mkpath(dir.path()),"archive dir created");
+        QFile archive(dir.filePath(QStringLiteral("Broken Archive.zip")));
+        check(archive.open(QIODevice::WriteOnly),"archive file written");(void)archive.write("fixture");archive.close();
+        QFile partial(dir.filePath(QStringLiteral(".xmb-game.part")));
+        (void)partial.open(QIODevice::WriteOnly);(void)partial.write("x");partial.close();
+        QFile meta(dir.filePath(QStringLiteral(".xmb-game.resume.json")));
+        (void)meta.open(QIODevice::WriteOnly);(void)meta.write("{}");meta.close();
+        check(releaseJobDiscardArchive(games,id,archive.fileName()),"definitive cancel discards archive dir");
+        check(!QFileInfo::exists(dir.path()),"archive dir removed after cancel");
+        // Unrelated content is preserved: the helper removes the owned archive and reports it gone
+        // (so the caller clears its stale reference), but leaves the directory (and any unrecognised
+        // file) in place.
+        const QDir dir2(QDir(games).filePath(QStringLiteral("Download Archives/")+id));
+        check(QDir().mkpath(dir2.path()),"second archive dir created");
+        QFile keep(dir2.filePath(QStringLiteral("keep.txt")));
+        (void)keep.open(QIODevice::WriteOnly);(void)keep.write("user");keep.close();
+        QFile arch2(dir2.filePath(QStringLiteral("Game.zip")));
+        (void)arch2.open(QIODevice::WriteOnly);(void)arch2.write("z");arch2.close();
+        check(releaseJobDiscardArchive(games,id,arch2.fileName()),"owned archive reported gone despite unrelated content");
+        check(QFileInfo::exists(dir2.filePath(QStringLiteral("keep.txt"))),"unrelated file preserved");
+        check(QFileInfo::exists(dir2.path()),"directory retained for unrelated content");
+        check(!QFileInfo::exists(arch2.fileName()),"owned archive still removed");
+        // Malformed job id and a relative root are refused without touching anything.
+        check(!releaseJobDiscardArchive(games,QStringLiteral("not-an-id"),archive.fileName()),"invalid id refused");
+        check(!releaseJobDiscardArchive(QStringLiteral("Download Archives"),id,archive.fileName()),"relative root refused");
+        // A missing archive directory is already clean.
+        check(releaseJobDiscardArchive(games,QStringLiteral("fedcba9876543210fedcba9876543210"),QString()),
+              "absent archive dir is clean");
+#ifdef Q_OS_WIN
+        // Junction defense: QFileInfo::isSymLink() is false for an NTFS junction, so the helper must
+        // also check isJunction() and refuse to delete through it. mklink /J normally needs no
+        // elevation; if this sandbox forbids it, the check is skipped rather than failed.
+        {
+            const QString jId=QStringLiteral("fedcba9876543210fedcba9876543210");
+            const QString jTarget = QDir::tempPath() + QStringLiteral("/xmb-release-cleanup-jtarget-") +
+                QString::number(QCoreApplication::applicationPid());
+            QDir().mkpath(jTarget);
+            QFile jKeep(jTarget + QStringLiteral("/keep.txt"));
+            (void)jKeep.open(QIODevice::WriteOnly);(void)jKeep.write("user");jKeep.close();
+            const QString jLink = QDir(games).filePath(QStringLiteral("Download Archives/")+jId);
+            QProcess mklink;
+            mklink.start(QStringLiteral("cmd"),{QStringLiteral("/C"),QStringLiteral("mklink"),QStringLiteral("/J"),
+                                               QDir::toNativeSeparators(jLink),QDir::toNativeSeparators(jTarget)});
+            mklink.waitForFinished(10000);
+            if(mklink.exitCode()==0 && QFileInfo(jLink).exists() && QFileInfo(jLink).isJunction()) {
+                check(!releaseJobDiscardArchive(games,jId,QDir(jLink).filePath(QStringLiteral("keep.txt"))),
+                      "junction archive dir refused");
+                check(QFileInfo::exists(jKeep.fileName()),"junction target content preserved");
+            }
+            // Remove the junction (reparse point) first so removeRecursively never walks through it.
+            QDir().rmdir(jLink);
+            QDir(games).removeRecursively();
+            QDir(jTarget).removeRecursively();
+        }
+#endif
+        QDir(games).removeRecursively();
+    }
     std::printf("Release backend: %d checks, %d failures\n",checks,failures);return failures?2:0;
 }
