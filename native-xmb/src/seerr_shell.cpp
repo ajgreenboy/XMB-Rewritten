@@ -38,6 +38,16 @@ struct SeerrUi {
     QString downloadApiKey;
     QString server;
     QString apiKey;
+    // Seerr -> Jellyfin resolution state: for a request whose SABnzbd transfer has completed but whose media
+    // is not yet marked Available, the matching Jellyfin library item (resolved by ProviderIds.Tmdb, title
+    // fallback) becomes a Watch action. Keyed by the download row id (download:seerr:<requestId>).
+    QHash<QString,QString> seerrTmdbId;
+    QHash<QString,JellyfinItem> jellyfinMatch;
+    QHash<QString,QString> jellyfinTitleKey;   // row id -> search key (dedupes re-search)
+    QHash<QString,QString> jellyfinTitle;      // row id -> title (title-match fallback)
+    QSet<QString> jellyfinResolvePending;
+    quint64 jellyfinResolveRequest=0;
+    bool jellyfinResolveHooked=false;
     QString searchTerm;
     QString title;
     QString mediaType;
@@ -220,6 +230,10 @@ void Shell::refreshSeerrDownloads() {
             row.action=Action::Information;
             row.artwork=state.posters.value(identifier);
             rows.append(std::move(row));
+            // The transfer is out of SABnzbd (no live queue ids) and the media is not yet Available: try to
+            // resolve the imported Jellyfin item so the row can offer Watch as soon as it is actually playable.
+            if(ids.isEmpty() && self->jellyfin_.signedIn())
+                self->resolveSeerrJellyfin(identifier,title,seerrMediaType(media)==QLatin1String("movie")?QString::number(id):QString());
             if(state.titles.contains(key) || state.downloadDetails.contains(key))continue;
             state.downloadDetails.insert(key);
             state.downloadClient.details(type,id,[self,key,identifier](QJsonObject details,QString error){
@@ -293,7 +307,13 @@ void Shell::addSeerrDownloadOptions(const Entry& entry) {
     if(!seerr_ || seerr_->sabBusy || diagnostics::safeMode())return;
     const auto& ui=*seerr_;
     const auto ids=ui.sabIds.value(entry.id);
-    if(ids.isEmpty())return;
+    // A request whose transfer has left SABnzbd has no live controls, but a resolved Jellyfin item does:
+    // Watch is the one action its menu offers while it waits to be marked Available.
+    if(ids.isEmpty()) {
+        if(ui.jellyfinMatch.contains(entry.id))
+            addOption({"",tr("Watch")},OptionCommand::SeerrDownloadWatch,"seerr-jellyfin");
+        return;
+    }
     bool anyPaused=false,anyRunning=false;
     for(const auto& id:ids) {
         const auto state=ui.sabStates.constFind(id);
@@ -308,6 +328,7 @@ void Shell::addSeerrDownloadOptions(const Entry& entry) {
 void Shell::controlSeerrDownload(const Entry& entry,OptionCommand command) {
     if(!seerr_ || seerr_->sabBusy || diagnostics::safeMode())return;
     auto& ui=*seerr_;
+    if(command==OptionCommand::SeerrDownloadWatch) { watchSeerrJellyfin(entry.id); return; }
     const auto ids=ui.sabIds.value(entry.id);
     const auto config=seerrConfig::loadSab(dataDirectory_);
     if(ids.isEmpty() || config.server.isEmpty() || config!=ui.sabActive ||
@@ -335,6 +356,70 @@ void Shell::controlSeerrDownload(const Entry& entry,OptionCommand command) {
         const auto title=tr("Cancel %1?").arg(entry.title);
         showConfirm(title,title+QStringLiteral("\n\n")+tr("SABnzbd keeps downloaded files and may clear temporary data. Seerr keeps the request, and the server may grab a replacement."),perform);
     } else perform();
+}
+
+// The Seerr->Jellyfin resolution: find the imported Jellyfin item for a request whose transfer is done but whose
+// media is not yet Available. One free-text search runs, answered through a dedicated pageReady connection whose
+// request id never matches the player's own search, so the player page handler ignores it.
+void Shell::resolveSeerrJellyfin(const QString& rowId,const QString& title,const QString& tmdbId) {
+    if(!seerr_ || !jellyfin_.signedIn())return;
+    auto& ui=*seerr_;
+    if(ui.jellyfinResolvePending.size()>=16 || ui.jellyfinMatch.contains(rowId))return;
+    const QString key=title.trimmed().toCaseFolded();
+    if(key.isEmpty() || ui.jellyfinTitleKey.value(rowId)==key)return;
+    ui.jellyfinTitleKey.insert(rowId,key);
+    ui.jellyfinTitle.insert(rowId,title.trimmed());
+    if(!tmdbId.isEmpty())ui.seerrTmdbId.insert(rowId,tmdbId);
+    ui.jellyfinResolvePending.insert(rowId);
+    if(!ui.jellyfinResolveHooked) {
+        ui.jellyfinResolveHooked=true;
+        connect(&jellyfin_,&JellyfinClient::pageReady,this,[this](quint64 request,const JellyfinPage& page){
+            if(!seerr_ || request!=seerr_->jellyfinResolveRequest || seerr_->jellyfinResolveRequest==0)return;
+            seerr_->jellyfinResolveRequest=0;
+            // One search serves every pending row: resolve each still-pending row against the page.
+            const auto pending=seerr_->jellyfinResolvePending;
+            seerr_->jellyfinResolvePending.clear();
+            for(const auto& rowId:pending) {
+                const QString tmdb=seerr_->seerrTmdbId.value(rowId);
+                const QString title=seerr_->jellyfinTitle.value(rowId);
+                const JellyfinItem* found=nullptr;
+                for(const auto& item:page.items) {
+                    const bool tmdbMatch=!tmdb.isEmpty() && item.tmdbId==tmdb;
+                    const bool titleMatch=!title.isEmpty() && !item.title.isEmpty() && item.title.trimmed().compare(title,Qt::CaseInsensitive)==0;
+                    if((tmdbMatch || titleMatch) &&
+                       (item.type==QLatin1String("Movie") || item.type==QLatin1String("Episode") || item.type==QLatin1String("Video"))) { found=&item; break; }
+                }
+                if(found)applySeerrJellyfinMatch(rowId,*found);
+            }
+        });
+    }
+    ui.jellyfinResolveRequest=jellyfin_.search(title);
+}
+
+void Shell::applySeerrJellyfinMatch(const QString& rowId,const JellyfinItem& item) {
+    if(!seerr_)return;
+    seerr_->jellyfinMatch.insert(rowId,item);
+    for(auto& row:seerr_->downloadRows)if(row.id==rowId) {
+        row.detail=tr("Ready to watch · Seerr · %1").arg(item.type==QLatin1String("Episode")?item.seriesName:item.title);
+        row.value=row.title+QStringLiteral("\n\n")+row.detail+QStringLiteral("\n")+tr("Watch opens it in Jellyfin.");
+    }
+    emit changed();
+}
+
+void Shell::watchSeerrJellyfin(const QString& rowId) {
+    if(!seerr_ || !seerr_->jellyfinMatch.contains(rowId))return;
+    const JellyfinItem item=seerr_->jellyfinMatch.value(rowId);
+    if(item.id.isEmpty() || !jellyfin_.signedIn())return;
+    Entry entry;
+    entry.id=QStringLiteral("jellyfin:")+item.id;
+    entry.title=item.title;
+    entry.value=item.id;
+    entry.action=Action::JellyfinPlay;
+    entry.mediaKind=item.type==QLatin1String("Movie")?QStringLiteral("Movie"):QStringLiteral("Episode");
+    entry.option=item.type==QLatin1String("Audio");
+    entry.resumeMs=item.resumeMs;entry.durationMs=item.durationMs;entry.played=item.played;entry.favorite=item.favorite;entry.seriesId=item.seriesId;
+    QVector<Entry> rows{entry};
+    playJellyfinQueue(rows,0,false);
 }
 
 void Shell::loadSeerrPoster(const QString& rowId,const QString& path) {

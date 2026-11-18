@@ -274,7 +274,7 @@ enum class OptionCommand { Activate, Information,
     UserAutoLoginTarget,
     // A Jellyfin image subtitle the client cannot draw: re-open the title with that stream burned into a
     // server transcode (MenuOption::index is the server's stream index).
-    SubtitleBurnIn, ReleaseDownloadCancel, ReleaseDownloadRetry, ReleaseDownloadPause, ReleaseDownloadResume, ReleaseDownloadPauseAll, ReleaseDownloadResumeAll, SeerrDownloadPause, SeerrDownloadResume, SeerrDownloadCancel };
+    SubtitleBurnIn, ReleaseDownloadCancel, ReleaseDownloadRetry, ReleaseDownloadPause, ReleaseDownloadResume, ReleaseDownloadPauseAll, ReleaseDownloadResumeAll, SeerrDownloadPause, SeerrDownloadResume, SeerrDownloadCancel, SeerrDownloadWatch };
 // A label read from the RCO text table: the key plus the English string it should resolve to. The fallback
 // is used only when the local flash image has no table; whenever the RCO is present, its value is the label.
 struct OptionLabel { const char* key=nullptr; QString fallback; };
@@ -1078,6 +1078,9 @@ private:
     void addSeerrDownloadOptions(const Entry& entry);
     void controlSeerrDownload(const Entry& entry,OptionCommand command);
     QVector<Entry> seerrDownloadRows() const;
+    void resolveSeerrJellyfin(const QString& rowId,const QString& title,const QString& tmdbId);
+    void applySeerrJellyfinMatch(const QString& rowId,const JellyfinItem& item);
+    void watchSeerrJellyfin(const QString& rowId);
     void loadSeerrPoster(const QString& rowId,const QString& path);
     void loadSeerrSearch(const QString& term,int page);
     void loadSeerrDetails(const QString& type,int id,const QString& title);

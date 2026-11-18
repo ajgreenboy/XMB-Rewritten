@@ -3834,6 +3834,7 @@ void Shell::optionsActivate() {
     case OptionCommand::SeerrDownloadPause:
     case OptionCommand::SeerrDownloadResume:
     case OptionCommand::SeerrDownloadCancel:
+    case OptionCommand::SeerrDownloadWatch:
         resetOptions();
         controlSeerrDownload(entry,option.command);
         emit changed();
