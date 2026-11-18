@@ -104,11 +104,20 @@ completes, `extractGameArchive` rejects the non-ZIP signature, `apps.json` is ne
 retained as `Download Archives/<uuid>/Broken Archive.zip`. The job's `Failed` row keeps `result.archive`, so the Phase
 2 retry reuses the validated archive (the recovery path the acceptance asks to "record").
 
-## 7. Open
+## 7. Multi-release fixture (verified)
 
-What remains to reach the full Phase 1 acceptance: the multi-release fixture across all three scopes (an overlapping
-game, distinct editions, multiple mirrors, an unknown size, and a failing source in one feed), the explicit
-scope-and-query-retained-on-return check (the result page already persists in the stack with its `Search: <query>`
-title), and the retained-artwork assertion (increment 1 fetches the cover; a feed entry carrying a cover URL would
-exercise it — the e2e fixture omitted one). See `audit/PHASES-MANIFEST-DOWNLOAD-2026-11-11.md` for the
-registration/integrity reference.
+A second scratch harness (`%TEMP%\xmb-p1-multi\`, not committed) imports a feed with two editions of one game, a second
+Deluxe entry with no size and a dead URL, and a mirror-group release, then searches "overlap" under the imported scope.
+Observed:
+
+- `Imported 4 releases from P1 Multi Feed`; searching "overlap" yields two results — "Overlap Game — Deluxe Edition"
+  (two options: the 2 GB direct and the unknown-size/dead-URL one, merged by name) and "Overlap Game — Standard
+  Edition" (one option). Editions are therefore kept apart when the release title carries the edition, exactly the
+  "distinguish similarly named games" case.
+- The game page (depth 4) lists `P1 Multi Feed / 127.0.0.1 · Mirror 1` — mirror groups render with the `· Mirror N`
+  suffix (`release_shell.cpp` `openGameSources`), and an option whose feed entry has no `fileSize` shows `Size unknown`
+  in its value column (the `option.fileSize.isEmpty()` fallback).
+
+The one acceptance element not separately driven is a live `all`/`online` scope against the Hydra library (needs the
+public API), and the retained-artwork assertion with a cover-URL feed entry; both are covered by design rather than a
+new capture.
