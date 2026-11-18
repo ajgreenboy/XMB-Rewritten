@@ -171,7 +171,9 @@ View::View(Shell& shell,Assets& assets,QWidget* parent):QOpenGLWidget(parent),sh
     // layout and the provenance is never guessed.
     xmb::bootprof::mark("View label+syncColumns");
     oskLayout_=loadOskLayout(assets_,oskObjects_);
+    oskPanelLayout_=loadOskPanelLayout(assets_,oskObjects_);
     xmb::bootprof::mark("View loadOskLayout");
+    xmb::bootprof::mark("View loadOskPanelLayout");
     monthImage_=assets_.image("qgl/lines",QString("textures/month_bg/rgb/%1.dds").arg(QDateTime::currentDateTime().date().month(),2,10,QChar('0')));
     connect(&shell_,&Shell::changed,this,[this]{syncInGameWindow();++uiRevision_;syncColumns();loadWallpaper();setColumnSink(shell_.columnSink());update();});
     connect(&shell_,&Shell::mediaFrame,this,[this](const QImage& frame){
@@ -1475,7 +1477,8 @@ void View::paintGL() {
     // --render-clock drives the phase as well as the background, so two captures of one state are identical
     // frames; a live run follows the wall clock.
     const qint64 blinkMs=secondsOverride_>=0?qint64(secondsOverride_*1000.):clock_.elapsed();
-    if(osk_.open)osk_.caretLit=((blinkMs/qMax(1,oskLayout_.caret.blinkMilliseconds))%2)==0;
+    const OskLayout& oskL=osk_.tenkey?oskPanelLayout_:oskLayout_;
+    if(osk_.open)osk_.caretLit=((blinkMs/qMax(1,oskL.caret.blinkMilliseconds))%2)==0;
     QString signature=QString::asprintf("%.4f %.4f %.4f %d %d %d ",categoryPosition_,depthPosition_,categoryFade_,shell_.category(),shell_.depth(),uiRevision_);
     // The bar layer runs its own (traced) depth ease; it is part of the signature only while the two disagree,
     // so the canonical rest frame's signature string is byte-identical to before the split.
@@ -1517,7 +1520,7 @@ void View::paintGL() {
     if(osk_.open)signature+=QString::asprintf("osk %d %d %d %d %d %d %d %d %d %d ",
         osk_.row,osk_.column,osk_.cursor,osk_.page,int(osk_.paletteOpen),osk_.paletteRow,osk_.paletteColumn,
         osk_.paletteScroll,int(osk_.caretLit),int(osk_.onPaste))+
-        (osk_.masked?QString(osk_.text.size(),oskLayout_.mask.glyph):osk_.text)+
+        (osk_.masked?QString(osk_.text.size(),oskL.mask.glyph):osk_.text)+
         QString::asprintf(" paste %d ",int(osk_.pasteReady))+osk_.toast;
     // The notification composite animates outside a shell change (slide/fade), so its amount and content are
     // part of the signature: quantised by 1/256, which is finer than the 2x layer can show.
@@ -6025,17 +6028,22 @@ constexpr double oskCharacterCaptionCentre=53.5;
 }
 QString View::oskCharacter(int row,int column) const {
     // One source for a key's character: the resolved page, never a table in this file.
-    const OskKey* key=oskLayout_.keyAt(osk_.page,row,column);
+    const OskLayout& L=osk_.tenkey?oskPanelLayout_:oskLayout_;
+    const OskKey* key=L.keyAt(osk_.page,row,column);
     return key?key->label:QString();
 }
 void View::openOsk(const QString& title,const QString& initial,std::function<void(QString)> done,bool masked) {
     osk_=Osk{};osk_.open=true;osk_.title=title;osk_.text=initial;osk_.cursor=int(initial.size());osk_.done=std::move(done);
     osk_.masked=masked;
+    // Test hook: XMB_OSK_TENKEY=1 forces the phone-style tenkey panel for this open. There are no numeric fields
+    // yet, so this is the only trigger that reaches the variant until one lands.
+    if(qEnvironmentVariableIntValue("XMB_OSK_TENKEY")==1){osk_.tenkey=true;qInfo().noquote()<<"osk: XMB_OSK_TENKEY=1 - using the tenkey panel";}
     // The firmware's default focus: row 2, column 4 = `g`, in two independent boots (audit 5, 12.2). The layout
     // carries it, so a different layout can start somewhere else without touching this call.
     osk_.page=0;
-    osk_.row=oskLayout_.defaultFocusRow;
-    osk_.column=oskLayout_.defaultFocusColumn;
+    const OskLayout& L=osk_.tenkey?oskPanelLayout_:oskLayout_;
+    osk_.row=L.defaultFocusRow;
+    osk_.column=L.defaultFocusColumn;
     update();
 }
 void View::oskClose(bool accept) {
@@ -6056,7 +6064,7 @@ void View::oskInsert(const QString& value) {
     osk_.text.insert(osk_.cursor,value.left(count));osk_.cursor+=count;update();
 }
 int View::oskPasteRow() const {
-    const auto& l=oskLayout_;
+    const OskLayout& l=osk_.tenkey?oskPanelLayout_:oskLayout_;
     return (l.bands.pasteButton.center().y()-l.gridOrigin.y())/std::max(1,l.cell.height());
 }
 void View::oskToast(const QString& text) {
@@ -6096,7 +6104,8 @@ void View::oskBackspace() {
 void View::oskMove(int dx,int dy) {
     // The palette owns the arrows while it is open: it is a 7x5 window over the symbol list (audit 4.3).
     if(osk_.paletteOpen) { oskPaletteMove(dx,dy);return; }
-    const OskPage* page=oskLayout_.page(osk_.page);
+    const OskLayout& L=osk_.tenkey?oskPanelLayout_:oskLayout_;
+    const OskPage* page=L.page(osk_.page);
     if(!page || page->rows.isEmpty())return;
     const int rowCount=int(page->rows.size());
     // The Paste button sits right of the grid, level with one row: Right from that row's last key lands on it, Left or
@@ -6105,13 +6114,13 @@ void View::oskMove(int dx,int dy) {
         osk_.onPaste=false;
         osk_.row=(osk_.row+dy+rowCount)%rowCount;
         if(dx>0)osk_.column=0;
-        else osk_.column=oskLayout_.columns-1;
+        else osk_.column=L.columns-1;
         if(const OskKey* key=page->keyAt(osk_.row,osk_.column))osk_.column=key->column;
         update();return;
     }
     if(dx>0 && osk_.row==oskPasteRow()) {
         const OskKey* current=page->keyAt(osk_.row,osk_.column);
-        if((current?current->column+current->span:osk_.column+1)>=oskLayout_.columns){osk_.onPaste=true;update();return;}
+        if((current?current->column+current->span:osk_.column+1)>=L.columns){osk_.onPaste=true;update();return;}
     }
     osk_.row=(osk_.row+dy+rowCount)%rowCount;   // up/down wrap over the six rows, keeping the column
     if(dx!=0) {
@@ -6119,8 +6128,8 @@ void View::oskMove(int dx,int dy) {
         // span and wraps inside the row (audit 5, "wide keys occupy their span").
         const OskKey* current=page->keyAt(osk_.row,osk_.column);
         int target=current?(dx>0?current->column+current->span:current->column-1):osk_.column+dx;
-        if(target>=oskLayout_.columns)target=0;
-        if(target<0)target=oskLayout_.columns-1;
+        if(target>=L.columns)target=0;
+        if(target<0)target=L.columns-1;
         if(const OskKey* next=page->keyAt(osk_.row,target))osk_.column=next->column;
         else osk_.column=target;
     }
@@ -6129,7 +6138,8 @@ void View::oskMove(int dx,int dy) {
     update();
 }
 void View::oskPaletteMove(int dx,int dy) {
-    const OskPalette& palette=oskLayout_.palette;
+    const OskLayout& L=osk_.tenkey?oskPanelLayout_:oskLayout_;
+    const OskPalette& palette=L.palette;
     if(palette.columns<=0 || palette.visibleRows<=0)return;
     osk_.paletteColumn=(osk_.paletteColumn+dx+palette.columns)%palette.columns;
     int row=osk_.paletteRow+dy;
@@ -6148,7 +6158,8 @@ void View::oskPaletteMove(int dx,int dy) {
     update();
 }
 void View::oskPalettePress() {
-    const QChar symbol=oskLayout_.palette.symbolAtCell(osk_.paletteRow,osk_.paletteColumn,osk_.paletteScroll);
+    const OskLayout& L=osk_.tenkey?oskPanelLayout_:oskLayout_;
+    const QChar symbol=L.palette.symbolAtCell(osk_.paletteRow,osk_.paletteColumn,osk_.paletteScroll);
     if(!symbol.isNull())oskInsert(QString(symbol));
     // F: the capture never shows a symbol being accepted, so closing the popup after the insert is a fit, not a
     // trace. Back (Escape/Circle) is the traced way out.
@@ -6158,7 +6169,8 @@ void View::oskPalettePress() {
 void View::oskPress() {
     if(osk_.paletteOpen) { oskPalettePress();return; }
     if(osk_.onPaste) { oskPaste();update();return; }
-    const OskKey* key=oskLayout_.keyAt(osk_.page,osk_.row,osk_.column);
+    const OskLayout& L=osk_.tenkey?oskPanelLayout_:oskLayout_;
+    const OskKey* key=L.keyAt(osk_.page,osk_.row,osk_.column);
     if(!key)return;
     // Every action the layout can carry is dispatched, and the three that the native build cannot honour say so
     // in the log instead of doing nothing silently (audit 8: no IME modules, no dictionary, no XMB clipboard).
@@ -6166,7 +6178,7 @@ void View::oskPress() {
     case OskAction::Character:oskInsert(key->label);break;
     case OskAction::Backspace:oskBackspace();break;
     case OskAction::Space:oskInsert(QStringLiteral(" "));break;
-    case OskAction::Shift:osk_.page=osk_.page==0?1:0;break;
+    case OskAction::Shift:osk_.page=oskPageStep(int(L.pages.size()),osk_.page,1);break;
     case OskAction::Accent:qInfo().noquote()<<"osk: accent page is not captured; the accent key is inert";break;
     case OskAction::Palette:osk_.paletteOpen=true;osk_.paletteRow=0;osk_.paletteColumn=0;osk_.paletteScroll=0;break;
     case OskAction::Enter:oskClose(true);return;
@@ -6182,9 +6194,9 @@ void View::oskPress() {
     update();
 }
 void View::drawOsk(QPainter& p) {
-    const OskPage* page=oskLayout_.page(osk_.page);
+    const OskLayout& l=osk_.tenkey?oskPanelLayout_:oskLayout_;
+    const OskPage* page=l.page(osk_.page);
     if(!page)return;
-    const OskLayout& l=oskLayout_;
     const QString container=QStringLiteral("oskfullkeypanel_plugin");
     // The text renderer is the one metric authority (audit/TEXT-RENDERER.md); the QPainter pen is the fallback for a
     // run where FreeType did not initialise.

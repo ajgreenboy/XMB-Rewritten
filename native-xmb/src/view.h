@@ -715,6 +715,7 @@ private:
     // the frame, the signature cache or a capture. Every other caller leaves it false.
     struct Osk {
         bool open=false,masked=false;
+        bool tenkey=false;         // XMB_OSK_TENKEY=1 forces the phone-style tenkey panel for this open (test hook)
         bool preserveWhitespace=false,allowEmpty=false;
         // The firmware's own state: `page` indexes OskLayout::pages (0 lower, 1 caps); the palette is the
         // `@#:` popup with its own 5-visible-row window over the 32 symbols; caretLit is the blink phase.
@@ -731,6 +732,7 @@ private:
     // The one RCO reader and the one resolved layout: both are startup work, never per-frame work.
     RcoObjects oskObjects_{assets_};
     OskLayout oskLayout_;
+    OskLayout oskPanelLayout_;   // the phone-style tenkey keypad (oskpanel_plugin); shown only under XMB_OSK_TENKEY
     void openOsk(const QString& title,const QString& initial,std::function<void(QString)> done,bool masked=false);
     void drawOsk(QPainter& p);
     void oskMove(int dx,int dy);
