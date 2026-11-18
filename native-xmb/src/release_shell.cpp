@@ -76,6 +76,34 @@ QImage fetchCover(const QUrl& url,const QString& path) {
 QString gameSearchKey(const QString& title) {
     return title.normalized(QString::NormalizationForm_KC).simplified().toCaseFolded();
 }
+QString coverCachePath(const QString& url,const QString& cacheRoot) {
+    return cacheRoot+QLatin1Char('/')+QStringLiteral("hot-")+
+        QString::fromLatin1(QCryptographicHash::hash(url.toUtf8(),QCryptographicHash::Sha256).toHex().left(16))+QStringLiteral(".png");
+}
+// Fetch each game's cover into the same cache the browse page uses, keyed by its list
+// position. Online Browse and search share this so a search result carries its box art the
+// moment the row lands instead of waiting for a second round-trip.
+QHash<int,QImage> fetchCovers(const QVector<GameResult>& games,const QString& cacheRoot) {
+    QHash<int,QImage> covers;
+    for(int i=0;i<games.size();++i) {
+        const QString url=games[i].coverUrl;
+        if(url.isEmpty())continue;
+        const QImage image=fetchCover(QUrl(url),coverCachePath(url,cacheRoot));
+        if(!image.isNull())covers.insert(i,image);
+    }
+    return covers;
+}
+// The local cache path `fetchCover` wrote for a URL, or empty when the cover could not be
+// cached. Used to surface game art behind the source list without a second network round-trip.
+QString cachedCoverPath(const QString& url,const QString& cacheRoot) {
+    if(url.isEmpty())return {};
+    const QString path=coverCachePath(url,cacheRoot);
+    if(!QFileInfo::exists(path)) {
+        const QImage image=fetchCover(QUrl(url),path);
+        if(image.isNull())return {};
+    }
+    return path;
+}
 
 GameResult importedGame(const ReleaseSource& source,const IndexedRelease& release) {
     GameResult game;
@@ -374,14 +402,7 @@ void Shell::openBrowseGames() {
     watcher->setFuture(QtConcurrent::run([cache]{
         BrowseOutcome result;
         HydraLibrary().popularGames(&result.games,&result.error);
-        for(int i=0;i<result.games.size();++i) {
-            const QString url=result.games[i].coverUrl;
-            if(url.isEmpty())continue;
-            const QString path=cache+QLatin1Char('/')+QStringLiteral("hot-")+
-                QString::fromLatin1(QCryptographicHash::hash(url.toUtf8(),QCryptographicHash::Sha256).toHex().left(16))+QStringLiteral(".png");
-            const QImage image=fetchCover(QUrl(url),path);
-            if(!image.isNull())result.covers.insert(i,image);
-        }
+        result.covers=fetchCovers(result.games,cache);
         return result;
     }));
     emit changed();
@@ -409,6 +430,7 @@ void Shell::runGameSearch(const QString& query,const QString& scope) {
                 Entry entry=releaseRow(QStringLiteral("game:result:")+index,game.name,Action::GameSearchResult,index);
                 entry.detail=optionCount(game);
                 entry.gameTile=true;
+                entry.artwork=result.covers.value(i);
                 entry.artworkUrl=game.coverUrl;
                 page.entries.append(std::move(entry));
             }
@@ -423,7 +445,8 @@ void Shell::runGameSearch(const QString& query,const QString& scope) {
         emit changed();
     });
     const auto sources=imported?releaseSources_:QVector<ReleaseSource>{};
-    watcher->setFuture(QtConcurrent::run([term,online,sources]{
+    const QString cache=QDir(dataDirectory_).filePath(QStringLiteral("cache/release-art"));
+    watcher->setFuture(QtConcurrent::run([term,online,sources,cache]{
         BrowseOutcome result;
         QHash<QString,int> indexes;
         const auto add=[&](GameResult game) {
@@ -458,6 +481,7 @@ void Shell::runGameSearch(const QString& query,const QString& scope) {
             if(HydraLibrary().searchGames(term,&results,&result.error))
                 for(auto& game:results)add(std::move(game));
         }
+        result.covers=fetchCovers(result.games,cache);
         return result;
     }));
     emit changed();
@@ -492,7 +516,26 @@ void Shell::openGameSources(const GameResult& game) {
     if(page.entries.isEmpty())
         page.entries.append(releaseRow(QStringLiteral("game:no-links"),tr("No supported single-file download"),Action::Unavailable));
     pages_.push_back(std::move(page));
+    requestGamePageArt();
     emit changed();
+}
+
+void Shell::requestGamePageArt() {
+    if(pages_.isEmpty() || pages_.last().downloadResults.isEmpty())return;
+    const QString url=pages_.last().downloadResults.first().coverUrl;
+    if(url.isEmpty())return;
+    const int depth=pages_.size();
+    const QString cache=QDir(dataDirectory_).filePath(QStringLiteral("cache/release-art"));
+    auto* watcher=new QFutureWatcher<QString>(this);
+    connect(watcher,&QFutureWatcher<QString>::finished,this,[this,watcher,depth]{
+        const QString path=watcher->result();watcher->deleteLater();
+        // Only the page this fetch was started for: a later back/pick must not repaint an older page.
+        if(path.isEmpty() || pages_.size()!=depth)return;
+        for(auto& row:pages_.last().entries)
+            if(row.action==Action::GameSourcePick)row.backgroundPath=path;
+        emit changed();
+    });
+    watcher->setFuture(QtConcurrent::run([url,cache]{return cachedCoverPath(url,cache);}));
 }
 
 void Shell::pickGameSource(const QString& value) {

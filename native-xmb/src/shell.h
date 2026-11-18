@@ -807,6 +807,7 @@ private:
     void beginGameDownload(const QString& title,const GameSourceOption& option);
     void completeGameDownload(const QString& drive);
     void fetchGameArtwork(const QString& id,const QString& title);
+    void requestGamePageArt();
     Assets& assets_;
     std::unique_ptr<class NotifyOverlay> notifyOverlay_;
     Preferences preferences_;
