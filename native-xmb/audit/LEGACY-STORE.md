@@ -39,12 +39,12 @@ page's Download action hands off to `openGameSources` unchanged; none of those f
 
 ## Fidelity limits (do not claim more than this)
 
-- **The wave is firmware-derived but the crest is an interpretation.** The wave's colour (`bk_color`
-  HSV), glow (`glow_col`/`glow_intensity`) and the five `bk_curvp` control points are read at run time
-  from `store.qrc` `/datacom/store.mnu`; the 2D QPainter crest is an interpretation of the 3D ribbon
-  (and the 4.93 material may not match the 2008 version). Every other rectangle and colour in
-  `View::drawLegacySurface` is an authored approximation against the period references, not a measured
-  capture.
+- **The wave's colour is firmware-derived; its shape is a fit.** The wave's colour (`bk_color` HSV) and
+  glow (`glow_col`/`glow_intensity`) are read at run time from `store.qrc` `/datacom/store.mnu`; the
+  crest's shape is a soft open cubic fitted to the 2008 reference, not a firmware shape (the firmware's
+  `bk_curvp` ribbon profile cannot be reconstructed as a 2D path, and the 4.93 material may not match the
+  2008 version). Every other rectangle and colour in `View::drawLegacySurface` is an authored
+  approximation against the period references, not a measured capture.
 - **The D-pad cursor is a native choice.** No captured frame traces the 2008 store's 2D cursor, so the moves
   in `Shell::legacyStoreMove` are a clean bounded 2D cursor over the documented regions (Search ⇄ 5-column
   grid), not firmware-traced.
@@ -160,36 +160,38 @@ left panel + coloured grid for the catalogue, dark inset + cover for the detail)
 authored-approximation targets with explicit tolerances, not pixel-perfect claims; `geometry.json`/
 `geometry.md` land next to the captures at `C:\dev\out\legacy-store-visual-polish\`.
 
-## Wave material from the firmware (2026-11-19) — `store.qrc` `/datacom/store.mnu`
+## Wave colours from the firmware (2026-11-19) — `store.qrc` `/datacom/store.mnu`
 
-The wave is no longer a hardcoded cyan streak. `View::drawLegacySurface` now reads the store
-background's material from the firmware's own `vsh/resource/qgl/store.qrc` entry `/datacom/store.mnu`
-through the shared `Materials` reader (`sceneMaterials` / `Materials::mnu`, `src/store_wave.{h,cpp}`):
+Only the wave's **colour** is firmware-driven. `View::drawLegacySurface` reads the store background's
+material from the firmware's own `vsh/resource/qgl/store.qrc` entry `/datacom/store.mnu` through the
+shared `Materials` reader (`sceneMaterials` / `Materials::mnu`, `src/store_wave.{h,cpp}`):
 
-- **`bk_curvp_0..4`** — five normalized control points (the ribbon's profile: a trough that rises
-  steeply to a level crest). The 2D crest is a smooth Catmull-Rom arch through these five points,
-  folded about the band centre so the monotonic profile reads as a symmetric arch peaking in the upper
-  middle. **This is an interpretation of the 3D ribbon, not a shader-equivalent reconstruction** — the
-  profile is the ribbon's cross-section; the on-screen arch is the same curve seen in perspective. The
-  fold that reconstructs the far side is a fit, not a firmware fact.
-- **`bk_color_h/s/v`** — the wave's HSV body tint, converted to RGB for the crest's blue body stroke.
+- **`bk_color_h/s/v`** — the wave's HSV body tint, converted to RGB for the ribbon's blue body stroke.
 - **`glow_col_r/g/b`** and **`glow_intensity`** — the crest's cyan glow colour and its strength (the
-  strength maps to the glow's alpha).
+  strength maps to the soft glow's alpha).
+
+The **shape is not firmware-driven.** The firmware's `bk_curvp` profile is a ribbon cross-section whose
+3D sweep cannot be reconstructed in a QPainter path (a first attempt that folded those control points
+into a symmetric arch rendered as a bright neon rectangle with vertical stems and was rejected). The
+crest is instead a single soft open cubic **fitted to the 2008 reference**
+(`2008-04-03_us-store-detail-preview_flickr-2386461216.jpg`): a gentle diagonal swoosh in the upper
+middle, rising from the lower-left to a peak then tapering down-right — not closed, not symmetric, no
+vertical stems. It is drawn at low opacity (a broad soft glow plus a subtle crest) so it reads as a
+fluid ribbon behind the UI and does not occlude the header or controls.
 
 The material is read once on the first legacy-store frame and cached (`View::legacyStoreWave_`); later
 frames reuse the struct. When `store.qrc` is absent (or `/datacom/store.mnu` is missing/incomplete) the
-struct is `!present` and the previous authored cyan approximation is kept. No Sony logo or image is
+struct is `!present` and the same fitted shape is drawn with fallback colours. No Sony logo or image is
 hardcoded and no firmware asset is bundled.
 
 **Caveat:** this is the **4.93** `store.qrc`. The 2008 period reference is firmware v2.30-era, so the
-4.93 material values (notably `glow_intensity: 0.216`, a dim glow against the reference's bright crest)
-may not be the exact 2008 values. The orientation — a bright cyan crest crossing the upper middle as an
-arch (x300..716 of the 1024 reference), not a straight horizontal line — is a fit to
-`2008-04-03_us-store-detail-preview_flickr-2386461216.jpg`. The crest's shape uses the firmware's
-control points, but the mapping to screen space is interpretive; where the material mapping is
-uncertain the code and this note say so rather than overclaiming the shape's basis.
+4.93 colour values (notably `glow_intensity: 0.216`, a dim glow against the reference's bright crest)
+may not be the exact 2008 values. The crest's orientation and extent (ref x320..715 y40..115, scaled
+x1.875 to the 1920x1080 canvas) are a fit to the reference; the exact fluid ribbon art is proprietary
+and is not reproduced.
 
-Tests: `xmb-store-wave-tests` (deterministic, firmware-free) covers the MNU extraction, the HSV→RGB
-conversion and the crest geometry (curved arch, apex in the upper middle). The geometry gate's wave
-checks assert the apex band is bright cyan, more cyan than the old upper-left spot, and that the bright
-crest core spans a vertical range (an arch, not a straight line).
+Tests: `xmb-store-wave-tests` (deterministic, firmware-free) covers the MNU colour extraction, the
+HSV→RGB conversion and the fitted crest geometry (a single open cubic, monotonic in x with a bounded
+slope — no vertical stems, not a closed rectangle). The geometry gate's wave checks assert the crest is
+soft cyan (not an opaque neon stroke), a diagonal swoosh (apex above both ramps, not a flat line), and
+that there is no bright vertical stem at the old fold columns x294/x650.

@@ -594,8 +594,9 @@ private:
     // colour and shape come from the firmware's datacom/store.mnu (store_wave.h).
     void drawLegacySurface(QPainter& painter);
     // The legacy Store wave material (store_wave.h), read once from the firmware's datacom/store.mnu on the
-    // first legacy-store frame and cached. When store.qrc is absent the struct stays !present and
-    // drawLegacySurface keeps its authored approximation.
+    // first legacy-store frame and cached. Only the colours come from the firmware (bk_color HSV, glow_col /
+    // glow_intensity); the crest's shape is a fitted open curve. When store.qrc is absent the struct stays
+    // !present and drawLegacySurface uses fallback colours for the same fitted shape.
     storewave::Params legacyStoreWave_;
     bool legacyStoreWaveParsed_ = false;
     const storewave::Params& legacyStoreWave();

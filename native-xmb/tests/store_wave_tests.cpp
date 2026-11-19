@@ -1,13 +1,13 @@
-// Deterministic tests for the legacy Store wave model (src/store_wave.h/.cpp): the MNU extraction, the
-// HSV -> RGB conversion and the curved crest geometry. Everything is pure and firmware-free: the MNU is
-// built from synthetic key/value pairs (invented numbers with the same "monotonic rise then level crest"
-// structure as the firmware's bk_curvp, but not the firmware's own values), so no firmware data is
-// reproduced and no dev_flash is read.
+// Deterministic tests for the legacy Store wave model (src/store_wave.h/.cpp): the MNU colour extraction,
+// the HSV -> RGB conversion and the fitted crest geometry. Everything is pure and firmware-free: the MNU
+// is built from synthetic key/value pairs (invented numbers), so no firmware data is reproduced and no
+// dev_flash is read.
 
 #include "store_wave.h"
 
 #include <cstdio>
 #include <cmath>
+#include <algorithm>
 
 namespace {
 int checks = 0;
@@ -25,8 +25,6 @@ using xmb::storewave::Params;
 using xmb::storewave::paramsFromMnu;
 using xmb::storewave::hsvToRgb;
 using xmb::storewave::crestPath;
-using xmb::storewave::crestBox;
-using xmb::storewave::ControlPoint;
 using Mnu = xmb::Materials::Mnu;
 
 Mnu mnuWith(std::initializer_list<std::pair<const char*, double>> pairs) {
@@ -42,11 +40,6 @@ Mnu mnuWith(std::initializer_list<std::pair<const char*, double>> pairs) {
 }
 
 const std::initializer_list<std::pair<const char*, double>> kFull = {
-    {"bk_curvp_0_x", 0.10}, {"bk_curvp_0_y", 0.90},
-    {"bk_curvp_1_x", 0.12}, {"bk_curvp_1_y", 0.40},
-    {"bk_curvp_2_x", 0.15}, {"bk_curvp_2_y", 0.10},
-    {"bk_curvp_3_x", 0.50}, {"bk_curvp_3_y", 0.05},
-    {"bk_curvp_4_x", 0.90}, {"bk_curvp_4_y", 0.05},
     {"bk_color_h", 0.60}, {"bk_color_s", 0.80}, {"bk_color_v", 0.50},
     {"glow_col_r", 0.10}, {"glow_col_g", 0.94}, {"glow_col_b", 1.00},
     {"glow_intensity", 0.21},
@@ -54,12 +47,10 @@ const std::initializer_list<std::pair<const char*, double>> kFull = {
 } // namespace
 
 int main() {
-    // ---- MNU extraction ---------------------------------------------------------
+    // ---- MNU colour extraction --------------------------------------------------
     {
         const Params p = paramsFromMnu(mnuWith(kFull));
         check(p.present, "full mnu -> present");
-        check(near(p.curve[0].u, 0.10) && near(p.curve[0].v, 0.90), "curve[0] = (0.10, 0.90)");
-        check(near(p.curve[4].u, 0.90) && near(p.curve[4].v, 0.05), "curve[4] = (0.90, 0.05)");
         check(near(p.colorH, 0.60) && near(p.colorS, 0.80) && near(p.colorV, 0.50), "bk_color HSV");
         check(near(p.glowR, 0.10) && near(p.glowG, 0.94) && near(p.glowB, 1.00), "glow_col RGB");
         check(near(p.glowIntensity, 0.21), "glow_intensity");
@@ -69,15 +60,8 @@ int main() {
         check(!paramsFromMnu(empty).present, "unparsed (ok=false) mnu -> not present");
     }
     {
-        // A full curve but no colour keys must still fall back.
-        Mnu m = mnuWith({
-            {"bk_curvp_0_x", 0.10}, {"bk_curvp_0_y", 0.90},
-            {"bk_curvp_1_x", 0.12}, {"bk_curvp_1_y", 0.40},
-            {"bk_curvp_2_x", 0.15}, {"bk_curvp_2_y", 0.10},
-            {"bk_curvp_3_x", 0.50}, {"bk_curvp_3_y", 0.05},
-            {"bk_curvp_4_x", 0.90}, {"bk_curvp_4_y", 0.05},
-        });
-        check(!paramsFromMnu(m).present, "curve-only mnu -> not present");
+        Mnu m = mnuWith({{"bk_color_h", 0.60}, {"bk_color_s", 0.80}, {"bk_color_v", 0.50}});
+        check(!paramsFromMnu(m).present, "colour-only mnu missing glow keys -> not present");
     }
 
     // ---- HSV -> RGB -------------------------------------------------------------
@@ -90,36 +74,39 @@ int main() {
         check(blue.red() == 0 && blue.green() == 0 && blue.blue() == 255, "hsv(2/3,1,1) -> pure blue");
         const QColor grey = hsvToRgb(0.5, 0.0, 0.5);
         check(grey.red() == 128 && grey.green() == 128 && grey.blue() == 128, "hsv(any,0,0.5) -> mid grey");
-        // A blue sector value stays blue-dominant (the firmware's bk_color is a blue hue ~0.60).
         const QColor navy = hsvToRgb(0.60, 0.80, 0.50);
         check(navy.blue() > navy.red() && navy.blue() > navy.green(), "hsv(0.60,0.80,0.50) -> blue-dominant");
     }
 
-    // ---- Crest geometry ---------------------------------------------------------
+    // ---- Crest geometry (a fitted open diagonal, NOT a rectangle) ----------------
     {
-        Params p;
-        p.curve[0] = ControlPoint{0.10, 0.90};
-        p.curve[1] = ControlPoint{0.12, 0.40};
-        p.curve[2] = ControlPoint{0.15, 0.10};
-        p.curve[3] = ControlPoint{0.50, 0.05};
-        p.curve[4] = ControlPoint{0.90, 0.05};
-        const QRectF box = crestBox();
+        const QPainterPath a = crestPath();
+        const QPainterPath b = crestPath();
+        // crestPath() only ever calls moveTo() and cubicTo(), so it is a single open curve by
+        // construction; the element count just confirms it is one move + one cubic.
+        check(a.elementCount() >= 2, "crest is a moveTo + cubic");
+        check(a.boundingRect() == b.boundingRect(), "crest is deterministic");
 
-        const QPainterPath a = crestPath(p, box);
-        const QPainterPath b = crestPath(p, box);
-        check(a.elementCount() > 2, "crest path is non-trivial");
-        check(a.boundingRect() == b.boundingRect(), "crest path is deterministic");
+        // No vertical stems: the crest is monotonic in x with a gentle, bounded slope. A folded/vertical
+        // rectangle would backtrack or show a near-vertical edge (|dx/dy| ~ 0).
+        QPointF prev = a.pointAtPercent(0.0);
+        bool monotonic = true;
+        double maxSlope = 0;
+        for (int i = 1; i <= 40; ++i) {
+            const QPointF pt = a.pointAtPercent(double(i) / 40.0);
+            if (pt.x() <= prev.x()) monotonic = false;
+            maxSlope = std::max(maxSlope, std::fabs(pt.y() - prev.y()) / (pt.x() - prev.x() + 1e-9));
+            prev = pt;
+        }
+        check(monotonic, "crest x is monotonic (no vertical stems / backtracking)");
+        check(maxSlope < 1.5, "crest slope is gentle (no near-vertical edge)");
 
+        // Not a rectangle: the crest is far wider than it is tall (a swoosh, not a square/stem).
         const QRectF r = a.boundingRect();
-        // The arch spans the crest band horizontally (both feet are inside it) ...
-        check(r.left() >= box.left() - 1e-6 && r.right() <= box.right() + 1e-6, "crest x within band");
-        // ... rises to the upper middle (its peak is near the band's top) ...
-        check(r.top() < box.top() + 0.2 * (box.bottom() - box.top()), "crest peaks in the upper middle");
-        // ... and is a genuine arch, not a straight horizontal line: the feet sit far below the peak.
-        check(r.height() > 0.5 * (box.bottom() - box.top()), "crest is an arch (large vertical extent)");
-        // The apex (highest point) is near the horizontal centre of the band.
-        check(std::fabs(r.center().x() - (box.left() + box.right()) / 2.0) < 0.2 * box.width(),
-              "crest apex near the band centre");
+        check(r.width() > 2.0 * r.height(), "crest is wide, not a tall rectangle");
+        // It rises into the upper middle of the 1920x1080 canvas.
+        check(r.top() < 140.0, "crest peaks in the upper middle");
+        check(r.top() > 40.0, "crest does not leave the upper band");
     }
 
     if (failures) {

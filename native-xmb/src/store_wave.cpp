@@ -1,6 +1,7 @@
 #include "store_wave.h"
 #include <QtMath>
 #include <algorithm>
+#include <cmath>
 
 namespace xmb::storewave {
 
@@ -21,19 +22,13 @@ double number(const Materials::Mnu& mnu, const QString& key, double fallback = 0
 Params paramsFromMnu(const Materials::Mnu& mnu) {
     Params p;
     if (!mnu.ok) return p;
-    // The wave needs every control point and every colour key; a partially-populated material would draw a
-    // broken wave, so an incomplete MNU is reported as "not present" and the caller keeps its fallback.
+    // The wave needs every colour key; a partially-populated material would draw with the wrong tint, so
+    // an incomplete MNU is reported as "not present" and the caller keeps its fallback colours.
     static const char* const required[] = {
-        "bk_curvp_0_x", "bk_curvp_0_y", "bk_curvp_1_x", "bk_curvp_1_y",
-        "bk_curvp_2_x", "bk_curvp_2_y", "bk_curvp_3_x", "bk_curvp_3_y",
-        "bk_curvp_4_x", "bk_curvp_4_y", "bk_color_h", "bk_color_s", "bk_color_v",
+        "bk_color_h", "bk_color_s", "bk_color_v",
         "glow_col_r", "glow_col_g", "glow_col_b", "glow_intensity",
     };
     for (const char* key : required) if (!hasNumber(mnu, QString::fromLatin1(key))) return p;
-    for (int i = 0; i < 5; ++i)
-        p.curve[i] = ControlPoint{
-            number(mnu, QStringLiteral("bk_curvp_%1_x").arg(i)),
-            number(mnu, QStringLiteral("bk_curvp_%1_y").arg(i)) };
     p.colorH = number(mnu, QStringLiteral("bk_color_h"));
     p.colorS = number(mnu, QStringLiteral("bk_color_s"));
     p.colorV = number(mnu, QStringLiteral("bk_color_v"));
@@ -68,38 +63,14 @@ QColor hsvToRgb(double h, double s, double v) {
     return QColor(toByte(r), toByte(g), toByte(b));
 }
 
-namespace {
-QPainterPath catmullRom(const QVector<QPointF>& pts) {
+QPainterPath crestPath() {
+    // Fitted to the 2008 reference's soft ribbon: ref (320,100) -> (570,40) -> (715,115) at 1024x576,
+    // scaled x1.875 to the 1920x1080 canvas. A single open cubic: it rises from the lower-left, peaks in
+    // the upper middle, then tapers gently down-right. Monotonic in x, so no vertical stems.
     QPainterPath path;
-    const int n = pts.size();
-    if (n < 2) return path;
-    path.moveTo(pts[0]);
-    for (int i = 0; i < n - 1; ++i) {
-        const QPointF p0 = pts[std::max(0, i - 1)];
-        const QPointF p1 = pts[i];
-        const QPointF p2 = pts[i + 1];
-        const QPointF p3 = pts[std::min(n - 1, i + 2)];
-        const QPointF c1 = p1 + (p2 - p0) / 6.0;
-        const QPointF c2 = p2 - (p3 - p1) / 6.0;
-        path.cubicTo(c1, c2, p2);
-    }
+    path.moveTo(600.0, 187.0);
+    path.cubicTo(840.0, 74.0, 1160.0, 74.0, 1341.0, 216.0);
     return path;
-}
-} // namespace
-
-QPainterPath crestPath(const Params& params, const QRectF& box) {
-    const double apexX = 0.5 * (box.left() + box.right());
-    const auto mapPoint = [&](const ControlPoint& p, bool right) {
-        const double x = right ? (box.right() - p.u * (box.right() - apexX))
-                               : (box.left() + p.u * (apexX - box.left()));
-        const double y = box.top() + p.v * (box.bottom() - box.top());
-        return QPointF(x, y);
-    };
-    QVector<QPointF> anchors;
-    anchors.reserve(10);
-    for (int i = 0; i < 5; ++i) anchors.push_back(mapPoint(params.curve[i], false));
-    for (int i = 4; i >= 0; --i) anchors.push_back(mapPoint(params.curve[i], true));
-    return catmullRom(anchors);
 }
 
 } // namespace xmb::storewave

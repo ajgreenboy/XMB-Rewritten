@@ -2623,8 +2623,8 @@ void View::drawLegacySurface(QPainter& p) {
     // The GEN 2 (2008-2012) PlayStation Store catalogue/detail, laid out against the 2008 period references
     // (legacy-store-reference/period, 1024x576 scaled x1.875 to this 1920x1080 canvas). This model cannot
     // inspect the rasters, so the layout follows the vision-capable orchestrator's region descriptions; the
-    // navy palette and every exact rectangle are authored approximations, not measured. The wave's colour and
-    // shape come from the firmware's datacom/store.mnu (see store_wave.h), interpreted as a curved crest.
+    // navy palette and every exact rectangle are authored approximations, not measured. The wave's colour
+    // comes from the firmware's datacom/store.mnu; its shape is a fitted open curve (see store_wave.h).
     auto text=[&](const QRectF& r,const QString& value,int size,QColor colour,int flags=Qt::AlignLeft|Qt::AlignVCenter){
         // shadow=false: this surface is a flat store UI, not the XMB's white-on-wave labels, so the firmware
         // drop-shadow (offset 4px, dark) reads as doubled text on the light silver footer.
@@ -2656,53 +2656,34 @@ void View::drawLegacySurface(QPainter& p) {
     // Dark navy full-bleed ground.
     QLinearGradient bg(0,0,0,1080);bg.setColorAt(0,QColor(12,24,48));bg.setColorAt(.55,QColor(8,16,34));bg.setColorAt(1,QColor(4,9,20));
     p.fillRect(QRectF(0,0,1920,1080),bg);
-    // The luminous cyan PS3 wave. Its material is read from the firmware's datacom/store.mnu (store_wave.h):
-    // the five bk_curvp control points shape the crest, bk_color (HSV) is the wave's body tint and
-    // glow_col / glow_intensity drive the crest's glow. The curved crest is an interpretation of the 3D
-    // ribbon, not a shader-equivalent reconstruction, and the orientation is a fit to the 2008 reference's
-    // bright cyan crest (upper middle, an arch, not a straight line). When the store.qrc is absent the
-    // authored approximation below is kept.
+    // The soft cyan PS3 wave. Only its colour comes from the firmware's datacom/store.mnu (store_wave.h:
+    // bk_color HSV is the body tint, glow_col / glow_intensity the crest's cyan glow). The shape is a soft
+    // open cubic fitted to the 2008 reference's ribbon (upper-middle diagonal swoosh), drawn at low opacity
+    // so it reads as a fluid ribbon behind the UI and never occludes the header/controls. When the store.qrc
+    // is absent the same shape is drawn with fallback colours.
     const storewave::Params& wave = legacyStoreWave();
-    if(wave.present) {
-        const QColor body = storewave::hsvToRgb(wave.colorH, wave.colorS, wave.colorV);
-        const QColor glowCol = QColor::fromRgbF(std::clamp(wave.glowR,0.,1.), std::clamp(wave.glowG,0.,1.),
-                                                std::clamp(wave.glowB,0.,1.), 1.0);
-        const double intensity = std::clamp(wave.glowIntensity,0.,1.);
-        const QRectF box = storewave::crestBox();
-        const double apexX = 0.5*(box.left()+box.right());
-        const double apexY = box.top();
-        // Soft glow: glow_col at glow_intensity, centred on the crest's apex.
-        QRadialGradient glow(apexX,apexY,620.);
-        glow.setColorAt(0,  QColor(glowCol.red(),glowCol.green(),glowCol.blue(),int(255.*intensity)));
-        glow.setColorAt(.5, QColor(glowCol.red(),glowCol.green(),glowCol.blue(),int(255.*intensity*.45)));
-        glow.setColorAt(1,  QColor(glowCol.red(),glowCol.green(),glowCol.blue(),0));
-        p.fillRect(QRectF(0,0,1920,1080),glow);
-        // The crest: the wave's blue body (bk_color) under the bright cyan edge (glow_col).
-        const QPainterPath crest = storewave::crestPath(wave, box);
-        p.save();
-        QPen bodyPen(body,30);bodyPen.setCapStyle(Qt::RoundCap);
-        bodyPen.setColor(QColor(body.red(),body.green(),body.blue(),95));
-        p.setPen(bodyPen);p.drawPath(crest);
-        QPen midPen(glowCol,14);midPen.setCapStyle(Qt::RoundCap);
-        midPen.setColor(QColor(glowCol.red(),glowCol.green(),glowCol.blue(),150));
-        p.setPen(midPen);p.drawPath(crest);
-        QPen corePen(glowCol,4);corePen.setCapStyle(Qt::RoundCap);
-        corePen.setColor(QColor(glowCol.red(),glowCol.green(),glowCol.blue(),240));
-        p.setPen(corePen);p.drawPath(crest);
-        p.restore();
-    } else {
-        // Authored approximation (no store.qrc): a soft glow plus a horizontal streak with vertical falloff.
-        QRadialGradient glow(1010,110,700);
-        glow.setColorAt(0,QColor(0,215,255,120));glow.setColorAt(.5,QColor(0,175,225,35));glow.setColorAt(1,QColor(0,150,205,0));
-        p.fillRect(QRectF(0,0,1920,1080),glow);
-        QLinearGradient streak(0,0,0,250);
-        streak.setColorAt(0,QColor(0,210,255,0));
-        streak.setColorAt(.42,QColor(0,218,255,55));
-        streak.setColorAt(.5,QColor(0,224,255,165));
-        streak.setColorAt(.58,QColor(0,218,255,55));
-        streak.setColorAt(1,QColor(0,210,255,0));
-        p.fillRect(QRectF(0,0,1920,250),streak);
-    }
+    const QColor body = wave.present ? storewave::hsvToRgb(wave.colorH,wave.colorS,wave.colorV) : QColor(23,73,140);
+    const QColor glowCol = wave.present
+        ? QColor::fromRgbF(std::clamp(wave.glowR,0.,1.),std::clamp(wave.glowG,0.,1.),std::clamp(wave.glowB,0.,1.),1.0)
+        : QColor(26,240,255);
+    const double intensity = wave.present ? std::clamp(wave.glowIntensity,0.,1.) : 0.22;
+    // Soft broad glow (the ribbon's body): glow_col at low opacity, centred on the crest's peak.
+    QRadialGradient glow(1000,80,560.);
+    glow.setColorAt(0,  QColor(glowCol.red(),glowCol.green(),glowCol.blue(),int(255.*intensity)));
+    glow.setColorAt(.55, QColor(glowCol.red(),glowCol.green(),glowCol.blue(),int(255.*intensity*.4)));
+    glow.setColorAt(1,  QColor(glowCol.red(),glowCol.green(),glowCol.blue(),0));
+    p.fillRect(QRectF(0,0,1920,1080),glow);
+    // The crest: a soft open cubic stroked with a broad low-opacity body, a soft glow and a subtle core —
+    // no opaque neon stroke, no vertical stems.
+    const QPainterPath crest = storewave::crestPath();
+    p.save();
+    QPen bodyPen(QColor(body.red(),body.green(),body.blue(),36),48);bodyPen.setCapStyle(Qt::RoundCap);
+    p.setPen(bodyPen);p.drawPath(crest);
+    QPen glowPen(QColor(glowCol.red(),glowCol.green(),glowCol.blue(),60),16);glowPen.setCapStyle(Qt::RoundCap);
+    p.setPen(glowPen);p.drawPath(crest);
+    QPen corePen(QColor(glowCol.red(),glowCol.green(),glowCol.blue(),110),4);corePen.setCapStyle(Qt::RoundCap);
+    p.setPen(corePen);p.drawPath(crest);
+    p.restore();
 
     // Header: the store logo (bag glyph + wordmark) on the left, the control buttons on the right.
     const QImage& bag=assets_.image(QStringLiteral("explore_plugin_full"),QStringLiteral("item_tex_ps_store"));

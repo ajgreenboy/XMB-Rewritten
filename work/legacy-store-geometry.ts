@@ -69,6 +69,20 @@ function countBag(img: PngImage): number {
   }
   return n;
 }
+// The wave's cyan crest (glow_col ~ (26,240,255)) is cyan (B >> R); the white wordmark/text is not
+// (B == R). These two helpers use that to find the crest ridge and to count a bright vertical stem,
+// so the white header text can never be mistaken for a cyan vertical edge.
+function cyanRidgeY(img: PngImage, x: number): number {
+  let best = -Infinity, by = -1;
+  for (let y = 30; y < 160; y++) { const c = px(img, x, y); const s = c[2] - c[0]; if (s > best) { best = s; by = y; } }
+  return by;
+}
+// Bright cyan pixels (an opaque neon stroke or stem would read B>200, G>180 and B>R) in a 1px column.
+function cyanStem(img: PngImage, x: number): number {
+  let n = 0;
+  for (let y = 30; y < 160; y++) { const c = px(img, x, y); if (c[2] > 200 && c[1] > 180 && c[2] - c[0] > 60) n++; }
+  return n;
+}
 
 let pass = 0, fail = 0;
 const results: Record<string, unknown> = {};
@@ -127,22 +141,20 @@ for (const exp of EXPECTED) {
   const navyBottom = mean(img, { x0: 800, x1: 900, y0: 535, y1: 539 });
   record(`${exp.file} navy bar reaches frame edge`, luma(navyBottom) < 45, `RGB ${navyBottom.join(",")} luma ${luma(navyBottom).toFixed(0)}`);
 
-  // Cyan wave: the firmware-derived curved crest (store_wave, /datacom/store.mnu). The bright cyan
-  // core (glow_col) crosses the upper middle as an arch. Three assertions: the apex band is bright
-  // cyan, it is more cyan than the old upper-left orb spot, and the crest is an arch (its bright core
-  // spans a vertical range) rather than a straight horizontal line.
-  const wc = mean(img, { x0: 400, x1: 530, y0: 40, y1: 48 });
+  // Cyan wave: a soft open diagonal ribbon (store_wave.h, colours from /datacom/store.mnu, shape fitted
+  // to the 2008 reference). Assert it is NOT the rejected bright rectangle: the crest is soft cyan (not an
+  // opaque neon stroke), it rises then falls (a diagonal swoosh, not a flat line), there is no bright
+  // vertical stem at the old fold columns (x~294/650), and it is more cyan than the old upper-left orb.
+  const wc = mean(img, { x0: 430, x1: 510, y0: 46, y1: 60 });
   const wl = mean(img, { x0: 30, x1: 100, y0: 40, y1: 70 });
   const cyanC = wc[2] - wc[0], cyanL = wl[2] - wl[0];
-  record(`${exp.file} wave crest is bright cyan`, cyanC >= 150, `RGB ${wc.join(",")} B\u2212R=${cyanC}`);
+  record(`${exp.file} wave crest is soft cyan`, cyanC >= 80 && cyanC <= 190, `RGB ${wc.join(",")} B\u2212R=${cyanC}`);
   record(`${exp.file} wave moved to centre`, cyanC > cyanL + 20, `centre B\u2212R ${cyanC} > old-left ${cyanL}+20`);
-  let coreMin = Infinity, coreMax = -Infinity;
-  for (let y = 30; y < 160; y++) for (let x = 280; x < 680; x++) {
-    const c = px(img, x, y);
-    if (c[2] > 190 && c[1] > 170) { if (y < coreMin) coreMin = y; if (y > coreMax) coreMax = y; }
-  }
-  record(`${exp.file} wave crest is curved (arch)`, coreMin !== Infinity && coreMax - coreMin >= 40,
-    `bright crest core y ${coreMin}..${coreMax} (range ${coreMax - coreMin})`);
+  const leftRidge = cyanRidgeY(img, 310), apexRidge = cyanRidgeY(img, 470), rightRidge = cyanRidgeY(img, 640);
+  record(`${exp.file} wave crest is a diagonal swoosh`, apexRidge >= 0 && apexRidge < leftRidge && apexRidge < rightRidge,
+    `apex y=${apexRidge}, left y=${leftRidge}, right y=${rightRidge}`);
+  record(`${exp.file} no bright vertical stem at x294`, cyanStem(img, 294) < 15, `${cyanStem(img, 294)} bright cyan px`);
+  record(`${exp.file} no bright vertical stem at x650`, cyanStem(img, 650) < 15, `${cyanStem(img, 650)} bright cyan px`);
 
   // Bag glyph within its bounded rect (the white wordmark at x>=195 is outside it).
   const bagCount = countBag(img);
@@ -164,7 +176,8 @@ for (const exp of EXPECTED) {
   cap.footerSilver = { top: silverTop, bottom: silverBottom };
   cap.navy = navy; cap.navyBottom = navyBottom;
   cap.waveApex = wc; cap.waveOldLeft = wl; cap.waveApexCyan = cyanC; cap.waveOldLeftCyan = cyanL;
-  cap.waveCoreYRange = [coreMin, coreMax];
+  cap.waveRidgeY = { left: leftRidge, apex: apexRidge, right: rightRidge };
+  cap.waveStem = { x294: cyanStem(img, 294), x650: cyanStem(img, 650) };
   cap.bagBluePixels = bagCount;
   results[exp.file] = cap;
   out();
