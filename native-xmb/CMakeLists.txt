@@ -325,6 +325,21 @@ if(MSVC)
     target_link_libraries(re-ps3-native PRIVATE dbghelp windowsapp d3d11 dxgi dcomp dwmapi shell32 wlanapi)
 endif()
 
+# Refresh build-info.json after every relink of re-ps3-native, so a direct
+# `cmake --build`/Ninja rebuild cannot leave the executable's metadata stale.
+# The helper writes only a JSON side file (never a build input), so it cannot
+# trigger another link. build.ps1 calls the same helper with the start-of-build
+# snapshot; a direct build snapshots the sources at link time instead.
+get_filename_component(XMB_REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/.." ABSOLUTE)
+add_custom_command(TARGET re-ps3-native POST_BUILD
+    COMMAND powershell -NoProfile -ExecutionPolicy Bypass -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/write-build-info.ps1"
+            -OutputDirectory "${CMAKE_BINARY_DIR}"
+            -ProjectRoot "${XMB_REPO_ROOT}"
+            -Configuration "${CMAKE_BUILD_TYPE}"
+    COMMENT "Refresh build-info.json"
+    VERBATIM)
+
 # XMB Manager: the standalone companion tool (CLI + Qt UI). It shares the
 # output directory with re-ps3-native, so windeployqt's Qt runtime deployment
 # for the main executable also serves xmb-manager.exe. The manager never

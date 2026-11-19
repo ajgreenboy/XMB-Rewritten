@@ -11,6 +11,22 @@ if(-not $PackageDirectory) { $PackageDirectory = Join-Path $repoRoot 'dist\re-ps
 $exe = Join-Path $OutputDirectory 're-ps3-native.exe'
 if(-not (Test-Path $exe)) { throw "No build at '$OutputDirectory' (re-ps3-native.exe missing). Run native-xmb\build.ps1 first." }
 
+# Verify the build metadata still matches the executable and the sources before
+# copying anything. A direct `cmake --build`/Ninja relink refreshes build-info.json
+# (see CMakeLists.txt), but a stale or hand-edited file must never be packaged.
+. (Join-Path (Split-Path -Parent $PSScriptRoot) 'build-metadata.ps1')
+$infoPath = Join-Path $OutputDirectory 'build-info.json'
+if(-not (Test-Path -LiteralPath $infoPath -PathType Leaf)) {
+    throw "No build-info.json at '$OutputDirectory'. Run native-xmb\build.ps1 first."
+}
+$info = Get-Content -LiteralPath $infoPath -Raw | ConvertFrom-Json
+if($info.executableSha256 -ne (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash) {
+    throw "build-info.json is stale: its executableSha256 does not match $exe. Rebuild with native-xmb\build.ps1 before packaging."
+}
+if($info.sourceFingerprint -ne (Get-NativeSourceFingerprint -ProjectRoot $repoRoot)) {
+    throw "build-info.json is stale: its sourceFingerprint does not match the current sources. Rebuild with native-xmb\build.ps1 before packaging."
+}
+
 Write-Host "Packaging '$OutputDirectory' -> '$PackageDirectory'"
 New-Item -ItemType Directory -Path $PackageDirectory -Force | Out-Null
 
