@@ -222,6 +222,32 @@ try {
         Add-Line ''
     }
 
+    # --- deterministic-region mutation regression -----------------------------
+    # This needs no firmware or private reference frames and is not skipped by -SkipBuild.
+    # The script resolves its own repository root, so it is also safe from another cwd.
+    $mutationArgs = @('work/ab-layers-mutation.ts')
+    if ($WhatIf) {
+        Add-Check 'mutation' 'SKIP' 'plan only; would run: bun work/ab-layers-mutation.ts'
+    } elseif (-not $bun) {
+        Add-Check 'mutation' 'FAIL' 'bun not found; cannot run deterministic-region mutation regression'
+    } else {
+        $mutationLines = @()
+        try {
+            $mutationLines = @(& $bun @mutationArgs 2>&1 | ForEach-Object { [string]$_ })
+            $mutationExit = $LASTEXITCODE
+        } catch {
+            $mutationLines = @([string]$_)
+            $mutationExit = 2
+        }
+        $mutationLines | ForEach-Object { Add-Line ("   {0}" -f $_) }
+        if ($mutationExit -eq 0) {
+            Add-Check 'mutation' 'PASS' 'guide, focused row and setup-step mutations rejected'
+        } else {
+            Add-Check 'mutation' 'FAIL' ("exit {0}; deterministic-region mutation regression failed" -f $mutationExit)
+        }
+        Add-Line ''
+    }
+
     if ($WhatIf) {
         Add-Check 'keys' 'SKIP' 'plan only; would scan the tracked text tree for credentials'
         Add-Check 'data' 'SKIP' 'plan only; would scan tracked, untracked and embedded data'

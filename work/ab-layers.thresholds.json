@@ -1219,7 +1219,6 @@
       "regions": [
         { "name": "list above compositor edge", "crop": [0, 140, 1920, 350] },
         { "name": "compositor edge left", "crop": [0, 490, 410, 30] },
-        { "name": "compositor edge right", "crop": [500, 490, 1420, 30] },
         { "name": "list below compositor edge", "crop": [0, 520, 1920, 560] },
         { "name": "focused row", "crop": [500, 440, 1300, 150] }
       ],
@@ -1334,7 +1333,7 @@
       "regions": [
         { "name": "frame upper", "crop": [0, 0, 1920, 490] },
         { "name": "frame compositor left", "crop": [0, 490, 410, 30] },
-        { "name": "frame compositor right", "crop": [460, 490, 1460, 30] },
+        { "name": "frame compositor right", "crop": [460, 490, 40, 30] },
         { "name": "frame lower", "crop": [0, 520, 1920, 560] },
         { "name": "step rows", "crop": [500, 440, 1400, 380] }
       ]

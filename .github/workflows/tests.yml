@@ -40,6 +40,12 @@ jobs:
           bun work/ci-guard.ts
           if ($LASTEXITCODE) { throw "Test wiring check failed." }
 
+      - name: Check render-gate mutation regression
+        shell: pwsh
+        run: |
+          bun work/ab-layers-mutation.ts
+          if ($LASTEXITCODE) { throw "Render-gate mutation regression failed." }
+
       - name: Install Qt (MSVC 2022 64-bit)
         uses: jurplel/install-qt-action@v4
         with:
