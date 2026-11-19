@@ -40,6 +40,16 @@ jobs:
           bun work/ci-guard.ts
           if ($LASTEXITCODE) { throw "Test wiring check failed." }
 
+      # CMake POST_BUILD invokes the metadata helper with bare Windows PowerShell on the release runner.
+      # Keep this independent of Qt, firmware, credentials and build outputs so it tests that exact contract.
+      - name: Check native metadata hashing under Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          $test = Join-Path $env:GITHUB_WORKSPACE 'native-xmb\tests\build_metadata_tests.ps1'
+          $powershell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+          & $powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $test
+          if ($LASTEXITCODE -ne 0) { throw "Native metadata hashing regression failed (exit $LASTEXITCODE)." }
+
       - name: Check render-gate mutation regression
         shell: pwsh
         run: |
