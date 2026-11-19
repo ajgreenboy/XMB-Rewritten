@@ -17,7 +17,7 @@ if((Test-Path $exe) -and (Test-Path $infoPath)) {
     try {
         $info=Get-Content -LiteralPath $infoPath -Raw | ConvertFrom-Json
         $current=$info.sourceFingerprint -eq (Get-NativeSourceFingerprint -ProjectRoot $PSScriptRoot) -and
-                 $info.executableSha256 -eq (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash
+                 $info.executableSha256 -eq (Get-NativeSha256 -LiteralPath $exe)
     } catch { $current=$false }
 }
 if($Build -or -not $current) {

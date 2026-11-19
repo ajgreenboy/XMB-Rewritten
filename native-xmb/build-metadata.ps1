@@ -1,10 +1,24 @@
+function Get-NativeSha256 {
+    param([Parameter(Mandatory=$true)][string]$LiteralPath)
+    $sha=[Security.Cryptography.SHA256]::Create()
+    $stream=$null
+    try {
+        $stream=[IO.File]::OpenRead($LiteralPath)
+        return ([BitConverter]::ToString($sha.ComputeHash($stream))).Replace('-','')
+    }
+    finally {
+        if($stream){$stream.Dispose()}
+        $sha.Dispose()
+    }
+}
+
 function Get-NativeSourceFingerprint {
     param([Parameter(Mandatory=$true)][string]$ProjectRoot)
     $nativeRoot=Join-Path $ProjectRoot 'native-xmb'
     $files=@(Get-ChildItem (Join-Path $nativeRoot 'src') -File -Recurse | Where-Object {$_.Extension -in @('.cpp','.h')})
     $files+=@(Get-Item (Join-Path $nativeRoot 'CMakeLists.txt'),(Join-Path $nativeRoot 'build.ps1'),(Join-Path $nativeRoot 'build-metadata.ps1'),(Join-Path $nativeRoot 'write-build-info.ps1'))
     $records=@($files | Sort-Object FullName | ForEach-Object {
-        $_.FullName.Substring($nativeRoot.Length).Replace('\','/')+' '+(Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash
+        $_.FullName.Substring($nativeRoot.Length).Replace('\','/')+' '+(Get-NativeSha256 -LiteralPath $_.FullName)
     })
     $sha=[Security.Cryptography.SHA256]::Create()
     try { ([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes(($records -join "`n"))))).Replace('-','') }

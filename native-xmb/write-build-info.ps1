@@ -24,7 +24,7 @@ if($RefreshExecutableHash) {
     $infoPath=Join-Path $OutputDirectory 'build-info.json'
     if(Test-Path -LiteralPath $infoPath -PathType Leaf) {
         $info=Get-Content -LiteralPath $infoPath -Raw | ConvertFrom-Json
-        $info.executableSha256=(Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash
+        $info.executableSha256=Get-NativeSha256 -LiteralPath $exe
         $info.builtAtUtc=[DateTime]::UtcNow.ToString('o')
         $info | ConvertTo-Json | Set-Content -LiteralPath $infoPath -Encoding UTF8
         return
@@ -46,7 +46,7 @@ $metadata=[ordered]@{
     sourceRevision=$SourceRevision
     sourceDirty=$dirty
     sourceFingerprint=$SourceFingerprint
-    executableSha256=(Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash
+    executableSha256=(Get-NativeSha256 -LiteralPath $exe)
     builtAtUtc=[DateTime]::UtcNow.ToString('o')
     configuration=$Configuration
 }

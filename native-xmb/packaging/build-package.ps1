@@ -28,7 +28,7 @@ try {
 if(-not $info -or $info.schema -ne 'xmb-build/1') {
     throw "build-info.json at '$infoPath' has an unexpected schema (expected 'xmb-build/1'). Rebuild with native-xmb\build.ps1 before packaging."
 }
-if($info.executableSha256 -ne (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash) {
+if($info.executableSha256 -ne (Get-NativeSha256 -LiteralPath $exe)) {
     throw "build-info.json is stale: its executableSha256 does not match $exe. Rebuild with native-xmb\build.ps1 before packaging."
 }
 if($info.sourceFingerprint -ne (Get-NativeSourceFingerprint -ProjectRoot $repoRoot)) {
