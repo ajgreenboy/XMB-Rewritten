@@ -1271,7 +1271,9 @@ private:
     void openSteamDownloads();
     void reloadSteamDownloads();
     std::shared_ptr<ReleaseGameQueue> releaseJobs_;
-    void enqueueReleaseGame(const QString& title,const QString& releaseTitle,const QUrl& sourceUrl,
+    // Returns true when the job was enqueued and Download Management opened; false when it was refused
+    // (safe mode, invalid arguments, a duplicate, a full queue, or a save failure), after showing why.
+    bool enqueueReleaseGame(const QString& title,const QString& releaseTitle,const QUrl& sourceUrl,
                             const QString& sourceSlug,const QString& gamesDirectory,const QVector<Download>& candidates={});
     void pumpReleaseJobs();
     void stopReleaseJobs();

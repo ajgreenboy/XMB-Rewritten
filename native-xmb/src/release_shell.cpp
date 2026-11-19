@@ -603,10 +603,11 @@ void Shell::completeGameDownload(const QString& drive) {
         .arg(release,source,size,QDir::toNativeSeparators(directory));
     showConfirm(question,body,[this,game,option,directory,drive]{
         pages_.removeLast();
-        // Remember this drive as the last-used install location for the next time the picker opens.
-        preferences_.setValue(QStringLiteral("downloads/lastGameDrive"),drive);
-        enqueueReleaseGame(game.name,option.releaseTitle.isEmpty()?game.name:option.releaseTitle,
-                           QUrl(option.sourceUrl),option.sourceSlug,directory,option.downloads);
+        // Remember this drive only when the enqueue actually succeeded: a refused download (duplicate,
+        // full queue, invalid volume) must not become the preselected "last used" location.
+        if(enqueueReleaseGame(game.name,option.releaseTitle.isEmpty()?game.name:option.releaseTitle,
+                              QUrl(option.sourceUrl),option.sourceSlug,directory,option.downloads))
+            preferences_.setValue(QStringLiteral("downloads/lastGameDrive"),drive);
         emit changed();
     });
 }

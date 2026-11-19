@@ -122,7 +122,7 @@ The one acceptance element not separately driven is a live `all`/`online` scope 
 public API), and the retained-artwork assertion with a cover-URL feed entry; both are covered by design rather than a
 new capture.
 
-## 8. Back/Esc cancellation on a focused release job (2026-11-18)
+## 8. Back/Esc cancellation on a focused release job (2026-11-18 — superseded 2026-11-19)
 
 > **Superseded (2026-11-19).** The Back/Esc "Cancel Download" confirm described in this section was removed: it did
 > not match the console (manuals.playstation.net → Background Download → Download Management), where Cancel lives only
@@ -136,6 +136,11 @@ new capture.
 > keeping Failed jobs for Retry/Dismiss; (2) auto-opens Download Management on a successful enqueue (refresh in place if
 > it is already the top page); and (3) persists the last-used install drive and preselected it on the next pick only when
 > it is still offered, leaving enqueue's volume validation as the safety check.
+>
+> **Archive retention:** a cancelled job's archive is discarded (the existing definitive-cancellation cleanup); a finished
+> job's downloaded archive is retained on disk in `Download Archives/<id>/` as user data — it is not deleted, because it was
+> previously reachable through the job's "Open Download Folder" row and the prior manual Dismiss also left it on disk. It is
+> now reachable only from the OS filesystem, not from Download Management.
 
 Circle/Esc (`Shell::back`) previously only popped the page on the Download Management list and a release job's detail
 page; cancellation lived solely in the detail page's "Cancel Download" row and the Triangle option. An active background
@@ -170,10 +175,10 @@ finished handler would still land it on `Paused` — so `JobControl::requestCanc
 The finished handler's settle decision (`paused ? Paused : cancelled ? Cancelled : Failed`) is hoisted into
 `releaseJobSettledState(paused, cancelled)` and used in production, so the Pausing → cancel → Cancelled path is testable.
 
-**Known limitation (pre-existing, documented rather than papered over):** if the pause's wind-down already flushed its
-checkpoint before the cancel request landed, the partial archive remains in `Download Archives/<id>/` — the job is still
-`Cancelled` and `archiveForResume` is cleared, but the file is orphaned. This is a cancel-during-pause race, not a
-regression this affordance introduces.
+**Resolved (2026-11-18, `7fecac1`):** the cancel-during-pause orphan below was fixed after this note was written —
+`releaseJobDiscardArchive` now runs on every definitive cancellation (a cancel with no standing pause), so a partial that
+the pause wind-down flushed (`.xmb-game.part` + `.xmb-game.resume.json`, with or without a published archive) is removed
+rather than left behind. The note is retained for history; the current code leaves no cancel-during-pause orphan.
 
 ### Verification
 

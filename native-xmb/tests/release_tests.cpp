@@ -217,6 +217,21 @@ int main(int argc,char** argv) {
         // A missing archive directory is already clean.
         check(releaseJobDiscardArchive(games,QStringLiteral("fedcba9876543210fedcba9876543210"),QString()),
               "absent archive dir is clean");
+        // Cancel-during-pause residue: the pause wind-down flushed the checkpoint but never published the
+        // archive, so only a partial and its checkpoint exist. An empty archivePath still removes the
+        // job-owned partial + checkpoint and drops the directory, so the definitive-cancel cleanup path
+        // leaves nothing orphaned (audit/PHASES-GAME-SEARCH-2026-11-17.md, §8).
+        {
+            const QString id2=QStringLiteral("abcdef0123456789abcdef0123456789");
+            const QDir pdir(QDir(games).filePath(QStringLiteral("Download Archives/")+id2));
+            check(QDir().mkpath(pdir.path()),"pause-residue archive dir created");
+            QFile part(pdir.filePath(QStringLiteral(".xmb-game.part")));
+            (void)part.open(QIODevice::WriteOnly);(void)part.write("partial");part.close();
+            QFile resume(pdir.filePath(QStringLiteral(".xmb-game.resume.json")));
+            (void)resume.open(QIODevice::WriteOnly);(void)resume.write("{}");resume.close();
+            check(releaseJobDiscardArchive(games,id2,QString()),"pause-residue partial + checkpoint discarded");
+            check(!QFileInfo::exists(pdir.path()),"pause-residue archive dir removed");
+        }
 #ifdef Q_OS_WIN
         // Junction defense: QFileInfo::isSymLink() is false for an NTFS junction, so the helper must
         // also check isJunction() and refuse to delete through it. mklink /J normally needs no

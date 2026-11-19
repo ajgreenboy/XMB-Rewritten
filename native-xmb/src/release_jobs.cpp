@@ -733,18 +733,18 @@ void Shell::refreshReleaseJobRows() {
     emit changed();
 }
 
-void Shell::enqueueReleaseGame(const QString& title,const QString& releaseTitle,const QUrl& sourceUrl,
+bool Shell::enqueueReleaseGame(const QString& title,const QString& releaseTitle,const QUrl& sourceUrl,
                               const QString& sourceSlug,const QString& gamesDirectory,const QVector<Download>& candidates) {
     if(diagnostics::safeMode()) {
         showMessage(tr("Downloads"),tr("Safe mode does not use the network."),MessageKind::Page);
         emit changed();
-        return;
+        return false;
     }
     if(title.trimmed().isEmpty() || releaseTitle.trimmed().isEmpty() || !QDir::isAbsolutePath(gamesDirectory) ||
        (sourceSlug.isEmpty() && sourceUrl.isEmpty() && candidates.isEmpty())) {
         showMessage(tr("Downloads"),tr("Choose a release and an absolute game library folder."),MessageKind::Page);
         emit changed();
-        return;
+        return false;
     }
     if(!releaseJobs_)releaseJobs_ = std::make_shared<ReleaseGameQueue>();
     const QString library = QDir::cleanPath(gamesDirectory);
@@ -753,20 +753,20 @@ void Shell::enqueueReleaseGame(const QString& title,const QString& releaseTitle,
         showMessage(tr("Downloads"),volume.isEmpty()?tr("Choose an available game library drive.")
             :tr("The saved download queue is unavailable."),MessageKind::Page);
         emit changed();
-        return;
+        return false;
     }
     for(const auto& job:releaseJobs_->jobs) {
         if(job.request.releaseTitle==releaseTitle && job.request.sourceSlug==sourceSlug && job.request.sourceUrl==sourceUrl &&
            job.request.gamesDirectory==library && (job.state==State::Queued || job.state==State::Paused || active(job.state))) {
             showMessage(tr("Downloads"),tr("This release already has a job in Download Management."),MessageKind::Page);
             emit changed();
-            return;
+            return false;
         }
     }
     if(releaseJobs_->jobs.size()>=MaxReleaseJobs) {
         showMessage(tr("Downloads"),tr("Download Management is full. Dismiss a finished job and try again."),MessageKind::Page);
         emit changed();
-        return;
+        return false;
     }
     Job job;
     job.id = QUuid::createUuid().toString(QUuid::Id128);
@@ -776,7 +776,7 @@ void Shell::enqueueReleaseGame(const QString& title,const QString& releaseTitle,
         releaseJobs_->jobs.removeFirst();
         showMessage(tr("Downloads"),tr("Could not save the download queue."),MessageKind::Page);
         emit changed();
-        return;
+        return false;
     }
     notify(tr("Download Management"),tr("%1 queued").arg(title));
     refreshReleaseJobRows();
@@ -786,6 +786,7 @@ void Shell::enqueueReleaseGame(const QString& title,const QString& releaseTitle,
     // place instead of stacking a duplicate page.
     if(!pages_.isEmpty() && pages_.last().downloads)reloadSteamDownloads();
     else openSteamDownloads();
+    return true;
 }
 
 void Shell::pumpReleaseJobs() {
@@ -858,7 +859,10 @@ void Shell::pumpReleaseJobs() {
         // A finished (installed + registered) or cancelled (archive cleaned up) job is complete: forget it
         // so it no longer occupies a queue slot or lingers in Download Management (the console clears both
         // from the list). Capture the row text first, then forget; failed and paused jobs stay for
-        // retry/resume.
+        // retry/resume. A finished job's downloaded archive is NOT discarded here (unlike the definitive
+        // cancellation above): it is the user's downloaded file and remains in Download Archives/<id>/,
+        // reachable from the OS rather than from Download Management, exactly as the previous manual Dismiss
+        // left it.
         const bool complete = xmb::releaseJobComplete(job->state);
         const QString title = job->request.title;
         const QString state = statusText(*job);
