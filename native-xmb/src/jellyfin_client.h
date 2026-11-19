@@ -36,6 +36,9 @@ struct JellyfinItem {
     // External provider identifiers (ProviderIds.Tmdb / ProviderIds.Imdb), for cross-service resolution:
     // a Seerr request carries a TMDB id, so the matching Jellyfin library item is recognised through these.
     QString tmdbId, imdbId;
+    // The source resolution's width in pixels, for the 4K rule: the largest MediaSources[].Width (0 when the
+    // server reported none). A width >= 3840 confirms a 4K source; 0 is "unknown", never a confirmation.
+    int width = 0;
     bool favorite = false;
     int playCount = 0;   // UserData.PlayCount (the Most Played list)
 };

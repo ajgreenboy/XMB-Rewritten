@@ -257,6 +257,22 @@ JellyfinItem parseItem(const QJsonObject& json) {
         result.seasonNumber = std::clamp(json.value(QStringLiteral("ParentIndexNumber")).toInt(0), 0, 999);
         result.episodeNumber = std::clamp(json.value(QStringLiteral("IndexNumber")).toInt(0), 0, 9999);
     }
+    // The source resolution, for the 4K rule: the widest MediaSources[].Width (a multi-version item reports every
+    // source, so the largest one is what "is this item 4K" asks). A few routes answer a top-level Width instead of
+    // MediaSources; honour it only when no source width was seen. 0 = the server reported none (unknown, not "SD").
+    result.width = 0;
+    {
+        const QJsonArray sources = json.value(QStringLiteral("MediaSources")).toArray();
+        for (const auto& sourceValue : sources) {
+            if (!sourceValue.isObject()) continue;
+            const int w = sourceValue.toObject().value(QStringLiteral("Width")).toInt(0);
+            if (w > 0 && w <= 20000) result.width = std::max(result.width, w);
+        }
+        if (result.width == 0) {
+            const int w = json.value(QStringLiteral("Width")).toInt(0);
+            if (w > 0 && w <= 20000) result.width = w;
+        }
+    }
     return result;
 }
 
@@ -552,7 +568,9 @@ quint64 JellyfinClient::search(QString term, int startIndex) {
     query.addQueryItem(QStringLiteral("SortBy"), QStringLiteral("SortName"));
     query.addQueryItem(QStringLiteral("SortOrder"), QStringLiteral("Ascending"));
     query.addQueryItem(QStringLiteral("EnableUserData"), QStringLiteral("true"));
-    query.addQueryItem(QStringLiteral("Fields"), QStringLiteral("Overview,ProviderIds"));
+    // MediaSources rides with Overview/ProviderIds so the Seerr->Jellyfin Watch resolution can read the source
+    // width for its 4K rule (the same search results serve both the player's own search and the resolver).
+    query.addQueryItem(QStringLiteral("Fields"), QStringLiteral("Overview,ProviderIds,MediaSources"));
     url.setQuery(query);
     return send(Operation::Search, get(url), QString::number(startIndex));
 }

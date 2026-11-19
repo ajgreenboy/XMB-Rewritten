@@ -1102,7 +1102,7 @@ private:
     void addSeerrDownloadOptions(const Entry& entry);
     void controlSeerrDownload(const Entry& entry,OptionCommand command);
     QVector<Entry> seerrDownloadRows() const;
-    void resolveSeerrJellyfin(const QString& rowId,const QString& title,const QString& tmdbId);
+    void resolveSeerrJellyfin(const QString& rowId,const QString& title,const QString& mediaType,const QString& tmdbId,bool is4k);
     void applySeerrJellyfinMatch(const QString& rowId,const JellyfinItem& item);
     void watchSeerrJellyfin(const QString& rowId);
     void loadSeerrPoster(const QString& rowId,const QString& path);

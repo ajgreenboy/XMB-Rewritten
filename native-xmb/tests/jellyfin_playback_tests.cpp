@@ -425,17 +425,29 @@ int main(int argc, char** argv) {
     bool flagLegacyOnly = false;
     struct Latest { int status = 0; bool legacyOnly = false, noFavorites = false; } latest;
     struct NextUp { int status = 0; QStringList items; } nextUp;
+    int searchStatus = 0;   // a non-zero HTTP status makes the search route fail, to test the resolver's retry path
     const QString user = QString::fromLatin1(kUser);
     const QJsonObject resumeItem{{"Id", "dddddddddddddddddddddddddddddd01"}, {"Name", "Half Watched"}, {"Type", "Episode"}, {"IsFolder", false},
         {"SeriesName", "Test Show"}, {"ParentIndexNumber", 2}, {"IndexNumber", 5}, {"RunTimeTicks", 36000000000LL},
         {"ProviderIds", QJsonObject{{"Tmdb", "1399"}, {"Imdb", "tt0944947"}, {"Tvdb", "333"}}},
+        {"MediaSources", QJsonArray{QJsonObject{{"Width", 3840}, {"Height", 2160}}}},
         {"UserData", QJsonObject{{"Played", false}, {"PlaybackPositionTicks", 6000000000LL}}}};
     const QJsonObject latestItem{{"Id", "dddddddddddddddddddddddddddddd03"}, {"Name", "Fresh Episode"}, {"Type", "Episode"}, {"IsFolder", false}, {"SeriesId", "eeeeeeeeeeeeeeeeeeeeeeeeeeeeee01"},
-        {"SeriesName", "Test Show"}, {"ParentIndexNumber", 2}, {"IndexNumber", 6}, {"RunTimeTicks", 36000000000LL}, {"UserData", QJsonObject{{"Played", true}, {"IsFavorite", true}, {"PlaybackPositionTicks", 0}}}};
+        {"SeriesName", "Test Show"}, {"ParentIndexNumber", 2}, {"IndexNumber", 6}, {"RunTimeTicks", 36000000000LL}, {"Width", 1920}, {"UserData", QJsonObject{{"Played", true}, {"IsFavorite", true}, {"PlaybackPositionTicks", 0}}}};
+    // The Seerr->Jellyfin resolver's search target: a Movie whose MediaSources carries the width the 4K rule reads.
+    const QJsonObject searchItem{{"Id", "cccccccccccccccccccccccccccccc01"}, {"Name", "Dune"}, {"Type", "Movie"}, {"IsFolder", false},
+        {"ProviderIds", QJsonObject{{"Tmdb", "438631"}}},
+        {"MediaSources", QJsonArray{QJsonObject{{"Width", 3840}, {"Height", 2160}}}},
+        {"UserData", QJsonObject{{"Played", false}}}};
     fake.handler = [&](const Req& r) -> Resp {
         const QString path = QString::fromLatin1(r.path);
         if (authToken(r) == kToken || r.query().queryItemValue("ApiKey").toLatin1() == kToken) {
             const QUrlQuery q = r.query();
+            // A free-text search (the Seerr->Jellyfin resolver and the player's own search share the route).
+            if (r.method == "GET" && path == QLatin1String("/Items") && q.hasQueryItem("SearchTerm")) {
+                if (searchStatus) return error(searchStatus, "search failed");
+                return json({{"Items", QJsonArray{searchItem}}, {"TotalRecordCount", 1}});
+            }
             // Phase 2: Latest, Favourites and the user's flags.
             if (r.method == "GET" && path == QLatin1String("/Items/Latest")) {
                 if (latest.status) return error(latest.status, "no");
@@ -521,6 +533,7 @@ int main(int argc, char** argv) {
             check(item.resumeMs == 600000 && item.durationMs == 3600000 && !item.played, "home: the server's PlaybackPositionTicks is the resume point (100 ns ticks to ms)");
             check(item.seriesName == QLatin1String("Test Show") && item.seasonNumber == 2 && item.episodeNumber == 5, "home: an episode names its show, season and number");
             check(item.tmdbId == QLatin1String("1399") && item.imdbId == QLatin1String("tt0944947"), "home: ProviderIds.Tmdb/Imdb are parsed for cross-service resolution");
+            check(item.width == 3840, "home: MediaSources[].Width is parsed for the 4K rule");
         } else check(false, "home: the page carries the resume item");
 
         // 10.9+ route missing, older route present: the page arrives under the original request id.
@@ -540,6 +553,39 @@ int main(int argc, char** argv) {
         client.home(JellyfinClient::HomeList::Resume);
         check(waitFor([&] { return pages.count() > 0 || failures2.count() > 0; }) && failures2.count() == 1 && pages.count() == 0, "home: an HTTP 500 is reported, not swallowed");
         home.resumeStatus = 0;
+        QObject::disconnect(pageConnection); QObject::disconnect(failConnection);
+    }
+    {
+        // Free-text search (the Seerr->Jellyfin resolver's route): Fields asks for MediaSources so the 4K rule has
+        // a width, and a Movie result parses that width (audit/PHASES-SEERR-JELLYFIN-2026-11-17.md).
+        Collector pages, failures2;
+        const auto pageConnection = QObject::connect(&client, &JellyfinClient::pageReady, [&](quint64 request, const JellyfinPage& page) { pages.v.push_back({QVariant::fromValue(request), QVariant::fromValue(page)}); });
+        const auto failConnection = QObject::connect(&client, &JellyfinClient::failed, [&](quint64 request, const QString& message) { failures2.v.push_back({QVariant::fromValue(request), message}); });
+        const quint64 id = client.search(QStringLiteral("Dune"));
+        check(waitFor([&] { return pages.count() > 0; }) && pages.first().at(0).toULongLong() == id, "search: a free-text search answers under its request id");
+        const auto& req = fake.log.last();
+        check(req.path == "/Items" && req.query().queryItemValue("Fields").contains("MediaSources"), "search: Fields requests MediaSources for the 4K width rule");
+        if (pages.count() > 0 && !qvariant_cast<JellyfinPage>(pages.first().at(1)).items.isEmpty()) {
+            const auto item = qvariant_cast<JellyfinPage>(pages.first().at(1)).items.first();
+            check(item.type == QLatin1String("Movie") && item.tmdbId == QLatin1String("438631") && item.width == 3840, "search: a movie result parses its MediaSources width");
+        } else check(false, "search: the page carries the movie");
+        QObject::disconnect(pageConnection); QObject::disconnect(failConnection);
+    }
+    {
+        // A failing search (401 then 500) answers under the search's own request id through failed, not pageReady.
+        // This is the signal the Seerr->Jellyfin resolver uses to clear its in-flight row so the next poll retries.
+        Collector pages, failures2;
+        const auto pageConnection = QObject::connect(&client, &JellyfinClient::pageReady, [&](quint64 request, const JellyfinPage& page) { pages.v.push_back({QVariant::fromValue(request), QVariant::fromValue(page)}); });
+        const auto failConnection = QObject::connect(&client, &JellyfinClient::failed, [&](quint64 request, const QString& message) { failures2.v.push_back({QVariant::fromValue(request), message}); });
+        searchStatus = 401;
+        const quint64 id401 = client.search(QStringLiteral("Dune"));
+        check(waitFor([&] { return failures2.count() > 0; }) && failures2.first().at(0).toULongLong() == id401 && pages.count() == 0,
+              "search: a 401 answers under the search's own request id through failed, no page");
+        failures2.clear(); pages.clear(); searchStatus = 500;
+        const quint64 id500 = client.search(QStringLiteral("Dune"));
+        check(waitFor([&] { return failures2.count() > 0; }) && failures2.first().at(0).toULongLong() == id500 && pages.count() == 0,
+              "search: a 5xx answers under the search's own request id through failed, no page");
+        searchStatus = 0;
         QObject::disconnect(pageConnection); QObject::disconnect(failConnection);
     }
     {
@@ -661,6 +707,7 @@ int main(int argc, char** argv) {
         if (pages.count() > 0 && !firstPage().items.isEmpty()) {
             const auto item = firstPage().items.first();
             check(item.favorite && item.seriesId == QLatin1String("eeeeeeeeeeeeeeeeeeeeeeeeeeeeee01") && item.played, "latest: UserData.IsFavorite, Played and SeriesId are read");
+            check(item.width == 1920, "latest: a top-level Width is honoured when the server sends no MediaSources");
         }
         check(fake.log.last().query().queryItemValue("ParentId") == library, "latest: the library id reached the server");
         pages.clear(); latest.legacyOnly = true;

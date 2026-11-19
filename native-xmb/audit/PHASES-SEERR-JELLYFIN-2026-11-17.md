@@ -6,65 +6,88 @@ identifiers, and offer **Watch** only when the item is actually playable. `seerr
 requests, checks the exact SABnzbd queue ids, and offers Pause/Resume/Cancel; what is missing is the last leg — the
 Jellyfin match that lets a completed Seerr request turn into a Watch action.
 
-## 1. The missing primitive: provider identifiers on Jellyfin items
+This document records the Stage 0 safety fix on top of that foundation: the match decision is now a pure, tested
+policy (`src/seerr_jellyfin_match.h`) that enforces movie-only matching, exact TMDB equality, the 4K width rule and
+a deliberate no-TV-Watch state, replacing the earlier first-wins `(tmdbMatch || titleMatch)` over
+Movie/Episode/Video that dropped `is4k` and could match a same-title Movie to a TV request.
+
+## 1. The foundation: provider identifiers and source width on Jellyfin items
 
 A Seerr request carries a TMDB id (`media.tmdbId`), and Seerr's search/detail paths already key on it. Jellyfin items
-carry the same external identifiers in `ProviderIds` (`Tmdb` / `Imdb` / `Tvdb`), but the client never read them, so
-there was no way to recognise the matching item. `JellyfinItem` and `parseItem` now parse them:
+carry the same external identifiers in `ProviderIds` (`Tmdb` / `Imdb` / `Tvdb`). `JellyfinItem` and `parseItem` read
+them, and now also the source width the 4K rule needs:
 
 - `JellyfinItem` gains `tmdbId` and `imdbId` (src/jellyfin_client.h).
 - `parseItem` reads `ProviderIds.Tmdb` (kept only when it is a bounded numeric id, 1..32 digits) and
   `ProviderIds.Imdb` (bounded, 1..32 chars), ignoring any other provider key (src/jellyfin_client.cpp).
-- `items()` and `search()` now request `ProviderIds` alongside `Overview` in `Fields`, so the server actually
-  returns them (src/jellyfin_client.cpp).
+- `items()` and `search()` request `ProviderIds` alongside `Overview` in `Fields`; `search()` also requests
+  `MediaSources` so the resolver has a width to read (src/jellyfin_client.cpp).
+- `JellyfinItem` gains `width` (src/jellyfin_client.h): `parseItem` takes the widest `MediaSources[].Width`, and
+  falls back to a top-level `Width` only when no source width was seen. `0` means the server reported none — it is
+  "unknown", never a confirmation and never "SD".
 
-This is the foundation the Watch resolution needs.
+## 2. Watch resolution — the Stage 0 safety policy
 
-## 2. Watch resolution
+The match decision lives in `resolveSeerrWatch()` (`src/seerr_jellyfin_match.h`), a pure function over the Seerr
+request and one Jellyfin search page, with no network and no session state. The rules it enforces:
 
-The second increment closes the request → Watch loop in `seerr_shell.cpp`:
+- **Movie-only.** A movie request matches only a Jellyfin `Type == "Movie"` item. Episode, Video and Series are
+  never a movie match.
+- **Exact TMDB equality.** With a Seerr TMDB id, a candidate matches only on exact id equality; a same-title
+  candidate with a different id is never accepted as a fallback.
+- **Title fallback, narrowly.** The title fallback (case-insensitive, trimmed) applies only when the Seerr TMDB id
+  itself is missing. With a supplied Seerr id, a candidate with a missing id cannot be confirmed and is refused just
+  like a mismatched id — title never overrides a known id or fills in an absent one.
+- **4K width rule.** A 4K request watches only a candidate whose `MediaSources` width confirms `>= 3840`; an unknown
+  width is unverified and never presumed 4K, and a known `2160p` (non-UHD) source is not 4K. A regular request
+  prefers a known `< 3840` copy; otherwise it watches its sole matching copy (a regular request needs no quality
+  proof, so a sole 4K or sole unknown-width copy is permitted), and refuses only when several copies leave no safe
+  pick — the resolver never invents a variant.
+- **No TV Watch.** A TV request never matches Movie/Video/Series as directly playable; it is left pending until
+  Stage 1 season/episode matching exists.
 
-- A new `OptionCommand::SeerrDownloadWatch` and three Shell methods (`resolveSeerrJellyfin`,
-  `applySeerrJellyfinMatch`, `watchSeerrJellyfin`).
-- When a Seerr request's transfer has left the SABnzbd queue (`seerrSabIds` empty) but its media status is below
-  `Available` (5), and Jellyfin is signed in, the row is queued for a resolution pass: one `jellyfin_.search(title)`
-  whose `pageReady` answer is taken by a dedicated connection keyed on a request id the player's own search never
-  uses, so the two routes cannot cross. The answer is matched against every still-pending row.
-- A match is accepted on `ProviderIds.Tmdb == tmdbId` (the Seerr request's TMDB id) or, fallback, an exact
-  case-insensitive title match, and only for playable `Movie`/`Episode`/`Video` items. On a match the row reads
-  "Ready to watch · Seerr · …" and its Triangle menu gains a single **Watch** row (no SABnzbd controls, since the
-  transfer is gone).
-- **Watch** builds a one-item Jellyfin `Entry` and plays it through the existing `playJellyfinQueue` path, so the
-  intended item opens in the same player as any Jellyfin row, with resume/seek/session reporting intact.
-
-An honest intermediate remains: while the transfer is done but no Jellyfin item matches (still importing), the row
-keeps its Seerr media status and offers no Watch — the state the acceptance calls "when import cannot be confirmed".
+`seerr_shell.cpp` now threads the request's `mediaType` and `is4k` (and the movie's TMDB id) through
+`resolveSeerrJellyfin`, stores them per row, and applies `resolveSeerrWatch()` to the search result. A TV row is
+never queued for resolution and never gains a Watch option — it keeps its Seerr media status, which is the honest
+"when import cannot be confirmed" state. A failed search (a 401 or 5xx) releases its row: the in-flight map, the
+pending set and the title-key are cleared, keyed on the search's own request id, so the next poll retries. An
+unrelated Jellyfin failure carries a request id that is not in that map and is left untouched.
 
 ## 3. Verification
 
-Provider-identifier parse (committed with the foundation):
+The policy is tested headlessly, with no real server, account or credential:
 
 ```
-cmake -S native-xmb -B out/phase-candidate ... -DXMB_JELLYFIN_PLAYBACK_BUILD_TESTS=ON
-cmake --build out/phase-candidate --target xmb-jellyfin-playback-tests
-out/phase-candidate/xmb-jellyfin-playback-tests.exe   -> 133 checks, 0 failures
+cmake -S native-xmb -B out/seerr-watch -G Ninja -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_PREFIX_PATH=C:\Qt\6.12.0\msvc2022_64 -DXMB_SEERR_WATCH_BUILD_TESTS=ON \
+      -DXMB_JELLYFIN_PLAYBACK_BUILD_TESTS=ON
+cmake --build out/seerr-watch --target xmb-seerr-watch-tests xmb-jellyfin-playback-tests
+out/seerr-watch/xmb-seerr-watch-tests.exe          -> 18 checks, 0 failures
+out/seerr-watch/xmb-jellyfin-playback-tests.exe    -> 140 checks, 0 failures
 ```
 
-Two assertions cover the parse: the home fixture's `resumeItem` carries
-`ProviderIds{"Tmdb":"1399","Imdb":"tt0944947","Tvdb":"333"}`, and the test checks `item.tmdbId == "1399"` and
-`item.imdbId == "tt0944947"` (`Tvdb` ignored). The full app build is clean; `ci-guard` and the release-check static
-gates pass.
+`xmb-seerr-watch-tests` (`tests/seerr_jellyfin_match_tests.cpp`) pins the policy: SD vs 4K for a 4K request, unknown
+width, a same-title mismatched TMDB, title fallback only when the Seerr id is missing (a missing candidate id is
+refused), an exact-id match across a title difference, wrong-type TV, the single-copy movie, the regular preference
+for `< 3840`, the sole-copy allowance (4K or unknown width), and the ambiguous/no-variant refusals.
 
-The Watch resolution compiles clean (no new warning beyond the pre-existing `value` shadow) but is not yet driven
-end-to-end: the loopback Seerr + SABnzbd + Jellyfin fixture is the next piece of evidence.
+`xmb-jellyfin-playback-tests` gained seven assertions (133 → 140): `MediaSources[].Width` is parsed, a top-level
+`Width` is honoured when the server sends no `MediaSources`, the `search()` route requests `MediaSources` in `Fields`
+and parses a movie's width, and a failing search (401 then 5xx) answers under the search's own request id through
+`failed` with no page — the signal the resolver clears its in-flight row on.
+
+`seerr_shell.cpp` compiles clean (only the pre-existing `value` shadow warning). `ci-guard` wiring
+(CMakeLists.txt ↔ tests.yml ↔ the new runner) is updated.
 
 ## 4. Open
 
-- A mock movie + TV season driven through transfer → import delay → Jellyfin availability, plus a completed-SAB
-  transfer whose Jellyfin item has not arrived, a conflicting same-title item, and a different season. This needs the
-  loopback Seerr + SABnzbd + Jellyfin fixture (the Seerr/SAB replay the handoff describes as local evidence).
-- Keeping TV seasons and 4K distinct at the Watch step: the resolution currently matches the request (movie) or the
-  show (title/tmdb), not a specific season or the 4K variant; the `is4k` flag and per-season `downloadStatus4k` are
-  already read in `seerr_shell.cpp` and are the natural inputs for that refinement.
+- The loopback Seerr + SABnzbd + Jellyfin fixture (a mock movie and TV season driven through transfer → import delay
+  → Jellyfin availability, plus a conflicting same-title item and a different season) is still the next piece of
+  end-to-end evidence; the policy is proven pure, not yet driven through the real three-service loop.
+- TV season/episode matching is deliberately unbuilt: a TV request is `Pending`/unverified until Stage 1 implements
+  per-season episode matching. This is not claimed as complete.
+- The 4K rule reads `MediaSources[].Width`; a server that does not return `MediaSources` for a movie yields an
+  unknown width and is refused a Watch for 4K (a regular request still watches its sole copy), rather than presumed
+  either way.
 
 See `audit/JELLYFIN-NATIVE.md` and `audit/SEERR.md` for the service contracts.

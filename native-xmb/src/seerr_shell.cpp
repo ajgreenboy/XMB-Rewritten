@@ -1,6 +1,7 @@
 #include "shell.h"
 #include "seerr_client.h"
 #include "seerr_config.h"
+#include "seerr_jellyfin_match.h"
 #include "sabnzbd_client.h"
 #include "diagnostics.h"
 #include "service_icons.h"
@@ -40,13 +41,17 @@ struct SeerrUi {
     QString apiKey;
     // Seerr -> Jellyfin resolution state: for a request whose SABnzbd transfer has completed but whose media
     // is not yet marked Available, the matching Jellyfin library item (resolved by ProviderIds.Tmdb, title
-    // fallback) becomes a Watch action. Keyed by the download row id (download:seerr:<requestId>).
+    // fallback) becomes a Watch action. Keyed by the download row id (download:seerr:<requestId>). The match
+    // decision itself is the pure resolveSeerrWatch() policy (seerr_jellyfin_match.h); this struct only keeps
+    // the per-row inputs and the in-flight search bookkeeping.
     QHash<QString,QString> seerrTmdbId;
+    QHash<QString,QString> seerrMediaType;    // row id -> "movie" / "tv"
+    QHash<QString,bool> seerrIs4k;            // row id -> the request's is4k flag
     QHash<QString,JellyfinItem> jellyfinMatch;
     QHash<QString,QString> jellyfinTitleKey;   // row id -> search key (dedupes re-search)
     QHash<QString,QString> jellyfinTitle;      // row id -> title (title-match fallback)
     QSet<QString> jellyfinResolvePending;
-    quint64 jellyfinResolveRequest=0;
+    QHash<quint64,QString> jellyfinResolveRow; // search request id -> the row it resolves
     bool jellyfinResolveHooked=false;
     QString searchTerm;
     QString title;
@@ -233,7 +238,7 @@ void Shell::refreshSeerrDownloads() {
             // The transfer is out of SABnzbd (no live queue ids) and the media is not yet Available: try to
             // resolve the imported Jellyfin item so the row can offer Watch as soon as it is actually playable.
             if(ids.isEmpty() && self->jellyfin_.signedIn())
-                self->resolveSeerrJellyfin(identifier,title,seerrMediaType(media)==QLatin1String("movie")?QString::number(id):QString());
+                self->resolveSeerrJellyfin(identifier,title,type,type==QLatin1String("movie")?QString::number(id):QString(),is4k);
             if(state.titles.contains(key) || state.downloadDetails.contains(key))continue;
             state.downloadDetails.insert(key);
             state.downloadClient.details(type,id,[self,key,identifier](QJsonObject details,QString error){
@@ -359,41 +364,51 @@ void Shell::controlSeerrDownload(const Entry& entry,OptionCommand command) {
 }
 
 // The Seerr->Jellyfin resolution: find the imported Jellyfin item for a request whose transfer is done but whose
-// media is not yet Available. One free-text search runs, answered through a dedicated pageReady connection whose
-// request id never matches the player's own search, so the player page handler ignores it.
-void Shell::resolveSeerrJellyfin(const QString& rowId,const QString& title,const QString& tmdbId) {
+// media is not yet Available. The match itself is the pure resolveSeerrWatch() policy (seerr_jellyfin_match.h):
+// movies only, exact TMDB equality (never a same-title id fallback), the 4K width rule, and no TV Watch in Stage 0.
+void Shell::resolveSeerrJellyfin(const QString& rowId,const QString& title,const QString& mediaType,const QString& tmdbId,bool is4k) {
     if(!seerr_ || !jellyfin_.signedIn())return;
     auto& ui=*seerr_;
     if(ui.jellyfinResolvePending.size()>=16 || ui.jellyfinMatch.contains(rowId))return;
+    // TV requests have no directly playable Watch in Stage 0: leave the row on its Seerr status, never claim
+    // completion. Season/episode matching arrives in Stage 1.
+    if(mediaType==QLatin1String("tv"))return;
     const QString key=title.trimmed().toCaseFolded();
     if(key.isEmpty() || ui.jellyfinTitleKey.value(rowId)==key)return;
     ui.jellyfinTitleKey.insert(rowId,key);
     ui.jellyfinTitle.insert(rowId,title.trimmed());
+    ui.seerrMediaType.insert(rowId,mediaType);
+    ui.seerrIs4k.insert(rowId,is4k);
     if(!tmdbId.isEmpty())ui.seerrTmdbId.insert(rowId,tmdbId);
     ui.jellyfinResolvePending.insert(rowId);
     if(!ui.jellyfinResolveHooked) {
         ui.jellyfinResolveHooked=true;
         connect(&jellyfin_,&JellyfinClient::pageReady,this,[this](quint64 request,const JellyfinPage& page){
-            if(!seerr_ || request!=seerr_->jellyfinResolveRequest || seerr_->jellyfinResolveRequest==0)return;
-            seerr_->jellyfinResolveRequest=0;
-            // One search serves every pending row: resolve each still-pending row against the page.
-            const auto pending=seerr_->jellyfinResolvePending;
-            seerr_->jellyfinResolvePending.clear();
-            for(const auto& rowId:pending) {
-                const QString tmdb=seerr_->seerrTmdbId.value(rowId);
-                const QString title=seerr_->jellyfinTitle.value(rowId);
-                const JellyfinItem* found=nullptr;
-                for(const auto& item:page.items) {
-                    const bool tmdbMatch=!tmdb.isEmpty() && item.tmdbId==tmdb;
-                    const bool titleMatch=!title.isEmpty() && !item.title.isEmpty() && item.title.trimmed().compare(title,Qt::CaseInsensitive)==0;
-                    if((tmdbMatch || titleMatch) &&
-                       (item.type==QLatin1String("Movie") || item.type==QLatin1String("Episode") || item.type==QLatin1String("Video"))) { found=&item; break; }
-                }
-                if(found)applySeerrJellyfinMatch(rowId,*found);
-            }
+            if(!seerr_)return;
+            const QString rowId=seerr_->jellyfinResolveRow.take(request);
+            if(rowId.isEmpty() || !seerr_->jellyfinResolvePending.contains(rowId))return;
+            seerr_->jellyfinResolvePending.remove(rowId);
+            seerr_->jellyfinTitleKey.remove(rowId);   // allow a later refresh to re-resolve an item still importing
+            const SeerrWatchRequest watchRequest{
+                seerr_->seerrMediaType.value(rowId),
+                seerr_->seerrTmdbId.value(rowId),
+                seerr_->jellyfinTitle.value(rowId),
+                seerr_->seerrIs4k.value(rowId)};
+            const SeerrWatchDecision decision=resolveSeerrWatch(watchRequest,page.items);
+            if(decision.state==SeerrWatchState::Watch)applySeerrJellyfinMatch(rowId,decision.item);
+        });
+        // A failed search must release its row so the next poll retries; any other Jellyfin failure (a home
+        // list, a playback, a sign-in) carries a request id that is not in the map and is left untouched.
+        connect(&jellyfin_,&JellyfinClient::failed,this,[this](quint64 request,const QString&){
+            if(!seerr_)return;
+            const QString rowId=seerr_->jellyfinResolveRow.take(request);
+            if(rowId.isEmpty())return;
+            seerr_->jellyfinResolvePending.remove(rowId);
+            seerr_->jellyfinTitleKey.remove(rowId);   // allow a later refresh to re-resolve
         });
     }
-    ui.jellyfinResolveRequest=jellyfin_.search(title);
+    const quint64 request=jellyfin_.search(title);
+    ui.jellyfinResolveRow.insert(request,rowId);
 }
 
 void Shell::applySeerrJellyfinMatch(const QString& rowId,const JellyfinItem& item) {
