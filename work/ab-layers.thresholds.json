@@ -1064,33 +1064,9 @@
         ]
       },
       "regions": [
-        {
-          "name": "frame",
-          "crop": [
-            0,
-            0,
-            1920,
-            1080
-          ]
-        },
-        {
-          "name": "game frame",
-          "crop": [
-            0,
-            130,
-            1920,
-            810
-          ]
-        },
-        {
-          "name": "guide",
-          "crop": [
-            60,
-            940,
-            900,
-            100
-          ]
-        }
+        { "name": "frame below compositor title", "crop": [0, 49, 1920, 1031] },
+        { "name": "game frame", "crop": [0, 130, 1920, 810] },
+        { "name": "guide", "crop": [60, 940, 900, 100] }
       ]
     },
     {
@@ -1241,24 +1217,11 @@
         ]
       },
       "regions": [
-        {
-          "name": "list below About",
-          "crop": [
-            0,
-            140,
-            1920,
-            940
-          ]
-        },
-        {
-          "name": "focused row",
-          "crop": [
-            500,
-            440,
-            1300,
-            150
-          ]
-        }
+        { "name": "list above compositor edge", "crop": [0, 140, 1920, 350] },
+        { "name": "compositor edge left", "crop": [0, 490, 410, 30] },
+        { "name": "compositor edge right", "crop": [500, 490, 1420, 30] },
+        { "name": "list below compositor edge", "crop": [0, 520, 1920, 560] },
+        { "name": "focused row", "crop": [500, 440, 1300, 150] }
       ],
       "preGrab": [
         "DOWN",
@@ -1369,24 +1332,11 @@
         ]
       },
       "regions": [
-        {
-          "name": "frame",
-          "crop": [
-            0,
-            0,
-            1920,
-            1080
-          ]
-        },
-        {
-          "name": "step rows",
-          "crop": [
-            500,
-            440,
-            1400,
-            380
-          ]
-        }
+        { "name": "frame upper", "crop": [0, 0, 1920, 490] },
+        { "name": "frame compositor left", "crop": [0, 490, 410, 30] },
+        { "name": "frame compositor right", "crop": [460, 490, 1460, 30] },
+        { "name": "frame lower", "crop": [0, 520, 1920, 560] },
+        { "name": "step rows", "crop": [500, 440, 1400, 380] }
       ]
     },
     {
