@@ -165,6 +165,29 @@ QVector<Entry> downloadHubRows(const QVector<ReleaseSource>& sources) {
 
 // Browse worker result: the popular games plus their fetched box art (indexed by list position).
 struct BrowseOutcome { QVector<GameResult> games; QHash<int,QImage> covers; QString error; };
+// Offline verification fixture (XMB_LEGACY_STORE_FIXTURE=1): synthetic games with solid-colour 16:9
+// covers, so a scripted run can exercise the legacy-store layout without the Hydra/Steam network. The
+// titles and covers are placeholders and are never shipped data; the hook only replaces the network
+// fetch, exactly like XMB_GAME_LIBRARY_ROOT replaces the drive list.
+QVector<GameResult> legacyStoreFixture(QHash<int,QImage>* covers) {
+    QVector<GameResult> games;
+    const int count=14;
+    for(int i=0;i<count;++i) {
+        GameResult g;
+        g.name=QStringLiteral("Fixture Game %1").arg(i+1);
+        g.title=g.name;g.originalTitle=g.name;
+        GameSourceOption o;
+        o.source=QStringLiteral("Fixture Source");
+        o.fileSize=QStringLiteral("%1 MB").arg(800+i*150);
+        o.releaseTitle=g.name;
+        g.options={o};
+        games.append(std::move(g));
+        QImage cover(480,270,QImage::Format_ARGB32);
+        cover.fill(QColor::fromHsv((i*29)%360,170,205));
+        (*covers)[i]=cover;
+    }
+    return games;
+}
 }
 
 void Shell::refreshReleaseSources(const QUrl& importUrl) {
@@ -373,9 +396,14 @@ void Shell::openBrowseGames() {
         const auto result=watcher->result();watcher->deleteLater();
         busy_=false;status_.clear();busyProgress_=-1.;busySpinnerPhase_=-1.;
         if(pages_.size()<32) {
-            Page page;page.title=tr("Browse");
+            // The legacy PlayStation Store catalogue (GEN 2, 2008-2012): a full-screen "featured left +
+            // compact cover grid right" layout over this Hydra feed. The page carries the games as its
+            // rows (so the entry dump and the cover art stay available) but the View renders it with its
+            // own layout (View::drawLegacySurface), not as an XMB column. The top Search button in the
+            // blue chrome replaces the old inline Search row and opens the same OSK search (openGameSearch).
+            Page page;page.title=tr("PlayStation Store");
             page.downloadResults=result.games;
-            page.entries.append(releaseRow(QStringLiteral("game:search-row"),tr("Search"),Action::SearchGames));
+            page.legacyStore=true;   // selection 0 (the default) is the featured pane; the Search button is a separate focus flag
             if(!result.error.isEmpty()) {
                 Entry error=releaseRow(QStringLiteral("game:error"),tr("Could not load games"),Action::Unavailable);
                 error.detail=result.error;page.entries.append(error);
@@ -386,8 +414,8 @@ void Shell::openBrowseGames() {
                 for(int i=0;i<shown;++i) {
                     const auto& game=page.downloadResults[i];
                     Entry entry=releaseRow(QStringLiteral("game:result:")+QString::number(i),game.name,Action::GameSearchResult,QString::number(i));
-                    entry.detail=game.options.size()>1?tr("%1 sources").arg(game.options.size()):game.options.first().source;
-                    entry.fieldValue=game.options.first().fileSize;
+                    entry.detail=optionCount(game);
+                    entry.fieldValue=game.options.isEmpty()?QString{}:game.options.first().fileSize;
                     entry.gameTile=true;
                     entry.artwork=result.covers.value(i);
                     entry.artworkUrl=game.coverUrl;
@@ -401,8 +429,13 @@ void Shell::openBrowseGames() {
     const QString cache=QDir(dataDirectory_).filePath(QStringLiteral("cache/release-art"));
     watcher->setFuture(QtConcurrent::run([cache]{
         BrowseOutcome result;
-        HydraLibrary().popularGames(&result.games,&result.error);
-        result.covers=fetchCovers(result.games,cache);
+        if(qEnvironmentVariableIntValue("XMB_LEGACY_STORE_FIXTURE")>0) {
+            // Offline verification: synthetic games + covers, no network (see legacyStoreFixture).
+            result.games=legacyStoreFixture(&result.covers);
+        } else {
+            HydraLibrary().popularGames(&result.games,&result.error);
+            result.covers=fetchCovers(result.games,cache);
+        }
         return result;
     }));
     emit changed();

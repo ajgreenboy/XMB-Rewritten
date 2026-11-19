@@ -585,6 +585,12 @@ private:
     QDateTime backgroundOverride_;                                    // fixed clock for measurement, invalid = now
     double secondsOverride_=-1;                                       // fixed animation time for A/B captures, -1 = now
     void drawScene(QPainter& painter);
+    // The GEN 2 (2008-2012) PlayStation Store catalogue/detail, drawn full-screen instead of the XMB
+    // column (audit/LEGACY-STORE.md). Read from Shell::legacyStoreOpen()/legacyDetailOpen() and the same
+    // Page rows openBrowseGames()/openLegacyDetail() build. All geometry and the blue palette here are
+    // native choices: the manual screenshots (manifest.md) document the regions and button set but not
+    // 720p/1080p pixel coordinates, and this authoring model cannot inspect the raster images.
+    void drawLegacySurface(QPainter& painter);
     // The system menu's black frame (warm: 0 the real draw, 1 and 2 the idle prewarm's text and bloom passes).
     void drawPsMenuBody(QPainter& painter,double content,double bloom,int warm,int part=0);
     // Idle prewarm of what a first-opened surface would otherwise build on its first frame (audit/PS-MENU-HITCH.md):

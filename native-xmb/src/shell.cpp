@@ -2428,6 +2428,9 @@ void Shell::horizontal(int delta) {
         } else seekMedia(qint64(delta)*10000);
         return;
     }
+    // Legacy PlayStation Store: Left/Right move the catalogue cursor (the store is a full-screen app, so
+    // the ordinary root category move does not apply while it is open).
+    if(legacyStoreOpen()) { legacyStoreMove(delta,0); return; }
     if(!pages_.isEmpty())return;
     // A busy console does not treat Left/Right as a cancel (FIDELITY-BEHAVIOUR N11: the earlier build
     // cancelled the scan here and cleared the status line, an escape the console does not document). The
@@ -2461,6 +2464,8 @@ void Shell::vertical(int delta) {
         if(busy() && message_.isEmpty())qInfo().noquote()<<"busy: navigation refused (Up/Down) while a list loads";
         return;
     }
+    // Legacy PlayStation Store: Up/Down move the catalogue cursor (see legacyStoreMove).
+    if(legacyStoreOpen()) { legacyStoreMove(0,delta); return; }
     const int previous=selection();
     const int n=int(entries().size());
     if(n>0) {
@@ -2509,6 +2514,10 @@ void Shell::activate() {
         if(settingsWrite_.stage==WriteStage::FinishOk || settingsWrite_.stage==WriteStage::FinishFailed)finishSettingWrite();
         emit changed();return;}
     if(mediaOpen_){if(nextOffer_.active){playNextOffer();return;}togglePlayback();return;}
+    // Legacy PlayStation Store: Cross on the Search button opens the search OSK; Cross on the featured
+    // pane or a grid cell opens the item detail. The detail's Cross hands off to the source-choice page.
+    if(legacyStoreOpen()) { legacyStoreActivate(); return; }
+    if(legacyDetailOpen()) { legacyDetailActivate(); return; }
     if(entries().isEmpty() || busy()) {
         if(busy())qInfo().noquote()<<"busy: action refused (Cross) while a list loads";
         return;
@@ -6942,6 +6951,8 @@ QString Shell::pageKind() const {
     if(!page.entries.isEmpty() && page.entries.first().id.startsWith("savedata:"))return QStringLiteral("saveData");
     if(page.signIn)return QStringLiteral("jellyfinSignIn");
     if(page.addGame)return QStringLiteral("addGame");
+    if(page.legacyStore)return QStringLiteral("legacyStore");
+    if(page.legacyDetail)return QStringLiteral("legacyDetail");
     if(page.steamAccounts)return QStringLiteral("steamAccounts");
     if(page.jellyfin && !page.jellyfinMusic.isEmpty())return QStringLiteral("jellyfinMusic");
     if(page.jellyfin)return page.jellyfinViews?QStringLiteral("jellyfinViews"):page.jellyfinSearch?QStringLiteral("jellyfinSearch"):QStringLiteral("jellyfinFolder");
@@ -6954,6 +6965,9 @@ QString Shell::pageKind() const {
 QString Shell::focusedRowId() const {
     const auto& rows=entries();
     if(rows.isEmpty())return {};
+    // Legacy store: when the top Search button has focus there is no game row under the cursor.
+    if(!pages_.isEmpty() && pages_.last().legacyStore && pages_.last().legacySearchFocus)
+        return QStringLiteral("legacy:search");
     return rows.value(std::clamp(selection(),0,int(rows.size())-1)).id;
 }
 QString Shell::focusedBackgroundPath() {

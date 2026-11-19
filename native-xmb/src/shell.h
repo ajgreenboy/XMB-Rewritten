@@ -367,6 +367,24 @@ public:
     // navigation clamps at its bounds and never accumulates a column offset.
     int columnSink() const { return columnSink_; }
     QString pageTitle() const { return pages_.isEmpty()?QString{}:pages_.last().title; }
+    // The GEN 2 (2008-2012) PlayStation Store catalogue/detail surfaces. The catalogue is a faithful
+    // "featured left + compact cover grid right + blue chrome" layout over the JSON/Hydra download-games
+    // feed (release_shell.cpp's openBrowseGames); the detail is one game's item page. Navigation and the
+    // cursor model live in Shell::legacyStoreMove/Activate (legacy_store.cpp) and the layout in
+    // View::drawLegacySurface (view.cpp). `selection` stays a valid game index (0 = the featured pane,
+    // 1..N-1 = grid cells), so the ordinary selection()<entries().size() invariant holds; the top Search
+    // button is a separate focus flag (Page::legacySearchFocus).
+    bool legacyStoreOpen() const { return !pages_.isEmpty() && pages_.last().legacyStore; }
+    bool legacyDetailOpen() const { return !pages_.isEmpty() && pages_.last().legacyDetail; }
+    // The grid window's first visible row (Shell::legacyStoreMove keeps the focused cell inside it).
+    int legacyStoreScroll() const { return pages_.isEmpty()?0:pages_.last().legacyScroll; }
+    // True while the catalogue's top Search button has focus (instead of a game row).
+    bool legacySearchFocused() const { return !pages_.isEmpty() && pages_.last().legacySearchFocus; }
+    // The compact-cover grid's column count, shared by Shell (cursor moves) and View (layout).
+    static constexpr int legacyStoreGridColumns=4;
+    // Rows of the grid visible at once; the rest scroll with the cursor (Shell::legacyStoreMove keeps the
+    // focused cell inside this window by advancing Page::legacyScroll).
+    static constexpr int legacyStoreGridRows=3;
     QString message() const { return message_; }
     // Which surface the message is drawn on (see MessageKind). message() carries the text: for Inline the
     // line itself, for the other kinds "Title\n\nbody" where a single first line is the header.
@@ -828,6 +846,16 @@ private:
     void completeGameDownload(const QString& drive);
     void fetchGameArtwork(const QString& id,const QString& title);
     void requestGamePageArt();
+    // ---- Legacy PlayStation Store (legacy_store.cpp, audit/LEGACY-STORE.md) --------------------------
+    // The GEN 2 store catalogue and detail navigation, over the same GameResult data the download hub
+    // already produces. These are ordinary pages in the page stack (Page::legacyStore / legacyDetail);
+    // the View renders them with its own full-screen layout instead of the XMB column. Cross on the top
+    // Search button or a game hands off to the existing search/source-choice flow (release_shell.cpp),
+    // so source choices, confirm and the Download Management job lifecycle are untouched by this pass.
+    void legacyStoreMove(int dx,int dy);
+    void legacyStoreActivate();
+    void legacyDetailActivate();
+    void openLegacyDetail(int gameIndex);
     Assets& assets_;
     std::unique_ptr<class NotifyOverlay> notifyOverlay_;
     Preferences preferences_;
@@ -1323,7 +1351,7 @@ private:
     int columnSink_=0;
     // `grouped` is a page the item menu's Group Content level rebuilt into letter folders: `groupedSource` keeps
     // the ungrouped rows so All can put them back without a rescan, and the folders' rows are the same entries.
-    struct Page { QString title; QVector<Entry> entries; int selection=0; QString directory; bool jellyfin=false,jellyfinViews=false,jellyfinSearch=false; QString jellyfinParent; QString jellyfinMusic,jellyfinLibrary; QString jellyfinHome; int jellyfinStart=0; bool downloads=false; QString steamCmd,seerr; bool continuePage=false; bool signIn=false; bool jfSetup=false; bool steamAccounts=false; bool grouped=false; QString groupKey; QVector<Entry> groupedSource; bool sysconfPlugin=false; QString playlistsType,playlistId; QString spotify,spotifyContext; QString dlna; int dlnaServer=-1; QString tailscale; QString wol,ha; bool weather=false; bool systemCheck=false; QString userInfo; int userInfoStep=0; bool browse=false; QString browsePath; QString browseFiles; bool libraryRoot=false; QVector<GameResult> downloadResults; bool downloadHub=false; bool addGame=false; };
+    struct Page { QString title; QVector<Entry> entries; int selection=0; QString directory; bool jellyfin=false,jellyfinViews=false,jellyfinSearch=false; QString jellyfinParent; QString jellyfinMusic,jellyfinLibrary; QString jellyfinHome; int jellyfinStart=0; bool downloads=false; QString steamCmd,seerr; bool continuePage=false; bool signIn=false; bool jfSetup=false; bool steamAccounts=false; bool grouped=false; QString groupKey; QVector<Entry> groupedSource; bool sysconfPlugin=false; QString playlistsType,playlistId; QString spotify,spotifyContext; QString dlna; int dlnaServer=-1; QString tailscale; QString wol,ha; bool weather=false; bool systemCheck=false; QString userInfo; int userInfoStep=0; bool browse=false; QString browsePath; QString browseFiles; bool libraryRoot=false; QVector<GameResult> downloadResults; bool downloadHub=false; bool addGame=false; bool legacyStore=false; bool legacyDetail=false; int legacyScroll=0; bool legacySearchFocus=false; };
     QVector<Page> pages_;
     bool psMenu_=false;              // the PS-button system menu is showing
     bool desktopMode_=false;         // the XMB window is hidden for Desktop Mode (main.cpp DesktopMode)

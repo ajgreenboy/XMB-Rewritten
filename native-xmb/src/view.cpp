@@ -2607,6 +2607,162 @@ bool View::modalMessagePage() const {
 // = 0.7333, within 0.002 of the fitted gain). DIALOGS-FIRMWARE 13.7 item 1; the offline reference-gain test
 // (work/msgview: the frame with this gain applied) takes the back-hint crop 16.71 -> 19.40 dB.
 constexpr int kMessagePageDimAlpha=68;
+void View::drawLegacySurface(QPainter& p) {
+    // The GEN 2 (2008-2012) PlayStation Store catalogue/detail. See the declaration in view.h for the
+    // fidelity framing: regions and the button set come from manifest.md's callout topology; every pixel
+    // coordinate and the blue palette here are native choices, because the manual screenshots are
+    // downscaled crops and this authoring model cannot inspect them.
+    auto text=[&](const QRectF& r,const QString& value,int size,QColor colour,int flags=Qt::AlignLeft|Qt::AlignVCenter){
+        if(textRenderer_.ready()){QFont f(shell_.fontFamily());f.setPixelSize(size);textRenderer_.draw(*this,p,r,value,f,colour,flags);return;}
+        QFont f(shell_.fontFamily());f.setPixelSize(size);f.setStyleStrategy(QFont::PreferAntialias);f.setHintingPreference(QFont::PreferNoHinting);p.setFont(f);p.setPen(QColor(0,0,0,38));p.drawText(r.translated(1,1),flags,value);p.setPen(colour);p.drawText(r,flags,value);
+    };
+    auto elide=[&](const QString& s,int size,double width){
+        QFont f(shell_.fontFamily());f.setPixelSize(size);
+        return QFontMetrics(f).elidedText(s,Qt::ElideRight,int(width));
+    };
+    // The game rows openBrowseGames()/openLegacyDetail() built (Action::GameSearchResult); the error and
+    // empty-state rows are Action::Unavailable and are not games.
+    QVector<const Entry*> games;
+    games.reserve(shell_.entries().size());
+    for(const auto& e:shell_.entries())if(e.action==Action::GameSearchResult)games.push_back(&e);
+
+    // Blue store ground and chrome (native palette).
+    QLinearGradient bg(0,0,0,1080);bg.setColorAt(0,QColor(18,62,115));bg.setColorAt(1,QColor(8,30,64));
+    p.fillRect(QRectF(0,0,1920,1080),bg);
+    QLinearGradient hdr(0,0,0,150);hdr.setColorAt(0,QColor(32,96,178));hdr.setColorAt(1,QColor(15,54,120));
+    p.fillRect(QRectF(0,0,1920,150),hdr);
+    p.fillRect(QRectF(0,0,1920,2),QColor(255,255,255,28));
+
+    // Header: the PlayStation Store bag glyph and the store name on the left, the control buttons on the
+    // right. Only Search is wired (out-of-scope Redeem Codes / View Downloads / View Cart stay dimmed and
+    // unfocusable, matching the documented button set without fabricating their surfaces).
+    const QImage& bag=assets_.image(QStringLiteral("explore_plugin_full"),QStringLiteral("item_tex_ps_store"));
+    if(!bag.isNull())p.drawImage(QRectF(44,43,64,64),bag);
+    text(QRectF(128,48,640,54),QStringLiteral("PlayStation®Store"),34,QColor(255,255,255));
+    const QRectF searchBtn(1590,48,220,54);
+    const int cursor=shell_.legacyStoreOpen()?shell_.selection():-1;   // a valid game index (0 = featured)
+    const bool searchFocused=shell_.legacySearchFocused();
+    if(searchFocused) {
+        p.save();p.setPen(QPen(QColor(255,255,255,220),2));p.setBrush(QColor(255,255,255,28));
+        p.drawRoundedRect(searchBtn,6,6);p.restore();
+    }
+    text(QRectF(1450,55,130,40),QStringLiteral("View Cart"),20,QColor(220,225,235,150));
+    text(QRectF(1260,55,180,40),QStringLiteral("View Downloads"),20,QColor(220,225,235,150));
+    text(QRectF(1080,55,170,40),QStringLiteral("Redeem Codes"),20,QColor(220,225,235,150));
+    text(searchBtn.adjusted(14,0,-14,0),QStringLiteral("Search"),searchFocused?23:21,searchFocused?Qt::white:QColor(235,240,248),Qt::AlignLeft|Qt::AlignVCenter);
+
+    if(shell_.legacyDetailOpen()) {
+        // ---- Item detail (purchase001.jpg shape: title, price/size, description, primary action) ------
+        // The "widescreen detail strip": cover on the left, title + metadata on the right. Metadata is
+        // shown only where the feed provides it; description, genre, release year, developer, publisher
+        // and platform are not in HydraLibrary's GameResult, so each is drawn as explicitly unavailable
+        // rather than fabricated.
+        const Entry* g=games.value(0);
+        if(g) {
+            const QRectF cover(140,200,480,270);
+            if(!g->artwork.isNull()) {
+                const QSizeF fitted=QSizeF(g->artwork.size()).scaled(cover.size(),Qt::KeepAspectRatio);
+                p.drawImage(QRectF(cover.center()-QPointF(fitted.width()/2,fitted.height()/2),fitted),g->artwork);
+            } else {
+                p.save();p.setPen(QPen(QColor(255,255,255,70),1));p.setBrush(QColor(255,255,255,14));
+                p.drawRoundedRect(cover,6,6);
+                drawItemGlyph(p,g->container,g->texture,cover.adjusted(cover.width()*.32,cover.height()*.32,-cover.width()*.32,-cover.height()*.32),.55);
+                p.restore();
+            }
+            text(QRectF(660,200,1120,54),elide(g->title,34,1120),34,Qt::white);
+            QString meta;
+            if(!g->fieldValue.isEmpty())meta=QStringLiteral("Size: %1").arg(g->fieldValue);
+            if(!g->detail.isEmpty())meta+=meta.isEmpty()?g->detail:QStringLiteral(" · ")+g->detail;
+            if(!meta.isEmpty())text(QRectF(660,258,1120,36),elide(meta,21,1120),21,QColor(205,214,230,215));
+            // The metadata panel: available facts above, the five absent ones marked unavailable.
+            p.save();p.setPen(Qt::NoPen);p.setBrush(QColor(255,255,255,10));
+            p.drawRoundedRect(QRectF(660,330,1120,330),8,8);p.restore();
+            const char* rows[][2]={{"Description",""},{"Genre",""},{"Release year",""},{"Developer",""},{"Publisher",""},{"Platform",""}};
+            for(int r=0;r<6;++r) {
+                const double y=360+r*46;
+                text(QRectF(690,y,300,40),QLatin1String(rows[r][0]),21,QColor(200,210,225,190));
+                text(QRectF(1000,y,760,40),QStringLiteral("Not available"),21,QColor(205,214,230,120),Qt::AlignLeft|Qt::AlignVCenter);
+            }
+            // The primary action is Download (the catalogue has no wallet/cart; every game is a free
+            // download). Cross hands off to the existing source-choice page.
+            const QRectF downloadBtn(660,700,400,60);
+            p.save();p.setPen(QPen(QColor(255,255,255,230),2));p.setBrush(QColor(255,255,255,30));
+            p.drawRoundedRect(downloadBtn,8,8);p.restore();
+            text(downloadBtn,QStringLiteral("Download"),26,Qt::white,Qt::AlignCenter);
+            text(QRectF(60,1020,1800,40),QStringLiteral("Cross: Download    Circle: Back"),20,QColor(210,218,232,180));
+        }
+        return;
+    }
+
+    // ---- Catalogue: featured pane left, compact cover grid right --------------------------------------
+    if(games.isEmpty()) {
+        // Empty/error state (the error row's detail carries the reason).
+        QString line=tr("No popular games are downloadable right now.");
+        if(!shell_.entries().isEmpty() && !shell_.entries().first().detail.isEmpty())
+            line=shell_.entries().first().detail;
+        text(QRectF(240,470,1440,80),elide(line,26,1440),26,QColor(215,222,235,220),Qt::AlignHCenter|Qt::AlignVCenter);
+        return;
+    }
+    const int n=games.size();
+    const int gridCount=n-1;
+    const int cols=Shell::legacyStoreGridColumns;
+    const int visRows=Shell::legacyStoreGridRows;
+    const int scroll=shell_.legacyStoreScroll();
+    // Featured (game 0).
+    {
+        const Entry& g=*games[0];
+        const QRectF cover(60,190,560,315);
+        if(!g.artwork.isNull()) {
+            const QSizeF fitted=QSizeF(g.artwork.size()).scaled(cover.size(),Qt::KeepAspectRatio);
+            p.drawImage(QRectF(cover.center()-QPointF(fitted.width()/2,fitted.height()/2),fitted),g.artwork);
+        } else {
+            p.save();p.setPen(QPen(QColor(255,255,255,70),1));p.setBrush(QColor(255,255,255,14));
+            p.drawRoundedRect(cover,6,6);
+            drawItemGlyph(p,g.container,g.texture,cover.adjusted(cover.width()*.32,cover.height()*.32,-cover.width()*.32,-cover.height()*.32),.55);
+            p.restore();
+        }
+        if(!searchFocused && cursor==0) { p.save();p.setPen(QPen(QColor(255,255,255,225),2));p.setBrush(Qt::NoBrush);p.drawRoundedRect(cover,6,6);p.restore(); }
+        text(QRectF(60,520,560,40),elide(g.title,30,560),30,(!searchFocused && cursor==0)?Qt::white:QColor(235,240,248));
+        QString sub=g.fieldValue;
+        if(!sub.isEmpty() && !g.detail.isEmpty())sub+=QStringLiteral(" · ");
+        sub+=g.detail;
+        if(!sub.isEmpty())text(QRectF(60,560,560,30),elide(sub,20,560),20,QColor(205,214,230,200));
+        text(QRectF(60,600,560,28),QStringLiteral("Featured"),18,QColor(205,214,230,150));
+    }
+    // Grid (games 1..n-1), 4 columns, 3 visible rows that scroll with the cursor.
+    const double gridX=680,gridY=190,gap=24;
+    const double gridW=1860-gridX;
+    const double cellW=(gridW-(cols-1)*gap)/cols;
+    const double coverH=cellW*9./16.;
+    const double rowH=coverH+40.;
+    for(int r=0;r<visRows;++r) {
+        const int rowIdx=scroll+r;
+        for(int c=0;c<cols;++c) {
+            const int k=rowIdx*cols+c;          // grid cell index (game k+1)
+            if(k>=gridCount)continue;
+            const int gi=k+1;
+            const Entry& g=*games[gi];
+            const double cx=gridX+c*(cellW+gap);
+            const double cy=gridY+r*rowH;
+            const QRectF cover(cx,cy,cellW,coverH);
+            if(!g.artwork.isNull()) {
+                const QSizeF fitted=QSizeF(g.artwork.size()).scaled(cover.size(),Qt::KeepAspectRatio);
+                p.drawImage(QRectF(cover.center()-QPointF(fitted.width()/2,fitted.height()/2),fitted),g.artwork);
+            } else {
+                p.save();p.setPen(QPen(QColor(255,255,255,60),1));p.setBrush(QColor(255,255,255,12));
+                p.drawRoundedRect(cover,4,4);
+                drawItemGlyph(p,g.container,g.texture,cover.adjusted(cover.width()*.32,cover.height()*.32,-cover.width()*.32,-cover.height()*.32),.45);
+                p.restore();
+            }
+            const bool focused=!searchFocused && (cursor-1)==k;
+            if(focused){p.save();p.setPen(QPen(QColor(255,255,255,225),2));p.setBrush(Qt::NoBrush);p.drawRoundedRect(cover,4,4);p.restore();}
+            text(QRectF(cx,cy+coverH+4,cellW,28),elide(g.title,18,cellW),18,focused?Qt::white:QColor(222,228,238));
+        }
+    }
+    // Bottom hints, the same controller affordance every surface keeps.
+    text(QRectF(60,1020,1800,40),QStringLiteral("Cross: Open    Circle: Back    D-pad: Browse"),20,QColor(210,218,232,180));
+}
+
 void View::drawScene(QPainter& p) {
     iconQueue_.clear();windSites_.clear();
     QFont font(shell_.fontFamily());font.setPixelSize(27);p.setFont(font);
@@ -2967,6 +3123,10 @@ void View::drawScene(QPainter& p) {
         videoPanelOpen_=false;
         previousMediaOpen_=false;
         const auto& categories=shell_.categories();
+        // The legacy PlayStation Store (catalogue or detail) replaces the XMB column, category bar and
+        // info bar: it is the GEN 2 store's own full-screen surface, drawn by drawLegacySurface below
+        // while the message/busy/OSK tail (search, errors) still draws over it.
+        const bool legacyOpen=shell_.legacyStoreOpen() || shell_.legacyDetailOpen();
         // Two depth channels (audit/PAGE-MOVE.md section 15). `childAmount` is the page content's progress
         // (the icon's 262 px travel, the item columns, the label's fade): 18 rendered frames = 300 ms mode 4,
         // the fit the 4c burst's frame count supports. `barAmount` is the bar layer's: the firmware's bar
@@ -2997,7 +3157,7 @@ void View::drawScene(QPainter& p) {
         // 0.698/0.067 endpoints bound this curve; the linear presence term is this build's.]
         const double barBrightness=.698+(.067-.698)*barAmount;
         const double barPresence=barAmount>=.999?0.:1.-barAmount;
-        for(int i=0;i<categories.size() && !messageScreen;++i) {
+        for(int i=0;!legacyOpen && i<categories.size() && !messageScreen;++i) {
             // Firmware geometry (RPCS3 capture at 1920x1080, audit/PIPELINE.md): focus column at x 565, icons
             // 200 px apart with 10 px more either side of the focused one; quads 117 px, focused 167 px;
             // shader brightness 0.698 unfocused, 1 focused. At rest those are exact, so childAmount 0
@@ -3512,7 +3672,10 @@ void View::drawScene(QPainter& p) {
         };
         // The item columns are replaced by a message screen and kept behind an inline line, which stands
         // in only for the focused row's label (the firmware's line sits in that list slot).
-        if(!messageScreen) {
+        if(legacyOpen && !messageScreen) {
+            // The legacy store's own full-screen surface stands in for the XMB columns entirely.
+            drawLegacySurface(p);
+        } else if(!messageScreen) {
             // On a category move the console cross-fades two row sets, and the two sides are not symmetric
             // (audit/PAGE-MOVE.md "Phase 14.2": the console burst at C:\dev\out\navfeel\navmove\right1,
             // 83.6 fps, key at 540 ms, Network -> PlayStation Network). The outgoing block translates
@@ -3595,7 +3758,7 @@ void View::drawScene(QPainter& p) {
             }();
         // The item menu's band is up (from the latch, so it stays up through its close ramp) or on its way in.
         const bool optionsBandUp=optionsDrawn() && !optionsShown_.player;
-        if((!messageScreen || modalPage) && !choiceBandUp && !optionsBandUp) {
+        if(!legacyOpen && (!messageScreen || modalPage) && !choiceBandUp && !optionsBandUp) {
             // Measured from the saved 1920x1080 firmware frames (audit/ITEM-MENU-INFO-FIRMWARE.md B3/E4):
             // the visible plate is 591x58 at (1329,75), flush to the right screen edge. The tile's own 1 px
             // transparent margin lies just outside that core (x1328/y74) and its right border falls past
