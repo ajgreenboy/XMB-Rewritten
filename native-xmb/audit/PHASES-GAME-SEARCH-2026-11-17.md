@@ -124,6 +124,19 @@ new capture.
 
 ## 8. Back/Esc cancellation on a focused release job (2026-11-18)
 
+> **Superseded (2026-11-19).** The Back/Esc "Cancel Download" confirm described in this section was removed: it did
+> not match the console (manuals.playstation.net → Background Download → Download Management), where Cancel lives only
+> in the Triangle menu and Circle/Back always just navigates, leaving the download running. Back now falls through to
+> ordinary navigation; the Triangle menu's Cancel and the detail page's Cancel Download row remain the only release-job
+> cancel affordances. The state predicates, `JobControl` and `releaseJobIdFromRow` in `release_job_state.h` are unchanged
+> (they now serve Triangle/detail Cancel only).
+>
+> The same correction (JSON release jobs only, Steam/Seerr/SteamCMD untouched) also:
+> (1) auto-clears a finished (registered) or cancelled (cleaned-up) release job from Download Management once finalized,
+> keeping Failed jobs for Retry/Dismiss; (2) auto-opens Download Management on a successful enqueue (refresh in place if
+> it is already the top page); and (3) persists the last-used install drive and preselected it on the next pick only when
+> it is still offered, leaving enqueue's volume validation as the safety check.
+
 Circle/Esc (`Shell::back`) previously only popped the page on the Download Management list and a release job's detail
 page; cancellation lived solely in the detail page's "Cancel Download" row and the Triangle option. An active background
 transfer now gets a Back/Esc affordance on **both** surfaces — the focused row of the Download Management list and the

@@ -283,10 +283,11 @@ QVector<Entry> jobActions(const Job& job) {
     if(canPause(job.state))add(QStringLiteral("pause"),QObject::tr("Pause"));
     if(job.state==State::Paused)add(QStringLiteral("resume"),QObject::tr("Resume"));
     if(canCancel(job.state))add(QStringLiteral("cancel"),QObject::tr("Cancel Download"));
-    const bool canRetry = job.state==State::Failed || job.state==State::Cancelled;
-    if(canRetry)add(QStringLiteral("retry"),QObject::tr("Retry Download"));
+    // Only a failed job lingers for a manual decision (Retry or Dismiss). Finished and Cancelled jobs are
+    // auto-forgotten once finalized, so they never reach their detail page.
+    if(job.state==State::Failed)add(QStringLiteral("retry"),QObject::tr("Retry Download"));
     if(!job.result.archive.isEmpty())add(QStringLiteral("folder"),QObject::tr("Open Download Folder"));
-    if(canRetry || job.state==State::Finished)add(QStringLiteral("dismiss"),QObject::tr("Dismiss"));
+    if(job.state==State::Failed)add(QStringLiteral("dismiss"),QObject::tr("Dismiss"));
     return rows;
 }
 
@@ -629,6 +630,10 @@ void Shell::restoreReleaseJobs() {
             job.archiveForResume=job.result.archive;
         }
     }
+    // Finished (registered above) and Cancelled (cleaned up above) jobs are final: forget them so a
+    // restored queue does not re-list completed work. Failed and paused jobs stay for retry/resume.
+    releaseJobs_->jobs.erase(std::remove_if(releaseJobs_->jobs.begin(),releaseJobs_->jobs.end(),
+        [](const Job& job){ return xmb::releaseJobComplete(job.state); }), releaseJobs_->jobs.end());
     if(!saveReleaseJobs())releaseJobs_->storageBlocked=true;
     if(installedAny)refreshContent();
     refreshReleaseJobRows();
@@ -701,7 +706,7 @@ void Shell::addReleaseDownloadOptions(const Entry& entry) {
         addOption({"",tr("Resume")},OptionCommand::ReleaseDownloadResume,"download-job");
     if(canCancel(job->state))
         addOption({"",tr("Cancel")},OptionCommand::ReleaseDownloadCancel,"download-job");
-    if(job->state==State::Failed || job->state==State::Cancelled)
+    if(job->state==State::Failed)
         addOption({"",tr("Retry")},OptionCommand::ReleaseDownloadRetry,"download-job");
 }
 
@@ -776,6 +781,11 @@ void Shell::enqueueReleaseGame(const QString& title,const QString& releaseTitle,
     notify(tr("Download Management"),tr("%1 queued").arg(title));
     refreshReleaseJobRows();
     pumpReleaseJobs();
+    // A successful enqueue opens Download Management so the new job is visible immediately. Reuse the
+    // existing page path; if Download Management is already the top page (a defensive case), refresh it in
+    // place instead of stacking a duplicate page.
+    if(!pages_.isEmpty() && pages_.last().downloads)reloadSteamDownloads();
+    else openSteamDownloads();
 }
 
 void Shell::pumpReleaseJobs() {
@@ -845,8 +855,16 @@ void Shell::pumpReleaseJobs() {
            releaseJobDiscardArchive(job->request.gamesDirectory,id,result.archive))
             job->result.archive.clear();
         job->result.error = result.error;
+        // A finished (installed + registered) or cancelled (archive cleaned up) job is complete: forget it
+        // so it no longer occupies a queue slot or lingers in Download Management (the console clears both
+        // from the list). Capture the row text first, then forget; failed and paused jobs stay for
+        // retry/resume.
+        const bool complete = xmb::releaseJobComplete(job->state);
+        const QString title = job->request.title;
+        const QString state = statusText(*job);
+        if(complete)forgetReleaseJob(id);
         if(!saveReleaseJobs())notify(tr("Download Management"),tr("Could not save the download queue."));
-        notify(tr("Download Management"),tr("%1 · %2").arg(job->request.title,statusText(*job)));
+        notify(tr("Download Management"),tr("%1 · %2").arg(title,state));
         refreshReleaseJobRows();
         pumpReleaseJobs();
     });
@@ -877,7 +895,7 @@ void Shell::activateReleaseJob(const Entry& entry) {
     auto& jobs = releaseJobs_->jobs;
     const auto job = std::find_if(jobs.begin(),jobs.end(),[&](const Job& job) { return job.id==id; });
     if(job==jobs.end())return;
-    const bool retryable = job->state==State::Failed || job->state==State::Cancelled;
+    const bool retryable = job->state==State::Failed;
     if(entry.value==QLatin1String("pause")) {
         if(!canPause(job->state))return;
         if(job->state==State::Queued) {
@@ -902,14 +920,18 @@ void Shell::activateReleaseJob(const Entry& entry) {
             }
             job->state=State::Finished;
             refreshContent();
+            // Registration finalized: the retried install is complete, so forget it rather than leaving a
+            // Finished row in Download Management. forgetReleaseJob() also drops the detail page, so the
+            // shared tail below must not pop again (it sees the list, not the detail page, afterward).
+            forgetReleaseJob(id);
         } else {
             job->state=State::Queued;
             job->archiveForResume.clear();
+            job->result.error.clear();
+            job->progress=0;
         }
-        job->result.error.clear();
-        job->progress=0;
     } else if(entry.value==QLatin1String("dismiss")) {
-        if(!retryable && job->state!=State::Finished)return;
+        if(job->state!=State::Failed)return;
         jobs.erase(job);
     } else if(entry.value==QLatin1String("folder")) {
         if(job->result.archive.isEmpty())return;
@@ -947,24 +969,11 @@ QString Shell::releaseJobDetailId() const {
     return xmb::releaseJobIdFromRow(rows.first().id);
 }
 
-// The release job id Back/Esc should offer to cancel, or empty: the detail page's job, or, on the
-// Download Management list, the focused row when it is a release job. The caller re-checks active +
-// canCancel, so a queued/paused/finished row (or a SteamCMD / Steam row) still falls through to the
-// ordinary pop. The list decode clamps the selection and rejects any row id that is not a release job.
-QString Shell::releaseJobBackTarget() const {
-    const QString detail = releaseJobDetailId();
-    if(!detail.isEmpty())return detail;
-    if(pages_.isEmpty() || !pages_.last().downloads)return {};
-    const auto& rows = pages_.last().entries;
-    if(rows.isEmpty())return {};
-    const int idx = std::clamp(pages_.last().selection, 0, int(rows.size()) - 1);
-    return xmb::releaseJobIdFromRow(rows.value(idx).id);
-}
-
-// The single source of a release job's cancellation state change. Both the detail page's Cancel row
-// (activateReleaseJob) and the Back/Esc affordance (releaseJobBack) go through here, so the mutation is
-// written once. Mutates only: callers own saveReleaseJobs / refreshReleaseJobRows / pumpReleaseJobs.
-// Returns true when a cancellation was applied.
+// The single source of a release job's cancellation state change. Both the detail page's Cancel row and
+// the Triangle menu's Cancel (activateReleaseJob) go through here, so the mutation is written once.
+// Back/Esc never reaches this: it only navigates and leaves the download running. Mutates only: callers
+// own saveReleaseJobs / refreshReleaseJobRows / pumpReleaseJobs. Returns true when a cancellation was
+// applied.
 bool Shell::cancelReleaseJob(const QString& id) {
     if(!releaseJobs_)return false;
     auto& jobs = releaseJobs_->jobs;
@@ -974,8 +983,10 @@ bool Shell::cancelReleaseJob(const QString& id) {
     if(prior==State::Queued || prior==State::Paused) {
         const QString archiveDir = gameArchiveDirectory(job->request,id);
         if(destinationReady(job->request,archiveDir))ReleaseSources::discardGamePartial(archiveDir);
-        job->archiveForResume.clear();
-        job->state = State::Cancelled;
+        // A queued/paused cancel finalizes immediately: the partial is discarded above, so the job is
+        // complete and clears Download Management at once (the console clears a cancelled download).
+        // forgetReleaseJob() also drops the detail page, so the caller's shared tail must not pop again.
+        forgetReleaseJob(id);
     } else if(releaseJobs_->control) {
         job->state = State::Cancelling;
         // requestCancel() also clears pausing, so a job cancelled during Pausing settles to Cancelled
@@ -990,28 +1001,17 @@ bool Shell::cancelReleaseJob(const QString& id) {
     return true;
 }
 
-// Circle/Esc on an active, still-cancellable release job: the focused row of the Download Management
-// list, or the job of its detail page. The console's Circle always navigates, so Back leaves the page
-// first, then offers to cancel the focused transfer: Yes cancels it, No (the box's default) leaves it
-// running in the background. Non-active and non-release rows (and a job already cancelling) return false
-// and fall through to ordinary Back navigation, so queued/paused/finished jobs and every other page keep
-// their existing behaviour and other background jobs keep running.
-bool Shell::releaseJobBack() {
-    const QString id = releaseJobBackTarget();
-    if(id.isEmpty() || !releaseJobs_)return false;
-    const auto& jobs = releaseJobs_->jobs;
-    const auto job = std::find_if(jobs.cbegin(),jobs.cend(),[&](const Job& value) { return value.id==id; });
-    if(job==jobs.cend() || !active(job->state) || !canCancel(job->state))return false;
-    const QString title = job->request.title;
-    library_.cancel();scanRequest_=0;jellyfinRequest_=0;loading_=false;status_.clear();
-    pages_.removeLast();
-    if(!pages_.isEmpty() && !pages_.last().seerr.isEmpty())refreshSeerrPage();
-    showConfirm(tr("Cancel Download"),tr("Cancel the download of \"%1\"?").arg(title),[this,id]{
-        if(!cancelReleaseJob(id))return;   // the job finished, was dismissed, or is no longer cancellable
-        if(!saveReleaseJobs())notify(tr("Download Management"),tr("Could not save the download queue."));
-        refreshReleaseJobRows();
-        pumpReleaseJobs();
-    });
-    return true;
+// Forgets a release job whose work is complete (installed and registered, or cancelled and cleaned up).
+// It removes the job from the queue so it no longer occupies a slot or lingers in Download Management,
+// and drops the job's detail page if it is still open. It does not navigate otherwise and is safe to call
+// while the Download Management list is the top page. Callers must finalize the job first (registration
+// success for Finished, archive cleanup for Cancelled); see releaseJobComplete().
+void Shell::forgetReleaseJob(const QString& id) {
+    if(!releaseJobs_)return;
+    auto& jobs = releaseJobs_->jobs;
+    const auto job = std::find_if(jobs.begin(),jobs.end(),[&](const Job& value){ return value.id==id; });
+    if(job==jobs.end())return;
+    jobs.erase(job);
+    if(releaseJobDetailId()==id)pages_.removeLast();
 }
 }

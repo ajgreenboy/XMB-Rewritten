@@ -578,6 +578,12 @@ void Shell::beginGameDownload(const QString& title,const GameSourceOption& optio
     }
     if(page.entries.isEmpty())
         page.entries.append(releaseRow(QStringLiteral("drive:none"),tr("No drives found"),Action::Unavailable));
+    // Preselect the last-used install drive when it is still offered. The persisted value is only a
+    // focus default (the console remembers the last destination); enqueue re-validates the volume, so a
+    // stale or removed drive simply falls back to the first row.
+    const QString last=preferences_.value(QStringLiteral("downloads/lastGameDrive")).toString();
+    for(int i=0;i<page.entries.size();++i)
+        if(page.entries[i].action==Action::GameDownloadDrive && page.entries[i].value==last){page.selection=i;break;}
     pages_.push_back(std::move(page));
     emit changed();
 }
@@ -595,8 +601,10 @@ void Shell::completeGameDownload(const QString& drive) {
     const QString release=option.releaseTitle.isEmpty()?game.name:option.releaseTitle;
     const QString body=question+QStringLiteral("\n\n")+tr("Release: %1\nSource: %2\nSize: %3\nDestination: %4")
         .arg(release,source,size,QDir::toNativeSeparators(directory));
-    showConfirm(question,body,[this,game,option,directory]{
+    showConfirm(question,body,[this,game,option,directory,drive]{
         pages_.removeLast();
+        // Remember this drive as the last-used install location for the next time the picker opens.
+        preferences_.setValue(QStringLiteral("downloads/lastGameDrive"),drive);
         enqueueReleaseGame(game.name,option.releaseTitle.isEmpty()?game.name:option.releaseTitle,
                            QUrl(option.sourceUrl),option.sourceSlug,directory,option.downloads);
         emit changed();

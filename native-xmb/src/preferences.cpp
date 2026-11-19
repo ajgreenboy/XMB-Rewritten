@@ -154,6 +154,9 @@ bool Preferences::validBare(const QString& key,const QVariant& value) {
     }
     if(key==QStringLiteral("debrid/realDebridToken"))return text.size()<=4096 && !text.contains(QLatin1Char('\n')) && !text.contains(QLatin1Char('\r'));
     if(key==QStringLiteral("debrid/flareSolverrUrl"))return text.size()<=256 && !text.contains(QLatin1Char('\n')) && !text.contains(QLatin1Char('\r')) && !text.contains(QLatin1Char(' '));
+    // The last-used game install drive ("C:/", or the scratch root under XMB_GAME_LIBRARY_ROOT). A path,
+    // bounded and single-line, never resolved or trusted for safety: enqueue re-validates the volume.
+    if(key==QStringLiteral("downloads/lastGameDrive"))return text.size()<=1024 && !text.contains(QLatin1Char('\n')) && !text.contains(QLatin1Char('\r'));
     // A global hotkey: one or more of Ctrl/Alt/Shift/Win, then Home/End/Insert/Delete/PageUp/PageDown, F1-F24, a letter or a
     // digit (the same grammar desktop_mode.cpp parses). At least one modifier, so a bare key can never be taken.
     if(key=="desktop/hotkey")return QRegularExpression(QStringLiteral("^((Ctrl|Alt|Shift|Win)\\+)+(Home|End|Insert|Delete|PageUp|PageDown|F([1-9]|1[0-9]|2[0-4])|[A-Z0-9])$")).match(text).hasMatch();

@@ -5175,7 +5175,9 @@ void Shell::back() {
     else if(steamCmdBack());   // Circle on the SteamCMD sign-in page stops SteamCMD and wipes the password
     else if(multiSelect_)exitMultiSelect();   // Circle leaves the marking mode before it leaves the page
     else if(browseUp());   // Circle in the folder browser goes up one folder; at This PC it leaves the page
-    else if(releaseJobBack());   // Circle on an active release job (list focus or detail page) leaves the page and offers to cancel
+    // Circle/Esc on a release job never cancels it: Back always just navigates away and leaves the
+    // download running (the console's Cancel lives in the Triangle menu, not Circle). The ordinary pop
+    // below covers the Download Management list and a release job's detail page.
     else if(!pages_.isEmpty()){library_.cancel();scanRequest_=0;jellyfinRequest_=0;loading_=false;status_.clear();pages_.removeLast();
         if(!pages_.isEmpty() && !pages_.last().seerr.isEmpty())refreshSeerrPage();}
     emit changed();

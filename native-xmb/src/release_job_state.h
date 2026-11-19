@@ -44,6 +44,15 @@ inline ReleaseJobState releaseJobSettledState(bool paused, bool cancelled) {
                               : ReleaseJobState::Failed;
 }
 
+// A job whose work is complete and finalized is forgotten from Download Management (the console clears
+// both a finished install and a cancelled download from the list). `Finished` is only reached after the
+// installation registration succeeds, and `Cancelled` only after the archive cleanup is finalized, so a
+// caller that checks this after those steps never removes a job before its work is actually done. Failed
+// and paused jobs stay for retry/resume.
+inline bool releaseJobComplete(ReleaseJobState state) {
+    return state == ReleaseJobState::Finished || state == ReleaseJobState::Cancelled;
+}
+
 // The release-job row-id prefix shared by the list rows ("download:release:<id>") and the detail page's
 // first row ("download:release:<id>:status"). Kept here so row decoding is testable.
 inline const QString& releaseJobRowPrefix() {
@@ -60,8 +69,8 @@ inline QString releaseJobIdFromRow(const QString& rowId) {
 }
 
 // The flags one in-flight worker reads. `cancel` stops the transfer; `pausing` distinguishes a pause
-// (keep the checkpoint for resume) from a cancel (discard it). requestCancel() is what the Back/Esc
-// affordance and the detail-page Cancel row use: it always clears `pausing`, so a job that was being
+// (keep the checkpoint for resume) from a cancel (discard it). requestCancel() is what the Triangle
+// menu's Cancel and the detail-page Cancel row use: it always clears `pausing`, so a job that was being
 // paused when cancelled ends up Cancelled, never Paused.
 struct JobControl {
     std::atomic_bool cancel{false};

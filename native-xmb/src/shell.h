@@ -1285,15 +1285,13 @@ private:
     void addReleaseDownloadOptions(const Entry& entry);
     void refreshReleaseJobRows();
     void activateReleaseJob(const Entry& entry);
-    // Back/Esc cancellation affordance for background game transfers (release jobs). releaseJobDetailId()
-    // names the job whose detail page is open (empty otherwise); releaseJobBackTarget() extends that to the
-    // Download Management list's focused row; cancelReleaseJob() is the single source of the cancellation
-    // mutation; releaseJobBack() is the Circle/Esc handler and returns true when it took over (the ordinary
-    // Back navigation runs otherwise).
+    // Release-job cancellation and cleanup. releaseJobDetailId() names the job whose detail page is open
+    // (empty otherwise); cancelReleaseJob() is the single source of the cancellation mutation (the detail
+    // page's Cancel row and the Triangle menu's Cancel); forgetReleaseJob() drops a finalized job so it no
+    // longer occupies a queue slot or lingers in Download Management.
     QString releaseJobDetailId() const;
-    QString releaseJobBackTarget() const;
     bool cancelReleaseJob(const QString& id);
-    bool releaseJobBack();
+    void forgetReleaseJob(const QString& id);
     quint64 scanRequest_=0,photoRequest_=0;
     bool loading_=false;
     // The settings-chain proceed stage holds the busy page (see busy()). Separate from loading_ so a scan

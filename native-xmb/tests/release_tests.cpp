@@ -109,10 +109,14 @@ int main(int argc,char** argv) {
         check(store.downloadedPath(stored.first().slug,QStringLiteral("CON: Test/Game")).isEmpty(),"deleted download is not treated as local");
     }
     check(preferences.setValue(QStringLiteral("debrid/realDebridToken"),QStringLiteral("synthetic-test-value")),"token preference accepted");
-    Preferences reloaded(temporary.path());check(reloaded.value(QStringLiteral("debrid/realDebridToken")).toString()==QStringLiteral("synthetic-test-value"),"token preference survives reload");
-    // Background game transfer state machine (release_job_state.h): the Back/Esc cancellation affordance and
-    // the detail-page Cancel row reuse these predicates. Pausing must be cancellable (the pause already raised
-    // the cancel flag; cancelling then drops the pause flag so the job lands Cancelled, not Paused).
+    check(preferences.setValue(QStringLiteral("downloads/lastGameDrive"),QStringLiteral("C:/")),"last-used install drive accepted");
+    Preferences reloaded(temporary.path());
+    check(reloaded.value(QStringLiteral("debrid/realDebridToken")).toString()==QStringLiteral("synthetic-test-value"),"token preference survives reload");
+    check(reloaded.value(QStringLiteral("downloads/lastGameDrive")).toString()==QStringLiteral("C:/"),"last-used install drive survives reload");
+    // Background game transfer state machine (release_job_state.h): the Triangle menu's Cancel and the
+    // detail-page Cancel row reuse these predicates. Circle/Esc (Back) never cancels a release job: it
+    // only navigates and leaves the download running. Pausing must be cancellable (the pause already
+    // raised the cancel flag; cancelling then drops the pause flag so the job lands Cancelled, not Paused).
     for(int s=0;s<=int(xmb::ReleaseJobState::Cancelled);++s) {
         const auto st=static_cast<xmb::ReleaseJobState>(s);
         const bool pausable=xmb::releaseJobCanPause(st);
@@ -126,7 +130,7 @@ int main(int argc,char** argv) {
                          st==xmb::ReleaseJobState::Pausing || st==xmb::ReleaseJobState::Extracting ||
                          st==xmb::ReleaseJobState::Cancelling),"releaseJobActive set");
     }
-    check(xmb::releaseJobCanCancel(xmb::ReleaseJobState::Pausing),"Pausing is cancellable (Back/Esc + Triangle Cancel)");
+    check(xmb::releaseJobCanCancel(xmb::ReleaseJobState::Pausing),"Pausing is cancellable (Triangle Cancel + detail Cancel)");
     check(!xmb::releaseJobCanPause(xmb::ReleaseJobState::Pausing),"Pausing is not re-pausable");
     check(!xmb::releaseJobCanCancel(xmb::ReleaseJobState::Cancelling),"Cancelling is not re-cancellable");
     check(!xmb::releaseJobCanCancel(xmb::ReleaseJobState::Finished) &&
@@ -139,13 +143,21 @@ int main(int argc,char** argv) {
     check(xmb::releaseJobSettledState(true,false)==xmb::ReleaseJobState::Paused,"settle: paused -> Paused");
     check(xmb::releaseJobSettledState(true,true)==xmb::ReleaseJobState::Paused,"settle: pause wins over cancel");
     check(xmb::releaseJobSettledState(false,true)==xmb::ReleaseJobState::Cancelled,"settle: cancel -> Cancelled");
+    // releaseJobComplete(): only Finished (registered) and Cancelled (cleaned up) are auto-forgotten from
+    // Download Management; every other state - including Failed and Paused - stays for retry/resume.
+    for(int s=0;s<=int(xmb::ReleaseJobState::Cancelled);++s) {
+        const auto st=static_cast<xmb::ReleaseJobState>(s);
+        const bool complete=xmb::releaseJobComplete(st);
+        check(complete==(st==xmb::ReleaseJobState::Finished || st==xmb::ReleaseJobState::Cancelled),
+              "releaseJobComplete set (Finished and Cancelled only)");
+    }
     xmb::JobControl control;
     check(!control.cancel.load() && !control.pausing.load(),"control starts clear");
     check(control.requestPause(),"pause requested");
     check(control.cancel.load() && control.pausing.load(),"pause raises cancel and pausing");
     check(xmb::releaseJobSettledState(control.pausing.load(),control.cancel.load())==xmb::ReleaseJobState::Paused,
           "Pausing worker settles to Paused while the pause stands");
-    control.requestCancel();   // the Back/Esc or detail Cancel during Pausing
+    control.requestCancel();   // the Triangle/detail Cancel during Pausing
     check(control.cancel.load() && !control.pausing.load(),"cancel after pause drops the pause flag");
     check(xmb::releaseJobSettledState(control.pausing.load(),control.cancel.load())==xmb::ReleaseJobState::Cancelled,
           "Pausing -> requestCancel settles to Cancelled");
@@ -156,8 +168,8 @@ int main(int argc,char** argv) {
     check(freshControl.beginExtraction(),"a fresh control begins extraction");
     check(!freshControl.requestPause(),"pause is refused once extraction began");
     // Row-id decoding (releaseJobIdFromRow): the list row and the detail page's status row both decode to
-    // the job id; foreign prefixes and an empty id are rejected, so the Back/Esc list focus can never pick
-    // up a SteamCMD row, a Steam queue row or a malformed id.
+    // the job id; foreign prefixes and an empty id are rejected, so the Triangle menu's focus can never
+    // pick up a SteamCMD row, a Steam queue row or a malformed id.
     const QString uuid=QStringLiteral("0123456789abcdef0123456789abcdef");
     check(xmb::releaseJobIdFromRow(QStringLiteral("download:release:")+uuid)==uuid,"list row decodes to job id");
     check(xmb::releaseJobIdFromRow(QStringLiteral("download:release:")+uuid+QStringLiteral(":status"))==uuid,"detail status row decodes to job id");
