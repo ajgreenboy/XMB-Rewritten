@@ -591,7 +591,7 @@ private:
     // Page rows openBrowseGames()/openLegacyDetail() build. Layout follows the 2008 period references'
     // region descriptions (selected-game panel left + 5-column grid right; dark inset product detail);
     // the navy palette and every exact rectangle are authored approximations, not measured; the wave's
-    // colour and shape come from the firmware's datacom/store.mnu (store_wave.h).
+    // colour comes from the firmware's datacom/store.mnu, its shape is a fitted open curve (store_wave.h).
     void drawLegacySurface(QPainter& painter);
     // The legacy Store wave material (store_wave.h), read once from the firmware's datacom/store.mnu on the
     // first legacy-store frame and cached. Only the colours come from the firmware (bk_color HSV, glow_col /

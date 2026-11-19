@@ -63,6 +63,18 @@ int main() {
         Mnu m = mnuWith({{"bk_color_h", 0.60}, {"bk_color_s", 0.80}, {"bk_color_v", 0.50}});
         check(!paramsFromMnu(m).present, "colour-only mnu missing glow keys -> not present");
     }
+    {
+        // A required key with value 0.0 is still "present": presence is key existence, not a non-zero
+        // value. A naive lookup that returns 0.0 for both "absent" and "zero" would mis-detect this.
+        Mnu m = mnuWith({
+            {"bk_color_h", 0.60}, {"bk_color_s", 0.80}, {"bk_color_v", 0.50},
+            {"glow_col_r", 0.10}, {"glow_col_g", 0.94}, {"glow_col_b", 1.00},
+            {"glow_intensity", 0.0},
+        });
+        const Params p = paramsFromMnu(m);
+        check(p.present, "zero-valued required key -> still present");
+        check(near(p.glowIntensity, 0.0), "zero glow_intensity preserved");
+    }
 
     // ---- HSV -> RGB -------------------------------------------------------------
     {

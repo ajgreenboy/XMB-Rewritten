@@ -28,10 +28,10 @@ Params paramsFromMnu(const Materials::Mnu& mnu);
 // HSV (h, s, v each 0..1) -> an opaque RGB colour.
 QColor hsvToRgb(double h, double s, double v);
 
-// The crest as a single soft open cubic, fitted to the 2008 reference's ribbon (ref x320 y100 rising to
-// x570 y40 then tapering right to x715 y115 @ 1024x576, scaled x1.875 to this 1920x1080 canvas). It is
-// a gentle diagonal swoosh — monotonic in x, no vertical stems, not a closed or symmetric rectangle.
-// This is a FIT, not a firmware shape.
+// The crest as a single soft open cubic fitted to the 2008 reference's ribbon (it spans ref x320..715,
+// scaled x1.875 to this 1920x1080 canvas). It is a gentle diagonal swoosh — monotonic in x, no vertical
+// stems, not a closed or symmetric rectangle — with an approximate apex (the exact flowing ribbon's
+// crest peak is not reproduced). This is a FIT, not a firmware shape.
 QPainterPath crestPath();
 
 } // namespace xmb::storewave

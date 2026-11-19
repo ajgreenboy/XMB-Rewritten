@@ -64,9 +64,12 @@ QColor hsvToRgb(double h, double s, double v) {
 }
 
 QPainterPath crestPath() {
-    // Fitted to the 2008 reference's soft ribbon: ref (320,100) -> (570,40) -> (715,115) at 1024x576,
-    // scaled x1.875 to the 1920x1080 canvas. A single open cubic: it rises from the lower-left, peaks in
-    // the upper middle, then tapers gently down-right. Monotonic in x, so no vertical stems.
+    // A single open cubic fitted to the 2008 reference's soft ribbon: it spans ref x320..715 (scaled
+    // x1.875 to this 1920x1080 canvas, so (600,187) -> (1341,216)), rising gently through the upper
+    // middle then tapering down-right. The apex is approximate — this open cubic peaks near canvas
+    // (970,106) (ref ~517,56), left of and slightly below the reference's own crest peak (ref ~570,40),
+    // which the exact flowing ribbon art does not reproduce. It is a soft fit, not a firmware shape.
+    // Monotonic in x, so no vertical stems.
     QPainterPath path;
     path.moveTo(600.0, 187.0);
     path.cubicTo(840.0, 74.0, 1160.0, 74.0, 1341.0, 216.0);
