@@ -182,7 +182,7 @@ QVector<GameResult> legacyStoreFixture(QHash<int,QImage>* covers) {
         o.releaseTitle=g.name;
         g.options={o};
         games.append(std::move(g));
-        QImage cover(480,270,QImage::Format_ARGB32);
+        QImage cover(480,480,QImage::Format_ARGB32);
         cover.fill(QColor::fromHsv((i*29)%360,170,205));
         (*covers)[i]=cover;
     }

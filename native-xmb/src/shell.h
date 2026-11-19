@@ -384,8 +384,9 @@ public:
     // per the 2008 browse reference (a selected-game panel left, a 5-column cover grid right).
     static constexpr int legacyStoreGridColumns=5;
     // Rows of the grid visible at once; the rest scroll with the cursor (Shell::legacyStoreMove keeps the
-    // focused cell inside this window by advancing Page::legacyScroll).
-    static constexpr int legacyStoreGridRows=3;
+    // focused cell inside this window by advancing Page::legacyScroll). Four, per the 2008 browse's 5x4
+    // artwork-card grid.
+    static constexpr int legacyStoreGridRows=4;
     QString message() const { return message_; }
     // Which surface the message is drawn on (see MessageKind). message() carries the text: for Inline the
     // line itself, for the other kinds "Title\n\nbody" where a single first line is the header.

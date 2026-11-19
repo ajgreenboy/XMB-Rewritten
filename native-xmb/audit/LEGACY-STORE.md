@@ -47,7 +47,11 @@ page's Download action hands off to `openGameSources` unchanged; none of those f
   in `Shell::legacyStoreMove` are a clean bounded 2D cursor over the documented regions (Search ⇄ 5-column
   grid), not firmware-traced.
 - **The grid label is the title, not the genre.** The Hydra feed carries no genre, so the reference's genre
-  labels under the tiles are replaced by the title (which is available).
+  labels under the tiles are replaced by the title (which is available), drawn inside a dark band at the
+  bottom of each square card, with a thin tile frame around every card.
+- **The store surface uses no XMB drop-shadow.** `View::drawLegacySurface`'s text helper passes
+  `shadow=false` to the text renderer (the firmware's 4 px dark drop-shadow reads as doubled text on the
+  light silver footer).
 - **The description is a placeholder.** Neither the selected-game panel nor the product detail has a real
   description (none exists in the feed); both show "Description not available for this title.", and the
   product detail shows "Publisher: Not available" and no platform/developer/genre/year. These are honest
