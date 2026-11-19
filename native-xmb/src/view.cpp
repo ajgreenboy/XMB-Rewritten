@@ -2640,25 +2640,30 @@ void View::drawLegacySurface(QPainter& p) {
     games.reserve(shell_.entries().size());
     for(const auto& e:shell_.entries())if(e.action==Action::GameSearchResult)games.push_back(&e);
 
-    // Dark navy full-bleed ground + the luminous cyan PS3 streak (authored approximation; the exact
-    // wave/streak art is proprietary and is re-approximated as a bright diagonal beam + a corner glow).
+    // Dark navy full-bleed ground + the luminous cyan PS3 wave (authored approximation: a bright
+    // horizontal cyan streak crossing the upper centre with a soft glow; the exact flowing wave art
+    // is proprietary and is not reproduced without its asset).
     QLinearGradient bg(0,0,0,1080);bg.setColorAt(0,QColor(12,24,48));bg.setColorAt(.55,QColor(8,16,34));bg.setColorAt(1,QColor(4,9,20));
     p.fillRect(QRectF(0,0,1920,1080),bg);
-    QRadialGradient orb(110,90,520);
-    orb.setColorAt(0,QColor(0,210,255,110));orb.setColorAt(.4,QColor(0,170,220,40));orb.setColorAt(1,QColor(0,140,200,0));
-    p.fillRect(QRectF(0,0,1920,1080),orb);
-    p.save();
-    p.translate(180.,-60.);p.rotate(14.);
-    QLinearGradient beam(0,-300,2600,300);
-    beam.setColorAt(0,QColor(0,205,255,0));beam.setColorAt(.5,QColor(0,215,255,95));beam.setColorAt(1,QColor(0,205,255,0));
-    p.fillRect(QRectF(0,-2000,2600,4000),beam);
-    p.restore();
+    // Upper-centre cyan wave (reference x~600..1430, y~0..250): a soft glow on the wave's core plus a
+    // bright horizontal streak with vertical falloff, so it crosses the upper centre instead of the
+    // previous upper-left orb.
+    QRadialGradient glow(1010,110,700);
+    glow.setColorAt(0,QColor(0,215,255,120));glow.setColorAt(.5,QColor(0,175,225,35));glow.setColorAt(1,QColor(0,150,205,0));
+    p.fillRect(QRectF(0,0,1920,1080),glow);
+    QLinearGradient streak(0,0,0,250);
+    streak.setColorAt(0,QColor(0,210,255,0));
+    streak.setColorAt(.42,QColor(0,218,255,55));
+    streak.setColorAt(.5,QColor(0,224,255,165));
+    streak.setColorAt(.58,QColor(0,218,255,55));
+    streak.setColorAt(1,QColor(0,210,255,0));
+    p.fillRect(QRectF(0,0,1920,250),streak);
 
-    // Header: the store logo (orb glow + bag glyph + wordmark) on the left, the control buttons on the right.
+    // Header: the store logo (bag glyph + wordmark) on the left, the control buttons on the right.
     const QImage& bag=assets_.image(QStringLiteral("explore_plugin_full"),QStringLiteral("item_tex_ps_store"));
-    if(!bag.isNull())p.drawImage(QRectF(56,48,88,88),bag);
-    text(QRectF(164,58,760,64),QStringLiteral("PlayStation®Store"),44,Qt::white);
-    text(QRectF(168,130,560,34),QStringLiteral("Store Top"),22,QColor(170,205,235,190));
+    if(!bag.isNull())p.drawImage(QRectF(294,76,88,88),bag);
+    text(QRectF(390,84,440,64),QStringLiteral("PlayStation®Store"),44,Qt::white);
+    text(QRectF(294,164,560,34),QStringLiteral("Store Top"),22,QColor(170,205,235,190));
     const int cursor=shell_.legacyStoreOpen()?shell_.selection():-1;   // the focused grid cell's game index
     const bool searchFocused=shell_.legacySearchFocused();
     // The four control buttons, in the manual's order (Search · Redeem Codes · View Downloads · View Cart),
@@ -2692,10 +2697,12 @@ void View::drawLegacySurface(QPainter& p) {
     // than acting as a live toggle.
     text(QRectF(1670,64,190,54),QStringLiteral("View Mode: Grid"),18,QColor(205,214,230,150),Qt::AlignLeft|Qt::AlignVCenter);
 
-    // ---- Silver gradient bottom footer (the reference's action footer) ----
-    QLinearGradient foot(0,861,0,1080);foot.setColorAt(0,QColor(201,205,211));foot.setColorAt(1,QColor(139,146,155));
-    p.fillRect(QRectF(0,861,1920,219),foot);
-    p.fillRect(QRectF(0,861,1920,2),QColor(255,255,255,120));
+    // ---- Footer: a silver action strip (y930..1014, ~84 px) over a dark navy lower policy bar
+    // (y1014..1080, ~66 px), matching the reference's ~42 px silver + ~33 px navy at 576p. ----
+    QLinearGradient foot(0,930,0,1014);foot.setColorAt(0,QColor(206,210,215));foot.setColorAt(1,QColor(148,155,164));
+    p.fillRect(QRectF(0,930,1920,84),foot);
+    p.fillRect(QRectF(0,930,1920,2),QColor(255,255,255,140));
+    p.fillRect(QRectF(0,1014,1920,66),QColor(8,16,34));
 
     if(shell_.legacyDetailOpen()) {
         // ---- Product detail (2008-04-03_us-store-2): dark inset panel, title/publisher/price strip,
@@ -2741,7 +2748,7 @@ void View::drawLegacySurface(QPainter& p) {
                 text(QRectF(560,432,1050,400),description,22,QColor(190,205,225,180),
                      Qt::AlignLeft|Qt::AlignTop|Qt::TextWordWrap);
             }
-            text(QRectF(291,900,1340,40),QStringLiteral("Cross: Download    Circle: Back"),20,QColor(40,46,55,210),Qt::AlignHCenter|Qt::AlignVCenter);
+            text(QRectF(291,952,1340,40),QStringLiteral("Cross: Download    Circle: Back"),20,QColor(40,46,55,210),Qt::AlignHCenter|Qt::AlignVCenter);
         }
         return;
     }
@@ -2802,7 +2809,7 @@ void View::drawLegacySurface(QPainter& p) {
             if(focused){p.save();p.setPen(QPen(QColor(120,200,255,235),2));p.setBrush(Qt::NoBrush);p.drawRoundedRect(card.adjusted(-2,-2,2,2),4,4);p.restore();}
         }
     }
-    text(QRectF(294,900,1340,40),QStringLiteral("Cross: Open    Circle: Back    D-pad: Browse"),20,QColor(40,46,55,210),Qt::AlignHCenter|Qt::AlignVCenter);
+    text(QRectF(294,952,1340,40),QStringLiteral("Cross: Open    Circle: Back    D-pad: Browse"),20,QColor(40,46,55,210),Qt::AlignHCenter|Qt::AlignVCenter);
 }
 
 void View::drawScene(QPainter& p) {

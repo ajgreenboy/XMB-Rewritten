@@ -122,3 +122,34 @@ Isolated branch base `941e764` predates `main` `d59850f` (flow corrections). The
 `src/release_shell.cpp` (`openBrowseGames` body + the fixture helper) and the `horizontal`/`vertical`/
 `activate`/`pageKind`/`focusedRowId` hunks in `src/shell.cpp`; a later cherry-pick must re-check those
 locations. No Download Management or `release_jobs.cpp` changes were made.
+
+## Visual polish (2026-11-19) — measured geometry/colour corrections
+
+A vision-capable pass measured the rendered 960x540 captures against the 2008 period references
+(`2008-04-03_us-store-detail-preview_flickr-2386461216.jpg` browse, `2008-04-03_us-store-2_flickr-2386461340.jpg`
+detail, 1024x576 scaled x0.9375 to 960x540) and corrected four material differences in
+`View::drawLegacySurface` (all in the 1920x1080 canvas; capture = /2):
+
+- **Header logo** moved from x35..281 to the reference's x147..414 (canvas x294..828): the bag glyph now
+  draws at `(294,76,88,88)` and the "PlayStation®Store" wordmark at `(390,84)`.
+- **"Store Top"** moved from x83 y72 to x147 y83 (canvas `(294,164)`).
+- **Cyan wave** replaced the previous upper-left orb/diagonal beam with an upper-centre wave: a soft
+  cyan glow centred at `(1010,110)` plus a horizontal streak over `y0..250` (reference x~600..1430,
+  y~0..250 in canvas). The exact flowing wave art is proprietary and is not reproduced without its
+  asset — this is a material approximation, not a pixel trace.
+- **Footer** corrected from a full-height silver band (y861..1080) to the reference's silver action
+  strip `y930..1014` (canvas, ~84 px) over a dark navy lower policy bar `y1014..1080` (~66 px). The
+  action hint ("Cross: Open / Circle: Back / D-pad: Browse" for catalogue, "Cross: Download / Circle:
+  Back" for detail) is drawn once in the silver strip, still with `shadow=false` so it never doubles.
+
+Left panel / grid / detail inset were already within tolerance and are unchanged. The top controls keep
+the wired **Search** action (2010 legacy variant); Redeem Codes / View Downloads / View Cart and Add to
+Cart / Preview stay label-only (no fake cart). The detail page's title/publisher/size and metadata stay
+plain QPainter text (no rich text), so they remain readable and cannot inject markup.
+
+Verification: the fixture captures and the analytical pixel comparison are reproduced by
+`work/legacy-store-capture.ps1` (offline, `XMB_LEGACY_STORE_FIXTURE=1`) and
+`work/legacy-store-geometry.ts`, which writes `geometry.json`/`geometry.md` next to the captures at
+`C:\dev\out\legacy-store-visual-polish\`. Measured footer silver y465..506 (target 465..507), navy
+policy bar `RGB(8,16,34)` to the frame edge, logo left at x158 (target x147), and a blue-dominant cyan
+wave in the upper centre.
