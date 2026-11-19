@@ -2,15 +2,14 @@ param([string]$QtRoot=$env:QTDIR,[string]$OutputDirectory,[string]$SteamworksHea
 $ErrorActionPreference='Stop'
 $root=Split-Path -Parent $PSScriptRoot
 . (Join-Path $PSScriptRoot 'build-metadata.ps1')
-# Snapshot the source identity up front: fingerprint and revision are read at the
-# same moment so they can never describe different trees. If the working tree has
-# uncommitted changes, record that honestly instead of implying a clean commit.
+# Snapshot the source identity before building: the fingerprint and the git
+# revision are both read up front, and the dirty flag records any uncommitted
+# changes so a build of a dirty tree is never presented as a clean commit.
 $sourceFingerprint=Get-NativeSourceFingerprint -ProjectRoot $root
-$sourceDirty=$false
+$src=Get-NativeSourceRevision -ProjectRoot $root
+$sourceDirty=$src.Dirty
 if(-not $SourceRevision) {
-    $src=Get-NativeSourceRevision -ProjectRoot $root
     $SourceRevision=$src.Revision
-    $sourceDirty=$src.Dirty
 }
 if(-not $QtRoot) {
     $qtBase=Join-Path ([IO.Path]::GetPathRoot($root)) 'Qt'
@@ -34,5 +33,5 @@ if($LASTEXITCODE){throw 'Native C++ build failed.'}
 & (Join-Path $QtRoot 'bin\windeployqt.exe') --release --no-translations --no-compiler-runtime (Join-Path $output 're-ps3-native.exe')
 if($LASTEXITCODE){throw 'Qt runtime deployment failed.'}
 if((Get-NativeSourceFingerprint -ProjectRoot $root) -ne $sourceFingerprint){throw 'Sources changed during the build. Rebuild before using this output.'}
-& (Join-Path $PSScriptRoot 'write-build-info.ps1') -OutputDirectory $output -ProjectRoot $root -SourceRevision $SourceRevision -SourceFingerprint $sourceFingerprint -SourceDirty:$sourceDirty
+& (Join-Path $PSScriptRoot 'write-build-info.ps1') -OutputDirectory $output -ProjectRoot $root -SourceRevision $SourceRevision -SourceFingerprint $sourceFingerprint -SourceDirty:$sourceDirty -Configuration Release
 Write-Host ('Built '+(Join-Path $output 're-ps3-native.exe'))

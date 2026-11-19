@@ -86,6 +86,16 @@ jobs:
           timestamp-rfc3161: http://timestamp.acs.microsoft.com
           timestamp-digest: SHA256
 
+      # Code signing rewrites re-ps3-native.exe in place, so build-info.json's
+      # executableSha256 no longer matches it. Refresh only that hash (the source
+      # provenance is unchanged) so build-package.ps1's provenance guard still
+      # passes against the signed exe. Skipped when signing is off.
+      - name: Refresh build metadata after signing
+        if: env.SIGNING == 'true'
+        shell: pwsh
+        run: |
+          .\native-xmb\write-build-info.ps1 -OutputDirectory C:\release\out -ProjectRoot "$env:GITHUB_WORKSPACE" -RefreshExecutableHash
+
       - name: Package the app
         shell: pwsh
         run: |

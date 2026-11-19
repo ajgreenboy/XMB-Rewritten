@@ -336,7 +336,7 @@ add_custom_command(TARGET re-ps3-native POST_BUILD
             "${CMAKE_CURRENT_SOURCE_DIR}/write-build-info.ps1"
             -OutputDirectory "${CMAKE_BINARY_DIR}"
             -ProjectRoot "${XMB_REPO_ROOT}"
-            -Configuration "${CMAKE_BUILD_TYPE}"
+            -Configuration "$<CONFIG>"
     COMMENT "Refresh build-info.json"
     VERBATIM)
 

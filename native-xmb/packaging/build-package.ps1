@@ -19,7 +19,15 @@ $infoPath = Join-Path $OutputDirectory 'build-info.json'
 if(-not (Test-Path -LiteralPath $infoPath -PathType Leaf)) {
     throw "No build-info.json at '$OutputDirectory'. Run native-xmb\build.ps1 first."
 }
-$info = Get-Content -LiteralPath $infoPath -Raw | ConvertFrom-Json
+$info = $null
+try {
+    $info = Get-Content -LiteralPath $infoPath -Raw | ConvertFrom-Json
+} catch {
+    throw "build-info.json at '$infoPath' is not valid JSON. Rebuild with native-xmb\build.ps1 before packaging."
+}
+if(-not $info -or $info.schema -ne 'xmb-build/1') {
+    throw "build-info.json at '$infoPath' has an unexpected schema (expected 'xmb-build/1'). Rebuild with native-xmb\build.ps1 before packaging."
+}
 if($info.executableSha256 -ne (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash) {
     throw "build-info.json is stale: its executableSha256 does not match $exe. Rebuild with native-xmb\build.ps1 before packaging."
 }
