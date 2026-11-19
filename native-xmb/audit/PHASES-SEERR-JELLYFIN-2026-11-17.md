@@ -76,14 +76,33 @@ for `< 3840`, the sole-copy allowance (4K or unknown width), and the ambiguous/n
 and parses a movie's width, and a failing search (401 then 5xx) answers under the search's own request id through
 `failed` with no page — the signal the resolver clears its in-flight row on.
 
-`seerr_shell.cpp` compiles clean (only the pre-existing `value` shadow warning). `ci-guard` wiring
+`seerr_shell.cpp` compiles clean under `/W4` (the `value` shadow warning is renamed away). `ci-guard` wiring
 (CMakeLists.txt ↔ tests.yml ↔ the new runner) is updated.
+
+The policy is also driven through the loopback three-service fixture — a mock Seerr/Jellyfin on `127.0.0.1`
+(`:8190`/`:8191`), **no live service** — re-run against the integrated build `617b453` (clean, verified on disk).
+Evidence: `out/seerr-harness/EVIDENCE-INTEGRATED.md`; the per-case `dump.options.json` records whether `Watch`
+(condition `seerr-jellyfin`) was offered:
+
+| Case | Seerr is4k | Jellyfin search result | Options | Verdict |
+|---|---|---|---|---|
+| `int-match` | false | "Fight Club" Tmdb 550 (1920) | `Status`, `Watch` | exactly one Watch (baseline) |
+| `int-sametitle` | false | "Fight Club" Tmdb 999999 (1920) | `Status` | no Watch (same title, different TMDB) |
+| `int-4k-sd-first` | true | SD 1920 first, then 4K 3840 | `Status`, `Watch` | Watch `movie-4k` (PlaybackInfo log) |
+| `int-4k-sd-only` | true | SD 1920 (sole copy) | `Status` | no Watch |
+| `int-4k-width-unknown` | true | no width reported | `Status` | no Watch |
+| `int-401-retry` | false | first search 401, later match | `Status`, `Watch` | retry resolves Watch |
+
+The whole run logged exactly one PlaybackInfo line — `POST /Items/movie-4k/PlaybackInfo` — so the 4K request with
+SD listed first opened `movie-4k`, not `movie-sd` (`int-4k-sd-first`'s `grab.png.json` records the stream opened).
+The 401 case releases its row on the failed search and the next poll re-resolves it to a Watch. All of this is
+loopback mock evidence; no live Seerr or Jellyfin service was contacted.
 
 ## 4. Open
 
-- The loopback Seerr + SABnzbd + Jellyfin fixture (a mock movie and TV season driven through transfer → import delay
-  → Jellyfin availability, plus a conflicting same-title item and a different season) is still the next piece of
-  end-to-end evidence; the policy is proven pure, not yet driven through the real three-service loop.
+- The loopback Seerr → Jellyfin resolution is now recorded (table above). A fuller fixture that also drives a mock
+  TV season through transfer → import delay → Jellyfin availability remains open, as does any live-service evidence
+  (none claimed here).
 - TV season/episode matching is deliberately unbuilt: a TV request is `Pending`/unverified until Stage 1 implements
   per-season episode matching. This is not claimed as complete.
 - The 4K rule reads `MediaSources[].Width`; a server that does not return `MediaSources` for a movie yields an
