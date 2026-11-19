@@ -166,6 +166,7 @@ QVector<Entry> downloadHubRows(const QVector<ReleaseSource>& sources) {
 // Browse worker result: source-complete popular games. Covers are deliberately not part of
 // first paint; they are fetched after the Store page is visible.
 struct BrowseOutcome { QVector<GameResult> games; QHash<int,QImage> covers; QString error; };
+struct BrowseTitlesOutcome { QVector<PopularTitle> titles; QVector<GameResult> fixtureGames; QHash<int,QImage> covers; QString error; };
 // Offline verification fixture (XMB_LEGACY_STORE_FIXTURE=1): synthetic games with solid-colour 16:9
 // covers, so a scripted run can exercise the legacy-store layout without the Hydra/Steam network. The
 // titles and covers are placeholders and are never shipped data; the hook only replaces the network
@@ -394,8 +395,8 @@ void Shell::openBrowseGames() {
     const int parentDepth=pages_.size();
     busy_=true;status_=tr("Loading popular games...");
     busyProgress_=-1.;busySpinnerPhase_=0.;busyClock_.start();
-    auto* watcher=new QFutureWatcher<BrowseOutcome>(this);
-    connect(watcher,&QFutureWatcher<BrowseOutcome>::finished,this,[this,watcher,generation,parentDepth]{
+    auto* watcher=new QFutureWatcher<BrowseTitlesOutcome>(this);
+    connect(watcher,&QFutureWatcher<BrowseTitlesOutcome>::finished,this,[this,watcher,generation,parentDepth]{
         const auto result=watcher->result();watcher->deleteLater();
         if(generation!=legacyStoreGeneration_)return;
         if(pages_.size()!=parentDepth) {
@@ -410,20 +411,29 @@ void Shell::openBrowseGames() {
             // rows (so the entry dump and the cover art stay available) but the View renders it with its
             // own layout (View::drawLegacySurface), not as an XMB column. The top Search button in the
             // blue chrome replaces the old inline Search row and opens the same OSK search (openGameSearch).
-            Page page;page.title=tr("PlayStation Store");
-            page.downloadResults=result.games;
+            Page page;page.title=tr("PlayStation Store");page.identity=++pageIdentityCounter_;
             page.legacyStore=true;   // selection 0 (the default) is the featured pane; the Search button is a separate focus flag
             if(!result.error.isEmpty()) {
                 Entry error=releaseRow(QStringLiteral("game:error"),tr("Could not load games"),Action::Unavailable);
                 error.detail=result.error;page.entries.append(error);
-            } else if(page.downloadResults.isEmpty()) {
+            } else if(result.titles.isEmpty() && result.fixtureGames.isEmpty()) {
                 page.entries.append(releaseRow(QStringLiteral("game:empty"),tr("No popular games are downloadable right now."),Action::Unavailable));
             } else {
+                page.downloadResults=result.fixtureGames;
+                if(page.downloadResults.isEmpty()) {
+                    for(const auto& title:result.titles) {
+                        GameResult skeleton;skeleton.name=title.title;skeleton.title=title.title;skeleton.coverUrl=title.coverUrl;
+                        page.downloadResults.append(std::move(skeleton));
+                    }
+                }
+                page.legacyGameState=QVector<int>(page.downloadResults.size(),result.fixtureGames.isEmpty()?0:1);
+                page.legacyGameError=QVector<QString>(page.downloadResults.size());
+                page.legacyGameRequest=QVector<quint64>(page.downloadResults.size());
                 const int shown=qMin(100,page.downloadResults.size());
                 for(int i=0;i<shown;++i) {
                     const auto& game=page.downloadResults[i];
                     Entry entry=releaseRow(QStringLiteral("game:result:")+QString::number(i),game.name,Action::GameSearchResult,QString::number(i));
-                    entry.detail=optionCount(game);
+                    entry.detail=page.legacyGameState[i]==0?tr("Loading sources..."):optionCount(game);
                     entry.fieldValue=game.options.isEmpty()?QString{}:game.options.first().fileSize;
                     entry.gameTile=true;
                     entry.artwork=result.covers.value(i);
@@ -432,48 +442,85 @@ void Shell::openBrowseGames() {
                 }
             }
             pages_.push_back(std::move(page));
-            const int depth=pages_.size();
-            const QString cache=QDir(dataDirectory_).filePath(QStringLiteral("cache/release-art"));
             if(!result.covers.isEmpty()) {
                 for(auto it=result.covers.cbegin();it!=result.covers.cend();++it)
                     if(it.key()>=0 && it.key()<pages_.last().entries.size())
                         pages_.last().entries[it.key()].artwork=it.value();
             }
-            if(!result.games.isEmpty() && result.error.isEmpty())
-                requestLegacyStoreCovers(result.games,cache,generation,depth);
+            if(result.fixtureGames.isEmpty() && result.error.isEmpty()) {
+                const auto identity=pages_.last().identity;
+                const int count=qMin(100,result.titles.size());
+                for(int i=0;i<count;++i)requestLegacyStoreGame(i,result.titles[i],generation,identity,++legacyGameRequestCounter_);
+            }
         }
         emit changed();
     });
     watcher->setFuture(QtConcurrent::run([]{
-        BrowseOutcome result;
+        BrowseTitlesOutcome result;
         if(qEnvironmentVariableIntValue("XMB_LEGACY_STORE_FIXTURE")>0) {
-            // Offline verification: synthetic games + covers, no network (see legacyStoreFixture).
-            result.games=legacyStoreFixture(&result.covers);
+            result.fixtureGames=legacyStoreFixture(&result.covers);
         } else {
-            HydraLibrary().popularGames(&result.games,&result.error);
+            HydraLibrary().popularTitles(&result.titles,&result.error);
         }
         return result;
     }));
     emit changed();
 }
 
-void Shell::requestLegacyStoreCovers(const QVector<GameResult>& games,const QString& cache,
-                                     quint64 generation,int depth) {
-    // This queue is intentionally post-publication. A slow or unavailable artwork host can
-    // never keep the catalogue out of view, and the generation/depth checks prevent a late
-    // image from repainting a different page after Back or a second Store open.
-    auto* watcher=new QFutureWatcher<QHash<int,QImage>>(this);
-    connect(watcher,&QFutureWatcher<QHash<int,QImage>>::finished,this,[this,watcher,generation,depth]{
-        const auto covers=watcher->result();watcher->deleteLater();
-        if(generation!=legacyStoreGeneration_ || pages_.size()!=depth || !pages_.last().legacyStore)return;
-        for(auto it=covers.cbegin();it!=covers.cend();++it) {
-            const int index=it.key();
-            if(index>=0 && index<pages_.last().entries.size())pages_.last().entries[index].artwork=it.value();
+void Shell::requestLegacyStoreGame(int index,const PopularTitle& title,quint64 generation,quint64 pageIdentity,quint64 requestToken) {
+    auto* watcher=new QFutureWatcher<BrowseOutcome>(this);
+    connect(watcher,&QFutureWatcher<BrowseOutcome>::finished,this,[this,watcher,index,title,generation,pageIdentity,requestToken]{
+        const auto result=watcher->result();watcher->deleteLater();
+        if(pages_.isEmpty() || !pages_.last().legacyStore || index<0 || index>=pages_.last().downloadResults.size())return;
+        auto& page=pages_.last();
+        if(!asyncIdentityMatches(page.identity,pageIdentity,legacyStoreGeneration_,generation,
+                                 page.legacyGameRequest.value(index),requestToken))return;
+        if(!result.error.isEmpty() || result.games.isEmpty() || result.games.first().options.isEmpty()) {
+            page.legacyGameState[index]=2;page.legacyGameError[index]=result.error.isEmpty()?tr("No source results"):result.error;
+            page.entries[index].action=Action::GameRetry;
+            page.entries[index].detail=tr("Sources unavailable · Retry");
+        } else {
+            page.downloadResults[index]=result.games.first();
+            page.legacyGameState[index]=1;page.legacyGameError[index].clear();
+            page.entries[index].action=Action::GameSearchResult;
+            page.entries[index].detail=optionCount(page.downloadResults[index]);
+            page.entries[index].fieldValue=page.downloadResults[index].options.first().fileSize;
+            page.entries[index].artworkUrl=page.downloadResults[index].coverUrl;
+            requestLegacyStoreCover(index,page.downloadResults[index].coverUrl,pageIdentity);
         }
-        if(!covers.isEmpty())emit changed();
+        emit changed();
     });
-    watcher->setFuture(QtConcurrent::run([games,cache]{return fetchCovers(games,cache);}));
+    watcher->setFuture(QtConcurrent::run(&legacyStorePool_,[title]{
+        BrowseOutcome result;GameResult game;
+        if(HydraLibrary().popularGame(title,&game,&result.error))result.games.append(std::move(game));
+        return result;
+    }));
 }
+
+void Shell::retryLegacyStoreGame(int index) {
+    if(pages_.isEmpty() || !pages_.last().legacyStore || index<0 || index>=pages_.last().downloadResults.size() ||
+       pages_.last().legacyGameState.value(index)!=2)return;
+    auto& page=pages_.last();
+    PopularTitle title{page.downloadResults[index].title,page.downloadResults[index].coverUrl};
+    page.legacyGameState[index]=0;page.legacyGameError[index].clear();page.entries[index].action=Action::GameSearchResult;
+    page.entries[index].detail=tr("Loading sources...");page.entries[index].fieldValue.clear();
+    const quint64 requestToken=++legacyGameRequestCounter_;
+    page.legacyGameRequest[index]=requestToken;
+    requestLegacyStoreGame(index,title,legacyStoreGeneration_,page.identity,requestToken);emit changed();
+}
+
+void Shell::requestLegacyStoreCover(int index,const QString& url,quint64 pageIdentity) {
+    if(url.isEmpty())return;
+    const QString cache=QDir(dataDirectory_).filePath(QStringLiteral("cache/release-art"));
+    auto* watcher=new QFutureWatcher<QImage>(this);
+    connect(watcher,&QFutureWatcher<QImage>::finished,this,[this,watcher,index,pageIdentity]{
+        const auto image=watcher->result();watcher->deleteLater();
+        if(image.isNull() || pages_.isEmpty() || pages_.last().identity!=pageIdentity || !pages_.last().legacyStore)return;
+        if(index>=0 && index<pages_.last().entries.size()){pages_.last().entries[index].artwork=image;emit changed();}
+    });
+    watcher->setFuture(QtConcurrent::run([url,cache]{return fetchCover(QUrl(url),coverCachePath(url,cache));}));
+}
+
 void Shell::runGameSearch(const QString& query,const QString& scope) {
     const QString term=query.trimmed();
     if(term.isEmpty() || busy() || pages_.size()>=32)return;

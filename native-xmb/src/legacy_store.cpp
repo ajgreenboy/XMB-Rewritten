@@ -92,6 +92,14 @@ void Shell::legacyStoreActivate() {
     }
     const int gameIndex=page.selection;          // the focused grid cell's game
     if(gameIndex<0 || gameIndex>=page.downloadResults.size())return;
+    if(page.legacyGameState.value(gameIndex)==0) {
+        showMessage(tr("Sources are still loading"),tr("This game cannot be opened until all source results are ready."),MessageKind::Inline);
+        return;
+    }
+    if(page.legacyGameState.value(gameIndex)==2) {
+        retryLegacyStoreGame(gameIndex);
+        return;
+    }
     interactionAudio_.play(InteractionAudio::Cue::Confirm);
     openLegacyDetail(gameIndex);
 }

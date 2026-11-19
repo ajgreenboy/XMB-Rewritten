@@ -32,6 +32,10 @@ struct GameResult {
     QString coverUrl;       // landscape box art (Steam header), when known
     QVector<GameSourceOption> options;
 };
+struct PopularTitle {
+    QString title;
+    QString coverUrl;
+};
 // One raw record from the Hydra /games API, before merge/dedup. buildGameCatalog turns a batch of
 // these into the one-game-per-name catalogue.
 struct GameRecord {
@@ -68,6 +72,8 @@ public:
     // Full-text search across /games, deduplicated by name. All sources are included (direct and
     // torrent); each game carries one option per source with its display name and download size.
     bool searchGames(const QString& query, QVector<GameResult>* out, QString* error=nullptr) const;
+    bool popularTitles(QVector<PopularTitle>* out, QString* error=nullptr) const;
+    bool popularGame(const PopularTitle& title, GameResult* out, QString* error=nullptr) const;
     // Genuinely-popular games, in popularity order: the Hydra Cloud "hot" catalogue
     // (api.hydralauncher.gg/catalogue/hot) matched against the download library, so each entry
     // carries its download sources and Steam box art. Titles with no downloadable

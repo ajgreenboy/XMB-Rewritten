@@ -1,6 +1,7 @@
 #include "release_index.h"
 #include "release_source.h"
 #include "hydra_library.h"
+#include "async_identity.h"
 #include "real_debrid.h"
 #include "preferences.h"
 #include "release_job_state.h"
@@ -13,6 +14,9 @@
 #include <QTcpSocket>
 #include <QTemporaryDir>
 #include <QProcess>
+#include <QElapsedTimer>
+#include <QTimer>
+#include <QtConcurrent/QtConcurrentRun>
 #include <cmath>
 #include <cstdio>
 
@@ -337,6 +341,11 @@ int main(int argc,char** argv) {
               "forty-source fixture preserves deterministic response order and sizes");
     }
     {
+        check(asyncIdentityMatches(4,4,8,8,12,12),"async identity accepts current page request");
+        check(!asyncIdentityMatches(4,5,8,8,12,12) && !asyncIdentityMatches(4,4,8,9,12,12) &&
+              !asyncIdentityMatches(4,4,8,8,12,13),"async identity rejects stale page/request/tile");
+    }
+    {
         // Sources pagination: parse one page and decide whether to keep fetching, so no source is
         // silently dropped past page one.
         const auto page1=parseSourcesPage(QJsonDocument::fromJson(
@@ -354,6 +363,65 @@ int main(int argc,char** argv) {
         auto capped=parseSourcesPage(QJsonDocument::fromJson(R"({"total":200,"limit":100,"sources":[]})").object());
         capped.sources.append(HydraSource{});
         check(!hasMoreSources(100,100,capped),"pagination is capped at 100 pages");
+    }
+    {
+        // Deterministic local HTTP fixture for the progressive popular feed: forty hot titles are
+        // returned in ranking order, game responses complete out of order, title 39 is deliberately
+        // slow, and title 7 fails once before succeeding on retry. This exercises the same public
+        // Hydra calls used by the Store without real network or game media.
+        QTcpServer fixture;
+        check(fixture.listen(QHostAddress::LocalHost,0),"popular HTTP fixture listen");
+        QHash<int,int> attempts;
+        QObject::connect(&fixture,&QTcpServer::newConnection,&app,[&] {
+            auto* socket=fixture.nextPendingConnection();
+            QObject::connect(socket,&QTcpSocket::readyRead,socket,[&,socket] {
+                const QByteArray request=socket->readAll();
+                int title=-1;
+                for(int i=0;i<40;++i)if(request.contains(QStringLiteral("Hot%20%1").arg(i,2,10,QChar('0')).toLatin1())){title=i;break;}
+                const bool hot=request.contains("/hot");
+                QByteArray body;
+                int delay=hot?0:(title==39?900:(title%5)*15);
+                bool fail=false;
+                if(!hot && title==7)fail=++attempts[title]==1;
+                if(hot) {
+                    QJsonArray rows;
+                    for(int i=0;i<40;++i)rows.append(QJsonObject{{QStringLiteral("title"),QStringLiteral("Hot %1").arg(i,2,10,QChar('0'))}});
+                    body=QJsonDocument(rows).toJson(QJsonDocument::Compact);
+                } else if(!fail) {
+                    body=QJsonDocument(QJsonObject{{QStringLiteral("games"),QJsonArray{
+                        QJsonObject{{QStringLiteral("source"),QStringLiteral("Fixture Direct")},{QStringLiteral("sourceUrl"),QStringLiteral("https://fixture/direct.json")},{QStringLiteral("fileSize"),QStringLiteral("1 GB")}},
+                        QJsonObject{{QStringLiteral("source"),QStringLiteral("Fixture Torrent")},{QStringLiteral("sourceUrl"),QStringLiteral("https://fixture/torrent.json")},{QStringLiteral("fileSize"),QStringLiteral("2 GB")}}
+                    }}}).toJson(QJsonDocument::Compact);
+                }
+                QTimer::singleShot(delay,socket,[socket,body,fail] {
+                    const QByteArray status=fail?QByteArrayLiteral("500 Internal Server Error"):QByteArrayLiteral("200 OK");
+                    const QByteArray response="HTTP/1.1 "+status+"\r\nContent-Type: application/json\r\nContent-Length: "+QByteArray::number(body.size())+"\r\nConnection: close\r\n\r\n"+body;
+                    socket->write(response);socket->disconnectFromHost();
+                });
+            });
+            QObject::connect(socket,&QTcpSocket::disconnected,socket,&QObject::deleteLater);
+        });
+        const QString base=QStringLiteral("http://127.0.0.1:%1").arg(fixture.serverPort());
+        qputenv("XMB_HYDRA_HOT_URL",(base+QStringLiteral("/hot")).toUtf8());
+        qputenv("XMB_HYDRA_GAMES_URL",(base+QStringLiteral("/games")).toUtf8());
+        QVector<PopularTitle> titles;QString fixtureError;
+        check(HydraLibrary().popularTitles(&titles,&fixtureError) && titles.size()==40,"HTTP fixture returns forty hot titles");
+        check(titles.first().title==QStringLiteral("Hot 00") && titles.last().title==QStringLiteral("Hot 39"),"hot order is deterministic");
+        QThreadPool pool;pool.setMaxThreadCount(6);
+        QVector<QFuture<GameResult>> futures;
+        for(const auto& title:titles)futures.append(QtConcurrent::run(&pool,[title]{GameResult game;HydraLibrary().popularGame(title,&game,nullptr);return game;}));
+        QElapsedTimer clock;clock.start();bool early=false;
+        for(;;) {
+            int done=0;for(const auto& future:futures)if(future.isFinished())++done;
+            if(done>0 && clock.elapsed()<900)early=true;
+            if(done==futures.size())break;
+            QCoreApplication::processEvents(QEventLoop::AllEvents,10);
+        }
+        check(early,"at least one game completes before the slow response");
+        int complete=0;for(const auto& future:futures)if(future.result().options.size()==2)++complete;
+        check(complete==39,"failed title is not exposed with partial source options");
+        GameResult retry;check(HydraLibrary().popularGame(titles[7],&retry,&fixtureError) && retry.options.size()==2,"failed title succeeds on explicit retry");
+        qunsetenv("XMB_HYDRA_HOT_URL");qunsetenv("XMB_HYDRA_GAMES_URL");fixture.close();
     }
     {
         // Malformed source JSON: a null document and unparseable bytes report an error; an empty

@@ -76,7 +76,8 @@ bool isPreinstalled(const HydraSource& source) {
 
 struct PopularLookup {
     bool ok=false;
-    QJsonObject root;
+    GameResult game;
+    QString error;
 };
 }
 
@@ -209,11 +210,8 @@ bool HydraLibrary::searchGames(const QString& query, QVector<GameResult>* out, Q
 bool HydraLibrary::popularGames(QVector<GameResult>* out, QString* error) const {
     if(out)out->clear();
 
-    // The Hydra Cloud "hot" catalogue is the real popularity ranking. take=40 keeps the worker's
-    // round-trips bounded (one search per title).
-    QJsonArray hot;
-    if(!fetchJsonArray(QUrl(QStringLiteral("https://api.hydralauncher.gg/catalogue/hot?take=40&skip=0")),&hot,error))
-        return false;
+    QVector<PopularTitle> titles;
+    if(!popularTitles(&titles,error))return false;
 
     // Each /games lookup is independent. Keep the pool deliberately small: this is a
     // catalogue refresh, not an invitation to open 40 sockets at once. Futures are
@@ -222,59 +220,22 @@ bool HydraLibrary::popularGames(QVector<GameResult>* out, QString* error) const 
     QThreadPool pool;
     pool.setMaxThreadCount(6);
     QVector<QFuture<PopularLookup>> lookups;
-    lookups.reserve(hot.size());
-    for(const auto& value:hot) {
-        const QString title=value.toObject().value(QStringLiteral("title")).toString().trimmed();
-        const QString searchUrl=QStringLiteral("https://api.hydralibrary.com/games?q=%1&limit=100&page=1")
-            .arg(QString::fromUtf8(QUrl::toPercentEncoding(title)));
-        lookups.append(QtConcurrent::run(&pool,[searchUrl] {
-            QJsonObject root;
+    lookups.reserve(titles.size());
+    for(const auto& title:titles) {
+        lookups.append(QtConcurrent::run(&pool,[title] {
             PopularLookup lookup;
-            lookup.ok=fetchJson(QUrl(searchUrl),&root,nullptr);
-            lookup.root=std::move(root);
+            lookup.ok=HydraLibrary().popularGame(title,&lookup.game,&lookup.error);
             return lookup;
         }));
     }
 
     QVector<GameResult> results;
     QHash<QString,int> byName;
-    for(int hotIndex=0;hotIndex<hot.size();++hotIndex) {
-        const auto& value=hot.at(hotIndex);
-        const QJsonObject entry=value.toObject();
-        const QString title=entry.value(QStringLiteral("title")).toString().trimmed();
-        if(title.isEmpty())continue;
-        const QString cover=entry.value(QStringLiteral("libraryImageUrl")).toString();
-
-        // Match this popular title against the download library (single page; the query is specific).
+    for(int hotIndex=0;hotIndex<titles.size();++hotIndex) {
         const PopularLookup lookup=lookups.at(hotIndex).result();
-        if(!lookup.ok)continue; // one dead source/title must not erase other hot tiles
-        const QJsonObject& root=lookup.root;
-
-        GameResult result;
-        result.name=title;
-        result.title=title;
-        result.coverUrl=cover;
-        QSet<QString> seenSource;   // one download option per source
-        for(const auto& gv:root.value(QStringLiteral("games")).toArray()) {
-            const QJsonObject game=gv.toObject();
-            const QString sourceName=game.value(QStringLiteral("source")).toString();
-            const QString sourceUrl=game.value(QStringLiteral("sourceUrl")).toString();
-            const QString sourceIdentity=sourceUrl.isEmpty()?sourceName:sourceUrl;
-            if(seenSource.contains(sourceIdentity))continue;
-            seenSource.insert(sourceIdentity);
-            GameSourceOption option;
-            option.source=sourceName;
-            option.sourceUrl=game.value(QStringLiteral("sourceUrl")).toString();
-            option.fileSize=game.value(QStringLiteral("fileSize")).toString();
-            option.sourceStatus=game.value(QStringLiteral("sourceStatus")).toString();
-            option.releaseTitle=game.value(QStringLiteral("originalTitle")).toString();
-            if(option.releaseTitle.isEmpty())option.releaseTitle=game.value(QStringLiteral("title")).toString();
-            if(result.originalTitle.isEmpty())
-                result.originalTitle=game.value(QStringLiteral("originalTitle")).toString();
-            result.options.append(option);
-        }
-        if(result.options.isEmpty())continue;   // not downloadable: drop it
-
+        if(!lookup.ok)continue;
+        const GameResult& result=lookup.game;
+        const QString title=titles.at(hotIndex).title;
         const QString key=catalogNameKey(title);
         const auto existing=byName.find(key);
         if(existing==byName.end()) {
@@ -282,7 +243,7 @@ bool HydraLibrary::popularGames(QVector<GameResult>* out, QString* error) const 
             results.append(result);
         } else {
             auto& dst=results[existing.value()];
-            if(dst.coverUrl.isEmpty())dst.coverUrl=cover;
+            if(dst.coverUrl.isEmpty())dst.coverUrl=result.coverUrl;
             QSet<QString> have;
             for(const auto& o:dst.options)have.insert(o.sourceUrl.isEmpty()?o.source:o.sourceUrl);
             for(const auto& o:result.options) {
@@ -293,5 +254,51 @@ bool HydraLibrary::popularGames(QVector<GameResult>* out, QString* error) const 
     }
     if(out)*out=results;
     return !results.isEmpty();
+}
+
+bool HydraLibrary::popularTitles(QVector<PopularTitle>* out,QString* error) const {
+    if(out)out->clear();
+    QJsonArray hot;
+    const QString url=qEnvironmentVariable("XMB_HYDRA_HOT_URL",
+        QStringLiteral("https://api.hydralauncher.gg/catalogue/hot?take=40&skip=0"));
+    if(!fetchJsonArray(QUrl(url),&hot,error))return false;
+    for(const auto& value:hot) {
+        const auto object=value.toObject();
+        PopularTitle title;
+        title.title=object.value(QStringLiteral("title")).toString().trimmed();
+        title.coverUrl=object.value(QStringLiteral("libraryImageUrl")).toString();
+        if(!title.title.isEmpty() && out)out->append(title);
+    }
+    return out && !out->isEmpty();
+}
+
+bool HydraLibrary::popularGame(const PopularTitle& title,GameResult* out,QString* error) const {
+    if(out)*out=GameResult{};
+    const QString endpoint=qEnvironmentVariable("XMB_HYDRA_GAMES_URL",
+        QStringLiteral("https://api.hydralibrary.com/games"));
+    const QString searchUrl=endpoint+QStringLiteral("?q=%1&limit=100&page=1")
+        .arg(QString::fromUtf8(QUrl::toPercentEncoding(title.title)));
+    QJsonObject root;
+    if(!fetchJson(QUrl(searchUrl),&root,error))return false;
+    GameResult result;result.name=title.title;result.title=title.title;result.coverUrl=title.coverUrl;
+    QSet<QString> seenSource;
+    for(const auto& gv:root.value(QStringLiteral("games")).toArray()) {
+        const auto game=gv.toObject();
+        GameSourceOption option;
+        option.source=game.value(QStringLiteral("source")).toString();
+        option.sourceUrl=game.value(QStringLiteral("sourceUrl")).toString();
+        const QString identity=option.sourceUrl.isEmpty()?option.source:option.sourceUrl;
+        if(seenSource.contains(identity))continue;
+        seenSource.insert(identity);
+        option.fileSize=game.value(QStringLiteral("fileSize")).toString();
+        option.sourceStatus=game.value(QStringLiteral("sourceStatus")).toString();
+        option.releaseTitle=game.value(QStringLiteral("originalTitle")).toString();
+        if(option.releaseTitle.isEmpty())option.releaseTitle=game.value(QStringLiteral("title")).toString();
+        if(result.originalTitle.isEmpty())result.originalTitle=game.value(QStringLiteral("originalTitle")).toString();
+        result.options.append(option);
+    }
+    if(result.options.isEmpty()) { if(error)*error=QStringLiteral("No source results for popular title"); return false; }
+    if(out)*out=std::move(result);
+    return true;
 }
 } // namespace xmb

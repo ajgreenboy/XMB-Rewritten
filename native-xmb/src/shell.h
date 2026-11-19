@@ -1,5 +1,6 @@
 #pragma once
 #include <QObject>
+#include "async_identity.h"
 #include "preferences.h"
 #include "media_library.h"
 #include "playback_queue.h"
@@ -39,6 +40,7 @@
 #include <QElapsedTimer>
 #include <QDateTime>
 #include <QVector>
+#include <QThreadPool>
 #include <QImage>
 #include <functional>
 #include <memory>
@@ -154,7 +156,7 @@ enum class Action { Unavailable, SettingsPage, SettingChoices, SetSetting, EditN
     Setup,
     // Game > Saved Data / Memory Card Utility: presentation only, no console save-data backend.
     SaveData, ImportSource, ReleaseFolder, ReleaseDownload, DownloadManager, DebridToken, FlareSolverrUrl,
-    BrowseGames, SearchGames, GameSearchResult, GameSourcePick, GameDownloadDrive, GameDownloadConfirm,
+    BrowseGames, SearchGames, GameSearchResult, GameSourcePick, GameRetry, GameDownloadDrive, GameDownloadConfirm,
     // Game > Steam: the folded hub that lists Steam Store and All Games behind one column folder.
     SteamHub,
     // Game > Download Games: the folded hub that lists Browse, Import Source and the imported source folders.
@@ -833,6 +835,9 @@ private:
     QString legacyDetailTitle_;     // the title whose RAWG id/details are in flight
     bool releaseFeedsRefreshing_=false;
     quint64 releaseSourcesGeneration_=0;
+    quint64 pageIdentityCounter_=0;
+    quint64 legacyGameRequestCounter_=0;
+    QThreadPool legacyStorePool_;
     quint64 legacyStoreGeneration_=0;
     bool gameArtHooked_=false;
     void refreshReleaseSources(const QUrl& importUrl={});
@@ -848,8 +853,9 @@ private:
     void saveFlareSolverrUrl(const QString& url);
     void openGameSearch(const QString& scope={});
     void openBrowseGames();
-    void requestLegacyStoreCovers(const QVector<GameResult>& games,const QString& cache,
-                                  quint64 generation,int depth);
+    void requestLegacyStoreGame(int index,const PopularTitle& title,quint64 generation,quint64 pageIdentity,quint64 requestToken);
+    void retryLegacyStoreGame(int index);
+    void requestLegacyStoreCover(int index,const QString& url,quint64 pageIdentity);
     void openDownloadHub();
     void openManageHub();
     // Add a Game (add_game_shell.cpp): the page rows, the in-place rebuild, the activation dispatch and close.
@@ -1377,7 +1383,7 @@ private:
     int columnSink_=0;
     // `grouped` is a page the item menu's Group Content level rebuilt into letter folders: `groupedSource` keeps
     // the ungrouped rows so All can put them back without a rescan, and the folders' rows are the same entries.
-    struct Page { QString title; QVector<Entry> entries; int selection=0; QString directory; bool jellyfin=false,jellyfinViews=false,jellyfinSearch=false; QString jellyfinParent; QString jellyfinMusic,jellyfinLibrary; QString jellyfinHome; int jellyfinStart=0; bool downloads=false; QString steamCmd,seerr; bool continuePage=false; bool signIn=false; bool jfSetup=false; bool steamAccounts=false; bool grouped=false; QString groupKey; QVector<Entry> groupedSource; bool sysconfPlugin=false; QString playlistsType,playlistId; QString spotify,spotifyContext; QString dlna; int dlnaServer=-1; QString tailscale; QString wol,ha; bool weather=false; bool systemCheck=false; QString userInfo; int userInfoStep=0; bool browse=false; QString browsePath; QString browseFiles; bool libraryRoot=false; QVector<GameResult> downloadResults; bool downloadHub=false; bool addGame=false; bool legacyStore=false; bool legacyDetail=false; int legacyScroll=0; bool legacySearchFocus=false; RawgGameDetails legacyDetails; };
+    struct Page { QString title; QVector<Entry> entries; int selection=0; quint64 identity=0; QString directory; bool jellyfin=false,jellyfinViews=false,jellyfinSearch=false; QString jellyfinParent; QString jellyfinMusic,jellyfinLibrary; QString jellyfinHome; int jellyfinStart=0; bool downloads=false; QString steamCmd,seerr; bool continuePage=false; bool signIn=false; bool jfSetup=false; bool steamAccounts=false; bool grouped=false; QString groupKey; QVector<Entry> groupedSource; bool sysconfPlugin=false; QString playlistsType,playlistId; QString spotify,spotifyContext; QString dlna; int dlnaServer=-1; QString tailscale; QString wol,ha; bool weather=false; bool systemCheck=false; QString userInfo; int userInfoStep=0; bool browse=false; QString browsePath; QString browseFiles; bool libraryRoot=false; QVector<GameResult> downloadResults; QVector<int> legacyGameState; QVector<QString> legacyGameError; QVector<quint64> legacyGameRequest; bool downloadHub=false; bool addGame=false; bool legacyStore=false; bool legacyDetail=false; int legacyScroll=0; bool legacySearchFocus=false; RawgGameDetails legacyDetails; };
     QVector<Page> pages_;
     bool psMenu_=false;              // the PS-button system menu is showing
     bool desktopMode_=false;         // the XMB window is hidden for Desktop Mode (main.cpp DesktopMode)

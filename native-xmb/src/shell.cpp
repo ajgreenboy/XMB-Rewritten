@@ -1664,8 +1664,9 @@ Shell::Shell(QString dataDirectory,Assets& assets,QObject* parent):QObject(paren
     dataDirectory_(dataDirectory),
     steamArtwork_(std::make_unique<SteamArtwork>(QDir(dataDirectory).filePath("cache/steam"))),
     rawgArtwork_(std::make_unique<RawgArtwork>(QDir(dataDirectory).filePath("cache"))),
-    importedArt_(std::make_unique<ImportedArt>(QDir(dataDirectory).filePath("cache"))),
-    player_(std::make_unique<QMediaPlayer>()),audio_(std::make_unique<QAudioOutput>()),video_(std::make_unique<QVideoSink>()) {
+     importedArt_(std::make_unique<ImportedArt>(QDir(dataDirectory).filePath("cache"))),
+     player_(std::make_unique<QMediaPlayer>()),audio_(std::make_unique<QAudioOutput>()),video_(std::make_unique<QVideoSink>()) {
+    legacyStorePool_.setMaxThreadCount(6);
     xmb::bootprof::mark("Shell members");
     QDir().mkpath(dataDirectory);
     // The resume-point format change (audit/MEDIA-CONTROLS.md): a data directory written by the earlier
@@ -2748,6 +2749,7 @@ void Shell::activate() {
     case Action::SearchGames:openGameSearch(entry.value);break;
     case Action::GameSearchResult:pickGameResult(entry.value.toInt());break;
     case Action::GameSourcePick:pickGameSource(entry.value);break;
+    case Action::GameRetry:retryLegacyStoreGame(entry.value.toInt());break;
     case Action::GameDownloadConfirm:confirmGameDownload();break;
     case Action::GameDownloadDrive:completeGameDownload(entry.value);break;
     case Action::PlaylistFolder:openPlaylists(categories_[category_].id);break;
