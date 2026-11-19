@@ -74,6 +74,17 @@ bool isPreinstalled(const HydraSource& source) {
            title.contains(QStringLiteral("portable")) || (direct && !torrent);
 }
 
+QString loopbackEndpoint(const char* variable,const QString& fallback) {
+    const QString configured=qEnvironmentVariable(variable);
+    if(configured.isEmpty())return fallback;
+    const QUrl url(configured);
+    const QString host=url.host().toLower();
+    if((url.scheme()==QLatin1String("http") || url.scheme()==QLatin1String("https")) &&
+       (host==QLatin1String("127.0.0.1") || host==QLatin1String("localhost") || host==QLatin1String("::1")))
+        return configured;
+    return fallback;
+}
+
 struct PopularLookup {
     bool ok=false;
     GameResult game;
@@ -259,22 +270,26 @@ bool HydraLibrary::popularGames(QVector<GameResult>* out, QString* error) const 
 bool HydraLibrary::popularTitles(QVector<PopularTitle>* out,QString* error) const {
     if(out)out->clear();
     QJsonArray hot;
-    const QString url=qEnvironmentVariable("XMB_HYDRA_HOT_URL",
+    const QString url=loopbackEndpoint("XMB_HYDRA_HOT_URL",
         QStringLiteral("https://api.hydralauncher.gg/catalogue/hot?take=40&skip=0"));
     if(!fetchJsonArray(QUrl(url),&hot,error))return false;
+    QSet<QString> seen;
     for(const auto& value:hot) {
         const auto object=value.toObject();
         PopularTitle title;
         title.title=object.value(QStringLiteral("title")).toString().trimmed();
         title.coverUrl=object.value(QStringLiteral("libraryImageUrl")).toString();
-        if(!title.title.isEmpty() && out)out->append(title);
+        const QString key=catalogNameKey(title.title);
+        if(!title.title.isEmpty() && !seen.contains(key) && out) {
+            seen.insert(key);out->append(title);
+        }
     }
     return out && !out->isEmpty();
 }
 
 bool HydraLibrary::popularGame(const PopularTitle& title,GameResult* out,QString* error) const {
     if(out)*out=GameResult{};
-    const QString endpoint=qEnvironmentVariable("XMB_HYDRA_GAMES_URL",
+    const QString endpoint=loopbackEndpoint("XMB_HYDRA_GAMES_URL",
         QStringLiteral("https://api.hydralibrary.com/games"));
     const QString searchUrl=endpoint+QStringLiteral("?q=%1&limit=100&page=1")
         .arg(QString::fromUtf8(QUrl::toPercentEncoding(title.title)));

@@ -365,8 +365,9 @@ int main(int argc,char** argv) {
         check(!hasMoreSources(100,100,capped),"pagination is capped at 100 pages");
     }
     {
-        // Deterministic local HTTP fixture for the progressive popular feed: forty hot titles are
-        // returned in ranking order, game responses complete out of order, title 39 is deliberately
+        // Deterministic local HTTP fixture for the progressive popular feed: forty hot entries are
+        // returned in ranking order, including one normalized duplicate and a separate edition.
+        // Game responses complete out of order, title 39 is deliberately
         // slow, and title 7 fails once before succeeding on retry. This exercises the same public
         // Hydra calls used by the Store without real network or game media.
         QTcpServer fixture;
@@ -385,12 +386,22 @@ int main(int argc,char** argv) {
                 if(!hot && title==7)fail=++attempts[title]==1;
                 if(hot) {
                     QJsonArray rows;
-                    for(int i=0;i<40;++i)rows.append(QJsonObject{{QStringLiteral("title"),QStringLiteral("Hot %1").arg(i,2,10,QChar('0'))}});
+                    for(int i=0;i<40;++i) {
+                        QString title=QStringLiteral("Hot %1").arg(i,2,10,QChar('0'));
+                        if(i==11)title=QStringLiteral("  hot   10  ");
+                        if(i==12)title=QStringLiteral("Hot 10 — Deluxe Edition");
+                        rows.append(QJsonObject{{QStringLiteral("title"),title}});
+                    }
                     body=QJsonDocument(rows).toJson(QJsonDocument::Compact);
                 } else if(!fail) {
+                    const bool deluxe=request.contains("Deluxe");
+                    const QString first=deluxe?QStringLiteral("Fixture Deluxe A"):QStringLiteral("Fixture Direct");
+                    const QString firstUrl=deluxe?QStringLiteral("https://fixture/deluxe-a.json"):QStringLiteral("https://fixture/direct.json");
+                    const QString second=deluxe?QStringLiteral("Fixture Deluxe B"):QStringLiteral("Fixture Torrent");
+                    const QString secondUrl=deluxe?QStringLiteral("https://fixture/deluxe-b.json"):QStringLiteral("https://fixture/torrent.json");
                     body=QJsonDocument(QJsonObject{{QStringLiteral("games"),QJsonArray{
-                        QJsonObject{{QStringLiteral("source"),QStringLiteral("Fixture Direct")},{QStringLiteral("sourceUrl"),QStringLiteral("https://fixture/direct.json")},{QStringLiteral("fileSize"),QStringLiteral("1 GB")}},
-                        QJsonObject{{QStringLiteral("source"),QStringLiteral("Fixture Torrent")},{QStringLiteral("sourceUrl"),QStringLiteral("https://fixture/torrent.json")},{QStringLiteral("fileSize"),QStringLiteral("2 GB")}}
+                        QJsonObject{{QStringLiteral("source"),first},{QStringLiteral("sourceUrl"),firstUrl},{QStringLiteral("fileSize"),QStringLiteral("1 GB")}},
+                        QJsonObject{{QStringLiteral("source"),second},{QStringLiteral("sourceUrl"),secondUrl},{QStringLiteral("fileSize"),QStringLiteral("2 GB")}}
                     }}}).toJson(QJsonDocument::Compact);
                 }
                 QTimer::singleShot(delay,socket,[socket,body,fail] {
@@ -405,8 +416,10 @@ int main(int argc,char** argv) {
         qputenv("XMB_HYDRA_HOT_URL",(base+QStringLiteral("/hot")).toUtf8());
         qputenv("XMB_HYDRA_GAMES_URL",(base+QStringLiteral("/games")).toUtf8());
         QVector<PopularTitle> titles;QString fixtureError;
-        check(HydraLibrary().popularTitles(&titles,&fixtureError) && titles.size()==40,"HTTP fixture returns forty hot titles");
+        check(HydraLibrary().popularTitles(&titles,&fixtureError) && titles.size()==39,"HTTP fixture returns forty entries, one normalized duplicate");
         check(titles.first().title==QStringLiteral("Hot 00") && titles.last().title==QStringLiteral("Hot 39"),"hot order is deterministic");
+        check(titles[10].title==QStringLiteral("Hot 10") && titles[11].title==QStringLiteral("Hot 10 — Deluxe Edition"),
+              "duplicate hot title collapses while edition stays separate");
         QThreadPool pool;pool.setMaxThreadCount(6);
         QVector<QFuture<GameResult>> futures;
         for(const auto& title:titles)futures.append(QtConcurrent::run(&pool,[title]{GameResult game;HydraLibrary().popularGame(title,&game,nullptr);return game;}));
@@ -419,8 +432,15 @@ int main(int argc,char** argv) {
         }
         check(early,"at least one game completes before the slow response");
         int complete=0;for(const auto& future:futures)if(future.result().options.size()==2)++complete;
-        check(complete==39,"failed title is not exposed with partial source options");
+        check(complete==38,"failed title is not exposed with partial source options");
         GameResult retry;check(HydraLibrary().popularGame(titles[7],&retry,&fixtureError) && retry.options.size()==2,"failed title succeeds on explicit retry");
+        GameResult baseGame,deluxe;
+        check(HydraLibrary().popularGame(titles[10],&baseGame,&fixtureError) && baseGame.options.size()==2 &&
+              baseGame.options[0].source==QStringLiteral("Fixture Direct") && baseGame.options[1].source==QStringLiteral("Fixture Torrent"),
+              "base title keeps exact all-source order");
+        check(HydraLibrary().popularGame(titles[11],&deluxe,&fixtureError) && deluxe.options.size()==2 &&
+              deluxe.options[0].source==QStringLiteral("Fixture Deluxe A") && deluxe.options[1].source==QStringLiteral("Fixture Deluxe B"),
+              "edition keeps its distinct exact all-source order");
         qunsetenv("XMB_HYDRA_HOT_URL");qunsetenv("XMB_HYDRA_GAMES_URL");fixture.close();
     }
     {
