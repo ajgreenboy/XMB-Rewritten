@@ -317,6 +317,26 @@ int main(int argc,char** argv) {
               "empty size is preserved and same-source (no url) duplicates collapse");
     }
     {
+        // The popular feed fans out one /games response per hot title. A fixture with forty
+        // distinct source URLs proves the merge does not cap or silently discard choices when
+        // those responses arrive through the bounded worker pool.
+        QVector<GameRecord> records;
+        QVector<HydraSource> sources;
+        for(int i=0;i<40;++i) {
+            HydraSource source;source.title=QStringLiteral("Fixture Source %1").arg(i);sources.append(source);
+            GameRecord record;record.name=QStringLiteral("Forty Source Game");
+            record.title=record.name;record.source=sources.last().title;
+            record.sourceUrl=QStringLiteral("https://fixture.invalid/source-%1.json").arg(i);
+            record.fileSize=QStringLiteral("%1 GB").arg(i+1);records.append(record);
+        }
+        const auto catalog=buildGameCatalog(records,sources);
+        check(catalog.size()==1 && catalog.first().options.size()==40,
+              "forty-source fixture keeps every source choice");
+        check(catalog.first().options.first().source==QStringLiteral("Fixture Source 0") &&
+              catalog.first().options.last().fileSize==QStringLiteral("40 GB"),
+              "forty-source fixture preserves deterministic response order and sizes");
+    }
+    {
         // Sources pagination: parse one page and decide whether to keep fetching, so no source is
         // silently dropped past page one.
         const auto page1=parseSourcesPage(QJsonDocument::fromJson(

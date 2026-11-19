@@ -833,6 +833,7 @@ private:
     QString legacyDetailTitle_;     // the title whose RAWG id/details are in flight
     bool releaseFeedsRefreshing_=false;
     quint64 releaseSourcesGeneration_=0;
+    quint64 legacyStoreGeneration_=0;
     bool gameArtHooked_=false;
     void refreshReleaseSources(const QUrl& importUrl={});
     void refreshGameFeeds();
@@ -847,6 +848,8 @@ private:
     void saveFlareSolverrUrl(const QString& url);
     void openGameSearch(const QString& scope={});
     void openBrowseGames();
+    void requestLegacyStoreCovers(const QVector<GameResult>& games,const QString& cache,
+                                  quint64 generation,int depth);
     void openDownloadHub();
     void openManageHub();
     // Add a Game (add_game_shell.cpp): the page rows, the in-place rebuild, the activation dispatch and close.

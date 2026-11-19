@@ -86,7 +86,7 @@ option(XMB_RELEASE_BUILD_TESTS "Build release index and source backend fixture t
 if(XMB_RELEASE_BUILD_TESTS)
     qt_add_executable(xmb-release-tests tests/release_tests.cpp src/release_index.cpp src/real_debrid.cpp src/release_source.cpp src/flare_solverr.cpp src/flare_solverr.h src/hydra_library.cpp src/hydra_library.h src/preferences.cpp src/preferences.h src/jellyfin_player.cpp src/jellyfin_player.h)
     target_include_directories(xmb-release-tests PRIVATE src)
-    target_link_libraries(xmb-release-tests PRIVATE Qt6::Core Qt6::Gui Qt6::Network)
+    target_link_libraries(xmb-release-tests PRIVATE Qt6::Core Qt6::Gui Qt6::Network Qt6::Concurrent)
 endif()
 if(XMB_FIRMWARE_BUILD_TESTS)
     qt_add_executable(xmb-firmware-tests tests/firmware_tests.cpp src/firmware_install.cpp src/firmware_extract.cpp src/firmware_crypto.cpp)
