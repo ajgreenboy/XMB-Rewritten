@@ -39,6 +39,7 @@ void check(bool condition, const char* label) {
 constexpr const char* kItem = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbb02";
 bool g_fakeOmitsAudioIndex = false;   // the fake's TranscodingUrl leaves AudioStreamIndex out, so the client has to add it
 constexpr const char* kUser = "0123456789abcdef0123456789abcdef";
+constexpr const char* kSeries = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeee01";   // a show's id, for the episode look-up route
 const QByteArray kToken = "standin-token-for-tests-only";
 
 struct Req {
@@ -426,6 +427,8 @@ int main(int argc, char** argv) {
     struct Latest { int status = 0; bool legacyOnly = false, noFavorites = false; } latest;
     struct NextUp { int status = 0; QStringList items; } nextUp;
     int searchStatus = 0;   // a non-zero HTTP status makes the search route fail, to test the resolver's retry path
+    int episodesStatus = 0; // a non-zero HTTP status makes the episode look-up route fail
+    QList<int> episodesSeen;   // the seasons the episode look-up was asked for
     const QString user = QString::fromLatin1(kUser);
     const QJsonObject resumeItem{{"Id", "dddddddddddddddddddddddddddddd01"}, {"Name", "Half Watched"}, {"Type", "Episode"}, {"IsFolder", false},
         {"SeriesName", "Test Show"}, {"ParentIndexNumber", 2}, {"IndexNumber", 5}, {"RunTimeTicks", 36000000000LL},
@@ -488,6 +491,22 @@ int main(int argc, char** argv) {
                     list.push_back(QJsonObject{{"Id", itemId}, {"Name", "Next One"}, {"Type", "Episode"}, {"IsFolder", false}, {"SeriesId", q.queryItemValue("seriesId")},
                         {"SeriesName", "Test Show"}, {"ParentIndexNumber", 2}, {"IndexNumber", 6}, {"RunTimeTicks", 36000000000LL}, {"UserData", QJsonObject{{"Played", false}, {"PlaybackPositionTicks", 0}}}});
                 return json({{"Items", list}, {"TotalRecordCount", int(list.size())}});
+            }
+            // The episode look-up (Seerr->Jellyfin TV Stage 1): /Shows/{series}/Episodes?season=&userId=, with
+            // MediaSources in Fields so each episode carries its source width for the 4K rule.
+            if (r.method == "GET" && path == QStringLiteral("/Shows/%1/Episodes").arg(QString::fromLatin1(kSeries))) {
+                if (episodesStatus) return error(episodesStatus, "episodes failed");
+                const int season = q.queryItemValue("season").toInt();
+                episodesSeen.push_back(season);
+                const QJsonObject e1{{"Id", "dddddddddddddddddddddddddddddd01"}, {"Name", "Episode Five"}, {"Type", "Episode"}, {"IsFolder", false},
+                    {"SeriesId", QString::fromLatin1(kSeries)}, {"SeriesName", "Test Show"}, {"ParentIndexNumber", season}, {"IndexNumber", 5},
+                    {"MediaSources", QJsonArray{QJsonObject{{"Width", 1920}, {"Height", 1080}}}},
+                    {"UserData", QJsonObject{{"Played", true}, {"PlaybackPositionTicks", 0}}}};
+                const QJsonObject e2{{"Id", "dddddddddddddddddddddddddddddd02"}, {"Name", "Episode Six"}, {"Type", "Episode"}, {"IsFolder", false},
+                    {"SeriesId", QString::fromLatin1(kSeries)}, {"SeriesName", "Test Show"}, {"ParentIndexNumber", season}, {"IndexNumber", 6},
+                    {"MediaSources", QJsonArray{QJsonObject{{"Width", 3840}, {"Height", 2160}}}},
+                    {"UserData", QJsonObject{{"Played", false}, {"PlaybackPositionTicks", 0}}}};
+                return json({{"Items", QJsonArray{e1, e2}}, {"TotalRecordCount", 2}, {"StartIndex", 0}});
             }
             if (home.resumeStatus && (path == QLatin1String("/UserItems/Resume") || path == QStringLiteral("/Users/%1/Items/Resume").arg(user))) return error(home.resumeStatus, "boom");
             if (r.method == "GET" && path == QLatin1String("/UserItems/Resume"))
@@ -794,6 +813,44 @@ int main(int argc, char** argv) {
         client.nextEpisode(QStringLiteral("a/b"), QString::fromLatin1(kItem));
         check(waitFor([&] { return got.done; }) && !got.found, "next: an invalid series id offers nothing without a request");
         QObject::disconnect(nextConnection);
+    }
+    {
+        // The episode look-up behind the Seerr->Jellyfin TV Watch (Stage 1): /Shows/{series}/Episodes?season=&userId=,
+        // MediaSources in Fields for the 4K width rule, and each episode parsed (type, SeriesId, season, index, width, played).
+        Collector pages, failures2;
+        const auto pageConnection = QObject::connect(&client, &JellyfinClient::pageReady, [&](quint64 request, const JellyfinPage& page) { pages.v.push_back({QVariant::fromValue(request), QVariant::fromValue(page)}); });
+        const auto failConnection = QObject::connect(&client, &JellyfinClient::failed, [&](quint64 request, const QString&) { failures2.v.push_back({QVariant::fromValue(request), QString{}}); });
+        const auto firstPage = [&]() { return qvariant_cast<JellyfinPage>(pages.first().at(1)); };
+
+        episodesSeen.clear();
+        const quint64 id = client.episodes(QString::fromLatin1(kSeries), 2);
+        check(waitFor([&] { return pages.count() > 0; }) && pages.first().at(0).toULongLong() == id, "episodes: the season look-up answers under its own request id");
+        const auto& req = fake.log.last();
+        check(req.method == "GET" && req.path == QStringLiteral("/Shows/%1/Episodes").arg(QString::fromLatin1(kSeries)), "episodes: the /Shows/{series}/Episodes route");
+        check(req.query().queryItemValue("season") == QLatin1String("2") && req.query().queryItemValue("userId") == user, "episodes: the season and the user are asked for");
+        check(req.query().queryItemValue("Fields").contains("MediaSources"), "episodes: Fields requests MediaSources for the 4K rule");
+        if (pages.count() > 0 && firstPage().items.size() == 2) {
+            const auto a = firstPage().items.at(0);
+            const auto b = firstPage().items.at(1);
+            check(a.type == QLatin1String("Episode") && a.seriesId == QLatin1String(kSeries) && a.seasonNumber == 2 && a.episodeNumber == 5 && a.width == 1920 && a.played,
+                  "episodes: an episode parses its type, SeriesId, season, index, width and watched flag");
+            check(b.episodeNumber == 6 && b.width == 3840 && !b.played, "episodes: the second episode parses (4K width, unwatched)");
+            check(episodesSeen.size() == 1 && episodesSeen.first() == 2, "episodes: exactly one season was asked for");
+        } else check(false, "episodes: the page carries both episodes");
+
+        // A failing look-up answers under its own request id through failed (the signal the resolver clears its row on).
+        pages.clear(); failures2.clear(); episodesStatus = 500;
+        const quint64 id500 = client.episodes(QString::fromLatin1(kSeries), 2);
+        check(waitFor([&] { return failures2.count() > 0; }) && failures2.first().at(0).toULongLong() == id500 && pages.count() == 0,
+              "episodes: a 5xx answers under its own request id through failed, no page");
+        episodesStatus = 0;
+
+        // An invalid series id never reaches the server.
+        pages.clear(); failures2.clear();
+        client.episodes(QStringLiteral("a/b"), 2);
+        check(waitFor([&] { return failures2.count() > 0; }) && pages.count() == 0, "episodes: an invalid series id fails without a request");
+
+        QObject::disconnect(pageConnection); QObject::disconnect(failConnection);
     }
 
     std::printf("%d checks, %d failures\n", checks, failures);

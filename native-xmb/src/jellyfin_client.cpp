@@ -575,6 +575,25 @@ quint64 JellyfinClient::search(QString term, int startIndex) {
     return send(Operation::Search, get(url), QString::number(startIndex));
 }
 
+quint64 JellyfinClient::episodes(QString seriesId, int season) {
+    if (!signedIn()) { const quint64 request = ++nextRequest_; fail(request, QStringLiteral("Sign in to Jellyfin first.")); return request; }
+    if (!validId(seriesId) || season < 0) {
+        const quint64 request = ++nextRequest_;
+        fail(request, QStringLiteral("Choose a valid Jellyfin series."));
+        return request;
+    }
+    QUrl url = apiUrl(QStringLiteral("Shows/") + seriesId + QStringLiteral("/Episodes"));
+    QUrlQuery query;
+    query.addQueryItem(QStringLiteral("userId"), userId_);
+    query.addQueryItem(QStringLiteral("season"), QString::number(season));
+    query.addQueryItem(QStringLiteral("EnableUserData"), QStringLiteral("true"));
+    // MediaSources rides with ProviderIds so the TV 4K rule can read the source width; the episode's SeriesId,
+    // ParentIndexNumber (season) and IndexNumber are core fields, always present.
+    query.addQueryItem(QStringLiteral("Fields"), QStringLiteral("ProviderIds,MediaSources"));
+    url.setQuery(query);
+    return send(Operation::Episodes, get(url), QString::number(season));
+}
+
 quint64 JellyfinClient::music(MusicList kind, QString libraryId, QString id, int startIndex) {
     if (!signedIn()) { const quint64 request = ++nextRequest_; fail(request, QStringLiteral("Sign in to Jellyfin first.")); return request; }
     const bool needsId = kind == MusicList::ArtistAlbums || kind == MusicList::AlbumTracks || kind == MusicList::PlaylistTracks || kind == MusicList::ArtistTracks;
@@ -1310,7 +1329,7 @@ void JellyfinClient::finish(QNetworkReply* reply, Operation operation, quint64 r
     if (parse.error != QJsonParseError::NoError) {
         fail(request, QStringLiteral("Jellyfin returned an unexpected response.")); return;
     }
-    if (operation == Operation::Views || operation == Operation::Items || operation == Operation::Search || operation == Operation::Home) {
+    if (operation == Operation::Views || operation == Operation::Items || operation == Operation::Search || operation == Operation::Episodes || operation == Operation::Home) {
         JellyfinPage page;
         page.startIndex = operation == Operation::Items || operation == Operation::Search ? context.toInt() : 0;
         QJsonArray values;

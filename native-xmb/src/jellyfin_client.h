@@ -109,6 +109,12 @@ public:
     // A free-text library search: the same user-scoped /Items route with SearchTerm and
     // Recursive=true, so results carry the same UserData (resume/played) as a folder listing.
     quint64 search(QString term, int startIndex = 0);
+    // The playable episodes of one season of a series, for the Seerr->Jellyfin TV Watch (Stage 1):
+    // GET /Shows/{seriesId}/Episodes?season=<n>&userId=... The answer is the same BaseItemDtoQueryResult shape a
+    // folder lists (Items + TotalRecordCount), parsed and answered through pageReady like items(). MediaSources is
+    // requested in Fields so each episode carries its source width for the 4K rule, and EnableUserData is on so the
+    // unwatched-first selection can read UserData.Played.
+    quint64 episodes(QString seriesId, int season);
     // The lists of the Music column (audit/JELLYFIN-MUSIC.md). Every one is a paged, user-scoped request answered
     // through pageReady like items(): Artists = the album artists, Albums, Songs, Playlists (audio playlists),
     // Recent = albums by date added, Random = a random page of albums, ArtistAlbums (id = the artist),
@@ -204,7 +210,7 @@ signals:
     void userFlagChanged(quint64 request, QString itemId, int flag, bool value, bool ok);
     void nextEpisodeReady(quint64 request, xmb::JellyfinItem item, bool found);
 private:
-    enum class Operation { SignIn, Views, Items, Search, Playback, Artwork, Report, Subtitle, SubtitleImage, TrickplayInfo, TrickplaySheet, Probe, Home, Chapters, UserFlag, NextEpisode, Lyrics };
+    enum class Operation { SignIn, Views, Items, Search, Episodes, Playback, Artwork, Report, Subtitle, SubtitleImage, TrickplayInfo, TrickplaySheet, Probe, Home, Chapters, UserFlag, NextEpisode, Lyrics };
     quint64 send(Operation operation, QNetworkReply* reply, QString context = {}, bool audio = false);
     void finish(QNetworkReply* reply, Operation operation, quint64 request,
                 quint64 generation, QString context = {}, bool audio = false);

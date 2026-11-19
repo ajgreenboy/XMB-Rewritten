@@ -52,6 +52,13 @@ struct SeerrUi {
     QHash<QString,QString> jellyfinTitle;      // row id -> title (title-match fallback)
     QSet<QString> jellyfinResolvePending;
     QHash<quint64,QString> jellyfinResolveRow; // search request id -> the row it resolves
+    // TV (Stage 1) two-step state: after the search recognises a Series, its episodes are fetched season by season
+    // (lowest requested first) until one yields a playable episode, or the seasons run out and the row stays Pending.
+    QHash<QString,QVector<int>> seerrSeasons;      // row id -> requested season numbers (ascending)
+    QHash<QString,JellyfinItem> seerrSeries;       // row id -> the matched Series (TV Step 1)
+    QHash<QString,int> seerrSeasonNext;            // row id -> index into seerrSeasons of the next season to fetch
+    QHash<QString,QVector<JellyfinItem>> seerrEpisodes;  // row id -> episodes fetched so far (TV Step 2)
+    QHash<quint64,QString> jellyfinEpisodeRow;     // episode request id -> the row it resolves
     bool jellyfinResolveHooked=false;
     QString searchTerm;
     QString title;
@@ -237,8 +244,10 @@ void Shell::refreshSeerrDownloads() {
             rows.append(std::move(row));
             // The transfer is out of SABnzbd (no live queue ids) and the media is not yet Available: try to
             // resolve the imported Jellyfin item so the row can offer Watch as soon as it is actually playable.
+            // The request's TMDB id reaches the resolver for BOTH media types: a TV row needs it too, or the
+            // Series identity rule would fall back to title matching and a same-title wrong Series could Watch.
             if(ids.isEmpty() && self->jellyfin_.signedIn())
-                self->resolveSeerrJellyfin(identifier,title,type,type==QLatin1String("movie")?QString::number(id):QString(),is4k);
+                self->resolveSeerrJellyfin(identifier,title,type,QString::number(id),is4k,seasons);
             if(state.titles.contains(key) || state.downloadDetails.contains(key))continue;
             state.downloadDetails.insert(key);
             state.downloadClient.details(type,id,[self,key,identifier](QJsonObject details,QString error){
@@ -364,15 +373,22 @@ void Shell::controlSeerrDownload(const Entry& entry,OptionCommand command) {
 }
 
 // The Seerr->Jellyfin resolution: find the imported Jellyfin item for a request whose transfer is done but whose
-// media is not yet Available. The match itself is the pure resolveSeerrWatch() policy (seerr_jellyfin_match.h):
-// movies only, exact TMDB equality (never a same-title id fallback), the 4K width rule, and no TV Watch in Stage 0.
-void Shell::resolveSeerrJellyfin(const QString& rowId,const QString& title,const QString& mediaType,const QString& tmdbId,bool is4k) {
+// media is not yet Available. The match itself is the pure policy in seerr_jellyfin_match.h — movies through
+// resolveSeerrWatch() (exact TMDB, the 4K width rule), TV through the two-step resolveSeerrSeries() then
+// selectSeerrTvEpisode() (a Series by identity, then the lowest requested season's playable episode). Never a
+// Series/Season/Movie for TV.
+void Shell::resolveSeerrJellyfin(const QString& rowId,const QString& title,const QString& mediaType,const QString& tmdbId,bool is4k,const QVector<int>& seasons) {
     if(!seerr_ || !jellyfin_.signedIn())return;
     auto& ui=*seerr_;
     if(ui.jellyfinResolvePending.size()>=16 || ui.jellyfinMatch.contains(rowId))return;
-    // TV requests have no directly playable Watch in Stage 0: leave the row on its Seerr status, never claim
-    // completion. Season/episode matching arrives in Stage 1.
-    if(mediaType==QLatin1String("tv"))return;
+    // A TV request needs at least one valid requested season to fetch; without one there is nothing playable to
+    // look up, so the row stays Pending and the next poll retries once the request carries its seasons.
+    QVector<int> tvSeasons;
+    if(mediaType==QLatin1String("tv")) {
+        for(int s:seasons) if(s>0) tvSeasons.push_back(s);
+        if(tvSeasons.isEmpty())return;
+        std::sort(tvSeasons.begin(),tvSeasons.end());
+    }
     const QString key=title.trimmed().toCaseFolded();
     if(key.isEmpty() || ui.jellyfinTitleKey.value(rowId)==key)return;
     ui.jellyfinTitleKey.insert(rowId,key);
@@ -380,42 +396,116 @@ void Shell::resolveSeerrJellyfin(const QString& rowId,const QString& title,const
     ui.seerrMediaType.insert(rowId,mediaType);
     ui.seerrIs4k.insert(rowId,is4k);
     if(!tmdbId.isEmpty())ui.seerrTmdbId.insert(rowId,tmdbId);
+    if(mediaType==QLatin1String("tv"))ui.seerrSeasons.insert(rowId,tvSeasons);
     ui.jellyfinResolvePending.insert(rowId);
     if(!ui.jellyfinResolveHooked) {
         ui.jellyfinResolveHooked=true;
         connect(&jellyfin_,&JellyfinClient::pageReady,this,[this](quint64 request,const JellyfinPage& page){
             if(!seerr_)return;
-            const QString rowId=seerr_->jellyfinResolveRow.take(request);
+            const QString searchRow=seerr_->jellyfinResolveRow.take(request);
+            const QString episodeRow=seerr_->jellyfinEpisodeRow.take(request);
+            const QString rowId=!searchRow.isEmpty()?searchRow:episodeRow;
             if(rowId.isEmpty() || !seerr_->jellyfinResolvePending.contains(rowId))return;
-            seerr_->jellyfinResolvePending.remove(rowId);
-            seerr_->jellyfinTitleKey.remove(rowId);   // allow a later refresh to re-resolve an item still importing
             const SeerrWatchRequest watchRequest{
                 seerr_->seerrMediaType.value(rowId),
                 seerr_->seerrTmdbId.value(rowId),
                 seerr_->jellyfinTitle.value(rowId),
-                seerr_->seerrIs4k.value(rowId)};
-            const SeerrWatchDecision decision=resolveSeerrWatch(watchRequest,page.items);
-            if(decision.state==SeerrWatchState::Watch)applySeerrJellyfinMatch(rowId,decision.item);
+                seerr_->seerrIs4k.value(rowId),
+                seerr_->seerrSeasons.value(rowId)};
+            if(!searchRow.isEmpty()) {
+                // Step 1 (search) answered, for a movie or a TV request.
+                if(watchRequest.mediaType==QLatin1String("tv")) {
+                    const SeerrSeriesDecision decision=resolveSeerrSeries(watchRequest,page.items);
+                    if(decision.state==SeerrWatchState::Watch) {
+                        seerr_->seerrSeries.insert(rowId,decision.series);
+                        seerr_->seerrSeasonNext.insert(rowId,0);
+                        // The row stays pending (and keeps its title key) through the episode fetches.
+                        fetchSeerrTvSeason(rowId);
+                    } else {
+                        seerr_->jellyfinResolvePending.remove(rowId);
+                        seerr_->jellyfinTitleKey.remove(rowId);   // allow a later refresh to re-resolve
+                        seerr_->seerrSeasons.remove(rowId);
+                    }
+                } else {
+                    seerr_->jellyfinResolvePending.remove(rowId);
+                    seerr_->jellyfinTitleKey.remove(rowId);   // allow a later refresh to re-resolve an item still importing
+                    const SeerrWatchDecision decision=resolveSeerrWatch(watchRequest,page.items);
+                    if(decision.state==SeerrWatchState::Watch)applySeerrJellyfinMatch(rowId,decision.item);
+                }
+                return;
+            }
+            // Step 2 (episodes) answered for a TV row: accumulate this season and re-run the selection.
+            auto& accumulated=seerr_->seerrEpisodes[rowId];
+            for(const auto& item:page.items)accumulated.push_back(item);
+            const JellyfinItem series=seerr_->seerrSeries.value(rowId);
+            const SeerrEpisodeDecision decision=selectSeerrTvEpisode(watchRequest,series,accumulated);
+            if(decision.state==SeerrWatchState::Watch) {
+                seerr_->jellyfinResolvePending.remove(rowId);
+                seerr_->jellyfinTitleKey.remove(rowId);
+                seerr_->seerrSeasons.remove(rowId);
+                seerr_->seerrSeries.remove(rowId);
+                seerr_->seerrSeasonNext.remove(rowId);
+                seerr_->seerrEpisodes.remove(rowId);
+                applySeerrJellyfinMatch(rowId,decision.episode);
+            } else {
+                fetchSeerrTvSeason(rowId);   // advance to the next requested season, or finalise Pending
+            }
         });
-        // A failed search must release its row so the next poll retries; any other Jellyfin failure (a home
-        // list, a playback, a sign-in) carries a request id that is not in the map and is left untouched.
+        // A failed search or episode fetch must release its row so the next poll retries; any other Jellyfin
+        // failure (a home list, a playback, a sign-in) carries a request id that is not in either map and is
+        // left untouched.
         connect(&jellyfin_,&JellyfinClient::failed,this,[this](quint64 request,const QString&){
             if(!seerr_)return;
-            const QString rowId=seerr_->jellyfinResolveRow.take(request);
+            const QString searchRow=seerr_->jellyfinResolveRow.take(request);
+            const QString episodeRow=seerr_->jellyfinEpisodeRow.take(request);
+            const QString rowId=!searchRow.isEmpty()?searchRow:episodeRow;
             if(rowId.isEmpty())return;
             seerr_->jellyfinResolvePending.remove(rowId);
             seerr_->jellyfinTitleKey.remove(rowId);   // allow a later refresh to re-resolve
+            seerr_->seerrSeasons.remove(rowId);
+            seerr_->seerrSeries.remove(rowId);
+            seerr_->seerrSeasonNext.remove(rowId);
+            seerr_->seerrEpisodes.remove(rowId);
         });
     }
     const quint64 request=jellyfin_.search(title);
     ui.jellyfinResolveRow.insert(request,rowId);
 }
 
+// TV Step 2: fetch the next requested season's episodes for a row whose Series was recognised. When the season
+// list is exhausted without a playable episode, the row is left Pending and its maps are cleared so the next poll
+// re-resolves (a season that has not imported yet is retried, not failed).
+void Shell::fetchSeerrTvSeason(const QString& rowId) {
+    if(!seerr_ || !jellyfin_.signedIn())return;
+    auto& ui=*seerr_;
+    const int next=ui.seerrSeasonNext.value(rowId,0);
+    const QVector<int> seasons=ui.seerrSeasons.value(rowId);
+    if(next>=seasons.size()) {
+        ui.jellyfinResolvePending.remove(rowId);
+        ui.jellyfinTitleKey.remove(rowId);
+        ui.seerrSeasons.remove(rowId);
+        ui.seerrSeries.remove(rowId);
+        ui.seerrSeasonNext.remove(rowId);
+        ui.seerrEpisodes.remove(rowId);
+        return;
+    }
+    const JellyfinItem series=ui.seerrSeries.value(rowId);
+    const int season=seasons.at(next);
+    ui.seerrSeasonNext.insert(rowId,next+1);
+    const quint64 request=jellyfin_.episodes(series.id,season);
+    ui.jellyfinEpisodeRow.insert(request,rowId);
+}
+
 void Shell::applySeerrJellyfinMatch(const QString& rowId,const JellyfinItem& item) {
     if(!seerr_)return;
     seerr_->jellyfinMatch.insert(rowId,item);
     for(auto& row:seerr_->downloadRows)if(row.id==rowId) {
-        row.detail=tr("Ready to watch · Seerr · %1").arg(item.type==QLatin1String("Episode")?item.seriesName:item.title);
+        if(item.type==QLatin1String("Episode") && item.seasonNumber>0 && item.episodeNumber>0)
+            row.detail=tr("Ready to watch · Seerr · %1 S%2E%3").arg(item.seriesName).arg(item.seasonNumber).arg(item.episodeNumber);
+        else if(item.type==QLatin1String("Episode"))
+            row.detail=tr("Ready to watch · Seerr · %1").arg(item.seriesName);
+        else
+            row.detail=tr("Ready to watch · Seerr · %1").arg(item.title);
         row.value=row.title+QStringLiteral("\n\n")+row.detail+QStringLiteral("\n")+tr("Watch opens it in Jellyfin.");
     }
     emit changed();

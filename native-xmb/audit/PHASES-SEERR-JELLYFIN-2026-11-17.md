@@ -103,10 +103,87 @@ loopback mock evidence; no live Seerr or Jellyfin service was contacted.
 - The loopback Seerr → Jellyfin resolution is now recorded (table above). A fuller fixture that also drives a mock
   TV season through transfer → import delay → Jellyfin availability remains open, as does any live-service evidence
   (none claimed here).
-- TV season/episode matching is deliberately unbuilt: a TV request is `Pending`/unverified until Stage 1 implements
-  per-season episode matching. This is not claimed as complete.
+- TV season/episode matching was deliberately unbuilt in Stage 0: a TV request was `Pending`/unverified. Stage 1
+  (section 5, below) now implements per-season episode matching; that section is the current record.
 - The 4K rule reads `MediaSources[].Width`; a server that does not return `MediaSources` for a movie yields an
   unknown width and is refused a Watch for 4K (a regular request still watches its sole copy), rather than presumed
   either way.
 
 See `audit/JELLYFIN-NATIVE.md` and `audit/SEERR.md` for the service contracts.
+
+## 5. Stage 1 — TV season Watch (added on top of Stage 0)
+
+Stage 0 deliberately left a TV request `Pending` (no Watch); this stage closes the gap the same way movies close it,
+as a two-step pure policy plus one new client route. **No live Seerr or Jellyfin service was contacted**; everything
+below is compiled and unit-tested against in-memory fixtures and the in-process fake server, not end-to-end.
+
+### 5.1 The two steps
+
+- **Step 1 (series identity, `resolveSeerrSeries`).** The existing `jellyfin_.search(title)` now also serves a TV row.
+  Only a `Type == "Series"` candidate matches, by the same identity rules movies use: with a Seerr TMDB id, exact id
+  equality (a missing candidate id is refused, a different id is a conflict); the title fallback applies only when the
+  Seerr id is absent. An Episode/Movie/Season is never a Series match.
+- **Step 2 (episode selection, `selectSeerrTvEpisode`).** The matched Series' episodes are fetched season by season
+  through the new `JellyfinClient::episodes(seriesId, season)` → `GET /Shows/{seriesId}/Episodes?season=<n>&userId=...`
+  with `Fields=ProviderIds,MediaSources` and `EnableUserData`, answered through the existing `pageReady`/`failed`
+  infrastructure. Client-side, an item is a candidate only when it is an `Episode`, carries the matched series' id
+  (`SeriesId`), and its `ParentIndexNumber` is one of the requested seasons — a Movie/Season/Series, an episode of
+  another series, or a wrong-season episode is never watched. The lowest requested season with a qualifying episode
+  wins (the request's seasons are sorted, so input order does not matter); within it the first unwatched episode by
+  `IndexNumber` is chosen, or the first episode when every one is watched.
+
+The Seerr request's `media.tmdbId` and its `seasons[]` now reach the resolver: `refreshSeerrDownloads` already reads
+both and `resolveSeerrJellyfin` threads them through the `SeerrWatchRequest` (the movie path is unchanged and still
+ignores seasons). A TV row that resolves keeps its `jellyfinMatch` and gains `Watch`; `watchSeerrJellyfin` already
+plays an Episode entry, so no playback change was needed.
+
+### 5.2 The 4K rule for TV (an explicit safe limitation)
+
+A 4K TV request chooses only an episode whose `MediaSources[].Width` confirms `>= 3840`. The episodes route asks for
+`MediaSources`, so a server that reports source width for episodes can resolve a 4K TV row. A server that reports no
+width yields `WidthUnknown` for every episode, and a known SD-only season yields `Not4k` — in both cases the row is
+left **`Pending`, never silently played as SD**. This is deliberate: TV 4K is supported only where the resolution can
+be confirmed, and otherwise falls back to "no Watch" rather than guessing a variant. (Movie 4K behaviour is untouched.)
+
+### 5.3 Retry, not failure
+
+A missing season or a season with no qualifying episode is `Pending`, not an error: the row's maps are cleared and the
+next poll re-runs the resolution (so a season that has not finished importing resolves once it has). A failed search
+or a failed episode page clears the same maps, keyed on the request's own id, so nothing is left half-resolved and an
+unrelated Jellyfin failure is untouched — the same contract Stage 0 established for the search.
+
+### 5.4 Verification (scoped, headless)
+
+```
+cmake -S native-xmb -B out/seerr-stage1 -G Ninja -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_PREFIX_PATH=C:\Qt\6.12.0\msvc2022_64 -DXMB_SEERR_WATCH_BUILD_TESTS=ON \
+      -DXMB_JELLYFIN_PLAYBACK_BUILD_TESTS=ON
+cmake --build out/seerr-stage1 --target xmb-seerr-watch-tests xmb-jellyfin-playback-tests
+out/seerr-stage1/xmb-seerr-watch-tests.exe        -> 35 checks, 0 failures   (was 18 in Stage 0)
+out/seerr-stage1/xmb-jellyfin-playback-tests.exe  -> 149 checks, 0 failures  (was 140 in Stage 0)
+```
+
+The full `re-ps3-native` target also builds clean under `/W4` (the `seerr_shell.cpp` integration compiles with no new
+warning), and `bun work/ci-guard.ts` stays `ok` (no new runner, option or target was added — the new checks live in the
+two existing suites).
+
+`xmb-seerr-watch-tests` (`tests/seerr_jellyfin_match_tests.cpp`) pins the policy: Series identity (exact TMDB,
+mismatched, missing-id refused, title fallback only without a Seerr id), cross-type (Episode/Movie/Season never a
+Series match), and episode selection (lowest requested season with episodes regardless of input order, a lower
+all-watched season winning over a higher season, first-unwatched by IndexNumber, first when all watched, wrong-season,
+wrong-series, missing SeriesId, and the 4K SD-refused / 3840-accepted / unknown-refused triad).
+
+`xmb-jellyfin-playback-tests` (`tests/jellyfin_playback_tests.cpp`) adds a fake-server `/Shows/{series}/Episodes`
+route and pins the client contract: the route and the `season`/`userId`/`Fields`(MediaSources) query, the episode
+parse (`Type`, `SeriesId`, `ParentIndexNumber` → season, `IndexNumber` → episode, `MediaSources` width, `UserData`
+watched), a 5xx answering under its own request id through `failed` (the resolver's clear signal), and an invalid
+series id never reaching the server.
+
+### 5.5 Open
+
+- This is unit and fake-server evidence only. A loopback fixture that drives a mock TV season through
+  `transfer → import delay → Jellyfin availability → Watch`, and any live-service evidence, remain open (none claimed).
+- TV 4K depends on the episodes route returning `MediaSources` width; a server that omits it leaves a 4K TV row
+  `Pending` by design (section 5.2).
+- Season 0 (specials) is not requested through Seerr's normal season selection and is out of scope; only positive
+  requested season numbers are considered.

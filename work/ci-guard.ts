@@ -42,6 +42,17 @@ for (const t of ran) if (!defined.has(t)) problems.push(`tests.yml runs ${t}.exe
 for (const f of readdirSync(join(root, "native-xmb", "tests")).filter((n) => /_tests\.cpp$/.test(n)))
   if (!cmake.includes(`tests/${f}`)) problems.push(`tests/${f} exists but no CMake target compiles it`);
 
+// Seerr->Jellyfin production wiring: the Shell's call into the resolver must hand it the request's TMDB id for
+// BOTH media types. Stage 1's TV Series identity depends on the id reaching resolveSeerrSeries(); a call that
+// passes the id only for movies (a `type==movie ? QString::number(id) : QString()` conditional) leaves the TV id
+// empty, so a same-title wrong Series could match on the title fallback. This is a source-level guard because the
+// wiring lives in Shell::refreshSeerrDownloads, which no headless test instantiates.
+const seerrShell = readFileSync(join(root, "native-xmb", "src", "seerr_shell.cpp"), "utf8");
+if (!seerrShell.includes("resolveSeerrJellyfin(identifier,title,type,QString::number(id),is4k,seasons)"))
+  problems.push("seerr_shell.cpp must pass the request's TMDB id (QString::number(id)) to resolveSeerrJellyfin for both movie and TV");
+if (/type==QLatin1String\("movie"\)\?QString::number\(id\):QString\(\)/.test(seerrShell))
+  problems.push("seerr_shell.cpp drops the TMDB id for TV in the resolveSeerrJellyfin call (Stage 1 regression)");
+
 if (problems.length) {
   console.error(`ci-guard: ${problems.length} mismatch(es)`);
   for (const p of problems) console.error(`  - ${p}`);
