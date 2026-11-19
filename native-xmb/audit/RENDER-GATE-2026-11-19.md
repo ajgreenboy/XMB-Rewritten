@@ -7,7 +7,7 @@ frames, firmware assets or machine-private data are stored here.
 
 ## Candidate provenance
 
-- Source revision: `85e849c`
+- Source revision: `7c662eb`
 - Build metadata: `sourceDirty: false`
 - Candidate executable: `out/native-xmb-followup/re-ps3-native.exe`
 - Candidate SHA-256: `5E66EF34EFE71F50CEEA070809D8C1ED05CE8E5609B5F0A5887013E7863671AE`
