@@ -236,6 +236,16 @@ int main(int argc, char** argv) {
     JellyfinClient client;
     QTemporaryDir cache;
     client.setImageCache(cache.path());
+    // The covers section proves the disk cache by asking twice and expecting the second ask to skip the server.
+    // That only holds when setImageCache got a real directory; if TMP/TEMP names a missing folder, QTemporaryDir
+    // fails, path() is empty, every ask re-fetches and two of those checks fail misleadingly. Record the state
+    // once up front, and skip only those two below.
+    const bool cacheOk = cache.isValid() && !cache.path().isEmpty();
+    check(cacheOk, "image cache: a usable temporary directory (TMP/TEMP) was created");
+    if (!cacheOk)
+        std::fprintf(stderr, "image cache disabled: QTemporaryDir failed (TMP=%s TEMP=%s QtTemp=%s)\n",
+                     qPrintable(qEnvironmentVariable("TMP")), qPrintable(qEnvironmentVariable("TEMP")),
+                     qPrintable(QDir::tempPath()));
     struct Got { quint64 request; JellyfinPage page; };
     QList<Got> pages;
     QStringList errors;
@@ -398,11 +408,11 @@ int main(int argc, char** argv) {
         covers.clear();
         client.artwork(kAlbum, QStringLiteral("albumtag1"), false);
         check(waitFor([&] { return !covers.isEmpty(); }) && !covers.first().isNull(), "cover: second ask answered");
-        check(fake.count("/Items/" + kAlbum.toLatin1() + "/Images/Primary") == fetched, "cover: the second ask is served from the disk cache, not the server");
+        if (cacheOk) check(fake.count("/Items/" + kAlbum.toLatin1() + "/Images/Primary") == fetched, "cover: the second ask is served from the disk cache, not the server");
         covers.clear();
         client.artwork(kAlbum, QStringLiteral("albumtag2"), false);
         check(waitFor([&] { return !covers.isEmpty(); }), "cover: a changed tag is answered");
-        check(fake.count("/Items/" + kAlbum.toLatin1() + "/Images/Primary") == fetched + 1, "cover: a changed tag is fetched again");
+        if (cacheOk) check(fake.count("/Items/" + kAlbum.toLatin1() + "/Images/Primary") == fetched + 1, "cover: a changed tag is fetched again");
     }
     // ---- audio PlaybackInfo, direct play, the loopback relay -------------------------------------------------------------------------
     {
