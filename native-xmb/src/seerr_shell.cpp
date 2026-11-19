@@ -724,8 +724,8 @@ void Shell::refreshSeerrPage() {
             const int mediaStatus=seerrInt(media.value(is4k?QStringLiteral("status4k"):QStringLiteral("status")));
             QString mediaState=seerrMediaStatus(mediaStatus);
             QList<int> seasons;
-            for(const auto value:request.value(QStringLiteral("seasons")).toArray())
-                seasons.push_back(value.toObject().value(QStringLiteral("seasonNumber")).toInt(-1));
+            for(const auto seasonValue:request.value(QStringLiteral("seasons")).toArray())
+                seasons.push_back(seasonValue.toObject().value(QStringLiteral("seasonNumber")).toInt(-1));
             const QString tracked=seerrTrackedStatus(media,seasons,is4k);
             if(!tracked.isEmpty())mediaState=tracked;
             const QString status=QStringLiteral("%1 · %2").arg(seerrRequestStatus(reqStatus),mediaState);
