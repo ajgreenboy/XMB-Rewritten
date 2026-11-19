@@ -2639,17 +2639,39 @@ void View::drawLegacySurface(QPainter& p) {
     const QImage& bag=assets_.image(QStringLiteral("explore_plugin_full"),QStringLiteral("item_tex_ps_store"));
     if(!bag.isNull())p.drawImage(QRectF(44,43,64,64),bag);
     text(QRectF(128,48,640,54),QStringLiteral("PlayStation®Store"),34,QColor(255,255,255));
-    const QRectF searchBtn(1590,48,220,54);
     const int cursor=shell_.legacyStoreOpen()?shell_.selection():-1;   // a valid game index (0 = featured)
     const bool searchFocused=shell_.legacySearchFocused();
-    if(searchFocused) {
-        p.save();p.setPen(QPen(QColor(255,255,255,220),2));p.setBrush(QColor(255,255,255,28));
-        p.drawRoundedRect(searchBtn,6,6);p.restore();
-    }
-    text(QRectF(1450,55,130,40),QStringLiteral("View Cart"),20,QColor(220,225,235,150));
-    text(QRectF(1260,55,180,40),QStringLiteral("View Downloads"),20,QColor(220,225,235,150));
-    text(QRectF(1080,55,170,40),QStringLiteral("Redeem Codes"),20,QColor(220,225,235,150));
-    text(searchBtn.adjusted(14,0,-14,0),QStringLiteral("Search"),searchFocused?23:21,searchFocused?Qt::white:QColor(235,240,248),Qt::AlignLeft|Qt::AlignVCenter);
+    // The four control buttons, in the manual's order (Search · Redeem Codes · View Downloads · View Cart),
+    // plus the View Mode toggle. Only Search is wired; the other three are drawn as their documented labels
+    // but stay unfocusable (their PSN surfaces are out of scope and would otherwise be faked). Firmware
+    // glyphs are used where they exist (tex_kensaku for Search, tex_dl_manage for Downloads); Redeem and
+    // Cart have no firmware glyph, so they are label-only - the manual's own GIFs are copyrighted and are
+    // never bundled into the repo.
+    const auto controlBtn=[&](const QRectF& r,const QString& label,const char* iconContainer,const char* iconName,bool focused){
+        p.save();
+        if(focused){p.setPen(QPen(QColor(255,255,255,220),2));p.setBrush(QColor(255,255,255,30));}
+        else {p.setPen(QPen(QColor(255,255,255,60),1));p.setBrush(QColor(255,255,255,6));}
+        p.drawRoundedRect(r,6,6);p.restore();
+        if(iconContainer && iconName) {
+            const QImage& icon=assets_.image(QLatin1String(iconContainer),QLatin1String(iconName));
+            if(!icon.isNull()) {
+                const double ih=r.height()-20.;
+                p.drawImage(QRectF(r.left()+8,r.center().y()-ih/2,ih,ih),icon);
+                text(QRectF(r.left()+8+ih+8,r.top(),r.width()-8-ih-8-10,r.height()),label,focused?21:19,
+                     focused?Qt::white:QColor(214,222,236,160),Qt::AlignLeft|Qt::AlignVCenter);
+                return;
+            }
+        }
+        text(r.adjusted(14,0,-14,0),label,focused?21:19,focused?Qt::white:QColor(214,222,236,160),Qt::AlignLeft|Qt::AlignVCenter);
+    };
+    const QRectF searchBtn(970,48,150,54);
+    controlBtn(searchBtn,QStringLiteral("Search"),"explore_category_network","tex_kensaku",searchFocused);
+    controlBtn(QRectF(1130,48,175,54),QStringLiteral("Redeem Codes"),nullptr,nullptr,false);
+    controlBtn(QRectF(1315,48,215,54),QStringLiteral("View Downloads"),"explore_category_network","tex_dl_manage",false);
+    controlBtn(QRectF(1540,48,120,54),QStringLiteral("View Cart"),nullptr,nullptr,false);
+    // View Mode toggle (list vs grid): only the grid is implemented, so it reads the current mode rather
+    // than acting as a live toggle.
+    text(QRectF(1670,48,190,54),QStringLiteral("View Mode: Grid"),18,QColor(205,214,230,150),Qt::AlignLeft|Qt::AlignVCenter);
 
     if(shell_.legacyDetailOpen()) {
         // ---- Item detail (purchase001.jpg shape: title, price/size, description, primary action) ------

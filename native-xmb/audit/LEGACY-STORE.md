@@ -40,9 +40,18 @@ page's Download action hands off to `openGameSources` unchanged; none of those f
   grid), not firmware-traced.
 - **Grid window scrolls 3 rows at a time** (`legacyStoreGridRows`), one row per boundary crossing; the scroll
   rate is a native choice (the store scrolled, but no trace fixes its step).
-- **Three control buttons are inert.** Redeem Codes / View Downloads / View Cart are drawn dimmed (they are
-  the documented button set) but are not focusable: their PSN surfaces are out of scope and would be faked
-  otherwise. Only Search is wired.
+- **Control buttons: correct order, partial icons.** The four controls are drawn in the manual's order
+  **Search · Redeem Codes · View Downloads · View Cart**, as buttons. Firmware glyphs are used where they
+  exist (`explore_category_network:tex_kensaku` for Search, `tex_dl_manage` for View Downloads); Redeem and
+  View Cart have no firmware glyph, so they are label-only. The manual's own `in_pss_search.gif` etc. are
+  copyrighted Sony material and are **not** bundled. Only Search is focusable; the other three are drawn
+  dimmed as their documented labels but are unfocusable, because their PSN surfaces are out of scope and
+  would otherwise be faked.
+- **View Mode toggle is grid-only.** The manual's View Mode control (list vs grid) is drawn as a static
+  "View Mode: Grid" reading; the list mode is not implemented, so it is not a live toggle and is not
+  presented as one.
+- **The grid is dark blue, not white.** The white area at x>300 in `store001.jpg` is Sony's explanatory
+  callout canvas outside the storefront crop (x≈0..300), not a store surface, so it is not reproduced.
 - **No wallet/cart.** Every item's primary action is Download (the feed has no prices), matching the manual's
   free-item path.
 - **Triangle** on the store still opens the focused game row's ordinary item menu (it inherits the
@@ -79,10 +88,12 @@ stated gap for a later pass.
   `pageKind == "legacyStore"` → cursor moves `selection` 0 (featured) → grid cells → `pageKind ==
   "legacyDetail"` on Cross → back → `legacySearchFocused` on Up. Last grid cell (`selection 13` of 14) does not
   break the `selection() < entries().size()` invariant.
-- Pixel sampling of the grabbed frames confirms the blue chrome header, the dark-blue ground, and the
-  fixture covers render (not a black/blank frame).
+- Pixel sampling of the grabbed frames confirms the blue chrome header, the dark-blue ground (not white),
+  and the fixture covers render (not a black/blank frame).
 - The live Hydra network could not be used for the visual check in this environment (the `catalogue/hot`
   round-trip hangs); the fixture is the deterministic stand-in and is gated behind `XMB_LEGACY_STORE_FIXTURE`.
+- Reproducible captures (frames + `grab=` sidecars + a reproduction `manifest.md`) are written outside the
+  repo at `C:\dev\out\legacy-store-ui-check\` — see that manifest for the exact command.
 
 ## Integration note
 
