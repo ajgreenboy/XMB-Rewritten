@@ -27,6 +27,8 @@ namespace {
 
 constexpr int RequestDeadlineMs = 12000;
 constexpr qsizetype MaxMetadataBytes = 2 * 1024 * 1024;
+constexpr qsizetype MaxDetailsBytes = 2 * 1024 * 1024;
+constexpr int MaxDescriptionChars = 8192;
 constexpr qsizetype MaxImageBytes = 8 * 1024 * 1024;
 constexpr int MaxRedirects = 2;
 constexpr int MaxGames = 12;
@@ -85,6 +87,50 @@ QStringList parseNames(const QJsonValue& value, int countLimit, bool nestedPlatf
         if (result.size() >= countLimit) break;
     }
     return result;
+}
+
+// Four-digit year from RAWG's "released" string ("2013-09-17", "2013", "" or a
+// placeholder). 0 means unknown; no value is invented when the field is absent.
+int releasedYear(const QString& released) {
+    if (released.size() < 4) return 0;
+    bool ok = false;
+    const int year = released.left(4).toInt(&ok);
+    if (!ok || year < 1900 || year > 2199) return 0;
+    return year;
+}
+
+// Minimal deterministic HTML -> plain text for the detail description. RAWG's
+// "description" field is HTML; its "description_raw" is preferred elsewhere.
+QString plainTextFromHtml(const QString& html, int maxChars) {
+    QString text = html;
+    static const QRegularExpression blocks(
+        QStringLiteral("<(script|style)[^>]*>.*?</\\1>"),
+        QRegularExpression::CaseInsensitiveOption | QRegularExpression::DotMatchesEverythingOption);
+    text.remove(blocks);
+    static const QRegularExpression breaks(
+        QStringLiteral("<br\\s*/?>|</p>|</div>|</li>|</h[1-6]>"),
+        QRegularExpression::CaseInsensitiveOption);
+    text.replace(breaks, QStringLiteral("\n"));
+    static const QRegularExpression tags(QStringLiteral("<[^>]*>"));
+    text.remove(tags);
+    text.replace(QStringLiteral("&amp;"), QStringLiteral("&"));
+    text.replace(QStringLiteral("&lt;"), QStringLiteral("<"));
+    text.replace(QStringLiteral("&gt;"), QStringLiteral(">"));
+    text.replace(QStringLiteral("&quot;"), QStringLiteral("\""));
+    text.replace(QStringLiteral("&#39;"), QStringLiteral("'"));
+    text.replace(QStringLiteral("&apos;"), QStringLiteral("'"));
+    text.replace(QStringLiteral("&nbsp;"), QStringLiteral(" "));
+    static const QRegularExpression manyNewlines(QStringLiteral("\n[ \t]*\n[ \t]*\n+"));
+    text.replace(manyNewlines, QStringLiteral("\n\n"));
+    return text.trimmed().left(maxChars);
+}
+
+QString plainDescription(const QJsonObject& object) {
+    const QString raw = boundedString(object.value(QStringLiteral("description_raw")), MaxDescriptionChars);
+    if (!raw.isEmpty()) return raw;
+    const QString html = boundedString(object.value(QStringLiteral("description")), MaxDescriptionChars * 8);
+    if (html.isEmpty()) return {};
+    return plainTextFromHtml(html, MaxDescriptionChars);
 }
 
 QVector<RawgGame> parseGames(const QJsonArray& results) {
@@ -172,6 +218,37 @@ QImage readCachedPreview(const QString& path) {
 
 } // namespace
 
+RawgGameDetails parseRawgGameDetails(const QJsonObject& object) {
+    RawgGameDetails details;
+    const QJsonValue idValue = object.value(QStringLiteral("id"));
+    if (idValue.isDouble()) {
+        const double rawId = idValue.toDouble();
+        if (rawId >= 1 && rawId <= 2147483647 && rawId == qFloor(rawId))
+            details.id = static_cast<int>(rawId);
+    }
+    details.name = boundedString(object.value(QStringLiteral("name")), 120);
+    details.description = plainDescription(object);
+    details.releaseYear = releasedYear(boundedString(object.value(QStringLiteral("released")), 20));
+    details.developers = parseNames(object.value(QStringLiteral("developers")), 12);
+    details.publishers = parseNames(object.value(QStringLiteral("publishers")), 12);
+    details.genres = parseNames(object.value(QStringLiteral("genres")), 12);
+    details.platforms = parseNames(object.value(QStringLiteral("platforms")), 16, true);
+    return details;
+}
+
+bool RawgClient::jsonRole(RequestRole role) {
+    return role == RequestRole::Metadata || role == RequestRole::Details;
+}
+
+qsizetype RawgClient::roleByteLimit(RequestRole role) {
+    switch (role) {
+        case RequestRole::Image: return MaxImageBytes;
+        case RequestRole::Details: return MaxDetailsBytes;
+        case RequestRole::Metadata: return MaxMetadataBytes;
+    }
+    return MaxMetadataBytes;
+}
+
 RawgClient::RawgClient(QString cacheDirectory, QObject* parent, QNetworkAccessManager* network)
     : QObject(parent), cacheDirectory_(QDir::cleanPath(QDir(cacheDirectory).absolutePath())),
       network_(network ? network : new QNetworkAccessManager(this)), deadline_(new QTimer(this)) {
@@ -241,6 +318,25 @@ void RawgClient::search(const QString& rawQuery) {
     beginRequest(url, RequestRole::Metadata, generation);
 }
 
+void RawgClient::fetchDetails(int gameId) {
+    cancel();
+    const quint64 generation = generation_;
+    if (gameId <= 0) {
+        emit failed(QStringLiteral("RAWG has no details for this game."));
+        return;
+    }
+    const QString key = configuredApiKey();
+    if (key.isEmpty()) {
+        emit failed(QStringLiteral("Add a RAWG API key in settings to load game details. The catalogue stays available."));
+        return;
+    }
+    QUrl url(QStringLiteral("https://api.rawg.io/api/games/%1").arg(gameId));
+    QUrlQuery query;
+    query.addQueryItem(QStringLiteral("key"), key);
+    url.setQuery(query);
+    beginRequest(url, RequestRole::Details, generation);
+}
+
 void RawgClient::downloadArtwork(const RawgGame& game) {
     cancel();
     const quint64 generation = generation_;
@@ -283,7 +379,7 @@ void RawgClient::cancel() {
 
 void RawgClient::beginRequest(const QUrl& url, RequestRole role, quint64 generation, int redirects) {
     if (generation != generation_) return;
-    const bool allowed = role == RequestRole::Metadata ? validMetadataUrl(url) : validImageUrl(url);
+    const bool allowed = jsonRole(role) ? validMetadataUrl(url) : validImageUrl(url);
     if (!allowed || redirects > MaxRedirects) {
         failIfCurrent(generation, QStringLiteral("RAWG returned an unsupported secure address."));
         return;
@@ -301,16 +397,16 @@ void RawgClient::beginRequest(const QUrl& url, RequestRole role, quint64 generat
     request.setAttribute(QNetworkRequest::AuthenticationReuseAttribute, QNetworkRequest::Manual);
     request.setAttribute(QNetworkRequest::CookieLoadControlAttribute, QNetworkRequest::Manual);
     request.setAttribute(QNetworkRequest::CookieSaveControlAttribute, QNetworkRequest::Manual);
-    request.setRawHeader("Accept", role == RequestRole::Metadata ? "application/json" : "image/avif,image/webp,image/*");
+    request.setRawHeader("Accept", jsonRole(role) ? "application/json" : "image/avif,image/webp,image/*");
     request.setRawHeader("User-Agent", "XMB RAWG artwork client");
     reply_ = network_->get(request);
     QNetworkReply* current = reply_;
-    current->setReadBufferSize((role == RequestRole::Metadata ? MaxMetadataBytes : MaxImageBytes) + 1);
-    response_.reserve(role == RequestRole::Metadata ? 16 * 1024 : 128 * 1024);
+    current->setReadBufferSize(roleByteLimit(role) + 1);
+    response_.reserve(jsonRole(role) ? 16 * 1024 : 128 * 1024);
     deadline_->start(RequestDeadlineMs);
     connect(current, &QIODevice::readyRead, this, [this, current, role, generation] {
         if (current != reply_ || generation != generation_) return;
-        const qsizetype limit = role == RequestRole::Metadata ? MaxMetadataBytes : MaxImageBytes;
+        const qsizetype limit = roleByteLimit(role);
         const qint64 remaining = limit + 1 - response_.size();
         if (remaining <= 0) { current->abort(); return; }
         response_.append(current->read(remaining));
@@ -325,7 +421,7 @@ void RawgClient::finishRequest(QNetworkReply* reply, RequestRole role, quint64 g
                                int redirects, const QUrl& requestUrl) {
     if (reply != reply_ || generation != generation_) { reply->deleteLater(); return; }
     deadline_->stop();
-    const qsizetype limit = role == RequestRole::Metadata ? MaxMetadataBytes : MaxImageBytes;
+    const qsizetype limit = roleByteLimit(role);
     const qint64 remaining = limit + 1 - response_.size();
     if (remaining > 0) response_.append(reply->read(remaining));
     const QByteArray bytes = response_;
@@ -345,7 +441,7 @@ void RawgClient::finishRequest(QNetworkReply* reply, RequestRole role, quint64 g
             return;
         }
         QUrl target = requestUrl.resolved(redirectAttribute.toUrl());
-        if (role == RequestRole::Metadata) {
+        if (jsonRole(role)) {
             QUrlQuery query(target);
             const auto items = query.queryItems(QUrl::FullyDecoded);
             query.clear();
@@ -368,10 +464,13 @@ void RawgClient::finishRequest(QNetworkReply* reply, RequestRole role, quint64 g
     if (networkError != QNetworkReply::NoError || status < 200 || status >= 300 || bytes.isEmpty()) {
         failIfCurrent(generation, role == RequestRole::Metadata
             ? QStringLiteral("RAWG search failed. Check the API key and try again.")
-            : QStringLiteral("RAWG artwork could not be downloaded."));
+            : role == RequestRole::Details
+                ? QStringLiteral("RAWG game details could not be loaded. Check the API key and try again.")
+                : QStringLiteral("RAWG artwork could not be downloaded."));
         return;
     }
     if (role == RequestRole::Metadata) finishMetadata(bytes, generation);
+    else if (role == RequestRole::Details) finishDetails(bytes, generation);
     else finishImage(bytes, generation);
 }
 
@@ -383,6 +482,21 @@ void RawgClient::finishMetadata(const QByteArray& bytes, quint64 generation) {
         return;
     }
     emit searchReady(parseGames(results.toArray()));
+}
+
+void RawgClient::finishDetails(const QByteArray& bytes, quint64 generation) {
+    if (generation != generation_) return;
+    const QJsonDocument document = QJsonDocument::fromJson(bytes);
+    if (document.isNull() || !document.isObject()) {
+        failIfCurrent(generation, QStringLiteral("RAWG returned unreadable game details."));
+        return;
+    }
+    RawgGameDetails details = parseRawgGameDetails(document.object());
+    if (details.id <= 0) {
+        failIfCurrent(generation, QStringLiteral("RAWG returned no details for this game."));
+        return;
+    }
+    emit detailsReady(details);
 }
 
 void RawgClient::finishImage(const QByteArray& bytes, quint64 generation) {

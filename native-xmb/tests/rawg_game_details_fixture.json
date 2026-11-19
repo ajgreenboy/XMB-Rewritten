@@ -1,0 +1,30 @@
+{
+  "id": 3498,
+  "slug": "synthetic-quest",
+  "name": "Synthetic Quest",
+  "name_original": "Synthetic Quest",
+  "description": "<p>Synthetic Quest is a fictional fixture game used only by the test suite.</p><p>It exercises the description, genre, year, developer, publisher and platform fields without reproducing any real copyrighted content.</p>",
+  "description_raw": "Synthetic Quest is a fictional fixture game used only by the test suite. It exercises the description, genre, year, developer, publisher and platform fields without reproducing any real copyrighted content.",
+  "released": "2013-09-17",
+  "tba": false,
+  "background_image": "https://media.rawg.io/media/games/fixture/synthetic-quest.jpg",
+  "rating": 4.1,
+  "platforms": [
+    { "platform": { "id": 4, "name": "PC", "slug": "pc" }, "released_at": "2013-09-17" },
+    { "platform": { "id": 187, "name": "PlayStation 5", "slug": "playstation5" }, "released_at": "2020-11-12" },
+    { "platform": { "id": 4, "name": "PC", "slug": "pc" }, "released_at": "2013-09-17" }
+  ],
+  "developers": [
+    { "id": 1, "name": "Fixture Labs", "slug": "fixture-labs", "games_count": 4 },
+    { "id": 2, "name": "Placeholder Interactive", "slug": "placeholder-interactive", "games_count": 1 }
+  ],
+  "publishers": [
+    { "id": 3, "name": "Fixture Publishing", "slug": "fixture-publishing", "games_count": 9 }
+  ],
+  "genres": [
+    { "id": 1, "name": "Action", "slug": "action", "games_count": 1000 },
+    { "id": 2, "name": "Adventure", "slug": "adventure", "games_count": 800 }
+  ],
+  "esrb_rating": null,
+  "metacritic": 88
+}
