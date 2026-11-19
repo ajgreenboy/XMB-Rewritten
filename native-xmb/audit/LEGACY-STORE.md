@@ -39,10 +39,12 @@ page's Download action hands off to `openGameSources` unchanged; none of those f
 
 ## Fidelity limits (do not claim more than this)
 
-- **Colours and geometry are authored approximations, not measured captures.** The navy palette, the cyan
-  PS3 streak (a soft radial glow) and every rectangle in `View::drawLegacySurface` follow the period
-  references' region descriptions; this model cannot inspect the rasters and no hex/pixel metadata is
-  recoverable from them. They are not pixel-perfect claims.
+- **The wave is firmware-derived but the crest is an interpretation.** The wave's colour (`bk_color`
+  HSV), glow (`glow_col`/`glow_intensity`) and the five `bk_curvp` control points are read at run time
+  from `store.qrc` `/datacom/store.mnu`; the 2D QPainter crest is an interpretation of the 3D ribbon
+  (and the 4.93 material may not match the 2008 version). Every other rectangle and colour in
+  `View::drawLegacySurface` is an authored approximation against the period references, not a measured
+  capture.
 - **The D-pad cursor is a native choice.** No captured frame traces the 2008 store's 2D cursor, so the moves
   in `Shell::legacyStoreMove` are a clean bounded 2D cursor over the documented regions (Search ⇄ 5-column
   grid), not firmware-traced.
@@ -157,3 +159,37 @@ its bounded rect (x147..191, blue body, not the white wordmark), and the mode-sp
 left panel + coloured grid for the catalogue, dark inset + cover for the detail). These are
 authored-approximation targets with explicit tolerances, not pixel-perfect claims; `geometry.json`/
 `geometry.md` land next to the captures at `C:\dev\out\legacy-store-visual-polish\`.
+
+## Wave material from the firmware (2026-11-19) — `store.qrc` `/datacom/store.mnu`
+
+The wave is no longer a hardcoded cyan streak. `View::drawLegacySurface` now reads the store
+background's material from the firmware's own `vsh/resource/qgl/store.qrc` entry `/datacom/store.mnu`
+through the shared `Materials` reader (`sceneMaterials` / `Materials::mnu`, `src/store_wave.{h,cpp}`):
+
+- **`bk_curvp_0..4`** — five normalized control points (the ribbon's profile: a trough that rises
+  steeply to a level crest). The 2D crest is a smooth Catmull-Rom arch through these five points,
+  folded about the band centre so the monotonic profile reads as a symmetric arch peaking in the upper
+  middle. **This is an interpretation of the 3D ribbon, not a shader-equivalent reconstruction** — the
+  profile is the ribbon's cross-section; the on-screen arch is the same curve seen in perspective. The
+  fold that reconstructs the far side is a fit, not a firmware fact.
+- **`bk_color_h/s/v`** — the wave's HSV body tint, converted to RGB for the crest's blue body stroke.
+- **`glow_col_r/g/b`** and **`glow_intensity`** — the crest's cyan glow colour and its strength (the
+  strength maps to the glow's alpha).
+
+The material is read once on the first legacy-store frame and cached (`View::legacyStoreWave_`); later
+frames reuse the struct. When `store.qrc` is absent (or `/datacom/store.mnu` is missing/incomplete) the
+struct is `!present` and the previous authored cyan approximation is kept. No Sony logo or image is
+hardcoded and no firmware asset is bundled.
+
+**Caveat:** this is the **4.93** `store.qrc`. The 2008 period reference is firmware v2.30-era, so the
+4.93 material values (notably `glow_intensity: 0.216`, a dim glow against the reference's bright crest)
+may not be the exact 2008 values. The orientation — a bright cyan crest crossing the upper middle as an
+arch (x300..716 of the 1024 reference), not a straight horizontal line — is a fit to
+`2008-04-03_us-store-detail-preview_flickr-2386461216.jpg`. The crest's shape uses the firmware's
+control points, but the mapping to screen space is interpretive; where the material mapping is
+uncertain the code and this note say so rather than overclaiming the shape's basis.
+
+Tests: `xmb-store-wave-tests` (deterministic, firmware-free) covers the MNU extraction, the HSV→RGB
+conversion and the crest geometry (curved arch, apex in the upper middle). The geometry gate's wave
+checks assert the apex band is bright cyan, more cyan than the old upper-left spot, and that the bright
+crest core spans a vertical range (an arch, not a straight line).

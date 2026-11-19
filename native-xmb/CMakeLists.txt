@@ -17,6 +17,7 @@ qt_add_executable(re-ps3-native
     src/raf_render.cpp src/raf_render.h
     src/vsmx_eval.cpp src/vsmx_eval.h
     src/rco_objects.cpp src/rco_objects.h
+    src/store_wave.cpp src/store_wave.h
     src/osk_layout.cpp src/osk_layout.h
     src/xmbml_view.cpp src/xmbml_view.h
     src/preferences.cpp src/preferences.h
@@ -126,6 +127,15 @@ if(XMB_VIDEO_PANEL_BUILD_TESTS)
     target_include_directories(xmb-video-panel-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
     if(MSVC)
         target_compile_options(xmb-video-panel-tests PRIVATE /W4 /permissive- /utf-8)
+    endif()
+endif()
+option(XMB_STORE_WAVE_BUILD_TESTS "Build the legacy Store wave material (MNU extraction, HSV, crest geometry) tests" OFF)
+if(XMB_STORE_WAVE_BUILD_TESTS)
+    qt_add_executable(xmb-store-wave-tests tests/store_wave_tests.cpp src/store_wave.cpp src/store_wave.h)
+    target_include_directories(xmb-store-wave-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(xmb-store-wave-tests PRIVATE Qt6::Core Qt6::Gui)
+    if(MSVC)
+        target_compile_options(xmb-store-wave-tests PRIVATE /W4 /permissive- /utf-8)
     endif()
 endif()
 option(XMB_FILE_OPS_BUILD_TESTS "Build the Delete and Copy refusal tests" OFF)

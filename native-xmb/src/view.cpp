@@ -2607,11 +2607,24 @@ bool View::modalMessagePage() const {
 // = 0.7333, within 0.002 of the fitted gain). DIALOGS-FIRMWARE 13.7 item 1; the offline reference-gain test
 // (work/msgview: the frame with this gain applied) takes the back-hint crop 16.71 -> 19.40 dB.
 constexpr int kMessagePageDimAlpha=68;
+const storewave::Params& View::legacyStoreWave() {
+    // Read the firmware's datacom/store.mnu once and cache it. Materials::mnu() is itself cached per
+    // (archive, path) and the shared reader is per-process, so this is the one parse for the life of the
+    // process; later frames take the cached struct. A tree without vsh/resource/qgl/store.qrc returns
+    // !present (Materials logs it) and drawLegacySurface falls back to the authored approximation.
+    if(!legacyStoreWaveParsed_) {
+        legacyStoreWaveParsed_ = true;
+        Materials& materials = sceneMaterials(assets_);
+        legacyStoreWave_ = storewave::paramsFromMnu(materials.mnu(QStringLiteral("store"), QStringLiteral("/datacom/store.mnu")));
+    }
+    return legacyStoreWave_;
+}
 void View::drawLegacySurface(QPainter& p) {
     // The GEN 2 (2008-2012) PlayStation Store catalogue/detail, laid out against the 2008 period references
     // (legacy-store-reference/period, 1024x576 scaled x1.875 to this 1920x1080 canvas). This model cannot
     // inspect the rasters, so the layout follows the vision-capable orchestrator's region descriptions; the
-    // navy palette, the cyan streak and every exact rectangle are authored approximations, not measured.
+    // navy palette and every exact rectangle are authored approximations, not measured. The wave's colour and
+    // shape come from the firmware's datacom/store.mnu (see store_wave.h), interpreted as a curved crest.
     auto text=[&](const QRectF& r,const QString& value,int size,QColor colour,int flags=Qt::AlignLeft|Qt::AlignVCenter){
         // shadow=false: this surface is a flat store UI, not the XMB's white-on-wave labels, so the firmware
         // drop-shadow (offset 4px, dark) reads as doubled text on the light silver footer.
@@ -2640,24 +2653,56 @@ void View::drawLegacySurface(QPainter& p) {
     games.reserve(shell_.entries().size());
     for(const auto& e:shell_.entries())if(e.action==Action::GameSearchResult)games.push_back(&e);
 
-    // Dark navy full-bleed ground + the luminous cyan PS3 wave (authored approximation: a bright
-    // horizontal cyan streak crossing the upper centre with a soft glow; the exact flowing wave art
-    // is proprietary and is not reproduced without its asset).
+    // Dark navy full-bleed ground.
     QLinearGradient bg(0,0,0,1080);bg.setColorAt(0,QColor(12,24,48));bg.setColorAt(.55,QColor(8,16,34));bg.setColorAt(1,QColor(4,9,20));
     p.fillRect(QRectF(0,0,1920,1080),bg);
-    // Upper-centre cyan wave (reference x~600..1430, y~0..250): a soft glow on the wave's core plus a
-    // bright horizontal streak with vertical falloff, so it crosses the upper centre instead of the
-    // previous upper-left orb.
-    QRadialGradient glow(1010,110,700);
-    glow.setColorAt(0,QColor(0,215,255,120));glow.setColorAt(.5,QColor(0,175,225,35));glow.setColorAt(1,QColor(0,150,205,0));
-    p.fillRect(QRectF(0,0,1920,1080),glow);
-    QLinearGradient streak(0,0,0,250);
-    streak.setColorAt(0,QColor(0,210,255,0));
-    streak.setColorAt(.42,QColor(0,218,255,55));
-    streak.setColorAt(.5,QColor(0,224,255,165));
-    streak.setColorAt(.58,QColor(0,218,255,55));
-    streak.setColorAt(1,QColor(0,210,255,0));
-    p.fillRect(QRectF(0,0,1920,250),streak);
+    // The luminous cyan PS3 wave. Its material is read from the firmware's datacom/store.mnu (store_wave.h):
+    // the five bk_curvp control points shape the crest, bk_color (HSV) is the wave's body tint and
+    // glow_col / glow_intensity drive the crest's glow. The curved crest is an interpretation of the 3D
+    // ribbon, not a shader-equivalent reconstruction, and the orientation is a fit to the 2008 reference's
+    // bright cyan crest (upper middle, an arch, not a straight line). When the store.qrc is absent the
+    // authored approximation below is kept.
+    const storewave::Params& wave = legacyStoreWave();
+    if(wave.present) {
+        const QColor body = storewave::hsvToRgb(wave.colorH, wave.colorS, wave.colorV);
+        const QColor glowCol = QColor::fromRgbF(std::clamp(wave.glowR,0.,1.), std::clamp(wave.glowG,0.,1.),
+                                                std::clamp(wave.glowB,0.,1.), 1.0);
+        const double intensity = std::clamp(wave.glowIntensity,0.,1.);
+        const QRectF box = storewave::crestBox();
+        const double apexX = 0.5*(box.left()+box.right());
+        const double apexY = box.top();
+        // Soft glow: glow_col at glow_intensity, centred on the crest's apex.
+        QRadialGradient glow(apexX,apexY,620.);
+        glow.setColorAt(0,  QColor(glowCol.red(),glowCol.green(),glowCol.blue(),int(255.*intensity)));
+        glow.setColorAt(.5, QColor(glowCol.red(),glowCol.green(),glowCol.blue(),int(255.*intensity*.45)));
+        glow.setColorAt(1,  QColor(glowCol.red(),glowCol.green(),glowCol.blue(),0));
+        p.fillRect(QRectF(0,0,1920,1080),glow);
+        // The crest: the wave's blue body (bk_color) under the bright cyan edge (glow_col).
+        const QPainterPath crest = storewave::crestPath(wave, box);
+        p.save();
+        QPen bodyPen(body,30);bodyPen.setCapStyle(Qt::RoundCap);
+        bodyPen.setColor(QColor(body.red(),body.green(),body.blue(),95));
+        p.setPen(bodyPen);p.drawPath(crest);
+        QPen midPen(glowCol,14);midPen.setCapStyle(Qt::RoundCap);
+        midPen.setColor(QColor(glowCol.red(),glowCol.green(),glowCol.blue(),150));
+        p.setPen(midPen);p.drawPath(crest);
+        QPen corePen(glowCol,4);corePen.setCapStyle(Qt::RoundCap);
+        corePen.setColor(QColor(glowCol.red(),glowCol.green(),glowCol.blue(),240));
+        p.setPen(corePen);p.drawPath(crest);
+        p.restore();
+    } else {
+        // Authored approximation (no store.qrc): a soft glow plus a horizontal streak with vertical falloff.
+        QRadialGradient glow(1010,110,700);
+        glow.setColorAt(0,QColor(0,215,255,120));glow.setColorAt(.5,QColor(0,175,225,35));glow.setColorAt(1,QColor(0,150,205,0));
+        p.fillRect(QRectF(0,0,1920,1080),glow);
+        QLinearGradient streak(0,0,0,250);
+        streak.setColorAt(0,QColor(0,210,255,0));
+        streak.setColorAt(.42,QColor(0,218,255,55));
+        streak.setColorAt(.5,QColor(0,224,255,165));
+        streak.setColorAt(.58,QColor(0,218,255,55));
+        streak.setColorAt(1,QColor(0,210,255,0));
+        p.fillRect(QRectF(0,0,1920,250),streak);
+    }
 
     // Header: the store logo (bag glyph + wordmark) on the left, the control buttons on the right.
     const QImage& bag=assets_.image(QStringLiteral("explore_plugin_full"),QStringLiteral("item_tex_ps_store"));

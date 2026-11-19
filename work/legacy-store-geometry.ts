@@ -127,13 +127,22 @@ for (const exp of EXPECTED) {
   const navyBottom = mean(img, { x0: 800, x1: 900, y0: 535, y1: 539 });
   record(`${exp.file} navy bar reaches frame edge`, luma(navyBottom) < 45, `RGB ${navyBottom.join(",")} luma ${luma(navyBottom).toFixed(0)}`);
 
-  // Cyan wave: the upper centre is blue-dominant (blue >> red) and MORE cyan than the old upper-left
-  // orb spot, which is what proves the wave moved off the corner onto the centre.
-  const wc = mean(img, { x0: 460, x1: 550, y0: 40, y1: 70 });
+  // Cyan wave: the firmware-derived curved crest (store_wave, /datacom/store.mnu). The bright cyan
+  // core (glow_col) crosses the upper middle as an arch. Three assertions: the apex band is bright
+  // cyan, it is more cyan than the old upper-left orb spot, and the crest is an arch (its bright core
+  // spans a vertical range) rather than a straight horizontal line.
+  const wc = mean(img, { x0: 400, x1: 530, y0: 40, y1: 48 });
   const wl = mean(img, { x0: 30, x1: 100, y0: 40, y1: 70 });
   const cyanC = wc[2] - wc[0], cyanL = wl[2] - wl[0];
-  record(`${exp.file} wave centre is cyan`, cyanC >= 120, `RGB ${wc.join(",")} B\u2212R=${cyanC}`);
+  record(`${exp.file} wave crest is bright cyan`, cyanC >= 150, `RGB ${wc.join(",")} B\u2212R=${cyanC}`);
   record(`${exp.file} wave moved to centre`, cyanC > cyanL + 20, `centre B\u2212R ${cyanC} > old-left ${cyanL}+20`);
+  let coreMin = Infinity, coreMax = -Infinity;
+  for (let y = 30; y < 160; y++) for (let x = 280; x < 680; x++) {
+    const c = px(img, x, y);
+    if (c[2] > 190 && c[1] > 170) { if (y < coreMin) coreMin = y; if (y > coreMax) coreMax = y; }
+  }
+  record(`${exp.file} wave crest is curved (arch)`, coreMin !== Infinity && coreMax - coreMin >= 40,
+    `bright crest core y ${coreMin}..${coreMax} (range ${coreMax - coreMin})`);
 
   // Bag glyph within its bounded rect (the white wordmark at x>=195 is outside it).
   const bagCount = countBag(img);
@@ -154,7 +163,8 @@ for (const exp of EXPECTED) {
 
   cap.footerSilver = { top: silverTop, bottom: silverBottom };
   cap.navy = navy; cap.navyBottom = navyBottom;
-  cap.waveCentre = wc; cap.waveOldLeft = wl; cap.waveCentreCyan = cyanC; cap.waveOldLeftCyan = cyanL;
+  cap.waveApex = wc; cap.waveOldLeft = wl; cap.waveApexCyan = cyanC; cap.waveOldLeftCyan = cyanL;
+  cap.waveCoreYRange = [coreMin, coreMax];
   cap.bagBluePixels = bagCount;
   results[exp.file] = cap;
   out();
