@@ -53,6 +53,12 @@ bool fetchJsonArray(const QUrl& url, QJsonArray* out, QString* error) {
     if(!document.isArray()) { if(error)*error=QStringLiteral("Hydra catalogue returned an unexpected response"); return false; }
     if(out)*out=document.array(); return true;
 }
+// The catalogue's dedup key. It must agree with the shell's gameSearchKey() so a game merged here
+// matches the imported/online merge in runGameSearch(): Unicode-normalise, collapse whitespace, then
+// case-fold. Editions that differ in this key stay apart; identical names merge across sources.
+QString catalogNameKey(const QString& name) {
+    return name.normalized(QString::NormalizationForm_KC).simplified().toCaseFolded();
+}
 bool isPreinstalled(const HydraSource& source) {
     const QString desc=source.description.toLower();
     const QString title=source.title.toLower();
@@ -65,36 +71,89 @@ bool isPreinstalled(const HydraSource& source) {
     return desc.contains(QStringLiteral("pre-installed")) || desc.contains(QStringLiteral("preinstalled")) ||
            title.contains(QStringLiteral("portable")) || (direct && !torrent);
 }
-bool isPreinstalledFor(const QString& sourceName,const QVector<HydraSource>& sources) {
-    for(const auto& source:sources)if(source.title==sourceName)return isPreinstalled(source);
-    return false;
 }
+
+SourcesPage parseSourcesPage(const QJsonObject& root) {
+    SourcesPage page;
+    page.total=root.value(QStringLiteral("total")).toInt();
+    page.limit=root.value(QStringLiteral("limit")).toInt();
+    for(const auto& value:root.value(QStringLiteral("sources")).toArray()) {
+        const QJsonObject object=value.toObject();
+        HydraSource source;
+        source.title=object.value(QStringLiteral("title")).toString();
+        source.url=QUrl(object.value(QStringLiteral("url")).toString());
+        source.gamesCount=object.value(QStringLiteral("gamesCount")).toInt();
+        source.description=object.value(QStringLiteral("description")).toString();
+        source.installs=object.value(QStringLiteral("stats")).toObject().value(QStringLiteral("installs")).toInt();
+        for(const auto& status:object.value(QStringLiteral("status")).toArray())source.status.append(status.toString());
+        for(const auto& option:object.value(QStringLiteral("topDownloadOption")).toArray())
+            source.topDownloadOption.append(option.toObject().value(QStringLiteral("name")).toString());
+        page.sources.append(source);
+    }
+    return page;
+}
+
+bool hasMoreSources(int pageNumber, int accumulated, const SourcesPage& page) {
+    return page.limit>0 && accumulated<page.total && !page.sources.isEmpty() && pageNumber<100;
+}
+
+QVector<GameResult> buildGameCatalog(const QVector<GameRecord>& records, const QVector<HydraSource>& sources) {
+    QHash<QString,int> installs;
+    for(const auto& source:sources)installs.insert(source.title,source.installs);
+    QVector<GameResult> results;
+    QHash<QString,int> byName;
+    for(const auto& record:records) {
+        const QString name=record.name.trimmed();
+        const QString key=catalogNameKey(name);
+        if(key.isEmpty())continue;
+        GameSourceOption option;
+        option.source=record.source;
+        option.sourceUrl=record.sourceUrl;
+        option.fileSize=record.fileSize;
+        option.sourceStatus=record.sourceStatus;
+        option.releaseTitle=record.originalTitle;
+        if(option.releaseTitle.isEmpty())option.releaseTitle=record.title;
+        const auto existing=byName.find(key);
+        if(existing==byName.end()) {
+            GameResult result;
+            result.name=name;
+            result.title=record.title;
+            result.originalTitle=record.originalTitle;
+            result.options.append(option);
+            byName.insert(key,results.size());
+            results.append(result);
+        } else {
+            // One option per source: identify a source by its release-index URL (unique), falling back
+            // to its display name when the URL is absent.
+            auto& dst=results[existing.value()];
+            const QString identity=option.sourceUrl.isEmpty()?option.source:option.sourceUrl;
+            bool have=false;
+            for(const auto& old:dst.options) {
+                const QString oldIdentity=old.sourceUrl.isEmpty()?old.source:old.sourceUrl;
+                if(!identity.isEmpty() && identity==oldIdentity){have=true;break;}
+            }
+            if(!have)dst.options.append(option);
+        }
+    }
+    std::sort(results.begin(),results.end(),[&installs](const GameResult& a,const GameResult& b){
+        int pa=0,pb=0;
+        for(const auto& o:a.options)pa=std::max(pa,installs.value(o.source,0));
+        for(const auto& o:b.options)pb=std::max(pb,installs.value(o.source,0));
+        return pa>pb;
+    });
+    return results;
 }
 bool HydraLibrary::listSources(QVector<HydraSource>* out, QString* error) const {
     if(out)out->clear();
     QVector<HydraSource> all;
-    int page=1;
+    int pageNumber=1;
     for(;;) {
         QJsonObject root;
-        if(!fetchJson(QUrl(QStringLiteral("https://api.hydralibrary.com/sources?page=%1&limit=100").arg(page)),&root,error))return false;
-        const QJsonArray sources=root.value(QStringLiteral("sources")).toArray();
-        for(const auto& value:sources) {
-            const QJsonObject object=value.toObject();
-            HydraSource source;
-            source.title=object.value(QStringLiteral("title")).toString();
-            source.url=QUrl(object.value(QStringLiteral("url")).toString());
-            source.gamesCount=object.value(QStringLiteral("gamesCount")).toInt();
-            source.description=object.value(QStringLiteral("description")).toString();
-            source.installs=object.value(QStringLiteral("stats")).toObject().value(QStringLiteral("installs")).toInt();
-            for(const auto& status:object.value(QStringLiteral("status")).toArray())source.status.append(status.toString());
-            for(const auto& option:object.value(QStringLiteral("topDownloadOption")).toArray())
-                source.topDownloadOption.append(option.toObject().value(QStringLiteral("name")).toString());
-            all.append(source);
-        }
-        const int total=root.value(QStringLiteral("total")).toInt();
-        const int limit=root.value(QStringLiteral("limit")).toInt();
-        if(limit<=0 || all.size()>=total || sources.isEmpty())break;
-        if(++page>100)break; // the server controls total; never page forever
+        if(!fetchJson(QUrl(QStringLiteral("https://api.hydralibrary.com/sources?page=%1&limit=100").arg(pageNumber)),&root,error))return false;
+        const SourcesPage page=parseSourcesPage(root);
+        all+=page.sources;
+        if(!hasMoreSources(pageNumber,all.size(),page))break;
+        ++pageNumber;
     }
     if(all.isEmpty()) { if(error)*error=QStringLiteral("Hydra library returned no sources"); return false; }
     if(out)*out=all; return true;
@@ -110,10 +169,8 @@ bool HydraLibrary::searchGames(const QString& query, QVector<GameResult>* out, Q
     if(out)out->clear();
     QVector<HydraSource> sources;
     if(!listSources(&sources,error))return false;
-    QHash<QString,int> installs;
-    for(const auto& source:sources)installs.insert(source.title,source.installs);
-    QVector<GameResult> results;
-    QHash<QString,int> byName;
+    QVector<GameRecord> records;
+    QSet<QString> names;   // distinct game names, so pagination stops at the API's filteredCount
     for(int page=1;page<=5;++page) {
         QJsonObject root;
         const QUrl url(QStringLiteral("https://api.hydralibrary.com/games?q=%1&limit=100&page=%2")
@@ -123,47 +180,27 @@ bool HydraLibrary::searchGames(const QString& query, QVector<GameResult>* out, Q
         if(games.isEmpty())break;
         for(const auto& value:games) {
             const QJsonObject game=value.toObject();
-            const QString sourceName=game.value(QStringLiteral("source")).toString();
-            if(!isPreinstalledFor(sourceName,sources))continue;
-            const QString name=game.value(QStringLiteral("name")).toString();
-            const QString key=name.trimmed().toLower();
+            GameRecord record;
+            record.name=game.value(QStringLiteral("name")).toString();
+            record.title=game.value(QStringLiteral("title")).toString();
+            record.originalTitle=game.value(QStringLiteral("originalTitle")).toString();
+            record.source=game.value(QStringLiteral("source")).toString();
+            record.sourceUrl=game.value(QStringLiteral("sourceUrl")).toString();
+            record.fileSize=game.value(QStringLiteral("fileSize")).toString();
+            record.sourceStatus=game.value(QStringLiteral("sourceStatus")).toString();
+            const QString key=catalogNameKey(record.name);
             if(key.isEmpty())continue;
-            GameSourceOption option;
-            option.source=sourceName;
-            option.sourceUrl=game.value(QStringLiteral("sourceUrl")).toString();
-            option.fileSize=game.value(QStringLiteral("fileSize")).toString();
-            option.sourceStatus=game.value(QStringLiteral("sourceStatus")).toString();
-            option.releaseTitle=game.value(QStringLiteral("originalTitle")).toString();
-            if(option.releaseTitle.isEmpty())option.releaseTitle=game.value(QStringLiteral("title")).toString();
-            const auto existing=byName.find(key);
-            if(existing==byName.end()) {
-                GameResult result;
-                result.name=name;
-                result.title=game.value(QStringLiteral("title")).toString();
-                result.originalTitle=game.value(QStringLiteral("originalTitle")).toString();
-                result.options.append(option);
-                byName.insert(key,results.size());
-                results.append(result);
-            } else {
-                results[existing.value()].options.append(option);
-            }
+            names.insert(key);
+            records.append(record);
         }
         const int filtered=root.value(QStringLiteral("filteredCount")).toInt();
-        if(results.size()>=filtered || results.size()>=500)break;
+        if(names.size()>=filtered || names.size()>=500)break;
     }
-    // Popularity: sort by the most-installed source each game is available from, descending.
-    std::sort(results.begin(),results.end(),[&installs](const GameResult& a,const GameResult& b){
-        int pa=0,pb=0;
-        for(const auto& o:a.options)pa=std::max(pa,installs.value(o.source,0));
-        for(const auto& o:b.options)pb=std::max(pb,installs.value(o.source,0));
-        return pa>pb;
-    });
+    const QVector<GameResult> results=buildGameCatalog(records,sources);
     if(out)*out=results; return true;
 }
 bool HydraLibrary::popularGames(QVector<GameResult>* out, QString* error) const {
     if(out)out->clear();
-    QVector<HydraSource> sources;
-    if(!listSources(&sources,error))return false;
 
     // The Hydra Cloud "hot" catalogue is the real popularity ranking. take=40 keeps the worker's
     // round-trips bounded (one search per title).
@@ -193,7 +230,6 @@ bool HydraLibrary::popularGames(QVector<GameResult>* out, QString* error) const 
         for(const auto& gv:root.value(QStringLiteral("games")).toArray()) {
             const QJsonObject game=gv.toObject();
             const QString sourceName=game.value(QStringLiteral("source")).toString();
-            if(!isPreinstalledFor(sourceName,sources))continue;
             if(seenSource.contains(sourceName))continue;
             seenSource.insert(sourceName,true);
             GameSourceOption option;

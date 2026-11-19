@@ -1,5 +1,6 @@
 #include "release_index.h"
 #include "release_source.h"
+#include "hydra_library.h"
 #include "real_debrid.h"
 #include "preferences.h"
 #include "release_job_state.h"
@@ -260,6 +261,91 @@ int main(int argc,char** argv) {
         }
 #endif
         QDir(games).removeRecursively();
+    }
+    // JSON game-source catalogue semantics (hydra_library): every source is included (direct and
+    // torrent), a game is listed once per distinct name, each source contributes one option carrying
+    // its display name and download size, and editions that differ in name stay separate.
+    {
+        QVector<HydraSource> sources;
+        HydraSource alpha; alpha.title=QStringLiteral("Alpha"); alpha.installs=100;
+        HydraSource beta;  beta.title =QStringLiteral("Beta");  beta.installs =10;
+        sources.append(alpha); sources.append(beta);
+        const auto record=[&](const QString& name,const QString& source,const QString& url,
+                              const QString& size,const QString& originalTitle) {
+            GameRecord r; r.name=name; r.source=source; r.sourceUrl=url; r.fileSize=size;
+            r.originalTitle=originalTitle; r.title=originalTitle.isEmpty()?name:originalTitle;
+            return r;
+        };
+        QVector<GameRecord> records;
+        records.append(record(QStringLiteral("Game One"),QStringLiteral("Beta"),QStringLiteral("https://beta.invalid/f.json"),QStringLiteral("9 GB"),QStringLiteral("Game One")));
+        records.append(record(QStringLiteral("Game One"),QStringLiteral("Alpha"),QStringLiteral("https://alpha.invalid/f.json"),QStringLiteral("8 GB"),QStringLiteral("Game One")));
+        records.append(record(QStringLiteral("Game One"),QStringLiteral("Alpha"),QStringLiteral("https://alpha.invalid/f.json"),QStringLiteral("8 GB"),QStringLiteral("Game One"))); // duplicate
+        records.append(record(QStringLiteral("Game One — Deluxe Edition"),QStringLiteral("Alpha"),QStringLiteral("https://alpha.invalid/f.json"),QStringLiteral("10 GB"),QStringLiteral("Game One — Deluxe Edition")));
+        records.append(record(QString(),QStringLiteral("Alpha"),QStringLiteral("https://alpha.invalid/f.json"),QStringLiteral("1 GB"),QString())); // empty name: dropped
+        const auto catalog=buildGameCatalog(records,sources);
+        check(catalog.size()==2,"catalogue merges duplicates by name and keeps editions apart");
+        const GameResult* base=nullptr; const GameResult* deluxe=nullptr;
+        for(const auto& game:catalog) {
+            if(game.name==QStringLiteral("Game One"))base=&game;
+            else if(game.name==QStringLiteral("Game One — Deluxe Edition"))deluxe=&game;
+        }
+        check(base!=nullptr && deluxe!=nullptr,"base and deluxe editions both listed once");
+        if(base) {
+            check(base->options.size()==2,"duplicate same-source record deduplicated to one option");
+            bool hasAlpha=false,hasBeta=false;
+            for(const auto& option:base->options) {
+                if(option.source==QStringLiteral("Alpha") && option.fileSize==QStringLiteral("8 GB"))hasAlpha=true;
+                if(option.source==QStringLiteral("Beta")  && option.fileSize==QStringLiteral("9 GB"))hasBeta=true;
+            }
+            check(hasAlpha && hasBeta,"each option carries its source name and download size");
+            check(base->options.first().source==QStringLiteral("Beta"),"options preserve first-seen order");
+        }
+        if(deluxe) {
+            check(deluxe->options.size()==1 && deluxe->options.first().fileSize==QStringLiteral("10 GB"),
+                  "edition keeps its own source option and size");
+        }
+    }
+    {
+        // Unknown/empty size passes through untouched (the shell renders "Size unknown"); a record
+        // whose sourceUrl is absent still deduplicates by source name.
+        QVector<GameRecord> records;
+        GameRecord r; r.name=QStringLiteral("Sized"); r.source=QStringLiteral("Host"); r.fileSize=QString(); r.title=QStringLiteral("Sized");
+        records.append(r);
+        GameRecord dup=r; dup.fileSize=QStringLiteral(""); records.append(dup);
+        const auto catalog=buildGameCatalog(records,{});
+        check(catalog.size()==1 && catalog.first().options.size()==1 && catalog.first().options.first().fileSize.isEmpty(),
+              "empty size is preserved and same-source (no url) duplicates collapse");
+    }
+    {
+        // Sources pagination: parse one page and decide whether to keep fetching, so no source is
+        // silently dropped past page one.
+        const auto page1=parseSourcesPage(QJsonDocument::fromJson(
+            R"({"total":3,"limit":2,"sources":[{"title":"One","url":"https://one.invalid/f.json","stats":{"installs":1}},{"title":"Two","url":"https://two.invalid/f.json","stats":{"installs":2}}]})").object());
+        check(page1.sources.size()==2 && page1.total==3 && page1.limit==2,"sources page parse");
+        check(page1.sources[0].title==QStringLiteral("One") && page1.sources[0].installs==1,"source title and installs parsed");
+        check(hasMoreSources(1,page1.sources.size(),page1),"more sources after a partial page");
+        const auto page2=parseSourcesPage(QJsonDocument::fromJson(
+            R"({"total":3,"limit":2,"sources":[{"title":"Three","url":"https://three.invalid/f.json","stats":{"installs":3}}]})").object());
+        check(!hasMoreSources(2,3,page2),"pagination stops once accumulated reaches total");
+        const auto emptyPage=parseSourcesPage(QJsonDocument::fromJson(R"({"total":5,"limit":2,"sources":[]})").object());
+        check(!hasMoreSources(1,0,emptyPage),"an empty page stops pagination");
+        const auto zeroLimit=parseSourcesPage(QJsonDocument::fromJson(R"({"total":5,"limit":0,"sources":[{"title":"X","url":"https://x.invalid/f.json"}]})").object());
+        check(!hasMoreSources(1,1,zeroLimit),"a zero limit stops pagination");
+        auto capped=parseSourcesPage(QJsonDocument::fromJson(R"({"total":200,"limit":100,"sources":[]})").object());
+        capped.sources.append(HydraSource{});
+        check(!hasMoreSources(100,100,capped),"pagination is capped at 100 pages");
+    }
+    {
+        // Malformed source JSON: a null document and unparseable bytes report an error; an empty
+        // object yields no releases instead of fabricating one.
+        QString catalogError;
+        check(parseReleaseIndex(QJsonDocument(),&catalogError).isEmpty() && !catalogError.isEmpty(),"null release index reports an error");
+        const auto malformed=QJsonDocument::fromJson(QByteArrayLiteral("{not json"));
+        check(malformed.isNull(),"unparseable JSON is null");
+        catalogError.clear();
+        check(parseReleaseIndex(malformed,&catalogError).isEmpty() && catalogError==QStringLiteral("Invalid release index JSON"),
+              "malformed JSON reports 'Invalid release index JSON'");
+        check(parseReleaseIndex(QJsonDocument::fromJson(QByteArrayLiteral("{}"))).isEmpty(),"empty object yields no releases");
     }
     std::printf("Release backend: %d checks, %d failures\n",checks,failures);return failures?2:0;
 }
