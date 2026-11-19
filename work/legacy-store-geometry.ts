@@ -1,157 +1,173 @@
-// legacy-store-geometry.ts - analytical pixel-geometry check for the legacy PlayStation Store
-// visual-polish pass. Decodes the offline fixture captures and measures the regions the
-// vision-capable orchestrator flagged against the 2008 period references, so the renderer's
-// authored geometry is verified against a target rather than eyeballed.
+// legacy-store-geometry.ts - analytical pixel-geometry GATE for the legacy PlayStation Store
+// visual-polish pass. It decodes the offline fixture captures and ASSERTS the regions the
+// vision-capable orchestrator flagged against the 2008 period references. It exits nonzero when a
+// capture is missing, its sidecar disagrees with the expected page state, or any geometry/colour
+// assertion fails, so `work/legacy-store-capture.ps1` can treat it as a real gate.
 //
 //   bun work/legacy-store-geometry.ts [capture-dir]
 //
-// Capture dir defaults to C:\dev\out\legacy-store-visual-polish. The captures are 960x540
-// windows of the 1920x1080 logical canvas, i.e. capture = canvas / 2. Targets below are in
-// capture space (the reference 1024x576 scaled x0.9375 to 960x540, the space the orchestrator
-// measured in).
-import { readFileSync, existsSync, writeFileSync, readdirSync } from "node:fs";
+// Capture dir defaults to C:\dev\out\legacy-store-visual-polish. The captures are 960x540 windows
+// of the 1920x1080 logical canvas (capture = canvas / 2). Targets below are authored-approximation
+// targets in that capture space (the reference 1024x576 scaled x0.9375), NOT pixel-perfect claims:
+// every check carries an explicit tolerance and the wording below is deliberate about that.
+import { readFileSync, existsSync, writeFileSync } from "node:fs";
 import { decodePng, type PngImage } from "./ab-compare.ts";
 
 const dir = process.argv[2] ?? "C:\\dev\\out\\legacy-store-visual-polish";
 
 type Rect = { x0: number; x1: number; y0: number; y1: number };
 
-// Target geometry in capture space (960x540), from the orchestrator's measurements.
-const TARGET = {
-  headerLogo: { x0: 147, x1: 414, y0: 38, y1: 75 } as Rect,
-  storeTop: { x0: 147, y: 83 },
-  wave: { x0: 300, x1: 715, y0: 0, y1: 125 } as Rect,
-  footerSilver: { y0: 465, y1: 507 },
-  footerNavy: { y0: 507, y1: 540 },
-  leftPanel: { x0: 147, x1: 473, y0: 115, y1: 430 } as Rect,
-  grid: { x0: 476, x1: 806 },
-  detailInset: { x0: 145, x1: 816, y0: 115, y1: 431 } as Rect,
-};
+// The four fixtures this pass owns, with the page state each `grab=` sidecar must report and the
+// content mode its frame draws (catalogue = featured panel + 5-column grid; detail = dark inset).
+const EXPECTED = [
+  { file: "01-store-selected.png", pageKind: "legacyStore", selection: 0, focusedRow: "game:result:0", mode: "catalogue" },
+  { file: "02-store-grid.png", pageKind: "legacyStore", selection: 1, focusedRow: "game:result:1", mode: "catalogue" },
+  { file: "03-detail.png", pageKind: "legacyDetail", selection: 0, focusedRow: "game:detail", mode: "detail" },
+  { file: "04-search-focus.png", pageKind: "legacyStore", selection: 1, focusedRow: "legacy:search", mode: "catalogue" },
+] as const;
+
+// Authored geometry targets (capture space). Tolerances are deliberate: the renderer geometry is
+// authored against the period references, not traced, so these bounds are "close to the reference",
+// never "pixel-perfect".
+const FOOTER_SILVER = { y0: 465, y1: 507 };   // silver action strip
+const FOOTER_TOL = 5;                          // px either side
+const BAG = { x0: 147, x1: 191, y0: 38, y1: 82 };  // the firmware bag glyph's drawn rect
 
 function px(img: PngImage, x: number, y: number): [number, number, number, number] {
   const i = (Math.floor(y) * img.w + Math.floor(x)) * 4;
   return [img.rgba[i], img.rgba[i + 1], img.rgba[i + 2], img.rgba[i + 3]];
 }
-function luma(c: [number, number, number, number]): number {
+function luma(c: readonly [number, number, number, number?]): number {
   return 0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2];
 }
-// Mean colour of a rect (downsampled stride for speed).
 function mean(img: PngImage, r: Rect): [number, number, number] {
-  let rsum = 0, gsum = 0, bsum = 0, n = 0;
-  for (let y = Math.max(0, Math.floor(r.y0)); y < Math.min(img.h, Math.ceil(r.y1)); y += 2)
-    for (let x = Math.max(0, Math.floor(r.x0)); x < Math.min(img.w, Math.ceil(r.x1)); x += 2) {
-      const c = px(img, x, y); rsum += c[0]; gsum += c[1]; bsum += c[2]; n++;
+  let rs = 0, gs = 0, bs = 0, n = 0;
+  for (let y = Math.max(0, Math.floor(r.y0)); y < Math.min(img.h, Math.ceil(r.y1)); y++)
+    for (let x = Math.max(0, Math.floor(r.x0)); x < Math.min(img.w, Math.ceil(r.x1)); x++) {
+      const c = px(img, x, y); rs += c[0]; gs += c[1]; bs += c[2]; n++;
     }
-  return n ? [Math.round(rsum / n), Math.round(gsum / n), Math.round(bsum / n)] : [0, 0, 0];
+  return n ? [Math.round(rs / n), Math.round(gs / n), Math.round(bs / n)] : [0, 0, 0];
 }
-// Scan a column from the bottom and return the y of the first luma crossing of `thresh` (bottom->up).
-function scanUp(img: PngImage, x: number, thresh: number, fromY: number, toY: number): number {
-  for (let y = fromY; y >= toY; y--) if (luma(px(img, x, y)) > thresh) return y;
-  return -1;
+// The footer is full-width, so a single column away from the panels/grid (x=900) separates the
+// three bands cleanly: dark navy ground -> bright silver strip -> dark navy policy bar.
+function detectFooter(img: PngImage): { silverTop: number; silverBottom: number } {
+  const x = 900;
+  let silverBottom = -1;
+  for (let y = 539; y >= 400; y--) if (luma(px(img, x, y)) > 90) { silverBottom = y; break; }
+  if (silverBottom < 0) return { silverTop: -1, silverBottom: -1 };
+  let silverTop = -1;
+  for (let y = silverBottom; y >= 400; y--) if (luma(px(img, x, y)) < 70) { silverTop = y + 1; break; }
+  return { silverTop, silverBottom };
 }
-// Leftmost bright (non-cyan) pixel in a horizontal band: the logo's left edge. The wordmark is
-// white; the cyan wave is excluded by requiring red >= blue (cyan has blue >> red).
-function leftmostBright(img: PngImage, y0: number, y1: number): number {
-  for (let x = 0; x < img.w; x++)
-    for (let y = y0; y <= y1; y += 2) {
-      const c = px(img, x, y);
-      if (c[0] > 150 && c[1] > 150 && c[2] > 150 && c[0] >= c[2]) return x;
-    }
-  return -1;
+// The bag glyph (a blue "steel blue" body) is detected ONLY in its bounded drawn rect, so the white
+// wordmark to its right and the cyan wave behind it cannot be mistaken for the glyph.
+function countBag(img: PngImage): number {
+  let n = 0;
+  for (let y = BAG.y0; y < BAG.y1; y++) for (let x = BAG.x0; x < BAG.x1; x++) {
+    const c = px(img, x, y);
+    if (c[0] >= 35 && c[1] >= 80 && c[2] >= 110 && c[2] > c[0]) n++;
+  }
+  return n;
 }
 
-function analyze(): void {
-  const files = readdirSync(dir).filter(f => /\.png$/.test(f) && !/\.json$/.test(f)).sort();
-  const results: Record<string, unknown> = {};
-  const rows: string[] = [];
-  const line = (s = "") => { rows.push(s); };
+let pass = 0, fail = 0;
+const results: Record<string, unknown> = {};
+const report: string[] = [];
+const out = (s = "") => { report.push(s); };
+const record = (name: string, ok: boolean, detail: string) => {
+  if (ok) { pass++; out(`PASS  ${name}  ${detail}`); }
+  else { fail++; out(`FAIL  ${name}  ${detail}`); console.error(`FAIL  ${name}  ${detail}`); }
+};
 
-  line("# Legacy store visual-polish — analytical geometry");
-  line();
-  line(`Capture dir: \`${dir}\`  (capture space 960x540 = canvas 1920x1080 / 2)`);
-  line();
+out("# Legacy store visual-polish — geometry gate");
+out();
+out(`Capture dir: \`${dir}\`  (capture space 960x540 = canvas 1920x1080 / 2)`);
+out();
+out("Checks below are authored-approximation targets with explicit tolerances, not pixel-perfect");
+out("claims. The footer silver strip, dark navy policy bar, upper-centre cyan wave and the bag glyph");
+out("are each asserted; a failure exits nonzero so the capture script can fail the run.");
+out();
 
-  for (const f of files) {
-    const path = `${dir}\\${f}`;
-    if (!existsSync(path)) continue;
-    const img = decodePng(path);
-    if (img.w !== 960 || img.h !== 540) { line(`- ${f}: unexpected size ${img.w}x${img.h}, skipped`); continue; }
+for (const exp of EXPECTED) {
+  const png = `${dir}\\${exp.file}`;
+  const json = `${png}.json`;
+  const cap: Record<string, unknown> = {};
 
-    // Footer: scan a column clear of the left panel / grid (x=480) from the bottom.
-    const silverBottom = scanUp(img, 480, 90, 539, 400);   // navy -> silver boundary (navy bar bottom)
-    const silverTop = scanUp(img, 480, 90, silverBottom - 4, 400) > 0
-      ? (() => { for (let y = silverBottom; y >= 400; y--) if (luma(px(img, 480, y)) < 70) return y + 1; return -1; })()
-      : -1;
-    const footerSilver = { y0: silverTop, y1: silverBottom };
-
-    // Header logo left edge in the logo band (y 30..90).
-    const logoLeft = leftmostBright(img, 30, 90);
-
-    // Cyan wave: mean colour upper-centre vs upper-left (the old orb sat upper-left).
-    const waveCentre = mean(img, { x0: 430, x1: 580, y0: 30, y1: 90 });
-    const waveLeft = mean(img, { x0: 100, x1: 250, y0: 30, y1: 90 });
-
-    // Detail / catalogue panels.
-    const leftPanel = mean(img, { x0: 150, x1: 470, y0: 200, y1: 300 });
-    const gridCard = mean(img, { x0: 480, x1: 600, y0: 200, y1: 300 });
-    const footerSilverColour = footerSilver.y0 > 0 ? mean(img, { x0: 400, x1: 560, y0: footerSilver.y0 + 4, y1: footerSilver.y1 - 4 }) : [0, 0, 0];
-    const footerNavyColour = mean(img, { x0: 400, x1: 560, y0: 515, y1: 535 });
-    // The dark navy policy bar must run from the silver bottom to the frame edge (y540).
-    const navyTopColour = mean(img, { x0: 400, x1: 560, y0: 508, y1: 513 });
-    const navyBottomColour = mean(img, { x0: 400, x1: 560, y0: 535, y1: 539 });
-    // Detail inset (dark) vs catalogue blue left panel: sample the same x-band centre.
-    const detailInset = mean(img, { x0: 150, x1: 470, y0: 220, y1: 280 });
-
-    const r = {
-      file: f,
-      size: `${img.w}x${img.h}`,
-      footerSilver,
-      footerNavyTop: navyTopColour,
-      footerNavyBottom: navyBottomColour,
-      logoLeft,
-      waveCentre,
-      waveLeft,
-      leftPanel,
-      detailInset,
-      gridCard,
-      footerSilverColour,
-      footerNavyColour,
-    };
-    results[f] = r;
-    line(`## ${f}`);
-    line();
-    line(`| Measure | Target (px) | Measured |`);
-    line(`|---|---|---|---|`);
-    line(`| Footer silver strip | y ${TARGET.footerSilver.y0}..${TARGET.footerSilver.y1} | y ${footerSilver.y0}..${footerSilver.y1} |`);
-    line(`| Footer navy bar | y ${TARGET.footerNavy.y0}..${TARGET.footerNavy.y1} (to frame edge) | top ${navyTopColour.join(",")}, bottom ${navyBottomColour.join(",")} |`);
-    line(`| Header logo left | x ${TARGET.headerLogo.x0} | x ${logoLeft} |`);
-    line(`| Wave centre RGB | cyan, upper centre | ${waveCentre.join(",")} |`);
-    line(`| Wave left RGB (old orb spot) | dimmer than centre | ${waveLeft.join(",")} |`);
-    line(`| Left panel RGB | blue gradient (catalogue) / dark (detail) | ${leftPanel.join(",")} |`);
-    line(`| Detail inset RGB | dark inset (detail) | ${detailInset.join(",")} |`);
-    line(`| Grid card RGB | coloured cover | ${gridCard.join(",")} |`);
-    line(`| Footer silver RGB | ~RGB(150..215) | ${footerSilverColour.join(",")} |`);
-    line(`| Footer navy RGB | dark navy | ${footerNavyColour.join(",")} |`);
-    line();
+  if (!existsSync(png)) {
+    record(`${exp.file} capture exists`, false, `${png} missing`);
+    results[exp.file] = { missing: true };
+    continue;
+  }
+  if (!existsSync(json)) {
+    record(`${exp.file} sidecar exists`, false, `${json} missing`);
+    results[exp.file] = { missingSidecar: true };
+    continue;
   }
 
-  // Verdict summary.
-  line("## Verdict");
-  line();
-  line("Authored geometry targets (renderer canvas 1920x1080, /2 = capture): header logo bag at x294 "
-    + "(capture x147), wordmark x390, \"Store Top\" x294 y164, cyan wave crossing upper centre (glow "
-    + "centre x1010 y110, streak y0..250), footer silver strip y930..1014 + dark navy policy bar "
-    + "y1014..1080. See the renderer in `View::drawLegacySurface` and the limitations below.");
-  line();
+  let sidecar: any;
+  try { sidecar = JSON.parse(readFileSync(json, "utf8")); }
+  catch (e) { record(`${exp.file} sidecar parses`, false, String(e)); results[exp.file] = { badSidecar: true }; continue; }
 
-  const report = rows.join("\n");
-  writeFileSync(`${dir}\\geometry.md`, report);
-  writeFileSync(`${dir}\\geometry.json`, JSON.stringify({ target: TARGET, captures: results }, null, 2));
-  console.log(report);
-  console.log(`\nWrote ${dir}\\geometry.md and ${dir}\\geometry.json`);
+  record(`${exp.file} pageKind`, sidecar.pageKind === exp.pageKind, `expected ${exp.pageKind}, got ${sidecar.pageKind}`);
+  record(`${exp.file} selection`, sidecar.selection === exp.selection, `expected ${exp.selection}, got ${sidecar.selection}`);
+  record(`${exp.file} focusedRow`, sidecar.focusedRow === exp.focusedRow, `expected ${exp.focusedRow}, got ${sidecar.focusedRow}`);
+
+  let img: PngImage;
+  try { img = decodePng(png); } catch (e) { record(`${exp.file} decode`, false, String(e)); results[exp.file] = { decodeError: true }; continue; }
+  record(`${exp.file} size`, img.w === 960 && img.h === 540, `got ${img.w}x${img.h}`);
+
+  // Footer silver strip bounded around the target, and the dark navy policy bar below it to the edge.
+  const { silverTop, silverBottom } = detectFooter(img);
+  record(`${exp.file} footer silver top`, Math.abs(silverTop - FOOTER_SILVER.y0) <= FOOTER_TOL,
+    `y=${silverTop} (target ${FOOTER_SILVER.y0}\u00B1${FOOTER_TOL})`);
+  record(`${exp.file} footer silver bottom`, Math.abs(silverBottom - FOOTER_SILVER.y1) <= FOOTER_TOL,
+    `y=${silverBottom} (target ${FOOTER_SILVER.y1}\u00B1${FOOTER_TOL})`);
+  const navy = mean(img, { x0: 800, x1: 900, y0: 515, y1: 535 });
+  record(`${exp.file} navy policy bar dark`, luma(navy) < 45, `RGB ${navy.join(",")} luma ${luma(navy).toFixed(0)}`);
+  const navyBottom = mean(img, { x0: 800, x1: 900, y0: 535, y1: 539 });
+  record(`${exp.file} navy bar reaches frame edge`, luma(navyBottom) < 45, `RGB ${navyBottom.join(",")} luma ${luma(navyBottom).toFixed(0)}`);
+
+  // Cyan wave: the upper centre is blue-dominant (blue >> red) and MORE cyan than the old upper-left
+  // orb spot, which is what proves the wave moved off the corner onto the centre.
+  const wc = mean(img, { x0: 460, x1: 550, y0: 40, y1: 70 });
+  const wl = mean(img, { x0: 30, x1: 100, y0: 40, y1: 70 });
+  const cyanC = wc[2] - wc[0], cyanL = wl[2] - wl[0];
+  record(`${exp.file} wave centre is cyan`, cyanC >= 120, `RGB ${wc.join(",")} B\u2212R=${cyanC}`);
+  record(`${exp.file} wave moved to centre`, cyanC > cyanL + 20, `centre B\u2212R ${cyanC} > old-left ${cyanL}+20`);
+
+  // Bag glyph within its bounded rect (the white wordmark at x>=195 is outside it).
+  const bagCount = countBag(img);
+  record(`${exp.file} bag glyph present`, bagCount >= 100, `${bagCount} blue-body px in x${BAG.x0}..${BAG.x1}`);
+
+  // Mode-specific content.
+  if (exp.mode === "catalogue") {
+    const lp = mean(img, { x0: 300, x1: 460, y0: 200, y1: 230 });
+    record(`${exp.file} left panel blue`, lp[2] - lp[0] >= 50, `RGB ${lp.join(",")} B\u2212R=${lp[2] - lp[0]}`);
+    const grid = mean(img, { x0: 480, x1: 800, y0: 120, y1: 180 });
+    record(`${exp.file} grid covers present`, luma(grid) > 45, `RGB ${grid.join(",")} luma ${luma(grid).toFixed(0)}`);
+  } else {
+    const inset = mean(img, { x0: 300, x1: 700, y0: 118, y1: 123 });
+    record(`${exp.file} detail inset dark`, luma(inset) < 50, `RGB ${inset.join(",")} luma ${luma(inset).toFixed(0)}`);
+    const cover = mean(img, { x0: 155, x1: 265, y0: 181, y1: 291 });
+    record(`${exp.file} detail cover present`, luma(cover) > 50, `RGB ${cover.join(",")} luma ${luma(cover).toFixed(0)}`);
+  }
+
+  cap.footerSilver = { top: silverTop, bottom: silverBottom };
+  cap.navy = navy; cap.navyBottom = navyBottom;
+  cap.waveCentre = wc; cap.waveOldLeft = wl; cap.waveCentreCyan = cyanC; cap.waveOldLeftCyan = cyanL;
+  cap.bagBluePixels = bagCount;
+  results[exp.file] = cap;
+  out();
 }
 
-try { analyze(); } catch (e) {
-  console.error(e instanceof Error ? e.message : String(e));
-  process.exit(2);
-}
+out(`## Result: ${fail === 0 ? "PASS" : "FAIL"} (${pass} passed, ${fail} failed)`);
+out();
+
+const text = report.join("\n");
+writeFileSync(`${dir}\\geometry.md`, text);
+writeFileSync(`${dir}\\geometry.json`, JSON.stringify({ targets: { footerSilver: FOOTER_SILVER, footerTol: FOOTER_TOL, bag: BAG }, captures: results, pass, fail }, null, 2));
+console.log(text);
+console.log(`\nWrote ${dir}\\geometry.md and ${dir}\\geometry.json`);
+
+if (fail > 0) { console.error(`\nGEOMETRY GATE FAILED: ${fail} check(s) failed`); process.exit(1); }
+console.log(`\nGEOMETRY GATE PASSED: ${pass} check(s)`);

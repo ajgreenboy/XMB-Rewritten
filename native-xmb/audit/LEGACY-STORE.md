@@ -147,9 +147,13 @@ the wired **Search** action (2010 legacy variant); Redeem Codes / View Downloads
 Cart / Preview stay label-only (no fake cart). The detail page's title/publisher/size and metadata stay
 plain QPainter text (no rich text), so they remain readable and cannot inject markup.
 
-Verification: the fixture captures and the analytical pixel comparison are reproduced by
-`work/legacy-store-capture.ps1` (offline, `XMB_LEGACY_STORE_FIXTURE=1`) and
-`work/legacy-store-geometry.ts`, which writes `geometry.json`/`geometry.md` next to the captures at
-`C:\dev\out\legacy-store-visual-polish\`. Measured footer silver y465..506 (target 465..507), navy
-policy bar `RGB(8,16,34)` to the frame edge, logo left at x158 (target x147), and a blue-dominant cyan
-wave in the upper centre.
+Verification: `work/legacy-store-capture.ps1` is the gate — it runs the native capture (offline,
+`XMB_LEGACY_STORE_FIXTURE=1`), fails on a nonzero native exit, requires all four PNG + JSON sidecars,
+and then runs `work/legacy-store-geometry.ts`, which exits nonzero on any failed check. The geometry
+script asserts each capture's `pageKind`/`selection`/`focusedRow`, the footer silver strip bounded to
+y465..507 (±5 px), the dark navy policy bar (`RGB(8,16,34)`) reaching the frame edge, the upper-centre
+cyan wave being blue-dominant and more cyan than the old upper-left spot, the bag glyph present inside
+its bounded rect (x147..191, blue body, not the white wordmark), and the mode-specific content (blue
+left panel + coloured grid for the catalogue, dark inset + cover for the detail). These are
+authored-approximation targets with explicit tolerances, not pixel-perfect claims; `geometry.json`/
+`geometry.md` land next to the captures at `C:\dev\out\legacy-store-visual-polish\`.
