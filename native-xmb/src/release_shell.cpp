@@ -577,7 +577,34 @@ void Shell::pickGameSource(const QString& value) {
     bool valid=false;
     const int option=value.toInt(&valid);
     if(!valid || option<0 || option>=game.options.size())return;
-    beginGameDownload(game.name,game.options[option]);
+    beginGameConfirm(game.name,game.options[option]);
+}
+
+// The dedicated full-page confirmation step for a picked JSON game source (the
+// free-item path: the feed carries no prices, so there is no cart or wallet). It
+// shows the game, its source and its download size, and its single Download action
+// hands off to the drive picker. It is an ordinary page in the stack, so Circle/Back
+// returns to the compact source list, and the list stays beneath it untouched.
+void Shell::beginGameConfirm(const QString& title,const GameSourceOption& option) {
+    if(pages_.size()>=32)return;
+    Page page;page.title=title;
+    GameResult game;game.name=title;game.options={option};
+    page.downloadResults={std::move(game)};
+    QString source=option.source;
+    if(!option.mirror.isEmpty())source+=QStringLiteral(" / ")+option.mirror;
+    Entry entry=releaseRow(QStringLiteral("game:confirm:download"),tr("Download"),Action::GameDownloadConfirm);
+    entry.detail=tr("Source: %1").arg(source);
+    entry.fieldValue=option.fileSize.isEmpty()?tr("Size unknown"):option.fileSize;
+    page.entries.append(std::move(entry));
+    pages_.push_back(std::move(page));
+    emit changed();
+}
+
+void Shell::confirmGameDownload() {
+    if(pages_.isEmpty() || pages_.last().downloadResults.isEmpty())return;
+    const auto game=pages_.last().downloadResults.first();
+    if(game.options.size()!=1)return;
+    beginGameDownload(game.name,game.options.first());
 }
 
 // The destinations the drive picker offers. XMB_GAME_LIBRARY_ROOT (local verification only,
@@ -627,22 +654,17 @@ void Shell::completeGameDownload(const QString& drive) {
     if(game.options.size()!=1)return;
     const auto option=game.options.first();
     const QString directory=QDir(drive).filePath(QStringLiteral("XMB Games"));
-    QString source=option.source;
-    if(!option.mirror.isEmpty())source+=QStringLiteral(" / ")+option.mirror;
-    const QString size=option.fileSize.isEmpty()?tr("Unknown"):option.fileSize;
-    const QString question=tr("Download and install %1?").arg(game.name);
-    const QString release=option.releaseTitle.isEmpty()?game.name:option.releaseTitle;
-    const QString body=question+QStringLiteral("\n\n")+tr("Release: %1\nSource: %2\nSize: %3\nDestination: %4")
-        .arg(release,source,size,QDir::toNativeSeparators(directory));
-    showConfirm(question,body,[this,game,option,directory,drive]{
-        pages_.removeLast();
-        // Remember this drive only when the enqueue actually succeeded: a refused download (duplicate,
-        // full queue, invalid volume) must not become the preselected "last used" location.
-        if(enqueueReleaseGame(game.name,option.releaseTitle.isEmpty()?game.name:option.releaseTitle,
-                              QUrl(option.sourceUrl),option.sourceSlug,directory,option.downloads))
-            preferences_.setValue(QStringLiteral("downloads/lastGameDrive"),drive);
-        emit changed();
-    });
+    // The confirmation step and the drive picker are both done now: pop them so the
+    // compact source list stays beneath Download Management (which enqueue opens).
+    // Circle/Back never reaches this path; it only navigates each step back.
+    pages_.removeLast();                             // drive picker
+    if(!pages_.isEmpty())pages_.removeLast();        // confirmation page
+    // Remember this drive only when the enqueue actually succeeded: a refused download (duplicate,
+    // full queue, invalid volume) must not become the preselected "last used" location.
+    if(enqueueReleaseGame(game.name,option.releaseTitle.isEmpty()?game.name:option.releaseTitle,
+                          QUrl(option.sourceUrl),option.sourceSlug,directory,option.downloads))
+        preferences_.setValue(QStringLiteral("downloads/lastGameDrive"),drive);
+    emit changed();
 }
 
 void Shell::fetchGameArtwork(const QString& id,const QString& title) {

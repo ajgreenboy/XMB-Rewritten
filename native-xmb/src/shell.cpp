@@ -2748,6 +2748,7 @@ void Shell::activate() {
     case Action::SearchGames:openGameSearch(entry.value);break;
     case Action::GameSearchResult:pickGameResult(entry.value.toInt());break;
     case Action::GameSourcePick:pickGameSource(entry.value);break;
+    case Action::GameDownloadConfirm:confirmGameDownload();break;
     case Action::GameDownloadDrive:completeGameDownload(entry.value);break;
     case Action::PlaylistFolder:openPlaylists(categories_[category_].id);break;
     case Action::CreatePlaylist:

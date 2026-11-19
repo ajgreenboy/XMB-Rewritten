@@ -218,6 +218,36 @@ QImage readCachedPreview(const QString& path) {
 
 } // namespace
 
+QString normalizeRawgTitle(QString title) {
+    static const QRegularExpression marks(QStringLiteral("[™®©'’]"));
+    static const QRegularExpression separators(QStringLiteral("[^\\p{L}\\p{M}\\p{N}]+"));
+    return title.remove(marks).normalized(QString::NormalizationForm_C).toCaseFolded()
+        .replace(separators, QStringLiteral(" ")).simplified();
+}
+
+int resolveRawgGameId(const RawgGameList& games, const QString& title) {
+    const QString wanted = normalizeRawgTitle(title);
+    if (wanted.isEmpty()) return 0;
+    int found = 0;
+    for (const RawgGame& game : games) {
+        if (normalizeRawgTitle(game.name) != wanted) continue;
+        if (found != 0 && found != game.id) return 0; // two distinct ids share the name
+        found = game.id;
+    }
+    return found;
+}
+
+QString rawgMetadataSummary(const RawgGameDetails& details) {
+    QStringList fields;
+    if (!details.genres.isEmpty()) fields << QStringLiteral("Genre: ") + details.genres.join(QStringLiteral(", "));
+    if (details.releaseYear > 0) fields << QStringLiteral("Release: ") + QString::number(details.releaseYear);
+    if (!details.developers.isEmpty())
+        fields << QStringLiteral("Developer: ") + details.developers.join(QStringLiteral(", "));
+    if (!details.platforms.isEmpty())
+        fields << QStringLiteral("Platform: ") + details.platforms.join(QStringLiteral(", "));
+    return fields.join(QStringLiteral("    "));
+}
+
 RawgGameDetails parseRawgGameDetails(const QJsonObject& object) {
     RawgGameDetails details;
     const QJsonValue idValue = object.value(QStringLiteral("id"));

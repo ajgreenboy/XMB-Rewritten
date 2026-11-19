@@ -34,6 +34,7 @@
 #include "subtitles.h"
 #include "release_source.h"
 #include "hydra_library.h"
+#include "rawg_client.h"
 #include <QTimer>
 #include <QElapsedTimer>
 #include <QDateTime>
@@ -153,7 +154,7 @@ enum class Action { Unavailable, SettingsPage, SettingChoices, SetSetting, EditN
     Setup,
     // Game > Saved Data / Memory Card Utility: presentation only, no console save-data backend.
     SaveData, ImportSource, ReleaseFolder, ReleaseDownload, DownloadManager, DebridToken, FlareSolverrUrl,
-    BrowseGames, SearchGames, GameSearchResult, GameSourcePick, GameDownloadDrive,
+    BrowseGames, SearchGames, GameSearchResult, GameSourcePick, GameDownloadDrive, GameDownloadConfirm,
     // Game > Steam: the folded hub that lists Steam Store and All Games behind one column folder.
     SteamHub,
     // Game > Download Games: the folded hub that lists Browse, Import Source and the imported source folders.
@@ -380,6 +381,14 @@ public:
     int legacyStoreScroll() const { return pages_.isEmpty()?0:pages_.last().legacyScroll; }
     // True while the catalogue's top Search button has focus (instead of a game row).
     bool legacySearchFocused() const { return !pages_.isEmpty() && pages_.last().legacySearchFocus; }
+    // The RAWG-enriched metadata for the open product-detail page, resolved
+    // asynchronously from the title (see requestLegacyDetails). Empty (id 0) while
+    // loading, when no key is configured, or when no exact title match exists, so
+    // the view falls back to its honest "Not available" lines rather than inventing
+    // a description, genre, year, developer, publisher or platform.
+    RawgGameDetails legacyDetails() const {
+        return !pages_.isEmpty() && pages_.last().legacyDetail ? pages_.last().legacyDetails : RawgGameDetails{};
+    }
     // The compact-cover grid's column count, shared by Shell (cursor moves) and View (layout). Five columns,
     // per the 2008 browse reference (a selected-game panel left, a 5-column cover grid right).
     static constexpr int legacyStoreGridColumns=5;
@@ -817,6 +826,11 @@ private:
     QSet<QString> releaseRawgArt_;
     QSet<QString> releaseArtRequested_;
     std::unique_ptr<RawgArtwork> releaseArtwork_;
+    // Dedicated RAWG client for the legacy-store product-detail lookup (separate from the
+    // artwork client, so a detail fetch never contends with the art queue's own client).
+    std::unique_ptr<RawgClient> rawgDetails_;
+    int legacyDetailDepth_=-1;      // pages_.size() when the detail lookup began (stale guard)
+    QString legacyDetailTitle_;     // the title whose RAWG id/details are in flight
     bool releaseFeedsRefreshing_=false;
     quint64 releaseSourcesGeneration_=0;
     bool gameArtHooked_=false;
@@ -844,6 +858,8 @@ private:
     void pickGameResult(int index);
     void openGameSources(const GameResult& game);
     void pickGameSource(const QString& value);
+    void beginGameConfirm(const QString& title,const GameSourceOption& option);
+    void confirmGameDownload();
     void beginGameDownload(const QString& title,const GameSourceOption& option);
     void completeGameDownload(const QString& drive);
     void fetchGameArtwork(const QString& id,const QString& title);
@@ -858,6 +874,11 @@ private:
     void legacyStoreActivate();
     void legacyDetailActivate();
     void openLegacyDetail(int gameIndex);
+    // RAWG metadata for the open product-detail page (legacy_store.cpp): resolves the
+    // game's RAWG id from its title by a conservative search match, then fetches the
+    // full detail document. No key -> no network; the lookup is async and dropped on
+    // navigation (a stale-response guard on pages_.size()).
+    void requestLegacyDetails(const QString& title);
     Assets& assets_;
     std::unique_ptr<class NotifyOverlay> notifyOverlay_;
     Preferences preferences_;
@@ -1353,7 +1374,7 @@ private:
     int columnSink_=0;
     // `grouped` is a page the item menu's Group Content level rebuilt into letter folders: `groupedSource` keeps
     // the ungrouped rows so All can put them back without a rescan, and the folders' rows are the same entries.
-    struct Page { QString title; QVector<Entry> entries; int selection=0; QString directory; bool jellyfin=false,jellyfinViews=false,jellyfinSearch=false; QString jellyfinParent; QString jellyfinMusic,jellyfinLibrary; QString jellyfinHome; int jellyfinStart=0; bool downloads=false; QString steamCmd,seerr; bool continuePage=false; bool signIn=false; bool jfSetup=false; bool steamAccounts=false; bool grouped=false; QString groupKey; QVector<Entry> groupedSource; bool sysconfPlugin=false; QString playlistsType,playlistId; QString spotify,spotifyContext; QString dlna; int dlnaServer=-1; QString tailscale; QString wol,ha; bool weather=false; bool systemCheck=false; QString userInfo; int userInfoStep=0; bool browse=false; QString browsePath; QString browseFiles; bool libraryRoot=false; QVector<GameResult> downloadResults; bool downloadHub=false; bool addGame=false; bool legacyStore=false; bool legacyDetail=false; int legacyScroll=0; bool legacySearchFocus=false; };
+    struct Page { QString title; QVector<Entry> entries; int selection=0; QString directory; bool jellyfin=false,jellyfinViews=false,jellyfinSearch=false; QString jellyfinParent; QString jellyfinMusic,jellyfinLibrary; QString jellyfinHome; int jellyfinStart=0; bool downloads=false; QString steamCmd,seerr; bool continuePage=false; bool signIn=false; bool jfSetup=false; bool steamAccounts=false; bool grouped=false; QString groupKey; QVector<Entry> groupedSource; bool sysconfPlugin=false; QString playlistsType,playlistId; QString spotify,spotifyContext; QString dlna; int dlnaServer=-1; QString tailscale; QString wol,ha; bool weather=false; bool systemCheck=false; QString userInfo; int userInfoStep=0; bool browse=false; QString browsePath; QString browseFiles; bool libraryRoot=false; QVector<GameResult> downloadResults; bool downloadHub=false; bool addGame=false; bool legacyStore=false; bool legacyDetail=false; int legacyScroll=0; bool legacySearchFocus=false; RawgGameDetails legacyDetails; };
     QVector<Page> pages_;
     bool psMenu_=false;              // the PS-button system menu is showing
     bool desktopMode_=false;         // the XMB window is hidden for Desktop Mode (main.cpp DesktopMode)

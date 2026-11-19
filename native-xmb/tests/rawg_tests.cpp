@@ -124,6 +124,46 @@ int main(int argc, char** argv) {
         check(failed && !message.isEmpty(), "fetchDetails without a key fails fast with a message");
     }
 
+    // 8. Conservative title -> id resolution (resolveRawgGameId) and the metadata
+    //    summary the detail page renders. Exact normalized name match only: an
+    //    ambiguous same-name result or no match yields 0, so a wrong description
+    //    is never attached to a game.
+    const auto game = [](int id, const QString& name) { RawgGame g; g.id = id; g.name = name; return g; };
+    check(resolveRawgGameId(RawgGameList{game(1, QStringLiteral("Prey"))}, QStringLiteral("Prey")) == 1,
+          "exact match resolves to its id");
+    check(resolveRawgGameId(RawgGameList{game(1, QStringLiteral("Prey")), game(2, QStringLiteral("Prey"))},
+                            QStringLiteral("Prey")) == 0,
+          "two distinct ids share the name -> ambiguous, no match");
+    check(resolveRawgGameId(RawgGameList{game(1, QStringLiteral("Prey")), game(2, QStringLiteral("Prey 2"))},
+                            QStringLiteral("Prey")) == 1,
+          "exact match wins alongside a differently-named sequel");
+    check(resolveRawgGameId(RawgGameList{game(1, QStringLiteral("Prey Remastered"))}, QStringLiteral("Prey")) == 0,
+          "an edition suffix is a different game, never a match");
+    check(resolveRawgGameId(RawgGameList{game(1, QStringLiteral("  The Witcher 3: Wild Hunt™  "))},
+                            QStringLiteral("the witcher 3 wild hunt")) == 1,
+          "normalization (case, punctuation, marks) matches");
+    check(resolveRawgGameId(RawgGameList{}, QStringLiteral("Prey")) == 0, "empty results -> no match");
+    check(resolveRawgGameId(RawgGameList{game(1, QStringLiteral("Prey"))}, QStringLiteral("   ")) == 0,
+          "blank title -> no match");
+    check(resolveRawgGameId(RawgGameList{game(0, QStringLiteral("Prey"))}, QStringLiteral("Prey")) == 0,
+          "id 0 is never resolved");
+
+    // 9. Metadata summary: only fields that are actually present, joined in a
+    //    fixed order; empty when none are present.
+    RawgGameDetails d;
+    d.genres = {QStringLiteral("Action"), QStringLiteral("Adventure")};
+    d.releaseYear = 2013;
+    d.developers = {QStringLiteral("Fixture Labs")};
+    d.platforms = {QStringLiteral("PC"), QStringLiteral("PlayStation 5")};
+    check(rawgMetadataSummary(d) ==
+              QStringLiteral("Genre: Action, Adventure    Release: 2013    Developer: Fixture Labs    Platform: PC, PlayStation 5"),
+          "metadata summary joins present fields in order");
+    check(rawgMetadataSummary(RawgGameDetails{}).isEmpty(), "metadata summary empty when no fields present");
+    RawgGameDetails partial;
+    partial.releaseYear = 2007;
+    check(rawgMetadataSummary(partial) == QStringLiteral("Release: 2007"),
+          "metadata summary includes only present fields");
+
     std::fprintf(stderr, "%d checks, %d failures\n", checks, failures);
     return failures == 0 ? 0 : 1;
 }

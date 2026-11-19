@@ -46,6 +46,27 @@ RawgGameDetails parseRawgGameDetails(const QJsonObject& object);
 
 using RawgGameList = QVector<RawgGame>;
 
+// Unicode-normalized, case-folded title key shared by the detail lookup and the
+// artwork lookup, so the same name resolves to the same id everywhere. Trademark
+// and quote marks are removed and every run of non-letter/number characters
+// collapses to one space.
+QString normalizeRawgTitle(QString title);
+
+// Conservative title -> RAWG id resolution for the game-detail lookup. Returns the
+// unique id whose normalized name exactly equals the normalized `title`, or 0 when
+// no result matches or the match is ambiguous (two distinct ids share the name).
+// Never breaks a tie by result order or by artwork availability, so a same-name
+// release (e.g. a 2006 and a 2017 "Prey") yields no details rather than a wrong
+// description. Exact match only: a result whose name is an edition suffix of the
+// wanted title ("Prey Remastered" for "Prey") is a different game and is not taken.
+int resolveRawgGameId(const RawgGameList& games, const QString& title);
+
+// A single display line for the detail page's metadata strip: the fields that are
+// actually present (genre, release year, developer, platform) joined with a wide
+// separator. Empty when none are present, so the view falls back to its honest
+// "Not available" copy. Values are the verbatim parsed names; nothing is synthesized.
+QString rawgMetadataSummary(const RawgGameDetails& details);
+
 class RawgClient final : public QObject {
     Q_OBJECT
 public:

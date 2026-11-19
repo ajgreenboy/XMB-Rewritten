@@ -2702,11 +2702,16 @@ void View::drawLegacySurface(QPainter& p) {
         //      square cover left, vertical action buttons below, long description right ----
         const Entry* g=games.value(0);
         if(g) {
+            const RawgGameDetails details=shell_.legacyDetails();
             const QRectF panel(291,231,1340,630);
             p.save();p.setPen(QPen(QColor(120,180,230,70),1));p.setBrush(QColor(6,13,30,235));
             p.drawRoundedRect(panel,8,8);p.restore();
             text(QRectF(311,251,1300,56),elide(g->title,34,1300),34,Qt::white);
-            QString pub=QStringLiteral("Publisher: Not available");
+            // Publisher comes from the resolved RAWG details when present; otherwise the honest
+            // "Not available" line (the Hydra feed carries no publisher, description, genre, year,
+            // developer or platform - only the RAWG detail document fills them).
+            QString pub=details.publishers.isEmpty()?QStringLiteral("Publisher: Not available")
+                :QStringLiteral("Publisher: %1").arg(details.publishers.join(QStringLiteral(", ")));
             if(!g->fieldValue.isEmpty())pub+=QStringLiteral("    Size: %1").arg(g->fieldValue);
             text(QRectF(311,312,1300,36),elide(pub,20,1300),20,QColor(190,205,225,200));
             drawCover(QRectF(311,362,220,220),*g);
@@ -2720,8 +2725,22 @@ void View::drawLegacySurface(QPainter& p) {
             actionBtn(QRectF(311,606,220,52),QStringLiteral("Download"),true);
             actionBtn(QRectF(311,668,220,52),QStringLiteral("Add to Cart"),false);
             actionBtn(QRectF(311,730,220,52),QStringLiteral("Preview"),false);
-            text(QRectF(560,362,1050,470),QStringLiteral("Description not available for this title."),22,QColor(190,205,225,180),
-                 Qt::AlignLeft|Qt::AlignTop|Qt::TextWordWrap);
+            // Metadata strip (genre/year/developer/platform, actual data only) then the description.
+            // Both go through the text renderer, which draws QPainter text - never Qt rich text - and
+            // parseRawgGameDetails already strips the HTML description to plain text, so a description
+            // can never inject markup.
+            const QString meta=rawgMetadataSummary(details);
+            const QString description=details.description.isEmpty()
+                ?QStringLiteral("Description not available for this title."):details.description;
+            if(meta.isEmpty())
+                text(QRectF(560,362,1050,470),description,22,QColor(190,205,225,180),
+                     Qt::AlignLeft|Qt::AlignTop|Qt::TextWordWrap);
+            else {
+                text(QRectF(560,362,1050,66),meta,19,QColor(170,205,235,210),
+                     Qt::AlignLeft|Qt::AlignTop|Qt::TextWordWrap);
+                text(QRectF(560,432,1050,400),description,22,QColor(190,205,225,180),
+                     Qt::AlignLeft|Qt::AlignTop|Qt::TextWordWrap);
+            }
             text(QRectF(291,900,1340,40),QStringLiteral("Cross: Download    Circle: Back"),20,QColor(40,46,55,210),Qt::AlignHCenter|Qt::AlignVCenter);
         }
         return;

@@ -1,4 +1,5 @@
 #include "shell.h"
+#include <QDir>
 #include <QSet>
 #include <algorithm>
 
@@ -129,6 +130,11 @@ void Shell::openLegacyDetail(int gameIndex) {
     entry.artworkUrl=game.coverUrl;
     page.entries.append(entry);
     pages_.push_back(std::move(page));
+    // Detail-only metadata: resolve the game's RAWG id from its title and fetch the
+    // description/genre/year/developer/publisher/platform asynchronously. Never per
+    // grid item (only the detail page triggers it); no key means no network and the
+    // view keeps its honest "Not available" lines.
+    requestLegacyDetails(game.name);
     emit changed();
 }
 
@@ -141,6 +147,32 @@ void Shell::legacyDetailActivate() {
     // source for this game, and from there the drive picker, confirm and Download Management job lifecycle
     // are unchanged.
     openGameSources(game);
+}
+
+void Shell::requestLegacyDetails(const QString& title) {
+    // Stale-response guard: record the page depth this lookup belongs to. Any search or
+    // detail response that lands after the user has navigated (the detail page popped, or
+    // another page pushed on top) is dropped instead of repainting a page it was not for.
+    legacyDetailDepth_=pages_.size();
+    legacyDetailTitle_=title;
+    if(!RawgClient::hasApiKey())return;   // no key: honest unavailable state, no network, never blocks
+    if(!rawgDetails_) {
+        rawgDetails_=std::make_unique<RawgClient>(QDir(dataDirectory_).filePath(QStringLiteral("cache/release-art")),this);
+        connect(rawgDetails_.get(),&RawgClient::searchReady,this,[this](const RawgGameList& games) {
+            if(!legacyDetailOpen() || pages_.size()!=legacyDetailDepth_)return;
+            const int id=resolveRawgGameId(games,legacyDetailTitle_);
+            if(id>0)rawgDetails_->fetchDetails(id);
+            // id==0 (no exact match, or ambiguous same-name releases): leave the page on its
+            // "Not available" lines rather than risk a wrong description.
+        });
+        connect(rawgDetails_.get(),&RawgClient::detailsReady,this,[this](const RawgGameDetails& details) {
+            if(!legacyDetailOpen() || pages_.size()!=legacyDetailDepth_)return;
+            if(pages_.last().title!=legacyDetailTitle_)return;
+            pages_.last().legacyDetails=details;
+            emit changed();
+        });
+    }
+    rawgDetails_->search(title);
 }
 
 } // namespace xmb
