@@ -163,6 +163,9 @@ SteamCMD updates itself (no account involved). Then the path is saved. Safe mode
 - a **cancel just before that timeout**: `cancel()` stops the prompt timer, so a sign-in cancelled while waiting for a
   prompt it never got still ends `Cancelled`, never `TimedOut` (the stand-in ignores terminate, so only the 1.5 s kill
   timer would otherwise lose the race to the prompt timeout).
+- a **guard prompt that never arrives after the password** (the same pipe-flush gap, on the second prompt): the
+  stand-in's `buffered_guard_user` flushes the password prompt (which is answered) and then writes `Steam Guard code:`
+  with no flush; the re-armed prompt timeout ends the run `TimedOut` with only the password prompt ever delivered.
 
 The stand-in never contacts Steam, never reads the registry and is addressed only by path. Runs use 30 s waits.
 
@@ -177,12 +180,16 @@ the `Run` state machine previously waited forever in "Signing In...".
 
 `Run` now starts a prompt timeout for a sign-in (`setPromptTimeout`, default 60 s, generous because a first run
 updates SteamCMD itself before it can prompt). If SteamCMD has not asked for the password or a code in that time the
-run ends `TimedOut` and the sign-in page says it may still be starting up, or that its prompt may be held in its own
-buffer instead of reaching this program's pipe. The timeout is **first-prompt-only**: it stops on the first prompt, so
-the phone-approval wait (no further prompt) is not cut short, and `cancel()` also stops it. Test #13 drives
-`buffered_user` with an explicit 2 s timeout and asserts the `TimedOut` outcome, that no prompt was delivered, that the
-process is gone, and the "pipe" message; test #14 cancels `buffered_user` 0.6 s into a 1 s timeout and asserts
-`Cancelled`, not `TimedOut`.
+run ends `TimedOut` and the sign-in page says its prompt may be buffered or slow to reach this program's pipe. The
+timeout is **re-armed after each answered prompt** — a sign-in can ask for more than one secret (a Steam Guard code
+after the password), and a following prompt that never arrives must not hang the run — but it is **disarmed when the
+phone-approval wait starts** (`MobileConfirm`/`MobileWaiting`, which has no further prompt and can take a while) and
+**when the login succeeds** (`LoginOk`), so it never fires after a successful sign-in. `cancel()` also stops it.
+Test #13 drives `buffered_user` (the first password prompt never arrives) with an explicit 2 s timeout and asserts the
+`TimedOut` outcome, that no prompt was delivered, that the process is gone, and the "pipe" message; test #14 cancels
+`buffered_user` 0.6 s into a 1 s timeout and asserts `Cancelled`, not `TimedOut`; test #15 drives `buffered_guard_user`
+(the password prompt flushes and is answered, the following guard code prompt stays buffered) and asserts `TimedOut`,
+that only the password prompt was delivered, and that the process is gone.
 
 This does **not** verify SteamCMD's real behaviour: whether a real SteamCMD flushes its prompt, or prompts on a pipe
 at all rather than a console, is still the owner's to test against a real account. What is now guaranteed is that a

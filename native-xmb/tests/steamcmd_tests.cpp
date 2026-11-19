@@ -398,6 +398,19 @@ static void processTests(const QString& exe, const QString& scratch) {
         CHECK(r.outcome == O(Run::Outcome::Cancelled));
         CHECK(!run.running());
     }
+    // 15. a guard prompt that never arrives after the password: the re-armed prompt timeout ends the run. Only the
+    //     password prompt is ever delivered; the buffered guard code prompt never reaches the reader.
+    {
+        Run run;
+        run.setPromptTimeout(2000);
+        const auto r = drive(run, Run::Mode::SignIn, exe, signInArguments(QStringLiteral("buffered_guard_user")),
+            [](Run& rn, int prompt, int) { return prompt == int(Prompt::Password) && answer(rn, kPassword); });
+        CHECK(!r.timedOut);                       // Run ended on its own, not the harness 30 s guard
+        CHECK(r.outcome == O(Run::Outcome::TimedOut));
+        CHECK(r.prompts == (QVector<int>{int(Prompt::Password)}));   // the guard prompt never arrived
+        CHECK(!run.running());
+        CHECK(r.message.contains(QStringLiteral("pipe")));
+    }
 
     // Jobs -----------------------------------------------------------------------------------------------------
     const QString library = QDir(scratch).filePath(QStringLiteral("Library"));

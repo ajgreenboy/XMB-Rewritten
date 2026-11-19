@@ -313,7 +313,7 @@ Run::Run(QObject* parent) : QObject(parent) {
     });
     connect(&promptTimer_, &QTimer::timeout, this, [this] {
         if (process_.state() == QProcess::NotRunning) return;
-        finish(Outcome::TimedOut, QStringLiteral("SteamCMD did not ask for the password or a code in time (it may still be starting up, or its prompt is not reaching this program's pipe)."));
+        finish(Outcome::TimedOut, QStringLiteral("SteamCMD did not ask for the password or a code in time; its prompt may be buffered or slow to reach this program's pipe."));
     });
 }
 Run::~Run() {
@@ -377,6 +377,10 @@ bool Run::provide(Secret& secret) {
     scanner_.clearTail();
     lineOutcome_ = Outcome::None;
     setState(State::Working);
+    // A sign-in may ask for more than one secret (a Steam Guard code after the password). Re-arm the prompt
+    // timeout so a following prompt that never arrives (held in SteamCMD's own buffer) cannot hang the run.
+    // The phone-approval and success paths below stop the timer again.
+    if (mode_ == Mode::SignIn) promptTimer_.start(promptTimeoutMs_);
     return true;
 }
 
@@ -404,9 +408,10 @@ void Run::handleLine(const QString& line) {
         return;
     }
     switch (OutputScanner::classifyLine(line)) {
-    case Line::LoginOk: sawLoginOk_ = true; if (state_ != State::Working) setState(State::Working); break;
+    case Line::LoginOk: sawLoginOk_ = true; promptTimer_.stop(); if (state_ != State::Working) setState(State::Working); break;
     case Line::MobileConfirm: case Line::MobileWaiting:
         sawMobile_ = true;
+        promptTimer_.stop();              // the phone approval has no further prompt and may take a while
         if (state_ != State::WaitingMobile) setState(State::WaitingMobile);
         break;
     case Line::MobileTimedOut: lineOutcome_ = Outcome::MobileTimedOut; lineMessage_ = line; killTimer_.start(4000); break;
@@ -433,7 +438,7 @@ void Run::checkTail() {
     // A new prompt after a failure line (a wrong code that SteamCMD asks again for) is not the end of the run.
     if (lineOutcome_ == Outcome::BadGuardCode || lineOutcome_ == Outcome::BadPassword) { message_ = lineMessage_; lineOutcome_ = Outcome::None; killTimer_.stop(); }
     pending_ = prompt;
-    promptTimer_.stop();                 // the first prompt arrived; stop waiting for it
+    promptTimer_.stop();                 // a prompt arrived; stop waiting for it (re-armed again in provide())
     scanner_.clearTail();
     setState(prompt == Prompt::Password ? State::WantPassword : State::WantGuard);
     emit promptRequested(int(prompt));

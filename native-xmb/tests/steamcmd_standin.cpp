@@ -83,6 +83,17 @@ static bool signIn(const std::string& user) {
         readLine();                     // blocks forever; the reader's prompt timeout kills this process
         return false;
     }
+    if (user == "buffered_guard_user") {
+        outSlow("\r\npass", "word: ");  // the password prompt flushes, so the reader sees and answers it
+        const std::string pw = readLine();
+        note(std::string("stdin: password length=") + std::to_string(pw.size()) + (pw == kPassword ? " match=1" : " match=0"));
+        if (pw != kPassword) { out("FAILED (Invalid Password)\r\n"); return false; }
+        out("\r\nThis computer has not been authenticated for your account using Steam Guard.\r\n"
+            "Please check your email for the message from Steam, and enter the Steam Guard code from that message.\r\n");
+        outNoFlush("Steam Guard code:"); // the guard prompt stays in the full-buffered pipe; never reaches the reader
+        readLine();                      // blocks forever; the re-armed prompt timeout kills this process
+        return false;
+    }
     outSlow("\r\npass", "word: ");
     const std::string pw = readLine();
     note(std::string("stdin: password length=") + std::to_string(pw.size()) + (pw == kPassword ? " match=1" : " match=0"));
