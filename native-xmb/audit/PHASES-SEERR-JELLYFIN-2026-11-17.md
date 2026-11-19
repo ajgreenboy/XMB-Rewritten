@@ -179,9 +179,30 @@ parse (`Type`, `SeriesId`, `ParentIndexNumber` → season, `IndexNumber` → epi
 watched), a 5xx answering under its own request id through `failed` (the resolver's clear signal), and an invalid
 series id never reaching the server.
 
-### 5.5 Open
+### 5.5 Loopback evidence (mock, no live service)
 
-- This is unit and fake-server evidence only. A loopback fixture that drives a mock TV season through
+The Stage 1 resolver is driven through the loopback three-service fixture — a mock Seerr/Jellyfin, **no live
+service** — against the integrated build `c463d33` (clean, verified on disk). Evidence lives under
+`out/seerr-harness/cases/tv-stage1-{match,mismatch,season-absent}/` and
+`out/seerr-harness/tv4k-sd-only/cases/tv4k-sd-only-neg/`; each case's `dump.options.json` records whether `Watch`
+(condition `seerr-jellyfin`) was offered, and the mock log records the episode route and any PlaybackInfo:
+
+| Case | Seerr request | Jellyfin result | Options | Verdict |
+|---|---|---|---|---|
+| `tv-stage1-match` | "Cowboy Bebop" Tmdb 81329, season 2 (S2E1) | Series Tmdb 81329 → `/Shows/series-1/Episodes?season=2` → S2E1 | `Status`, `Watch` | Watch → `POST /Items/ep-2-1/PlaybackInfo` |
+| `tv-stage1-mismatch` | "Cowboy Bebop" Tmdb 81329 | Series Tmdb 999999 (mismatch) | `Status` | no Watch, no `/Shows` |
+| `tv-stage1-season-absent` | "Cowboy Bebop" Tmdb 81329, season 3 | season 3 empty | `Status` | no Watch |
+| `tv4k-sd-only-neg` | "Cowboy Bebop" Tmdb 81329, 4K, season 2 | S2 SD-only episode (width < 3840) | `Status` | no Watch (SD not silently played) |
+
+The match run logged exactly one PlaybackInfo line — `POST /Items/ep-2-1/PlaybackInfo` (S2E1) — so the resolved
+episode is the one watched. The mismatch case never reaches `/Shows` (no Series matched); the absent-season and
+SD-only cases reach the episode route but resolve no Watch. This is mock loopback evidence only: no live
+Seerr/Jellyfin service was contacted and no real TV playback was exercised (the mock logs PlaybackInfo but opens no
+stream).
+
+### 5.6 Open
+
+- The resolution loopback above (section 5.5) is mock-only; a fuller fixture that drives a mock TV season through
   `transfer → import delay → Jellyfin availability → Watch`, and any live-service evidence, remain open (none claimed).
 - TV 4K depends on the episodes route returning `MediaSources` width; a server that omits it leaves a 4K TV row
   `Pending` by design (section 5.2).
