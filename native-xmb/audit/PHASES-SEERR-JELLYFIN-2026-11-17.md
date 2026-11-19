@@ -200,7 +200,31 @@ SD-only cases reach the episode route but resolve no Watch. This is mock loopbac
 Seerr/Jellyfin service was contacted and no real TV playback was exercised (the mock logs PlaybackInfo but opens no
 stream).
 
-### 5.6 Open
+### 5.6 TV seasons [2,3] episode-selection loopback (mock, no live service)
+
+The lowest-season / first-unwatched / wrong-series rules (section 5.1) are driven once more through the loopback
+fixture — an explicit mock Seerr and Jellyfin on `127.0.0.1` (`:8390`/`:8391`), **no live service and no
+stream/live playback** (the mock logs the chosen episode's `PlaybackInfo` POST but opens no stream). The integrated
+build is the deployed `c463d33` exe (`build-info.json` `sourceRevision` = `c463d33`, `sourceDirty` = true while the
+follow-up doc-only audit edit was still uncommitted); `main` (`4dfa113`) is `c463d33` plus that documentation-only
+change, so no source file differs. Evidence: `out/seerr-harness/tv-seasons-2-3/EVIDENCE-TV-SEASONS-2-3.md`; each
+case's `dump.options.json` records `Watch` (condition `seerr-jellyfin`) and the mock log records the episode route
+and the single `PlaybackInfo` POST:
+
+| Case | Seerr request | Jellyfin result | Options | Verdict |
+|---|---|---|---|---|
+| `tv-s2s3-watch` | seasons [2,3]; S2 all watched, S3 unwatched | `/Shows/series-1/Episodes?season=2` → S2E1 | `Status`, `Watch` | Watch → `POST /Items/ep-2-1/PlaybackInfo` (lowest season wins; all-watched → first) |
+| `tv-s2s3-partial` | seasons [2,3]; S2 {E1 watched, E2 unwatched}, S3 unwatched | `/Shows/series-1/Episodes?season=2` → S2E2 | `Status`, `Watch` | Watch → `POST /Items/ep-2-2/PlaybackInfo` (first unwatched within the lowest season) |
+| `tv-wrong-series` | seasons [2]; S2 {E1 wrong SeriesId, E2 valid} | `/Shows/series-1/Episodes?season=2` → valid E2 | `Status`, `Watch` | Watch → `POST /Items/ep-2-2/PlaybackInfo` (wrong-series `wrong-ep-2-1` skipped) |
+
+The `[2,3]` runs fetch season 2 only — season 3 is never reached — so the lowest requested season with episodes
+wins: the all-watched case chooses S2E1 over any season-3 episode, and the partial case chooses S2E2 (the first
+unwatched) over the watched S2E1. The wrong-series case skips an episode carrying another series' `SeriesId`
+(`ffffffff…`) even though it is the first episode of the requested season, and watches the next valid episode
+`ep-2-2` instead. All three offered `Watch` and logged exactly one `PlaybackInfo` POST. This is loopback mock
+evidence only: no live Seerr/Jellyfin service was contacted and no real TV playback was exercised.
+
+### 5.7 Open
 
 - The resolution loopback above (section 5.5) is mock-only; a fuller fixture that drives a mock TV season through
   `transfer → import delay → Jellyfin availability → Watch`, and any live-service evidence, remain open (none claimed).
