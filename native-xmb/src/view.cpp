@@ -2608,10 +2608,10 @@ bool View::modalMessagePage() const {
 // (work/msgview: the frame with this gain applied) takes the back-hint crop 16.71 -> 19.40 dB.
 constexpr int kMessagePageDimAlpha=68;
 void View::drawLegacySurface(QPainter& p) {
-    // The GEN 2 (2008-2012) PlayStation Store catalogue/detail. See the declaration in view.h for the
-    // fidelity framing: regions and the button set come from manifest.md's callout topology; every pixel
-    // coordinate and the blue palette here are native choices, because the manual screenshots are
-    // downscaled crops and this authoring model cannot inspect them.
+    // The GEN 2 (2008-2012) PlayStation Store catalogue/detail, laid out against the 2008 period references
+    // (legacy-store-reference/period, 1024x576 scaled x1.875 to this 1920x1080 canvas). This model cannot
+    // inspect the rasters, so the layout follows the vision-capable orchestrator's region descriptions; the
+    // navy palette, the cyan streak and every exact rectangle are authored approximations, not measured.
     auto text=[&](const QRectF& r,const QString& value,int size,QColor colour,int flags=Qt::AlignLeft|Qt::AlignVCenter){
         if(textRenderer_.ready()){QFont f(shell_.fontFamily());f.setPixelSize(size);textRenderer_.draw(*this,p,r,value,f,colour,flags);return;}
         QFont f(shell_.fontFamily());f.setPixelSize(size);f.setStyleStrategy(QFont::PreferAntialias);f.setHintingPreference(QFont::PreferNoHinting);p.setFont(f);p.setPen(QColor(0,0,0,38));p.drawText(r.translated(1,1),flags,value);p.setPen(colour);p.drawText(r,flags,value);
@@ -2620,26 +2620,37 @@ void View::drawLegacySurface(QPainter& p) {
         QFont f(shell_.fontFamily());f.setPixelSize(size);
         return QFontMetrics(f).elidedText(s,Qt::ElideRight,int(width));
     };
+    // A cover: the game's artwork fit into `rect` (square, per the store's box art), or a dim placeholder.
+    auto drawCover=[&](const QRectF& rect,const Entry& g){
+        if(!g.artwork.isNull()) {
+            const QSizeF fitted=QSizeF(g.artwork.size()).scaled(rect.size(),Qt::KeepAspectRatio);
+            p.drawImage(QRectF(rect.center()-QPointF(fitted.width()/2,fitted.height()/2),fitted),g.artwork);
+        } else {
+            p.save();p.setPen(QPen(QColor(255,255,255,70),1));p.setBrush(QColor(255,255,255,14));
+            p.drawRoundedRect(rect,4,4);
+            drawItemGlyph(p,g.container,g.texture,rect.adjusted(rect.width()*.32,rect.height()*.32,-rect.width()*.32,-rect.height()*.32),.55);
+            p.restore();
+        }
+    };
     // The game rows openBrowseGames()/openLegacyDetail() built (Action::GameSearchResult); the error and
     // empty-state rows are Action::Unavailable and are not games.
     QVector<const Entry*> games;
     games.reserve(shell_.entries().size());
     for(const auto& e:shell_.entries())if(e.action==Action::GameSearchResult)games.push_back(&e);
 
-    // Blue store ground and chrome (native palette).
-    QLinearGradient bg(0,0,0,1080);bg.setColorAt(0,QColor(18,62,115));bg.setColorAt(1,QColor(8,30,64));
+    // Dark navy full-bleed ground + the luminous cyan PS3 streak (authored approximation).
+    QLinearGradient bg(0,0,0,1080);bg.setColorAt(0,QColor(12,24,48));bg.setColorAt(.55,QColor(8,16,34));bg.setColorAt(1,QColor(4,9,20));
     p.fillRect(QRectF(0,0,1920,1080),bg);
-    QLinearGradient hdr(0,0,0,150);hdr.setColorAt(0,QColor(32,96,178));hdr.setColorAt(1,QColor(15,54,120));
-    p.fillRect(QRectF(0,0,1920,150),hdr);
-    p.fillRect(QRectF(0,0,1920,2),QColor(255,255,255,28));
+    QRadialGradient streak(80,40,1000);
+    streak.setColorAt(0,QColor(0,205,255,34));streak.setColorAt(.4,QColor(0,150,210,12));streak.setColorAt(1,QColor(0,150,210,0));
+    p.fillRect(QRectF(0,0,1920,1080),streak);
 
-    // Header: the PlayStation Store bag glyph and the store name on the left, the control buttons on the
-    // right. Only Search is wired (out-of-scope Redeem Codes / View Downloads / View Cart stay dimmed and
-    // unfocusable, matching the documented button set without fabricating their surfaces).
+    // Header: the store logo + "Store Top" breadcrumb on the left, the control buttons on the right.
     const QImage& bag=assets_.image(QStringLiteral("explore_plugin_full"),QStringLiteral("item_tex_ps_store"));
-    if(!bag.isNull())p.drawImage(QRectF(44,43,64,64),bag);
-    text(QRectF(128,48,640,54),QStringLiteral("PlayStation®Store"),34,QColor(255,255,255));
-    const int cursor=shell_.legacyStoreOpen()?shell_.selection():-1;   // a valid game index (0 = featured)
+    if(!bag.isNull())p.drawImage(QRectF(60,56,72,72),bag);
+    text(QRectF(150,60,720,60),QStringLiteral("PlayStation®Store"),40,Qt::white);
+    text(QRectF(152,128,560,34),QStringLiteral("Store Top"),22,QColor(170,205,235,190));
+    const int cursor=shell_.legacyStoreOpen()?shell_.selection():-1;   // the focused grid cell's game index
     const bool searchFocused=shell_.legacySearchFocused();
     // The four control buttons, in the manual's order (Search · Redeem Codes · View Downloads · View Cart),
     // plus the View Mode toggle. Only Search is wired; the other three are drawn as their documented labels
@@ -2664,61 +2675,51 @@ void View::drawLegacySurface(QPainter& p) {
         }
         text(r.adjusted(14,0,-14,0),label,focused?21:19,focused?Qt::white:QColor(214,222,236,160),Qt::AlignLeft|Qt::AlignVCenter);
     };
-    const QRectF searchBtn(970,48,150,54);
-    controlBtn(searchBtn,QStringLiteral("Search"),"explore_category_network","tex_kensaku",searchFocused);
-    controlBtn(QRectF(1130,48,175,54),QStringLiteral("Redeem Codes"),nullptr,nullptr,false);
-    controlBtn(QRectF(1315,48,215,54),QStringLiteral("View Downloads"),"explore_category_network","tex_dl_manage",false);
-    controlBtn(QRectF(1540,48,120,54),QStringLiteral("View Cart"),nullptr,nullptr,false);
+    controlBtn(QRectF(970,64,150,54),QStringLiteral("Search"),"explore_category_network","tex_kensaku",searchFocused);
+    controlBtn(QRectF(1130,64,175,54),QStringLiteral("Redeem Codes"),nullptr,nullptr,false);
+    controlBtn(QRectF(1315,64,215,54),QStringLiteral("View Downloads"),"explore_category_network","tex_dl_manage",false);
+    controlBtn(QRectF(1540,64,120,54),QStringLiteral("View Cart"),nullptr,nullptr,false);
     // View Mode toggle (list vs grid): only the grid is implemented, so it reads the current mode rather
     // than acting as a live toggle.
-    text(QRectF(1670,48,190,54),QStringLiteral("View Mode: Grid"),18,QColor(205,214,230,150),Qt::AlignLeft|Qt::AlignVCenter);
+    text(QRectF(1670,64,190,54),QStringLiteral("View Mode: Grid"),18,QColor(205,214,230,150),Qt::AlignLeft|Qt::AlignVCenter);
+
+    // ---- Silver gradient bottom footer (the reference's action footer) ----
+    QLinearGradient foot(0,861,0,1080);foot.setColorAt(0,QColor(201,205,211));foot.setColorAt(1,QColor(139,146,155));
+    p.fillRect(QRectF(0,861,1920,219),foot);
+    p.fillRect(QRectF(0,861,1920,2),QColor(255,255,255,120));
 
     if(shell_.legacyDetailOpen()) {
-        // ---- Item detail (purchase001.jpg shape: title, price/size, description, primary action) ------
-        // The "widescreen detail strip": cover on the left, title + metadata on the right. Metadata is
-        // shown only where the feed provides it; description, genre, release year, developer, publisher
-        // and platform are not in HydraLibrary's GameResult, so each is drawn as explicitly unavailable
-        // rather than fabricated.
+        // ---- Product detail (2008-04-03_us-store-2): dark inset panel, title/publisher/price strip,
+        //      square cover left, vertical action buttons below, long description right ----
         const Entry* g=games.value(0);
         if(g) {
-            const QRectF cover(140,200,480,270);
-            if(!g->artwork.isNull()) {
-                const QSizeF fitted=QSizeF(g->artwork.size()).scaled(cover.size(),Qt::KeepAspectRatio);
-                p.drawImage(QRectF(cover.center()-QPointF(fitted.width()/2,fitted.height()/2),fitted),g->artwork);
-            } else {
-                p.save();p.setPen(QPen(QColor(255,255,255,70),1));p.setBrush(QColor(255,255,255,14));
-                p.drawRoundedRect(cover,6,6);
-                drawItemGlyph(p,g->container,g->texture,cover.adjusted(cover.width()*.32,cover.height()*.32,-cover.width()*.32,-cover.height()*.32),.55);
-                p.restore();
-            }
-            text(QRectF(660,200,1120,54),elide(g->title,34,1120),34,Qt::white);
-            QString meta;
-            if(!g->fieldValue.isEmpty())meta=QStringLiteral("Size: %1").arg(g->fieldValue);
-            if(!g->detail.isEmpty())meta+=meta.isEmpty()?g->detail:QStringLiteral(" · ")+g->detail;
-            if(!meta.isEmpty())text(QRectF(660,258,1120,36),elide(meta,21,1120),21,QColor(205,214,230,215));
-            // The metadata panel: available facts above, the five absent ones marked unavailable.
-            p.save();p.setPen(Qt::NoPen);p.setBrush(QColor(255,255,255,10));
-            p.drawRoundedRect(QRectF(660,330,1120,330),8,8);p.restore();
-            const char* rows[][2]={{"Description",""},{"Genre",""},{"Release year",""},{"Developer",""},{"Publisher",""},{"Platform",""}};
-            for(int r=0;r<6;++r) {
-                const double y=360+r*46;
-                text(QRectF(690,y,300,40),QLatin1String(rows[r][0]),21,QColor(200,210,225,190));
-                text(QRectF(1000,y,760,40),QStringLiteral("Not available"),21,QColor(205,214,230,120),Qt::AlignLeft|Qt::AlignVCenter);
-            }
-            // The primary action is Download (the catalogue has no wallet/cart; every game is a free
-            // download). Cross hands off to the existing source-choice page.
-            const QRectF downloadBtn(660,700,400,60);
-            p.save();p.setPen(QPen(QColor(255,255,255,230),2));p.setBrush(QColor(255,255,255,30));
-            p.drawRoundedRect(downloadBtn,8,8);p.restore();
-            text(downloadBtn,QStringLiteral("Download"),26,Qt::white,Qt::AlignCenter);
-            text(QRectF(60,1020,1800,40),QStringLiteral("Cross: Download    Circle: Back"),20,QColor(210,218,232,180));
+            const QRectF panel(291,231,1340,630);
+            p.save();p.setPen(QPen(QColor(120,180,230,70),1));p.setBrush(QColor(6,13,30,235));
+            p.drawRoundedRect(panel,8,8);p.restore();
+            text(QRectF(311,251,1300,56),elide(g->title,34,1300),34,Qt::white);
+            QString pub=QStringLiteral("Publisher: Not available");
+            if(!g->fieldValue.isEmpty())pub+=QStringLiteral("    Size: %1").arg(g->fieldValue);
+            text(QRectF(311,312,1300,36),elide(pub,20,1300),20,QColor(190,205,225,200));
+            drawCover(QRectF(311,362,220,220),*g);
+            // Vertical action buttons (the manual's free-item path: Download replaces Buy Now; Add to Cart
+            // and Preview have no feed/console analogue and stay listed-but-unavailable).
+            const auto actionBtn=[&](const QRectF& r,const QString& label,bool primary){
+                if(primary){p.save();p.setPen(QPen(QColor(255,255,255,230),2));p.setBrush(QColor(60,140,220,60));p.drawRoundedRect(r,6,6);p.restore();}
+                else {p.save();p.setPen(QPen(QColor(255,255,255,60),1));p.setBrush(QColor(255,255,255,6));p.drawRoundedRect(r,6,6);p.restore();}
+                text(r,label,primary?24:20,primary?Qt::white:QColor(214,222,236,140),Qt::AlignCenter);
+            };
+            actionBtn(QRectF(311,606,220,52),QStringLiteral("Download"),true);
+            actionBtn(QRectF(311,668,220,52),QStringLiteral("Add to Cart"),false);
+            actionBtn(QRectF(311,730,220,52),QStringLiteral("Preview"),false);
+            text(QRectF(560,362,1050,470),QStringLiteral("Description not available for this title."),22,QColor(190,205,225,180),
+                 Qt::AlignLeft|Qt::AlignTop|Qt::TextWordWrap);
+            text(QRectF(291,900,1340,40),QStringLiteral("Cross: Download    Circle: Back"),20,QColor(40,46,55,210),Qt::AlignHCenter|Qt::AlignVCenter);
         }
         return;
     }
 
-    // ---- Catalogue: featured pane left, compact cover grid right --------------------------------------
+    // ---- Catalogue (2008-04-03_us-store-detail-preview): selected-game panel left, 5-column grid right --
     if(games.isEmpty()) {
-        // Empty/error state (the error row's detail carries the reason).
         QString line=tr("No popular games are downloadable right now.");
         if(!shell_.entries().isEmpty() && !shell_.entries().first().detail.isEmpty())
             line=shell_.entries().first().detail;
@@ -2726,63 +2727,45 @@ void View::drawLegacySurface(QPainter& p) {
         return;
     }
     const int n=games.size();
-    const int gridCount=n-1;
     const int cols=Shell::legacyStoreGridColumns;
     const int visRows=Shell::legacyStoreGridRows;
     const int scroll=shell_.legacyStoreScroll();
-    // Featured (game 0).
+    const int sel=std::clamp(cursor,0,n-1);
+    // Left selected-game panel (blue gradient): square cover, title, price/size, multiline description.
     {
-        const Entry& g=*games[0];
-        const QRectF cover(60,190,560,315);
-        if(!g.artwork.isNull()) {
-            const QSizeF fitted=QSizeF(g.artwork.size()).scaled(cover.size(),Qt::KeepAspectRatio);
-            p.drawImage(QRectF(cover.center()-QPointF(fitted.width()/2,fitted.height()/2),fitted),g.artwork);
-        } else {
-            p.save();p.setPen(QPen(QColor(255,255,255,70),1));p.setBrush(QColor(255,255,255,14));
-            p.drawRoundedRect(cover,6,6);
-            drawItemGlyph(p,g.container,g.texture,cover.adjusted(cover.width()*.32,cover.height()*.32,-cover.width()*.32,-cover.height()*.32),.55);
-            p.restore();
-        }
-        if(!searchFocused && cursor==0) { p.save();p.setPen(QPen(QColor(255,255,255,225),2));p.setBrush(Qt::NoBrush);p.drawRoundedRect(cover,6,6);p.restore(); }
-        text(QRectF(60,520,560,40),elide(g.title,30,560),30,(!searchFocused && cursor==0)?Qt::white:QColor(235,240,248));
-        QString sub=g.fieldValue;
-        if(!sub.isEmpty() && !g.detail.isEmpty())sub+=QStringLiteral(" · ");
-        sub+=g.detail;
-        if(!sub.isEmpty())text(QRectF(60,560,560,30),elide(sub,20,560),20,QColor(205,214,230,200));
-        text(QRectF(60,600,560,28),QStringLiteral("Featured"),18,QColor(205,214,230,150));
+        const Entry& g=*games[sel];
+        const QRectF panel(294,231,653,630);
+        QLinearGradient pg(panel.topLeft(),panel.bottomLeft());pg.setColorAt(0,QColor(30,79,143));pg.setColorAt(1,QColor(16,50,98));
+        p.save();p.setPen(Qt::NoPen);p.setBrush(pg);p.drawRoundedRect(panel,8,8);p.restore();
+        drawCover(QRectF(314,251,180,180),g);
+        text(QRectF(514,251,413,56),elide(g.title,30,413),30,Qt::white);
+        QString price=QStringLiteral("Free");
+        if(!g.fieldValue.isEmpty())price+=QStringLiteral(" · %1").arg(g.fieldValue);
+        text(QRectF(514,312,413,36),elide(price,20,413),20,QColor(205,222,240,210));
+        text(QRectF(314,455,613,380),QStringLiteral("Description not available for this title."),22,QColor(205,222,240,190),
+             Qt::AlignLeft|Qt::AlignTop|Qt::TextWordWrap);
     }
-    // Grid (games 1..n-1), 4 columns, 3 visible rows that scroll with the cursor.
-    const double gridX=680,gridY=190,gap=24;
-    const double gridW=1860-gridX;
+    // Right compact 5-column grid of square cover tiles (title as the label; genre is not in the feed).
+    const double gridX=956,gridY=231,gap=14;
+    const double gridW=1613-gridX;
     const double cellW=(gridW-(cols-1)*gap)/cols;
-    const double coverH=cellW*9./16.;
-    const double rowH=coverH+40.;
+    const double rowH=cellW+6+22+gap;
     for(int r=0;r<visRows;++r) {
         const int rowIdx=scroll+r;
         for(int c=0;c<cols;++c) {
-            const int k=rowIdx*cols+c;          // grid cell index (game k+1)
-            if(k>=gridCount)continue;
-            const int gi=k+1;
+            const int gi=rowIdx*cols+c;
+            if(gi>=n)continue;
             const Entry& g=*games[gi];
             const double cx=gridX+c*(cellW+gap);
             const double cy=gridY+r*rowH;
-            const QRectF cover(cx,cy,cellW,coverH);
-            if(!g.artwork.isNull()) {
-                const QSizeF fitted=QSizeF(g.artwork.size()).scaled(cover.size(),Qt::KeepAspectRatio);
-                p.drawImage(QRectF(cover.center()-QPointF(fitted.width()/2,fitted.height()/2),fitted),g.artwork);
-            } else {
-                p.save();p.setPen(QPen(QColor(255,255,255,60),1));p.setBrush(QColor(255,255,255,12));
-                p.drawRoundedRect(cover,4,4);
-                drawItemGlyph(p,g.container,g.texture,cover.adjusted(cover.width()*.32,cover.height()*.32,-cover.width()*.32,-cover.height()*.32),.45);
-                p.restore();
-            }
-            const bool focused=!searchFocused && (cursor-1)==k;
-            if(focused){p.save();p.setPen(QPen(QColor(255,255,255,225),2));p.setBrush(Qt::NoBrush);p.drawRoundedRect(cover,4,4);p.restore();}
-            text(QRectF(cx,cy+coverH+4,cellW,28),elide(g.title,18,cellW),18,focused?Qt::white:QColor(222,228,238));
+            const QRectF cover(cx,cy,cellW,cellW);
+            drawCover(cover,g);
+            const bool focused=!searchFocused && gi==sel;
+            if(focused){p.save();p.setPen(QPen(QColor(120,200,255,230),2));p.setBrush(Qt::NoBrush);p.drawRoundedRect(cover.adjusted(-2,-2,2,2),4,4);p.restore();}
+            text(QRectF(cx,cy+cellW+6,cellW,22),elide(g.title,16,cellW),16,focused?Qt::white:QColor(210,220,235));
         }
     }
-    // Bottom hints, the same controller affordance every surface keeps.
-    text(QRectF(60,1020,1800,40),QStringLiteral("Cross: Open    Circle: Back    D-pad: Browse"),20,QColor(210,218,232,180));
+    text(QRectF(294,900,1340,40),QStringLiteral("Cross: Open    Circle: Back    D-pad: Browse"),20,QColor(40,46,55,210),Qt::AlignHCenter|Qt::AlignVCenter);
 }
 
 void View::drawScene(QPainter& p) {

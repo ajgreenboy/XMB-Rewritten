@@ -368,20 +368,21 @@ public:
     int columnSink() const { return columnSink_; }
     QString pageTitle() const { return pages_.isEmpty()?QString{}:pages_.last().title; }
     // The GEN 2 (2008-2012) PlayStation Store catalogue/detail surfaces. The catalogue is a faithful
-    // "featured left + compact cover grid right + blue chrome" layout over the JSON/Hydra download-games
-    // feed (release_shell.cpp's openBrowseGames); the detail is one game's item page. Navigation and the
-    // cursor model live in Shell::legacyStoreMove/Activate (legacy_store.cpp) and the layout in
-    // View::drawLegacySurface (view.cpp). `selection` stays a valid game index (0 = the featured pane,
-    // 1..N-1 = grid cells), so the ordinary selection()<entries().size() invariant holds; the top Search
-    // button is a separate focus flag (Page::legacySearchFocus).
+    // "selected-game panel left + compact 5-column cover grid right" browse layout over the JSON/Hydra
+    // download-games feed (release_shell.cpp's openBrowseGames); the detail is one game's product page.
+    // Navigation and the cursor model live in Shell::legacyStoreMove/Activate (legacy_store.cpp) and the
+    // layout in View::drawLegacySurface (view.cpp). `selection` is the focused grid cell's game index
+    // (0..N-1; the left panel follows it), so the ordinary selection()<entries().size() invariant holds;
+    // the top Search button is a separate focus flag (Page::legacySearchFocus).
     bool legacyStoreOpen() const { return !pages_.isEmpty() && pages_.last().legacyStore; }
     bool legacyDetailOpen() const { return !pages_.isEmpty() && pages_.last().legacyDetail; }
     // The grid window's first visible row (Shell::legacyStoreMove keeps the focused cell inside it).
     int legacyStoreScroll() const { return pages_.isEmpty()?0:pages_.last().legacyScroll; }
     // True while the catalogue's top Search button has focus (instead of a game row).
     bool legacySearchFocused() const { return !pages_.isEmpty() && pages_.last().legacySearchFocus; }
-    // The compact-cover grid's column count, shared by Shell (cursor moves) and View (layout).
-    static constexpr int legacyStoreGridColumns=4;
+    // The compact-cover grid's column count, shared by Shell (cursor moves) and View (layout). Five columns,
+    // per the 2008 browse reference (a selected-game panel left, a 5-column cover grid right).
+    static constexpr int legacyStoreGridColumns=5;
     // Rows of the grid visible at once; the rest scroll with the cursor (Shell::legacyStoreMove keeps the
     // focused cell inside this window by advancing Page::legacyScroll).
     static constexpr int legacyStoreGridRows=3;
