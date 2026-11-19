@@ -421,9 +421,18 @@ void Shell::openBrowseGames() {
             } else {
                 page.downloadResults=result.fixtureGames;
                 if(page.downloadResults.isEmpty()) {
-                    for(const auto& title:result.titles) {
-                        GameResult skeleton;skeleton.name=title.title;skeleton.title=title.title;skeleton.coverUrl=title.coverUrl;
+                    const auto groups=groupPopularTitles(result.titles);
+                    for(const auto& group:groups) {
+                        GameResult skeleton;skeleton.name=group.name;skeleton.title=group.name;skeleton.coverUrl=group.coverUrl;
                         page.downloadResults.append(std::move(skeleton));
+                        page.legacyGameTitles.append(group.entries);
+                    }
+                    page.legacyGameResults.resize(page.downloadResults.size());
+                    page.legacyGamePending.resize(page.downloadResults.size());
+                    page.legacyGameFailed=QVector<int>(page.downloadResults.size());
+                    for(int i=0;i<page.legacyGameTitles.size();++i) {
+                        page.legacyGameResults[i].resize(page.legacyGameTitles[i].size());
+                        page.legacyGamePending[i]=page.legacyGameTitles[i].size();
                     }
                 }
                 page.legacyGameState=QVector<int>(page.downloadResults.size(),result.fixtureGames.isEmpty()?0:1);
@@ -449,8 +458,13 @@ void Shell::openBrowseGames() {
             }
             if(result.fixtureGames.isEmpty() && result.error.isEmpty()) {
                 const auto identity=pages_.last().identity;
-                const int count=qMin(100,result.titles.size());
-                for(int i=0;i<count;++i)requestLegacyStoreGame(i,result.titles[i],generation,identity,++legacyGameRequestCounter_);
+                const int count=qMin(100,pages_.last().legacyGameTitles.size());
+                for(int group=0;group<count;++group) {
+                    const quint64 token=++legacyGameRequestCounter_;
+                    pages_.last().legacyGameRequest[group]=token;
+                    for(int raw=0;raw<pages_.last().legacyGameTitles[group].size();++raw)
+                        requestLegacyStoreGame(group,raw,pages_.last().legacyGameTitles[group][raw],generation,identity,token);
+                }
             }
         }
         emit changed();
@@ -467,23 +481,29 @@ void Shell::openBrowseGames() {
     emit changed();
 }
 
-void Shell::requestLegacyStoreGame(int index,const PopularTitle& title,quint64 generation,quint64 pageIdentity,quint64 requestToken) {
+void Shell::requestLegacyStoreGame(int groupIndex,int rawIndex,const PopularTitle& title,quint64 generation,quint64 pageIdentity,quint64 requestToken) {
     auto* watcher=new QFutureWatcher<BrowseOutcome>(this);
-    connect(watcher,&QFutureWatcher<BrowseOutcome>::finished,this,[this,watcher,index,title,generation,pageIdentity,requestToken]{
+    connect(watcher,&QFutureWatcher<BrowseOutcome>::finished,this,[this,watcher,groupIndex,rawIndex,title,generation,pageIdentity,requestToken]{
         const auto result=watcher->result();watcher->deleteLater();
-        if(pages_.isEmpty() || !pages_.last().legacyStore || index<0 || index>=pages_.last().downloadResults.size())return;
+        if(pages_.isEmpty() || !pages_.last().legacyStore || groupIndex<0 || groupIndex>=pages_.last().downloadResults.size() ||
+           groupIndex>=pages_.last().legacyGameTitles.size() ||
+           rawIndex<0 || rawIndex>=pages_.last().legacyGameTitles[groupIndex].size())return;
         auto& page=pages_.last();
-        if(!asyncIdentityMatches(page.identity,pageIdentity,legacyStoreGeneration_,generation,
-                                 page.legacyGameRequest.value(index),requestToken))return;
-        if(!result.error.isEmpty() || result.games.isEmpty() || result.games.first().options.isEmpty()) {
-            page.legacyGameState[index]=2;page.legacyGameError[index]=result.error.isEmpty()?tr("No source results"):result.error;
-            page.entries[index].action=Action::GameRetry;
-            page.entries[index].detail=tr("Sources unavailable · Retry");
+        if(generation!=legacyStoreGeneration_ || !asyncIdentityMatches(page.identity,pageIdentity,
+                                 page.legacyGameRequest.value(groupIndex),requestToken,
+                                 quint64(rawIndex),quint64(rawIndex)))return;
+        if(!result.error.isEmpty() || result.games.isEmpty() || result.games.first().options.isEmpty())page.legacyGameFailed[groupIndex]=1;
+        else page.legacyGameResults[groupIndex][rawIndex]=result.games.first();
+        if(--page.legacyGamePending[groupIndex]>0)return;
+        const int index=groupIndex;
+        if(page.legacyGameFailed[groupIndex]) {
+            page.legacyGameState[index]=2;page.legacyGameError[index]=tr("One or more source lookups failed");
+            page.entries[index].action=Action::GameRetry;page.entries[index].detail=tr("Sources unavailable · Retry");
         } else {
-            page.downloadResults[index]=result.games.first();
+            page.downloadResults[index]=mergePopularGameResults(page.downloadResults[index].name,
+                page.downloadResults[index].coverUrl,page.legacyGameResults[groupIndex]);
             page.legacyGameState[index]=1;page.legacyGameError[index].clear();
-            page.entries[index].action=Action::GameSearchResult;
-            page.entries[index].detail=optionCount(page.downloadResults[index]);
+            page.entries[index].action=Action::GameSearchResult;page.entries[index].detail=optionCount(page.downloadResults[index]);
             page.entries[index].fieldValue=page.downloadResults[index].options.first().fileSize;
             page.entries[index].artworkUrl=page.downloadResults[index].coverUrl;
             requestLegacyStoreCover(index,page.downloadResults[index].coverUrl,pageIdentity);
@@ -501,12 +521,14 @@ void Shell::retryLegacyStoreGame(int index) {
     if(pages_.isEmpty() || !pages_.last().legacyStore || index<0 || index>=pages_.last().downloadResults.size() ||
        pages_.last().legacyGameState.value(index)!=2)return;
     auto& page=pages_.last();
-    PopularTitle title{page.downloadResults[index].title,page.downloadResults[index].coverUrl};
     page.legacyGameState[index]=0;page.legacyGameError[index].clear();page.entries[index].action=Action::GameSearchResult;
     page.entries[index].detail=tr("Loading sources...");page.entries[index].fieldValue.clear();
     const quint64 requestToken=++legacyGameRequestCounter_;
-    page.legacyGameRequest[index]=requestToken;
-    requestLegacyStoreGame(index,title,legacyStoreGeneration_,page.identity,requestToken);emit changed();
+    page.legacyGameRequest[index]=requestToken;page.legacyGamePending[index]=page.legacyGameTitles[index].size();
+    page.legacyGameFailed[index]=0;page.legacyGameResults[index].fill(GameResult{});
+    for(int raw=0;raw<page.legacyGameTitles[index].size();++raw)
+        requestLegacyStoreGame(index,raw,page.legacyGameTitles[index][raw],legacyStoreGeneration_,page.identity,requestToken);
+    emit changed();
 }
 
 void Shell::requestLegacyStoreCover(int index,const QString& url,quint64 pageIdentity) {

@@ -36,6 +36,14 @@ struct PopularTitle {
     QString title;
     QString coverUrl;
 };
+struct PopularTitleGroup {
+    QString name;
+    QString coverUrl;
+    QVector<PopularTitle> entries;
+};
+QVector<PopularTitleGroup> groupPopularTitles(const QVector<PopularTitle>& titles);
+GameResult mergePopularGameResults(const QString& name,const QString& coverUrl,
+                                   const QVector<GameResult>& results);
 // One raw record from the Hydra /games API, before merge/dedup. buildGameCatalog turns a batch of
 // these into the one-game-per-name catalogue.
 struct GameRecord {

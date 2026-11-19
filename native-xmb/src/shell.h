@@ -853,7 +853,8 @@ private:
     void saveFlareSolverrUrl(const QString& url);
     void openGameSearch(const QString& scope={});
     void openBrowseGames();
-    void requestLegacyStoreGame(int index,const PopularTitle& title,quint64 generation,quint64 pageIdentity,quint64 requestToken);
+    void requestLegacyStoreGame(int groupIndex,int rawIndex,const PopularTitle& title,quint64 generation,
+                                quint64 pageIdentity,quint64 requestToken);
     void retryLegacyStoreGame(int index);
     void requestLegacyStoreCover(int index,const QString& url,quint64 pageIdentity);
     void openDownloadHub();
@@ -1383,7 +1384,7 @@ private:
     int columnSink_=0;
     // `grouped` is a page the item menu's Group Content level rebuilt into letter folders: `groupedSource` keeps
     // the ungrouped rows so All can put them back without a rescan, and the folders' rows are the same entries.
-    struct Page { QString title; QVector<Entry> entries; int selection=0; quint64 identity=0; QString directory; bool jellyfin=false,jellyfinViews=false,jellyfinSearch=false; QString jellyfinParent; QString jellyfinMusic,jellyfinLibrary; QString jellyfinHome; int jellyfinStart=0; bool downloads=false; QString steamCmd,seerr; bool continuePage=false; bool signIn=false; bool jfSetup=false; bool steamAccounts=false; bool grouped=false; QString groupKey; QVector<Entry> groupedSource; bool sysconfPlugin=false; QString playlistsType,playlistId; QString spotify,spotifyContext; QString dlna; int dlnaServer=-1; QString tailscale; QString wol,ha; bool weather=false; bool systemCheck=false; QString userInfo; int userInfoStep=0; bool browse=false; QString browsePath; QString browseFiles; bool libraryRoot=false; QVector<GameResult> downloadResults; QVector<int> legacyGameState; QVector<QString> legacyGameError; QVector<quint64> legacyGameRequest; bool downloadHub=false; bool addGame=false; bool legacyStore=false; bool legacyDetail=false; int legacyScroll=0; bool legacySearchFocus=false; RawgGameDetails legacyDetails; };
+    struct Page { QString title; QVector<Entry> entries; int selection=0; quint64 identity=0; QString directory; bool jellyfin=false,jellyfinViews=false,jellyfinSearch=false; QString jellyfinParent; QString jellyfinMusic,jellyfinLibrary; QString jellyfinHome; int jellyfinStart=0; bool downloads=false; QString steamCmd,seerr; bool continuePage=false; bool signIn=false; bool jfSetup=false; bool steamAccounts=false; bool grouped=false; QString groupKey; QVector<Entry> groupedSource; bool sysconfPlugin=false; QString playlistsType,playlistId; QString spotify,spotifyContext; QString dlna; int dlnaServer=-1; QString tailscale; QString wol,ha; bool weather=false; bool systemCheck=false; QString userInfo; int userInfoStep=0; bool browse=false; QString browsePath; QString browseFiles; bool libraryRoot=false; QVector<GameResult> downloadResults; QVector<int> legacyGameState; QVector<QString> legacyGameError; QVector<quint64> legacyGameRequest; QVector<QVector<PopularTitle>> legacyGameTitles; QVector<QVector<GameResult>> legacyGameResults; QVector<int> legacyGamePending; QVector<int> legacyGameFailed; bool downloadHub=false; bool addGame=false; bool legacyStore=false; bool legacyDetail=false; int legacyScroll=0; bool legacySearchFocus=false; RawgGameDetails legacyDetails; };
     QVector<Page> pages_;
     bool psMenu_=false;              // the PS-button system menu is showing
     bool desktopMode_=false;         // the XMB window is hidden for Desktop Mode (main.cpp DesktopMode)

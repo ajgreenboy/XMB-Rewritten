@@ -75,6 +75,7 @@ bool isPreinstalled(const HydraSource& source) {
 }
 
 QString loopbackEndpoint(const char* variable,const QString& fallback) {
+    if(qEnvironmentVariableIntValue("XMB_HYDRA_TEST_FIXTURE")!=1)return fallback;
     const QString configured=qEnvironmentVariable(variable);
     if(configured.isEmpty())return fallback;
     const QUrl url(configured);
@@ -241,27 +242,21 @@ bool HydraLibrary::popularGames(QVector<GameResult>* out, QString* error) const 
     }
 
     QVector<GameResult> results;
-    QHash<QString,int> byName;
-    for(int hotIndex=0;hotIndex<titles.size();++hotIndex) {
-        const PopularLookup lookup=lookups.at(hotIndex).result();
-        if(!lookup.ok)continue;
-        const GameResult& result=lookup.game;
-        const QString title=titles.at(hotIndex).title;
-        const QString key=catalogNameKey(title);
-        const auto existing=byName.find(key);
-        if(existing==byName.end()) {
-            byName.insert(key,results.size());
-            results.append(result);
-        } else {
-            auto& dst=results[existing.value()];
-            if(dst.coverUrl.isEmpty())dst.coverUrl=result.coverUrl;
-            QSet<QString> have;
-            for(const auto& o:dst.options)have.insert(o.sourceUrl.isEmpty()?o.source:o.sourceUrl);
-            for(const auto& o:result.options) {
-                const QString identity=o.sourceUrl.isEmpty()?o.source:o.sourceUrl;
-                if(!have.contains(identity)) { have.insert(identity); dst.options.append(o); }
-            }
+    const auto groups=groupPopularTitles(titles);
+    int rawIndex=0;
+    for(const auto& group:groups) {
+        QVector<GameResult> parts;
+        bool failed=false;
+        parts.reserve(group.entries.size());
+        for(int i=0;i<group.entries.size();++i,++rawIndex) {
+            const auto& lookup=lookups.at(rawIndex).result();
+            if(!lookup.ok) { failed=true;break; }
+            parts.append(lookup.game);
         }
+        // A group is all-or-nothing. Never publish a partial source union when one
+        // duplicate hot entry failed; the Store's per-title retry handles recovery.
+        if(!failed)results.append(mergePopularGameResults(group.name,group.coverUrl,parts));
+        if(failed)rawIndex+=group.entries.size()-parts.size();
     }
     if(out)*out=results;
     return !results.isEmpty();
@@ -273,18 +268,45 @@ bool HydraLibrary::popularTitles(QVector<PopularTitle>* out,QString* error) cons
     const QString url=loopbackEndpoint("XMB_HYDRA_HOT_URL",
         QStringLiteral("https://api.hydralauncher.gg/catalogue/hot?take=40&skip=0"));
     if(!fetchJsonArray(QUrl(url),&hot,error))return false;
-    QSet<QString> seen;
     for(const auto& value:hot) {
         const auto object=value.toObject();
         PopularTitle title;
         title.title=object.value(QStringLiteral("title")).toString().trimmed();
         title.coverUrl=object.value(QStringLiteral("libraryImageUrl")).toString();
-        const QString key=catalogNameKey(title.title);
-        if(!title.title.isEmpty() && !seen.contains(key) && out) {
-            seen.insert(key);out->append(title);
-        }
+        if(!title.title.isEmpty() && out)out->append(title);
     }
     return out && !out->isEmpty();
+}
+
+QVector<PopularTitleGroup> groupPopularTitles(const QVector<PopularTitle>& titles) {
+    QVector<PopularTitleGroup> groups;
+    QHash<QString,int> indexes;
+    for(const auto& title:titles) {
+        const QString key=catalogNameKey(title.title);
+        if(key.isEmpty())continue;
+        const auto found=indexes.constFind(key);
+        if(found==indexes.cend()) {
+            indexes.insert(key,groups.size());
+            PopularTitleGroup group;group.name=title.title;group.coverUrl=title.coverUrl;group.entries.append(title);
+            groups.append(std::move(group));
+        } else groups[found.value()].entries.append(title);
+    }
+    return groups;
+}
+
+GameResult mergePopularGameResults(const QString& name,const QString& coverUrl,
+                                   const QVector<GameResult>& results) {
+    GameResult merged;merged.name=name;merged.title=name;merged.coverUrl=coverUrl;
+    QSet<QString> seen;
+    for(const auto& result:results) {
+        if(merged.originalTitle.isEmpty())merged.originalTitle=result.originalTitle;
+        for(const auto& option:result.options) {
+            const QString identity=option.sourceUrl.isEmpty()?option.source:option.sourceUrl;
+            if(seen.contains(identity))continue;
+            seen.insert(identity);merged.options.append(option);
+        }
+    }
+    return merged;
 }
 
 bool HydraLibrary::popularGame(const PopularTitle& title,GameResult* out,QString* error) const {
