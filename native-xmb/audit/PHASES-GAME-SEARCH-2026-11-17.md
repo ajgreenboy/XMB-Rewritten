@@ -226,3 +226,11 @@ behaviour, not a diagnosed defect of the Back/Esc change.
 Still not replayed: Back on a non-release row, Back on the remaining non-active states (paused / finished / failed /
 cancelled), and Back on the already-open confirm before answering (pre-confirm dismiss). Those paths remain covered by the
 state-predicate table and the `releaseJobBackTarget()` / `cancelReleaseJob()` unit tests above, not by a UI replay.
+
+## 9. Defensive worker join on shutdown (2026-11-18)
+
+The quit-hang observation in §8 did not reproduce consistently — the pre-fix binary also exited cleanly in repeated runs, so
+no root cause was confirmed. `stopReleaseJobs()` now defensively joins the in-flight worker (`QFuture::waitForFinished()`)
+so `app.quit()` exits deterministically rather than racing the thread pool's static-destruction `waitForDone()`. On the fixed
+build, three isolated loopback active-transfer runs quit → exit in ~0.6 s with the queue and archive resume state retained.
+No live HTPC run was exercised, so this remains a defensive fix, not a proven root cause.
