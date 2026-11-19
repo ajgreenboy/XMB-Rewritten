@@ -223,9 +223,34 @@ Unrelated observation, not root-caused: quitting with a release download still a
 cancel every job before the final `quit`. The hang is outside this affordance's scope and is recorded here only as observed
 behaviour, not a diagnosed defect of the Back/Esc change.
 
-Still not replayed: Back on a non-release row, Back on the remaining non-active states (paused / finished / failed /
-cancelled), and Back on the already-open confirm before answering (pre-confirm dismiss). Those paths remain covered by the
-state-predicate table and the `releaseJobBackTarget()` / `cancelReleaseJob()` unit tests above, not by a UI replay.
+Still not replayed: Back on a non-release row and Back on the remaining non-active states (paused / finished / failed /
+cancelled). Those paths remain covered by the state-predicate table and the `releaseJobBackTarget()` / `cancelReleaseJob()`
+unit tests above, not by a UI replay. The already-open confirm before answering (pre-confirm dismiss) is now replayed for
+the pre-download confirm — see the subsection below.
+
+### Pre-download confirm Esc path (replayed, 2026-11-18)
+
+A third scratch harness (`%TEMP%\xmb-p-cancel-pre\p-cancel-pre.ts`, not committed) replays the remaining confirm case —
+Back/Esc on the already-open confirm before answering — against the pre-download confirm. It drives the §5 route to the
+drive picker, selects the scratch drive (raising `completeGameDownload`'s `showConfirm` "Download and install <game>?",
+shell.cpp:2381), then sends Esc/Circle in place of the `RIGHT`+`ENTER` commit. Source is HEAD `2199652`; the build under
+test is `out/native-xmb/re-ps3-native.exe` (relinked 2026-11-18 18:08). The run is evidenced by the harness log and the
+shot sidecars, not by reading the PNG pixels:
+
+- Dialog transcript: `dialog: box show choices=yes choice=no` then `dialog: box cancel choice=no`, and no `box enter`
+  commit — the box's Yes callback (`enqueueReleaseGame`) never ran.
+- No enqueue and no artifacts: `data/release-download-queue.bin` absent, `data/apps.json` absent, no
+  `XMB Games/Download Archives/` under the scratch library (the directory is never created), and the loopback server
+  counted 0 archive requests — no transfer started.
+- Clean exit 0 (~29 s), no hung process.
+
+Sidecars pin the page state at each step: `s0-focus` (root, depth 0, `game:download-hub`, row 17 = Download Games)
+confirms the entry point, and `p1-confirm` / `p2-after-esc` / `p3-after-esc2` (page, depth 5, focused row the scratch
+drive entry) confirm the drive picker is the active page both when the box is raised and after Esc dismisses it back to
+the same page — the box itself is evidenced by the dialog log lines, not the sidecar.
+
+Build caveat: `out/native-xmb/build-info.json` is stale — it still records `sourceRevision 67f69f7` (built 2026-11-12),
+older than both the relink and HEAD `2199652` — so the exe's embedded build-info does not identify the source under test.
 
 ## 9. Defensive worker join on shutdown (2026-11-18)
 
