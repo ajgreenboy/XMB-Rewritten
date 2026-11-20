@@ -17,6 +17,12 @@
 
 namespace xmb {
 namespace {
+// Retry-After (RFC 7231 §7.1.3) is either delay-seconds = 1*DIGIT (decimal digits only: no sign,
+// no fraction, no unit suffix) or an HTTP-date. parseRetryAfterSeconds returns the digit-seconds
+// (>= 0), or one of the two sentinels below for an absent or unparseable header.
+constexpr qint64 kRetryAfterAbsent=-1;     // no Retry-After header (or an empty value)
+constexpr qint64 kRetryAfterMalformed=-2;  // present but neither a digit run nor an HTTP-date
+
 // The result of one blocking GET, kept separate from the error string so the retry loop can
 // classify a failure instead of guessing from prose. `status` is the final HTTP status (0 when
 // none), and `networkError` the reply's own error (which aborts turn into OperationCanceledError,
@@ -30,23 +36,29 @@ struct FetchOutcome {
     bool timedOut=false;
     bool invalidRedirect=false;
     bool overflow=false;
-    int retryAfterSeconds=-1;   // parsed Retry-After, -1 when absent or unparsable
+    qint64 retryAfterSeconds=kRetryAfterAbsent;   // parsed Retry-After (see sentinels above)
 };
 bool fetchBody(const QUrl& url,const QString& service,QByteArray* out,QString* error);
 
-// Retry-After per RFC 7231 §7.1.3: a non-negative decimal second count or an HTTP-date.
-// A value we cannot parse is treated as absent, never as a licence to wait unboundedly.
-int parseRetryAfterSeconds(const QByteArray& value) {
-    if(value.trimmed().isEmpty())return -1;
-    bool ok=false;
-    const long seconds=QString::fromLatin1(value).trimmed().toLong(&ok);
-    if(ok && seconds>=0)return int(seconds);
-    const QDateTime when=QDateTime::fromString(QString::fromLatin1(value).trimmed(),Qt::RFC2822Date);
+// Parses a Retry-After header value into seconds, honouring the strict 1*DIGIT grammar for the
+// delay-seconds form (leading/trailing optional whitespace is field framing, not part of the value).
+qint64 parseRetryAfterSeconds(const QByteArray& value) {
+    const QByteArray field=value.trimmed();
+    if(field.isEmpty())return kRetryAfterAbsent;
+    bool allDigits=!field.isEmpty();
+    for(const char c:field)if(c<'0'||c>'9'){allDigits=false;break;}
+    if(allDigits) {
+        bool ok=false;
+        const qlonglong seconds=QString::fromLatin1(field).toLongLong(&ok);
+        if(ok && seconds>=0)return seconds;
+        return kRetryAfterMalformed;   // a digit run that overflows qlonglong
+    }
+    const QDateTime when=QDateTime::fromString(QString::fromLatin1(field),Qt::RFC2822Date);
     if(when.isValid()) {
         const qint64 delta=QDateTime::currentDateTimeUtc().secsTo(when.toUTC());
-        return delta>0?int(delta):0;
+        return delta>0?delta:0;
     }
-    return -1;
+    return kRetryAfterMalformed;
 }
 
 // A curated set of genuinely temporary network conditions worth one bounded retry. Permanent or
@@ -111,7 +123,10 @@ bool safeRedirect(const QUrl& from, const QUrl& to) {
 }
 
 // One blocking GET. The body, status and failure reason are returned through FetchOutcome.
-FetchOutcome fetchBodyOnce(const QUrl& url,int timeoutMs) {
+// When `inactivity` is true the timeout is an idle deadline that restarts on every body chunk, so a
+// slowly progressing feed is never cut off while a stalled one is aborted and can be retried; when
+// false it is a hard cap (the catalogue callers' historical behaviour).
+FetchOutcome fetchBodyOnce(const QUrl& url,int timeoutMs,bool inactivity) {
     FetchOutcome outcome;
     if((url.scheme()!=QLatin1String("http") && url.scheme()!=QLatin1String("https")) || url.host().isEmpty()) {
         outcome.invalidUrl=true; return outcome;
@@ -134,6 +149,7 @@ FetchOutcome fetchBodyOnce(const QUrl& url,int timeoutMs) {
         const QByteArray chunk=reply->read(remaining+1);
         if(chunk.size()>remaining){overflow=true;abort();return;}
         body.append(chunk);
+        if(inactivity)timer.start(timeoutMs);   // reset the idle deadline on progress
     });
     QObject::connect(reply,&QNetworkReply::finished,&loop,&QEventLoop::quit);
     timer.start(timeoutMs); loop.exec();
@@ -155,7 +171,7 @@ FetchOutcome fetchBodyOnce(const QUrl& url,int timeoutMs) {
 }
 
 bool fetchBody(const QUrl& url,const QString& service,QByteArray* out,QString* error) {
-    const FetchOutcome outcome=fetchBodyOnce(url,30000);
+    const FetchOutcome outcome=fetchBodyOnce(url,30000,false);
     if(!outcome.ok) { if(error)*error=fetchErrorString(service,outcome); return false; }
     if(out)*out=outcome.body; return true;
 }
@@ -165,40 +181,58 @@ void sleepFor(int msecs) {
     QEventLoop loop; QTimer::singleShot(msecs,&loop,&QEventLoop::quit); loop.exec();
 }
 
-// Bounded automatic retry of the idempotent selected-feed GET (the Browse Sources path). A
-// transient failure gets a short, growing backoff that honours Retry-After: it never repeats before
-// the server says it is safe, and it never waits past the remaining budget. The whole sequence is
-// capped by kMaxAttempts and kBudgetMs, so a stuck endpoint cannot hold the caller.
+// Retry timing policy. The defaults are fixed for production; the loopback fixture may shrink them
+// (only while XMB_HYDRA_TEST_FIXTURE=1) so the stall, Retry-After and bound behaviours can be
+// exercised deterministically without a multi-second test run. Test-only overrides are never read
+// in production.
+struct RetryPolicy {
+    int maxAttempts=3;
+    int budgetMs=20000;      // hard ceiling on the whole sequence
+    int backoffBaseMs=400;   // short backoff before the first retry (doubles per retry)
+    int inactivityMs=8000;   // per-attempt idle deadline, reset on each body chunk
+};
+RetryPolicy retryPolicy() {
+    RetryPolicy policy;
+    if(qEnvironmentVariableIntValue("XMB_HYDRA_TEST_FIXTURE")!=1)return policy;
+    const auto readPositive=[&](const char* name,int fallback) {
+        const int value=qEnvironmentVariableIntValue(name);
+        return value>0?value:fallback;
+    };
+    policy.maxAttempts=readPositive("XMB_HYDRA_RETRY_MAX_ATTEMPTS",policy.maxAttempts);
+    policy.budgetMs=readPositive("XMB_HYDRA_RETRY_BUDGET_MS",policy.budgetMs);
+    policy.backoffBaseMs=readPositive("XMB_HYDRA_RETRY_BACKOFF_MS",policy.backoffBaseMs);
+    policy.inactivityMs=readPositive("XMB_HYDRA_RETRY_INACTIVITY_MS",policy.inactivityMs);
+    return policy;
+}
+
+// Bounded automatic retry of the idempotent selected-feed GET (the Browse Sources path). Each
+// attempt runs under the inactivity deadline (not a hard cap on a progressing feed); a transient
+// failure gets a short, growing backoff that honours Retry-After — never repeating before the server
+// says it is safe, never waiting past the remaining budget, and never retrying at all when a
+// Retry-After is present but unparseable. The whole sequence is capped by maxAttempts and budgetMs.
 bool fetchBodyWithRetry(const QUrl& url,const QString& service,QByteArray* out,QString* error) {
-    constexpr int kMaxAttempts=3;
-    constexpr int kBudgetMs=20000;
-    constexpr int kBackoffBaseMs=400;
+    const RetryPolicy policy=retryPolicy();
     QElapsedTimer budget; budget.start();
     FetchOutcome outcome;
     for(int attempt=1;;++attempt) {
         const int elapsed=int(budget.elapsed());
-        if(elapsed>=kBudgetMs)break;
-        outcome=fetchBodyOnce(url,qMin(30000,kBudgetMs-elapsed));
+        if(elapsed>=policy.budgetMs)break;
+        outcome=fetchBodyOnce(url,qMin(policy.inactivityMs,policy.budgetMs-elapsed),true);
         if(outcome.ok) { if(out)*out=outcome.body; return true; }
-        if(attempt>=kMaxAttempts || !fetchRetryable(outcome))break;
-        int wait=kBackoffBaseMs<<(attempt-1);
+        if(attempt>=policy.maxAttempts || !fetchRetryable(outcome))break;
+        if(outcome.retryAfterSeconds==kRetryAfterMalformed)break;   // unparseable Retry-After: no premature retry
+        int wait=policy.backoffBaseMs<<(attempt-1);
         if(outcome.retryAfterSeconds>0) {
-            const qint64 retryAfterMs=qMin<qint64>(qint64(outcome.retryAfterSeconds)*1000,kBudgetMs);
+            const qint64 secs=outcome.retryAfterSeconds;
+            const qint64 retryAfterMs=(secs>=qint64(policy.budgetMs)/1000)?qint64(policy.budgetMs):secs*1000;
             if(retryAfterMs>wait)wait=int(retryAfterMs);
         }
-        const int remaining=kBudgetMs-int(budget.elapsed());
+        const int remaining=policy.budgetMs-int(budget.elapsed());
         if(wait>=remaining)break;   // never wait past the budget (no unbounded wait)
         sleepFor(wait);
     }
     if(error)*error=fetchErrorString(service,outcome);
     return false;
-}
-
-bool fetchDocument(const QUrl& url, QJsonDocument* out, QString* error) {
-    QByteArray body; if(!fetchBody(url,QStringLiteral("source"),&body,error))return false;
-    QJsonParseError parseError; const auto document=QJsonDocument::fromJson(body,&parseError);
-    if(document.isNull()) { if(error)*error=QStringLiteral("Hydra source returned invalid JSON; retry"); return false; }
-    if(out)*out=document; return true;
 }
 bool fetchDocumentWithRetry(const QUrl& url, QJsonDocument* out, QString* error) {
     QByteArray body; if(!fetchBodyWithRetry(url,QStringLiteral("source"),&body,error))return false;

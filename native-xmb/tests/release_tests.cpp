@@ -516,6 +516,10 @@ int main(int argc,char** argv) {
         int source500AlwaysRequests=0;
         int source404Requests=0;
         int source503RetryAfterRequests=0;
+        int sourceStallRequests=0;
+        int source429Requests=0;
+        int source503RetryAfterShortRequests=0;
+        int source503RetryAfterMalformedRequests=0;
         QObject::connect(&fixture,&QTcpServer::newConnection,&app,[&] {
             auto* socket=fixture.nextPendingConnection();
             QObject::connect(socket,&QTcpSocket::readyRead,socket,[&,socket] {
@@ -567,6 +571,33 @@ int main(int argc,char** argv) {
                 if(request.contains("/source-503-retry-after")) {
                     ++source503RetryAfterRequests;
                     socket->write("HTTP/1.1 503 Service Unavailable\r\nRetry-After: 3600\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                    socket->disconnectFromHost();return;
+                }
+                if(request.contains("/source-stall-then-success")) {
+                    ++sourceStallRequests;
+                    if(sourceStallRequests==1)return;   // stall: hold the connection open, send nothing
+                    const QByteArray feed=QByteArrayLiteral("[{\"title\":\"Stall Then Success Game\",\"size\":\"1 GB\",\"uri\":\"https://fixture/stall.zip\"}]");
+                    socket->write("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: "+QByteArray::number(feed.size())+"\r\nConnection: close\r\n\r\n"+feed);
+                    socket->disconnectFromHost();return;
+                }
+                if(request.contains("/source-429")) {
+                    ++source429Requests;
+                    socket->write("HTTP/1.1 429 Too Many Requests\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                    socket->disconnectFromHost();return;
+                }
+                if(request.contains("/source-retryafter-short")) {
+                    ++source503RetryAfterShortRequests;
+                    if(source503RetryAfterShortRequests==1) {
+                        socket->write("HTTP/1.1 503 Service Unavailable\r\nRetry-After: 1\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                        socket->disconnectFromHost();return;
+                    }
+                    const QByteArray feed=QByteArrayLiteral("[{\"title\":\"Retry After Honored Game\",\"size\":\"1 GB\",\"uri\":\"https://fixture/retryafter.zip\"}]");
+                    socket->write("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: "+QByteArray::number(feed.size())+"\r\nConnection: close\r\n\r\n"+feed);
+                    socket->disconnectFromHost();return;
+                }
+                if(request.contains("/source-retryafter-malformed")) {
+                    ++source503RetryAfterMalformedRequests;
+                    socket->write("HTTP/1.1 503 Service Unavailable\r\nRetry-After: nonsense\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
                     socket->disconnectFromHost();return;
                 }
                 if(!hot && title==7)fail=++attempts[title]==1;
@@ -840,6 +871,36 @@ int main(int argc,char** argv) {
                "gateway 503 with Retry-After is surfaced as retryable");
          check(source503RetryAfterRequests==retryAfterBefore+1 && retryAfterClock.elapsed()<2000,
                "Retry-After beyond the budget stops retries without early repetition or an unbounded wait");
+         // Inactivity deadline: a stalled first GET is aborted at the idle deadline and retried,
+         // not allowed to consume the whole budget. A short test-only inactivity keeps this fast.
+         qputenv("XMB_HYDRA_RETRY_INACTIVITY_MS","500");
+         feed.url=QUrl(base+QStringLiteral("/source-stall-then-success"));feedGames.clear();fixtureError=QStringLiteral("stale error");
+         QElapsedTimer stallClock;stallClock.start();
+         check(HydraLibrary().browseSource(feed,&feedGames,&fixtureError) && feedGames.size()==1 &&
+               feedGames.first().name==QStringLiteral("Stall Then Success Game") && fixtureError.isEmpty(),
+               "a stalled first GET times out at the inactivity deadline and is retried to success");
+         check(sourceStallRequests==2,"the stalled feed costs one inactivity abort plus one successful retry");
+         check(stallClock.elapsed()>=700 && stallClock.elapsed()<5000,
+               "the stall test uses the short test inactivity deadline, not the full budget");
+         qunsetenv("XMB_HYDRA_RETRY_INACTIVITY_MS");
+         // A 429 rate limit is terminal: never auto-retried (the explicit Retry action remains).
+         feed.url=QUrl(base+QStringLiteral("/source-429"));feedGames.append(GameResult{});fixtureError.clear();
+         check(!HydraLibrary().browseSource(feed,&feedGames,&fixtureError) && feedGames.isEmpty() &&
+               fixtureError.contains(QStringLiteral("HTTP 429")) && source429Requests==1,
+               "HTTP 429 rate limit on a selected feed is terminal (never auto-retried)");
+         // A positive Retry-After is honoured: the retry waits the server's stated delay, not just the short backoff.
+         feed.url=QUrl(base+QStringLiteral("/source-retryafter-short"));feedGames.clear();fixtureError=QStringLiteral("stale error");
+         QElapsedTimer honoredClock;honoredClock.start();
+         check(HydraLibrary().browseSource(feed,&feedGames,&fixtureError) && feedGames.size()==1 &&
+               feedGames.first().name==QStringLiteral("Retry After Honored Game") && fixtureError.isEmpty(),
+               "a 503 with a small Retry-After is retried after the stated delay and succeeds");
+         check(source503RetryAfterShortRequests==2 && honoredClock.elapsed()>=900,
+               "the positive Retry-After delay is actually waited (>= Retry-After seconds) before retrying");
+         // A malformed Retry-After is treated conservatively: no premature retry.
+         feed.url=QUrl(base+QStringLiteral("/source-retryafter-malformed"));fixtureError.clear();
+         check(!HydraLibrary().browseSource(feed,&feedGames,&fixtureError) && feedGames.isEmpty() &&
+               fixtureError.contains(QStringLiteral("HTTP 503")) && source503RetryAfterMalformedRequests==1,
+               "an unsupported/malformed Retry-After does not trigger a premature retry");
         qputenv("XMB_HYDRA_SEARCH_URL",(base+QStringLiteral("/search-malformed")).toUtf8());
         searchResults.append(GameResult{});fixtureError.clear();
         check(!HydraLibrary().searchGames(QStringLiteral("fixture"),&searchResults,&fixtureError) && searchResults.isEmpty() &&
