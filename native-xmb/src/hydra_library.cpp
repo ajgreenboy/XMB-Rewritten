@@ -15,6 +15,13 @@
 
 namespace xmb {
 namespace {
+QString responseError(const QString& service, QNetworkReply* reply, bool timedOut) {
+    if(timedOut)return QStringLiteral("Hydra %1 request timed out; retry").arg(service);
+    const int status=reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    if(status>=400)return QStringLiteral("Hydra %1 request failed (HTTP %2); retry").arg(service).arg(status);
+    return QStringLiteral("Hydra %1 request failed; retry").arg(service);
+}
+
 bool fetchJson(const QUrl& url, QJsonObject* out, QString* error) {
     QNetworkAccessManager manager;
     QNetworkRequest request(url);
@@ -26,13 +33,19 @@ bool fetchJson(const QUrl& url, QJsonObject* out, QString* error) {
     QObject::connect(reply,&QNetworkReply::downloadProgress,&loop,[&](qint64 received,qint64){if(received>16*1024*1024){timedOut=true;reply->abort();}}); // a source cannot stream an unbounded body into memory
     QObject::connect(reply,&QNetworkReply::finished,&loop,&QEventLoop::quit);
     timer.start(30000); loop.exec();
-    if(timedOut || reply->error()!=QNetworkReply::NoError) {
-        const QString message=reply->errorString(); reply->deleteLater();
-        if(error)*error=QStringLiteral("Hydra library: %1").arg(message); return false;
+    if(timedOut || reply->error()!=QNetworkReply::NoError ||
+       reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt()>=400) {
+        const QString message=responseError(QStringLiteral("library"),reply,timedOut); reply->deleteLater();
+        if(error)*error=message; return false;
     }
-    const QJsonObject root=QJsonDocument::fromJson(reply->readAll()).object();
+    QJsonParseError parseError;
+    const QJsonDocument document=QJsonDocument::fromJson(reply->readAll(),&parseError);
     reply->deleteLater();
-    if(out)*out=root; return true;
+    if(document.isNull() || !document.isObject()) {
+        if(error)*error=QStringLiteral("Hydra library returned invalid JSON; retry");
+        return false;
+    }
+    if(out)*out=document.object(); return true;
 }
 // The Hydra Cloud catalogue endpoints (catalogue/hot, catalogue/featured) answer a bare JSON array.
 bool fetchJsonArray(const QUrl& url, QJsonArray* out, QString* error) {
@@ -46,13 +59,15 @@ bool fetchJsonArray(const QUrl& url, QJsonArray* out, QString* error) {
     QObject::connect(reply,&QNetworkReply::downloadProgress,&loop,[&](qint64 received,qint64){if(received>16*1024*1024){timedOut=true;reply->abort();}}); // a source cannot stream an unbounded body into memory
     QObject::connect(reply,&QNetworkReply::finished,&loop,&QEventLoop::quit);
     timer.start(30000); loop.exec();
-    if(timedOut || reply->error()!=QNetworkReply::NoError) {
-        const QString message=reply->errorString(); reply->deleteLater();
-        if(error)*error=QStringLiteral("Hydra catalogue: %1").arg(message); return false;
+    if(timedOut || reply->error()!=QNetworkReply::NoError ||
+       reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt()>=400) {
+        const QString message=responseError(QStringLiteral("catalogue"),reply,timedOut); reply->deleteLater();
+        if(error)*error=message; return false;
     }
-    const QJsonDocument document=QJsonDocument::fromJson(reply->readAll());
+    QJsonParseError parseError;
+    const QJsonDocument document=QJsonDocument::fromJson(reply->readAll(),&parseError);
     reply->deleteLater();
-    if(!document.isArray()) { if(error)*error=QStringLiteral("Hydra catalogue returned an unexpected response"); return false; }
+    if(document.isNull() || !document.isArray()) { if(error)*error=QStringLiteral("Hydra catalogue returned invalid JSON; retry"); return false; }
     if(out)*out=document.array(); return true;
 }
 // The catalogue's dedup key. It must agree with the shell's gameSearchKey() so a game merged here
@@ -170,12 +185,15 @@ bool HydraLibrary::listSources(QVector<HydraSource>* out, QString* error) const 
     for(;;) {
         QJsonObject root;
         if(!fetchJson(QUrl(QStringLiteral("https://api.hydralibrary.com/sources?page=%1&limit=100").arg(pageNumber)),&root,error))return false;
+        if(!root.contains(QStringLiteral("sources")) || !root.value(QStringLiteral("sources")).isArray()) {
+            if(error)*error=QStringLiteral("Hydra library returned an invalid sources response; retry");
+            return false;
+        }
         const SourcesPage page=parseSourcesPage(root);
         all+=page.sources;
         if(!hasMoreSources(pageNumber,all.size(),page))break;
         ++pageNumber;
     }
-    if(all.isEmpty()) { if(error)*error=QStringLiteral("Hydra library returned no sources"); return false; }
     if(out)*out=all; return true;
 }
 bool HydraLibrary::preinstalledSources(QStringList* out, QString* error) const {
@@ -196,6 +214,10 @@ bool HydraLibrary::searchGames(const QString& query, QVector<GameResult>* out, Q
         const QUrl url(QStringLiteral("https://api.hydralibrary.com/games?q=%1&limit=100&page=%2")
             .arg(QString::fromUtf8(QUrl::toPercentEncoding(query))).arg(page));
         if(!fetchJson(url,&root,error))return false;
+        if(!root.contains(QStringLiteral("games")) || !root.value(QStringLiteral("games")).isArray()) {
+            if(error)*error=QStringLiteral("Hydra library returned an invalid games response; retry");
+            return false;
+        }
         const QJsonArray games=root.value(QStringLiteral("games")).toArray();
         if(games.isEmpty())break;
         for(const auto& value:games) {
@@ -242,6 +264,7 @@ bool HydraLibrary::popularGames(QVector<GameResult>* out, QString* error) const 
     }
 
     QVector<GameResult> results;
+    QString firstFailure;
     const auto groups=groupPopularTitles(titles);
     int rawIndex=0;
     for(const auto& group:groups) {
@@ -250,16 +273,24 @@ bool HydraLibrary::popularGames(QVector<GameResult>* out, QString* error) const 
         parts.reserve(group.entries.size());
         for(int i=0;i<group.entries.size();++i,++rawIndex) {
             const auto& lookup=lookups.at(rawIndex).result();
-            if(!lookup.ok) { failed=true;break; }
+            if(!lookup.ok) { failed=true;if(firstFailure.isEmpty())firstFailure=lookup.error;break; }
             parts.append(lookup.game);
         }
         // A group is all-or-nothing. Never publish a partial source union when one
         // duplicate hot entry failed; the Store's per-title retry handles recovery.
-        if(!failed)results.append(mergePopularGameResults(group.name,group.coverUrl,parts));
+        if(!failed) {
+            auto merged=mergePopularGameResults(group.name,group.coverUrl,parts);
+            if(!merged.options.isEmpty())results.append(std::move(merged));
+        }
         if(failed)rawIndex+=group.entries.size()-parts.size();
     }
+    if(!firstFailure.isEmpty()) {
+        if(out)out->clear();
+        if(error)*error=firstFailure;
+        return false;
+    }
     if(out)*out=results;
-    return !results.isEmpty();
+    return true;
 }
 
 bool HydraLibrary::popularTitles(QVector<PopularTitle>* out,QString* error) const {
@@ -275,7 +306,7 @@ bool HydraLibrary::popularTitles(QVector<PopularTitle>* out,QString* error) cons
         title.coverUrl=object.value(QStringLiteral("libraryImageUrl")).toString();
         if(!title.title.isEmpty() && out)out->append(title);
     }
-    return out && !out->isEmpty();
+    return true;
 }
 
 QVector<PopularTitleGroup> groupPopularTitles(const QVector<PopularTitle>& titles) {
@@ -317,6 +348,10 @@ bool HydraLibrary::popularGame(const PopularTitle& title,GameResult* out,QString
         .arg(QString::fromUtf8(QUrl::toPercentEncoding(title.title)));
     QJsonObject root;
     if(!fetchJson(QUrl(searchUrl),&root,error))return false;
+    if(!root.contains(QStringLiteral("games")) || !root.value(QStringLiteral("games")).isArray()) {
+        if(error)*error=QStringLiteral("Hydra library returned an invalid games response; retry");
+        return false;
+    }
     GameResult result;result.name=title.title;result.title=title.title;result.coverUrl=title.coverUrl;
     QSet<QString> seenSource;
     for(const auto& gv:root.value(QStringLiteral("games")).toArray()) {
@@ -334,7 +369,6 @@ bool HydraLibrary::popularGame(const PopularTitle& title,GameResult* out,QString
         if(result.originalTitle.isEmpty())result.originalTitle=game.value(QStringLiteral("originalTitle")).toString();
         result.options.append(option);
     }
-    if(result.options.isEmpty()) { if(error)*error=QStringLiteral("No source results for popular title"); return false; }
     if(out)*out=std::move(result);
     return true;
 }
