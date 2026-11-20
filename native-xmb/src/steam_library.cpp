@@ -786,27 +786,44 @@ SteamAppState steamAppState(const QString& appId) {
     return state;
 }
 
-SteamTrackTransition steamTrackObservation(SteamTrackState current, SteamAppStatus status) {
+SteamTrackTransition steamTrackObservation(SteamTrackState current, SteamAppStatus status,
+                                           qint64 elapsedMs, qint64 timeoutMs) {
     SteamTrackTransition result;
     result.state = current;
+    result.status = status;
     switch (status) {
     case SteamAppStatus::Unavailable:
-        result.unavailable = true;
+        // A restarting/signed-out client and a transient read failure are not evidence that the title
+        // stopped: reset the exit debounce. Before a confirmed run, a client that never becomes readable
+        // must still recover within the launch wait, so the unavailable clock is deliberately NOT reset.
         result.state.consecutiveStopped = 0;
-        break;
-    case SteamAppStatus::Running:
-        result.confirmedRunning = true;
-        result.state.seenRunning = true;
-        result.state.consecutiveStopped = 0;
+        if (!current.seenRunning && elapsedMs >= timeoutMs)
+            result.action = SteamTrackAction::TimedOut;
         break;
     case SteamAppStatus::Updating:
+        // Known-but-not-stopped; also interrupts the clear streak. Before a confirmed run a download or
+        // update can take arbitrarily long, so the launch wait restarts on every updating observation.
         result.state.consecutiveStopped = 0;
+        if (!current.seenRunning)
+            result.action = SteamTrackAction::RestartWait;
+        break;
+    case SteamAppStatus::Running:
+        result.state.consecutiveStopped = 0;
+        if (!current.seenRunning || current.consecutiveStopped != 0) {
+            result.state.seenRunning = true;
+            result.action = SteamTrackAction::ConfirmedRunning;
+        }
         break;
     case SteamAppStatus::Stopped:
-        if (result.state.seenRunning && ++result.state.consecutiveStopped >= 2) {
-            result.confirmedStopped = true;
+        if (!current.seenRunning) {
+            if (elapsedMs >= timeoutMs)
+                result.action = SteamTrackAction::TimedOut;
+        } else if (++result.state.consecutiveStopped >= 2) {
             result.state.seenRunning = false;
             result.state.consecutiveStopped = 0;
+            result.action = SteamTrackAction::Returned;
+        } else {
+            result.action = SteamTrackAction::Cleared;
         }
         break;
     }

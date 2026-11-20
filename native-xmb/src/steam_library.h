@@ -42,20 +42,35 @@ struct SteamAppState {
 };
 SteamAppState steamAppState(const QString& appId);
 
-// Pure lifecycle reducer used by the shell and fixture runner. Unknown observations never
-// contribute to the stopped streak; two confirmed stopped observations are required after a
-// confirmed run. This keeps registry outages/restarts from becoming false exits.
+// How long a launch handoff keeps watching before it gives up without a confirmed run. The shell
+// and the tracking tests share this literal so the reducer's timeout behavior is exercised at the
+// exact production value.
+inline constexpr qint64 kSteamLaunchWaitMs = 5 * 60 * 1000;
+
+// Pure lifecycle reducer used by the shell's pollSteamGame and the deterministic tracking tests.
+// The shell dispatches on the returned action, so the timeout/update/interruption behavior tested
+// here is exactly what runs in production. Unknown observations never contribute to the stopped
+// streak; two confirmed stopped observations are required after a confirmed run. This keeps
+// registry outages/restarts from becoming false exits.
 struct SteamTrackState {
-    bool seenRunning = false;
-    int consecutiveStopped = 0;
+    bool seenRunning = false;    // Steam reported the title running at least once
+    int consecutiveStopped = 0;  // consecutive stopped observations since it was last seen running
+};
+enum class SteamTrackAction {
+    KeepWatching,      // no visible change; keep polling
+    RestartWait,       // restart the launch-wait clock (a confirmed update before the title ran)
+    ConfirmedRunning,  // the title transitioned into running (first time, or after a clear)
+    Cleared,           // first stopped observation after a run: drop the overlay, keep watching
+    Returned,          // the title was confirmed stopped after a run
+    TimedOut,          // the launch wait expired without a confirmed run
 };
 struct SteamTrackTransition {
     SteamTrackState state;
-    bool unavailable = false;
-    bool confirmedRunning = false;
-    bool confirmedStopped = false;
+    SteamTrackAction action = SteamTrackAction::KeepWatching;
+    SteamAppStatus status = SteamAppStatus::Unavailable; // the observation that drove this transition
 };
-SteamTrackTransition steamTrackObservation(SteamTrackState current, SteamAppStatus status);
+SteamTrackTransition steamTrackObservation(SteamTrackState current, SteamAppStatus status,
+                                           qint64 elapsedMs, qint64 timeoutMs);
 
 // Ask the running Steam client to stop a title through its console command line. The client executes
 // "+<command>" arguments handed to steam.exe, so this is the supported-by-observation way to quit a

@@ -740,7 +740,7 @@ bool Shell::gameRunning() const {
 bool Shell::titleRunning() const {
     // A pending Steam handoff still inhibits idle shutdown / another launch, but is not a game to overlay.
     return (!game_.isNull() && game_->state()==QProcess::Running) || adoptedPid_ ||
-        (!steamGameId_.isEmpty() && steamGameSeen_ && steamGameClear_==0);
+        (!steamGameId_.isEmpty() && steamTrack_.seenRunning && steamTrack_.consecutiveStopped==0);
 }
 // Steam launches itself, so the only honest lifecycle signal is Steam's own registry state. The
 // handoff records the app id, watches Apps\<id>\Running, and reports the return when it clears.
@@ -768,7 +768,7 @@ bool Shell::startSteamNow(const QString& appId,const QString& title) {
         showMessage(title,"Steam could not be started. Refresh the game library and check the Steam installation.",MessageKind::Page);
         return false;
     }
-    steamGameId_=appId;gameTitle_=title;gameCategory_=QStringLiteral("game");gameIsRpcs3_=false;steamGameSeen_=false;steamGameClear_=0;
+    steamGameId_=appId;gameTitle_=title;gameCategory_=QStringLiteral("game");gameIsRpcs3_=false;steamTrack_={};
     steamWatchAge_.start();steamWatch_.start();
     activity_.start();
     qInfo().noquote()<<"launch: steam -applaunch"<<appId<<"(watched through Steam's registry)";
@@ -879,55 +879,61 @@ void Shell::pollSteamGame() {
         state={};state.running=qEnvironmentVariable("XMB_STEAM_FAKE_FORCE_RUNNING")==QLatin1String("1") || (!dir.isEmpty() && !steamquit::selectGameProcesses(steamquit::snapshotProcesses(),dir,{quint32(QCoreApplication::applicationPid())}).isEmpty());
         state.status=state.running?SteamAppStatus::Running:SteamAppStatus::Stopped;
     }
-    constexpr qint64 startTimeoutMs=5*60*1000;   // Steam may download/update before the title runs
-    if(state.status==SteamAppStatus::Unavailable) {
-        // A restarting/signed-out Steam client and a transient registry read failure are
-        // not evidence that the title stopped. In particular, reset the exit debounce.
-        steamGameClear_=0;
+    constexpr qint64 startTimeoutMs=kSteamLaunchWaitMs;
+    const bool wasSeen=steamTrack_.seenRunning;
+    const auto t=steamTrackObservation(steamTrack_,state.status,steamWatchAge_.elapsed(),startTimeoutMs);
+    steamTrack_=t.state;
+    switch(t.action) {
+    case SteamTrackAction::RestartWait:
+        // A confirmed update before the title runs can take arbitrarily long; keep the launch
+        // wait clock pinned to the most recent update tick so a long download does not expire it.
+        steamWatchAge_.restart();
         return;
-    }
-    if(state.status==SteamAppStatus::Updating) {
-        steamGameClear_=0;
-        if(!steamGameSeen_ && steamWatchAge_.elapsed()>=startTimeoutMs) {
-            steamWatch_.stop();const QString title=gameTitle_;steamGameId_.clear();gameTitle_.clear();
-            clearInGame();
-            showMessage(title,"Steam did not confirm this title started before the launch wait expired.",MessageKind::Page);
-            qWarning().noquote()<<"steam:"<<title<<"launch observation timed out while updating";
-            emit changed();
-        }
+    case SteamTrackAction::ConfirmedRunning:
+        if(!wasSeen)qInfo().noquote()<<"steam:"<<gameTitle_<<"is running";
+        emit changed();
         return;
-    }
-    if(state.status==SteamAppStatus::Running) {
-        const bool wasRunning=titleRunning();
-        if(!steamGameSeen_)qInfo().noquote()<<"steam:"<<gameTitle_<<"is running";
-        steamGameSeen_=true;steamGameClear_=0;
-        if(!wasRunning)emit changed();
+    case SteamTrackAction::Cleared:
+        // First stopped observation after a run: drop the overlay, but one clear is only debounce
+        // evidence and is not an exit (a launcher-to-game handover may clear the flag momentarily).
+        clearInGame();
+        emit changed();
         return;
-    }
-    if(!steamGameSeen_) {
-        if(steamWatchAge_.elapsed()<startTimeoutMs)return;
+    case SteamTrackAction::TimedOut: {
+        // The launch wait expired without a confirmed run. The message names what was observed:
+        // Steam's status could not be read, or Steam was readable but never reported the title running.
         steamWatch_.stop();const QString title=gameTitle_;steamGameId_.clear();gameTitle_.clear();
         clearInGame();
-        showMessage(title,"Steam did not confirm this title started before the launch wait expired.",MessageKind::Page);
-        qWarning().noquote()<<"steam:"<<title<<"launch observation timed out without confirmed running";
-        emit changed();return;
+        if(t.status==SteamAppStatus::Unavailable) {
+            showMessage(title,"Steam's status could not be confirmed before the launch wait expired.",MessageKind::Page);
+            qWarning().noquote()<<"steam:"<<title<<"launch observation timed out while Steam status was unavailable";
+        } else {
+            showMessage(title,"Steam did not confirm this title started before the launch wait expired.",MessageKind::Page);
+            qWarning().noquote()<<"steam:"<<title<<"launch observation timed out without confirmed running";
+        }
+        emit changed();
+        return;
     }
-    // Steam clears the flag when the last process exits; require two polls so a launcher-to-game
-    // handover inside Steam is not mistaken for a return.
-    if(++steamGameClear_<2){clearInGame();emit changed();return;}
-    steamWatch_.stop();
-    const QString title=gameTitle_;
-    steamGameId_.clear();gameTitle_.clear();steamGameSeen_=false;steamGameClear_=0;
-    qInfo().noquote()<<"returned from"<<title<<"(Steam reported it stopped)";
-    clearInGame();
-    if(quitStage_>0) {
-        static const char* const stages[]={"none","cooperative (WM_CLOSE)","terminate","kill"};
-        qInfo().noquote()<<"ingame: quit ended by stage"<<stages[std::clamp(quitStage_,0,3)]<<"(Steam cleared the running flag) title="+quitTitle_;
-        quitStage_=0;quitTitle_.clear();
+    case SteamTrackAction::Returned: {
+        steamWatch_.stop();
+        const QString title=gameTitle_;
+        steamGameId_.clear();gameTitle_.clear();steamTrack_={};
+        qInfo().noquote()<<"returned from"<<title<<"(Steam reported it stopped)";
+        clearInGame();
+        if(quitStage_>0) {
+            static const char* const stages[]={"none","cooperative (WM_CLOSE)","terminate","kill"};
+            qInfo().noquote()<<"ingame: quit ended by stage"<<stages[std::clamp(quitStage_,0,3)]<<"(Steam cleared the running flag) title="+quitTitle_;
+            quitStage_=0;quitTitle_.clear();
+        }
+        restoreFocus();
+        emit changed();
+        refreshContent();
+        return;
     }
-    restoreFocus();
-    emit changed();
-    refreshContent();
+    case SteamTrackAction::KeepWatching:
+        return;
+    }
+    return;
 }
 void Shell::restoreFocus() {
     // Returning from a title starts a fresh idle interval, as the media and dialog paths do.

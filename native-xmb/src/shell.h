@@ -1234,8 +1234,7 @@ private:
     steamquit::Quitter steamQuitter_;   // closes a Steam title's own processes (Quit Game)
     QTimer steamWatch_;              // polls Steam's Running flags while steamGameId_ is set
     QElapsedTimer steamWatchAge_;    // since the handoff (or last update tick), for the start timeout
-    bool steamGameSeen_=false;       // Steam has reported the title running at least once
-    int steamGameClear_=0;           // consecutive polls without the flag after it was seen
+    SteamTrackState steamTrack_;      // the pure lifecycle reducer's state (seenRunning/consecutiveStopped)
     bool ownedInFlight_=false;
     QString ownedSignature_;        // app ids + installed flags + collection ids, to skip unchanged rebuilds
     std::unique_ptr<SteamArtwork> steamArtwork_;
