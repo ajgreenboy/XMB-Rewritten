@@ -20,7 +20,7 @@ qt_add_executable(re-ps3-native
     src/osk_layout.cpp src/osk_layout.h
     src/xmbml_view.cpp src/xmbml_view.h
     src/preferences.cpp src/preferences.h
-    src/release_index.cpp src/release_index.h src/real_debrid.cpp src/real_debrid.h src/release_source.cpp src/release_source.h src/flare_solverr.cpp src/flare_solverr.h src/hydra_library.cpp src/hydra_library.h src/async_identity.h src/archive_extract.cpp src/archive_extract.h
+     src/release_index.cpp src/release_index.h src/real_debrid.cpp src/real_debrid.h src/release_source.cpp src/release_source.h src/flare_solverr.cpp src/flare_solverr.h src/hydra_library.cpp src/hydra_library.h src/async_identity.h src/archive_extract.cpp src/archive_extract.h src/pending_installers.cpp src/pending_installers.h
     src/phone_remote.cpp src/phone_remote.h src/phone_remote_shell.cpp
     src/media_library.cpp src/media_library.h src/settings_menu.cpp
     src/playback_queue.cpp src/playback_queue.h
@@ -82,6 +82,12 @@ qt_add_resources(re-ps3-native seerr_icon PREFIX "/service-icons" BASE "src" FIL
 target_compile_definitions(re-ps3-native PRIVATE XMB_APP_VERSION="${PROJECT_VERSION}")
 option(XMB_FIRMWARE_BUILD_TESTS "Build firmware synthetic fixture tests" OFF)
 option(XMB_RELEASE_BUILD_TESTS "Build release index and source backend fixture tests" OFF)
+option(XMB_PENDING_INSTALLER_BUILD_TESTS "Build pending installer fixture tests" OFF)
+if(XMB_PENDING_INSTALLER_BUILD_TESTS)
+    qt_add_executable(xmb-pending-installer-tests tests/pending_installer_tests.cpp src/pending_installers.cpp src/pending_installers.h)
+    target_include_directories(xmb-pending-installer-tests PRIVATE src)
+    target_link_libraries(xmb-pending-installer-tests PRIVATE Qt6::Core)
+endif()
 if(XMB_RELEASE_BUILD_TESTS)
     qt_add_executable(xmb-release-tests tests/release_tests.cpp src/release_index.cpp src/real_debrid.cpp src/release_source.cpp src/flare_solverr.cpp src/flare_solverr.h src/hydra_library.cpp src/hydra_library.h src/preferences.cpp src/preferences.h src/jellyfin_player.cpp src/jellyfin_player.h)
     target_include_directories(xmb-release-tests PRIVATE src)
