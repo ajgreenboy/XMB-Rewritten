@@ -65,10 +65,20 @@ public static class ProcessTree {
   public static int[] Children(int[] parents) { var wanted=new HashSet<int>(parents); var result=new List<int>(); IntPtr s=CreateToolhelp32Snapshot(2,0); if(s==new IntPtr(-1)) return result.ToArray(); var e=new Entry(); e.Size=(uint)Marshal.SizeOf(e); if(Process32First(s,ref e)) do { if(wanted.Contains((int)e.ParentPid)) result.Add((int)e.Pid); } while(Process32Next(s,ref e)); CloseHandle(s); return result.ToArray(); }
 }
 '@
+Add-Type @'
+using System;
+using System.Runtime.InteropServices;
+public static class UiTarget {
+  [DllImport("user32.dll")] static extern IntPtr SendMessage(IntPtr h,uint msg,IntPtr w,IntPtr l);
+  public static void Click(int hwnd) { if(hwnd!=0) SendMessage(new IntPtr(hwnd),0x00F5,IntPtr.Zero,IntPtr.Zero); }
+}
+'@
 
 function Write-Result {
-    param([string]$Status,[string]$Message,[int]$ExitCode = 0)
-    [Console]::Out.WriteLine((@{ status=$Status; message=$Message } | ConvertTo-Json -Compress))
+    param([string]$Status,[string]$Message,[int]$ExitCode = 0,[int[]]$ProcessIds=@())
+    $identities=@()
+    foreach($processId in @($ProcessIds)) { try { $p=Get-Process -Id $processId -ErrorAction Stop; $identities+=@{pid=$processId;creationTime=$p.StartTime.ToUniversalTime().ToFileTimeUtc()} } catch {} }
+    [Console]::Out.WriteLine((@{ status=$Status; message=$Message; processIds=@($ProcessIds); processIdentities=@($identities) } | ConvertTo-Json -Compress))
     if ($ExitCode -ne 0) { exit $ExitCode }
 }
 
@@ -89,8 +99,11 @@ function Find-ElementByAutomationId {
     # Build an OR of the candidate AutomationIds.
     $orCond = $null
     foreach ($id in $Ids) {
-        $c = New-Object System.Windows.Automation.PropertyCondition(
+        $automationId = New-Object System.Windows.Automation.PropertyCondition(
             [System.Windows.Automation.AutomationElement]::AutomationIdProperty, $id)
+        $name = New-Object System.Windows.Automation.PropertyCondition(
+            [System.Windows.Automation.AutomationElement]::NameProperty, $id)
+        $c = New-Object System.Windows.Automation.OrCondition($automationId, $name)
         if (-not $orCond) { $orCond = $c }
         else { $orCond = New-Object System.Windows.Automation.OrCondition($orCond, $c) }
     }
@@ -121,7 +134,8 @@ function Invoke-Click {
         $p.Invoke()
     } else {
         # Fallback: keyboard navigation is handled by the caller via Space/Enter.
-        Write-Verbose "No InvokePattern; falling back to keyboard activation"
+        $hwnd=$el.Current.NativeWindowHandle
+        if($hwnd -ne 0) { [UiTarget]::Click($hwnd) } else { throw "UIA control has no invokable pattern or native target." }
     }
 }
 
@@ -130,11 +144,11 @@ function Wait-SetupWindow {
     param([System.Diagnostics.Process]$Process, [int]$TimeoutMs)
     $deadline = [DateTime]::UtcNow.AddMilliseconds($TimeoutMs)
     do {
-        $Process.Refresh()
-        if ($Process.MainWindowHandle -ne 0) { return $true }
+        $handle=Get-VerifiedWindowHandle -RootId $Process.Id
+        if ($handle -ne 0) { return $handle }
         Start-Sleep -Milliseconds 500
     } while ([DateTime]::UtcNow -lt $deadline)
-    return $false
+    return [IntPtr]::Zero
 }
 
 function Get-DescendantProcessIds {
@@ -146,6 +160,12 @@ function Get-DescendantProcessIds {
         $frontier=$next
     }
     return @($found)
+}
+function Get-VerifiedWindowHandle {
+    param([int]$RootId)
+    $ids=@($RootId)+@(Get-DescendantProcessIds -ParentIds @($RootId))
+    foreach($id in $ids) { try { $p=Get-Process -Id $id -ErrorAction Stop; $p.Refresh(); if($p.MainWindowHandle -ne 0){ return $p.MainWindowHandle } } catch {} }
+    return [IntPtr]::Zero
 }
 
 # ---------------------------------------------------------------------------
@@ -177,10 +197,11 @@ if ($PSCmdlet.ShouldProcess("setup.exe", "Launch installer and drive it")) {
     $proc = Start-Process -FilePath $setupPath -ArgumentList $innoArgs -WorkingDirectory (Split-Path $setupPath) -PassThru
 
     # 1. Wait for a window to appear.
-    if (-not (Wait-SetupWindow -Process $proc -TimeoutMs $PageTimeoutMs)) {
+    $setupWindow=Wait-SetupWindow -Process $proc -TimeoutMs $PageTimeoutMs
+    if ($setupWindow -eq [IntPtr]::Zero) {
         Write-Warning "No installer window appeared within $PageTimeoutMs ms."
-        if (-not $proc.HasExited) { Write-Result -Status 'process-still-running' -Message 'No installer window appeared; process was left running.' -ExitCode 3 }
-        Write-Result -Status 'failed' -Message 'Installer exited before a window appeared.' -ExitCode 3
+        if (-not $proc.HasExited) { Write-Result -Status 'process-still-running' -Message 'No installer window appeared; process was left running.' -ExitCode 3 -ProcessIds @($proc.Id) }
+        Write-Result -Status 'no-window' -Message 'Installer exited before a window appeared.' -ExitCode 3
     }
 
     # 2. Click "Next"/"Install" style buttons by AutomationId as they appear.
@@ -195,7 +216,8 @@ if ($PSCmdlet.ShouldProcess("setup.exe", "Launch installer and drive it")) {
         foreach ($id in $nextIds) {
             $proc.Refresh()
             if ($proc.HasExited) { break }
-            $root = [System.Windows.Automation.AutomationElement]::FromHandle($proc.MainWindowHandle)
+            $window=Get-VerifiedWindowHandle -RootId $proc.Id
+            $root = if($window -ne 0){[System.Windows.Automation.AutomationElement]::FromHandle($window)}else{$null}
             if (-not $root) { continue }
             $btn = Find-ElementByAutomationId -Ids @($id) -Root $root -TimeoutMs 1000
             if ($btn) {
@@ -209,12 +231,13 @@ if ($PSCmdlet.ShouldProcess("setup.exe", "Launch installer and drive it")) {
 
         # DODI quirk: Install button off-screen -> focus window, press UP.
         if ($IsDodi -and -not $doneSomething) {
-            if ($proc.MainWindowHandle -ne 0) {
+            $window=Get-VerifiedWindowHandle -RootId $proc.Id
+            if ($window -ne 0) {
                 $proc.Refresh()
-                if ($proc.MainWindowHandle -ne 0) {
+                if ((Get-VerifiedWindowHandle -RootId $proc.Id) -eq $window) {
                     try {
-                        [void][System.Windows.Automation.AutomationElement]::FromHandle($proc.MainWindowHandle)
-                        # Focus the window and send arrow keys / Enter.
+                        [void][System.Windows.Automation.AutomationElement]::FromHandle($window)
+                        # Revalidate the verified target before each targeted key.
                         Add-Type @'
 using System;
 using System.Runtime.InteropServices;
@@ -224,11 +247,12 @@ public static class Native {
     [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h, uint m, IntPtr w, IntPtr l);
 }
 '@
-                        [void][Native]::SetForegroundWindow($proc.MainWindowHandle)
-                        if ([Native]::GetForegroundWindow() -ne $proc.MainWindowHandle) { throw "Installer window did not become foreground." }
-                        [System.Windows.Forms.SendKeys]::SendWait('{UP}')
+                        [void][Native]::SetForegroundWindow($window)
+                        if ([Native]::GetForegroundWindow() -ne $window) { throw "Installer window did not become foreground." }
+                        [void][Native]::PostMessage($window,0x0100,[IntPtr]0x26,[IntPtr]::Zero); [void][Native]::PostMessage($window,0x0101,[IntPtr]0x26,[IntPtr]::Zero)
                         Start-Sleep -Milliseconds 500
-                        [System.Windows.Forms.SendKeys]::SendWait('{ENTER}')
+                        if ([Native]::GetForegroundWindow() -ne $window) { throw "Installer window lost foreground before Enter." }
+                        [void][Native]::PostMessage($window,0x0100,[IntPtr]0x0D,[IntPtr]::Zero); [void][Native]::PostMessage($window,0x0101,[IntPtr]0x0D,[IntPtr]::Zero)
                         $doneSomething = $true
                         Start-Sleep -Seconds 1
                     } catch { Write-Verbose "DODI arrow fallback failed: $_" }
@@ -263,10 +287,10 @@ public static class Native {
     if (-not $proc.HasExited -or @($trackedChildren).Count -gt 0) {
         Write-Warning "Installer still running after timeout; did not kill it."
         Write-Warning "Check the installer window manually before assuming failure."
-        Write-Result -Status 'process-still-running' -Message 'Installer or a verified child process exceeded timeout and was not killed.' -ExitCode 4
+        Write-Result -Status 'timeout' -Message 'Installer or a verified child process exceeded timeout and was not killed.' -ExitCode 4 -ProcessIds (@($proc.Id)+@($trackedChildren))
     } else {
         Write-Host ("Installer exited with code {0}." -f $proc.ExitCode)
         if ($proc.ExitCode -eq 0) { Write-Result -Status 'exited' -Message 'Installer exited; destination still requires verification.' }
-        else { Write-Result -Status 'failed' -Message ("Installer exited with code {0}." -f $proc.ExitCode) -ExitCode 5 }
+        else { Write-Result -Status 'nonzero' -Message ("Installer exited with code {0}." -f $proc.ExitCode) -ExitCode 5 }
     }
 }

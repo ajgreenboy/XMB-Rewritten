@@ -12,6 +12,7 @@
 #include <QFutureWatcher>
 #include <QImageReader>
 #include <QJsonDocument>
+#include <QJsonArray>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
@@ -20,6 +21,9 @@
 #include <QSaveFile>
 #include <QtConcurrent/QtConcurrentRun>
 #include <algorithm>
+#ifdef Q_OS_WIN
+#include <windows.h>
+#endif
 
 namespace xmb {
 
@@ -33,13 +37,56 @@ Entry pendingRow(const QString& id,const QString& title,Action action,const QStr
     Entry row; row.id=id; row.title=title; row.action=action; row.value=value;
     row.texture=QStringLiteral("game_tex_default_ps3"); row.container=QStringLiteral("explore_plugin_full"); return row;
 }
+bool parseHelperProtocol(const QByteArray& bytes,QString& status,QString& message,QVector<qint64>& processIds,QString& creationTime,QStringList& creationTimes) {
+    if(bytes.size()>64*1024)return false;
+    const auto lines=bytes.split('\n'); QByteArray line;
+    for(auto it=lines.crbegin();it!=lines.crend();++it)if(!it->trimmed().isEmpty()){line=it->trimmed();break;}
+    const auto doc=QJsonDocument::fromJson(line); if(!doc.isObject())return false;
+    const auto object=doc.object(); status=object.value(QStringLiteral("status")).toString(); message=object.value(QStringLiteral("message")).toString().left(1024);
+    static const QSet<QString> allowed{QStringLiteral("exited"),QStringLiteral("nonzero"),QStringLiteral("no-window"),QStringLiteral("process-still-running"),QStringLiteral("timeout"),QStringLiteral("helper-failed")};
+    if(!allowed.contains(status) || !object.value(QStringLiteral("processIds")).isArray())return false;
+    for(const auto value:object.value(QStringLiteral("processIds")).toArray())if(value.isDouble() && value.toDouble()>0)processIds.append(qint64(value.toDouble()));
+    for(const auto value:object.value(QStringLiteral("processIdentities")).toArray()) { const auto identity=value.toObject(); if(identity.value(QStringLiteral("pid")).isDouble() && identity.value(QStringLiteral("creationTime")).isDouble()){const qint64 pid=qint64(identity.value(QStringLiteral("pid")).toDouble()); const QString time=QString::number(qint64(identity.value(QStringLiteral("creationTime")).toDouble())); const int index=processIds.indexOf(pid); if(index>=0){while(creationTimes.size()<=index)creationTimes.append(QString()); creationTimes[index]=time; if(index==0)creationTime=time;} } }
+    return true;
+}
+bool processIdentityAlive(qint64 pid,const QString& creationTime) {
+#ifdef Q_OS_WIN
+    if(pid<=0)return false;
+    HANDLE handle=OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION,FALSE,DWORD(pid)); if(!handle)return false;
+    FILETIME created{},exited{},kernel{},user{}; const bool ok=GetProcessTimes(handle,&created,&exited,&kernel,&user)!=FALSE; CloseHandle(handle);
+    if(!ok || creationTime.isEmpty())return false;
+    ULARGE_INTEGER value{}; value.LowPart=created.dwLowDateTime; value.HighPart=created.dwHighDateTime;
+    return QString::number(qint64(value.QuadPart))==creationTime;
+#else
+    Q_UNUSED(pid); Q_UNUSED(creationTime); return false;
+#endif
+}
+QString processCreationTime(qint64 pid) {
+#ifdef Q_OS_WIN
+    HANDLE handle=OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION,FALSE,DWORD(pid)); if(!handle)return {};
+    FILETIME created{},exited{},kernel{},user{}; const bool ok=GetProcessTimes(handle,&created,&exited,&kernel,&user)!=FALSE; CloseHandle(handle);
+    if(!ok)return {};
+    ULARGE_INTEGER value{}; value.LowPart=created.dwLowDateTime; value.HighPart=created.dwHighDateTime; return QString::number(qint64(value.QuadPart));
+#else
+    Q_UNUSED(pid); return {};
+#endif
+}
 
 void Shell::openPendingInstallers() {
     const QString registryPath=QDir(dataDirectory_).filePath(QStringLiteral("pending-installers.json"));
     QVector<PendingInstaller> entries; QString error;
     if(!PendingInstallerRegistry::load(registryPath,entries,error)) {
-        showMessage(tr("Pending Installers"),error,MessageKind::Page); emit changed(); return;
+        const QString quarantine=registryPath+QStringLiteral(".corrupt-")+QUuid::createUuid().toString(QUuid::Id128);
+        if(QFile::rename(registryPath,quarantine)) { entries.clear(); error.clear(); }
+        else { showMessage(tr("Pending Installers"),error,MessageKind::Page); emit changed(); return; }
     }
+    bool registryChanged=false;
+    for(auto& entry:entries) if(entry.status==QStringLiteral("launching")) {
+        bool live=processIdentityAlive(entry.helperPid,entry.helperCreationTime);
+        if(!live) for(int i=0;i<entry.retainedProcessIds.size() && i<entry.retainedProcessCreationTimes.size();++i) if(processIdentityAlive(entry.retainedProcessIds[i],entry.retainedProcessCreationTimes[i])) { live=true; break; }
+        if(!live) { entry.status=QStringLiteral("launch-failed"); entry.error=tr("The recorded helper process tree is no longer running; verify the destination before retrying."); registryChanged=true; }
+    }
+    if(registryChanged) { QString saveError; PendingInstallerRegistry::upsert(registryPath,entries.first(),saveError); for(int i=1;i<entries.size();++i)PendingInstallerRegistry::upsert(registryPath,entries[i],saveError); }
     // Reconcile manifests left by a crash or injected registry-write failure.
     for(const auto& root:gameLibraryRoots()) {
         const QDir pendingRoot(QDir(root.second).filePath(QStringLiteral("XMB Games/Pending Installers")));
@@ -48,6 +95,8 @@ void Shell::openPendingInstallers() {
             if(!manifest.open(QIODevice::ReadOnly))continue;
             const auto o=QJsonDocument::fromJson(manifest.readAll()).object(); PendingInstaller recovered;
             recovered.id=o.value("id").toString(); recovered.title=o.value("title").toString(); recovered.installerPath=o.value("installer").toString(); recovered.archivePath=o.value("archive").toString(); recovered.libraryRoot=o.value("libraryRoot").toString(); recovered.status=QStringLiteral("unavailable");
+            const QString manifestRoot=dir.canonicalFilePath(); const QString installer=QFileInfo(recovered.installerPath).canonicalFilePath();
+            if(manifestRoot.isEmpty() || installer.isEmpty() || !installer.startsWith(manifestRoot+QLatin1Char('/'),Qt::CaseInsensitive) || QDir(recovered.libraryRoot).canonicalPath().isEmpty())continue;
             QString hash; if(recovered.id.isEmpty() || !sha256File(recovered.installerPath,&hash,&error))continue; recovered.sha256=hash;
             QString ignored; PendingInstallerRegistry::upsert(registryPath,recovered,ignored);
         }
@@ -140,33 +189,45 @@ void Shell::installPendingInstaller(const QString& id,const QString& destination
            !sha256File(currentCanonical,&currentHash,&validationError) || currentHash.compare(current->sha256,Qt::CaseInsensitive)!=0) {
             showMessage(tr("Install"),tr("The installer or destination changed after confirmation. Nothing was launched."),MessageKind::Page); emit changed(); return;
         }
-        current->destination=destination; current->status=QStringLiteral("launching");
-        // The manifest is written before launch so a crash leaves a discoverable
-        // recovery record rather than an untracked installation.
-        if(!PendingInstallerRegistry::upsert(registry,*current,validationError)) { showMessage(tr("Install"),validationError,MessageKind::Page); emit changed(); return; }
-        activePendingInstallerIds_.insert(id);
         const QString helper=QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("repack-install.ps1"));
         if(!QFileInfo(helper).isFile()){showMessage(tr("Install"),tr("The packaged installer helper is missing."),MessageKind::Page);emit changed();return;}
         auto* process=new QProcess(this);
-        connect(process, qOverload<int,QProcess::ExitStatus>(&QProcess::finished), this, [this,process,id](int code,QProcess::ExitStatus status){
+        connect(process, qOverload<int,QProcess::ExitStatus>(&QProcess::finished), this, [this,process,id](int code,QProcess::ExitStatus exitStatus){
             const QString registry=QDir(dataDirectory_).filePath(QStringLiteral("pending-installers.json"));
             QVector<PendingInstaller> current; QString registryError;
+            QString helperStatus,helperMessage,creationTime; QVector<qint64> processIds; QStringList creationTimes;
+            const bool protocolOk=parseHelperProtocol(process->readAllStandardOutput(),helperStatus,helperMessage,processIds,creationTime,creationTimes);
             if(PendingInstallerRegistry::load(registry,current,registryError)) {
                 const auto found=std::find_if(current.begin(),current.end(),[&](const auto& e){return e.id==id;});
                 if(found!=current.end()) {
-                    if(status==QProcess::NormalExit && code==0) {
+                    found->helperPid=processIds.isEmpty()?0:processIds.first(); found->helperCreationTime=creationTime; found->retainedProcessIds=processIds; found->retainedProcessCreationTimes=creationTimes;
+                    if(!protocolOk || exitStatus!=QProcess::NormalExit) {
+                        found->status=QStringLiteral("helper-failed"); found->error=protocolOk?helperMessage:QStringLiteral("Helper returned malformed JSON protocol."); PendingInstallerRegistry::upsert(registry,*found,registryError);
+                    } else if(helperStatus==QStringLiteral("exited")) {
                         QString verifyError;
                         if(!verifyAndRegisterPendingInstaller(registry,appRegistryPath(),*found,&verifyError)) { found->status=QStringLiteral("helper-exited-needs-verification"); found->error=verifyError; PendingInstallerRegistry::upsert(registry,*found,registryError); }
-                    } else { found->status=QStringLiteral("helper-failed-or-still-running"); found->error=QStringLiteral("Helper exit code %1; destination was not registered.").arg(code); PendingInstallerRegistry::upsert(registry,*found,registryError); }
+                    } else if(helperStatus==QStringLiteral("process-still-running") || helperStatus==QStringLiteral("timeout")) {
+                        found->status=helperStatus; found->error=helperMessage; PendingInstallerRegistry::upsert(registry,*found,registryError);
+                    } else { found->status=helperStatus==QStringLiteral("nonzero")||helperStatus==QStringLiteral("no-window")?helperStatus:QStringLiteral("helper-failed"); found->error=helperMessage; PendingInstallerRegistry::upsert(registry,*found,registryError); }
                 }
             }
-            const QString text=status==QProcess::NormalExit?tr("Installer helper exited with code %1; verify the destination before launching the game.").arg(code):tr("Installer helper did not exit normally; the installer may still be running.");
+            const QString text=protocolOk?tr("Installer helper result: %1; %2").arg(helperStatus,helperMessage):tr("Installer helper returned an invalid result protocol.");
             notify(tr("Pending Installers"),text); process->deleteLater(); Q_UNUSED(id); emit changed();
             activePendingInstallerIds_.remove(id);
         });
         QStringList args={QStringLiteral("-NoProfile"),QStringLiteral("-ExecutionPolicy"),QStringLiteral("Bypass"),QStringLiteral("-File"),helper,QStringLiteral("-Setup"),canonical,QStringLiteral("-InstallDir"),destination};
         process->start(QStringLiteral("powershell.exe"),args);
-        if(!process->waitForStarted(3000)){activePendingInstallerIds_.remove(id);showMessage(tr("Install"),tr("Could not start the packaged installer helper."),MessageKind::Page);process->deleteLater();}
+        if(!process->waitForStarted(3000)){
+            current->destination=destination; current->status=QStringLiteral("launch-failed"); current->error=process->errorString(); QString saveError; PendingInstallerRegistry::upsert(registry,*current,saveError);
+            showMessage(tr("Install"),tr("Could not start the packaged installer helper."),MessageKind::Page);process->deleteLater();
+        } else {
+            current->destination=destination; current->status=QStringLiteral("launching"); current->helperPid=process->processId(); current->helperCreationTime=processCreationTime(current->helperPid);
+            if(current->helperPid<=0 || current->helperCreationTime.isEmpty() || !PendingInstallerRegistry::upsert(registry,*current,validationError)) {
+                process->kill(); process->deleteLater();
+                showMessage(tr("Install"),tr("The installer helper started but its durable process identity could not be recorded."),MessageKind::Page); emit changed(); return;
+            }
+            activePendingInstallerIds_.insert(id);
+        }
     });
 }
 namespace {

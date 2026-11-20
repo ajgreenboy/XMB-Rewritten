@@ -2,6 +2,7 @@ import { decodePng, psnr, ssim, type Crop, type PngImage } from './ab-compare';
 import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { createHash } from 'node:crypto';
 
 // Per-layer fidelity harness for the native XMB. Scores a fixed set of named
 // regions of a native 1920x1080 frame against the stored RPCS3 reference and
@@ -102,6 +103,9 @@ type StateRecipe = {
   reference: string;
   dataSeed: string;
   seedPaths: string[];
+  // Explicitly seed the harmless pending-installer catalogue row used by
+  // Game-root states whose stored native baseline includes it.
+  pendingInstallerFixture?: boolean;
   waits: number;
   settleWaits?: number;
   path?: PathStage[];
@@ -656,6 +660,28 @@ function seedDataDir(recipe: StateRecipe, captureDir: string) {
     const source = resolveRepo(join(recipe.dataSeed, seed));
     if (!existsSync(source)) fail(`${recipe.name}: data seed missing: ${source}`);
     cpSync(source, join(dataDir, seed), { recursive: true });
+  }
+  if (recipe.pendingInstallerFixture) {
+    const pendingRoot = join(dataDir, 'pending-fixture');
+    const installer = join(pendingRoot, 'setup.exe');
+    mkdirSync(pendingRoot, { recursive: true });
+    writeFileSync(installer, 'synthetic harmless installer fixture\n');
+    const hash = createHash('sha256').update(readFileSync(installer)).digest('hex');
+    writeFileSync(join(dataDir, 'pending-installers.json'), JSON.stringify({
+      version: 1,
+      entries: [{
+        id: 'render-fixture-pending-installer',
+        title: 'Synthetic Pending Installer',
+        installer,
+        archive: join(pendingRoot, 'archive.zip'),
+        destination: '',
+        libraryRoot: join(dataDir, 'library'),
+        sha256: hash,
+        status: 'pending',
+        error: '',
+      }],
+    }));
+    mkdirSync(join(dataDir, 'library'), { recursive: true });
   }
   return dataDir;
 }

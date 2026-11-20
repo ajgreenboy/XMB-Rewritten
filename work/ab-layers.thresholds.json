@@ -102,6 +102,7 @@
       "reference": "out/native-reference/layers/steam-game-root.png",
       "dataSeed": "out/native-reference/store/ui3-data",
       "seedPaths": ["preferences.json", "profiles.json", "settings.ini", "family-shared.json", "artwork", "cache/steam"],
+      "pendingInstallerFixture": true,
       "waits": 8,
       "settleWaits": 3,
       "expect": {
@@ -122,6 +123,7 @@
       "reference": "out/native-reference/layers/steam-game-root-dpr3.png",
       "dataSeed": "out/native-reference/store/ui3-data",
       "seedPaths": ["preferences.json", "profiles.json", "settings.ini", "family-shared.json", "artwork", "cache/steam"],
+      "pendingInstallerFixture": true,
       "waits": 8,
       "settleWaits": 3,
       "env": { "QT_SCALE_FACTOR": "3", "QT_ENABLE_HIGHDPI_SCALING": "1" },

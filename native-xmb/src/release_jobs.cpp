@@ -860,13 +860,16 @@ void Shell::pumpReleaseJobs() {
             if(!result.pendingInstaller.isEmpty()) {
                 const QString pendingRoot=pendingInstallerDirectory(*job);
                 QDir().mkpath(QFileInfo(pendingRoot).absolutePath());
-                if(!destinationReady(job->request,pendingRoot) || !QDir().rename(result.folder->path(),pendingRoot)) {
+                const QByteArray recoveryBytes=QJsonDocument(QJsonObject{{"id",job->id},{"title",job->request.title},{"installer",QDir(pendingRoot).filePath(result.pendingInstaller)},{"archive",result.archive},{"libraryRoot",job->request.gamesDirectory}}).toJson(QJsonDocument::Compact);
+                const QString stagedRecovery=QDir(result.folder->path()).filePath(QStringLiteral(".xmb-pending-recovery.json"));
+                if(!saveAtomic(stagedRecovery,recoveryBytes)) {
+                    result.error=tr("Could not write the pending-installer recovery journal; files were left in staging.");
+                } else if(!destinationReady(job->request,pendingRoot) || !QDir().rename(result.folder->path(),pendingRoot)) {
                     result.error=tr("Could not preserve the pending installer files in the selected library.");
                 } else {
                     result.folder->setAutoRemove(false);
                     const QString installer=QDir(pendingRoot).filePath(result.pendingInstaller);
                     const QString recovery=QDir(pendingRoot).filePath(QStringLiteral(".xmb-pending-recovery.json"));
-                    saveAtomic(recovery,QJsonDocument(QJsonObject{{"id",job->id},{"title",job->request.title},{"installer",installer},{"archive",result.archive},{"libraryRoot",job->request.gamesDirectory}}).toJson(QJsonDocument::Compact));
                     QString hash;
                     PendingInstaller pending;
                     pending.id=job->id; pending.title=job->request.title; pending.archivePath=result.archive;

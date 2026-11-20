@@ -15,6 +15,10 @@ struct PendingInstaller {
     QString sha256;
     QString status = QStringLiteral("pending");
     QString error;
+    qint64 helperPid = 0;
+    QString helperCreationTime;
+    QVector<qint64> retainedProcessIds;
+    QStringList retainedProcessCreationTimes;
 };
 
 // Only paths owned by the download job may be accepted.  The inspection is
@@ -23,6 +27,7 @@ struct PendingInstaller {
 bool inspectPendingInstaller(const QString& extractedRoot, QString* installerPath,
                              QString* error = nullptr);
 bool sha256File(const QString& path, QString* hash, QString* error = nullptr);
+bool validatePendingInstallerRecord(PendingInstaller& entry, QString* error = nullptr);
 bool verifyAndRegisterPendingInstaller(const QString& registryPath, const QString& appsPath,
                                        const PendingInstaller& entry, QString* error = nullptr,
                                        const QString& selectedExecutable = {});
