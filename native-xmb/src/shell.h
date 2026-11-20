@@ -800,7 +800,7 @@ private:
     QSet<QString> releaseRawgArt_;
     QSet<QString> releaseArtRequested_;
     std::unique_ptr<RawgArtwork> releaseArtwork_;
-    // Dedicated RAWG client for the legacy-store product-detail lookup (separate from the
+    // Dedicated RAWG client for the native game-detail lookup (separate from the
     // artwork client, so a detail fetch never contends with the art queue's own client).
     std::unique_ptr<RawgClient> rawgDetails_;
     int gameDetailDepth_=-1;      // pages_.size() when the detail lookup began (stale guard)
@@ -828,10 +828,6 @@ private:
     void openHydraSources();
     void openHydraSource(const QString& sourceIndex,const QString& sourceName);
     void retryHydraPage();
-    void requestLegacyStoreGame(int groupIndex,int rawIndex,const PopularTitle& title,quint64 generation,
-                                quint64 pageIdentity,quint64 requestToken);
-    void retryLegacyStoreGame(int index);
-    void requestLegacyStoreCover(int index,const QString& url,quint64 pageIdentity);
     void openDownloadHub();
     void openManageHub();
     // Add a Game (add_game_shell.cpp): the page rows, the in-place rebuild, the activation dispatch and close.
@@ -853,7 +849,7 @@ private:
     // RAWG metadata for the native game-detail page: resolves the
     // game's RAWG id from its title by a conservative search match, then fetches the
     // full detail document. No key -> no network; the lookup is async and dropped on
-    // navigation (a stale-response guard on pages_.size()).
+    // navigation (a stale-response guard on page identity and request token).
     void requestGameDetails(const QString& title);
     Assets& assets_;
     std::unique_ptr<class NotifyOverlay> notifyOverlay_;

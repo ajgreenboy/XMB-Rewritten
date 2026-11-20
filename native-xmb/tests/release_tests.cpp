@@ -521,19 +521,38 @@ int main(int argc,char** argv) {
                 const bool hot=request.contains("/hot") || request.contains("-hot");
                 const bool sources=request.contains("/sources");
                 const bool search=request.contains("/search");
+                const bool sourceFeed=request.contains("/source-feed") || request.contains("/source-oversized") || request.contains("/source-malformed");
                 const bool duplicate=request.contains("hot%20%20%20");
                 QByteArray body;
                 int delay=hot?0:(title==39?900:(title%5)*15);
                 bool fail=false;
+                if(request.contains("/source-redirect")) {
+                    const QByteArray response=QByteArrayLiteral("HTTP/1.1 302 Found\r\nLocation: /source-feed\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                    socket->write(response);socket->disconnectFromHost();return;
+                }
+                if(request.contains("/source-unsafe-redirect")) {
+                    const QByteArray response=QByteArrayLiteral("HTTP/1.1 302 Found\r\nLocation: file:///not-a-source\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                    socket->write(response);socket->disconnectFromHost();return;
+                }
+                if(request.contains("/source-oversized-chunked")) {
+                    const QByteArray chunk(16*1024*1024+1,'x');
+                    const QByteArray header=QByteArrayLiteral("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n");
+                    socket->write(header+QByteArray::number(chunk.size(),16)+"\r\n"+chunk+"\r\n0\r\n\r\n");socket->disconnectFromHost();return;
+                }
                 if(!hot && title==7)fail=++attempts[title]==1;
                 if(!hot && duplicate)fail=++attempts[-1]==1;
                 if(sources) {
+                    if(request.contains("/sources-fail"))fail=true;
                     if(request.contains("/sources-malformed"))
                         body=QByteArrayLiteral("{\"total\":1,\"limit\":100,\"sources\":[{\"title\":\"Good\",\"url\":\"https://good.invalid/index.json\"},null]}");
                     else if(request.contains("/sources-empty"))
                         body=QByteArrayLiteral("{\"total\":0,\"limit\":100,\"sources\":[]}");
                     else
                         body=QByteArrayLiteral("{\"total\":2,\"limit\":100,\"sources\":[{\"title\":\"Fixture Source A\",\"url\":\"https://fixture.invalid/a.json\",\"stats\":{\"installs\":3}},{\"title\":\"Fixture Source B\",\"url\":\"https://fixture.invalid/b.json\",\"stats\":{\"installs\":2}}]}");
+                } else if(sourceFeed) {
+                    body=QByteArrayLiteral("[{\"title\":\"Same Game Deluxe\",\"size\":\"1 GB\",\"uri\":\"https://fixture/same.zip\"},{\"title\":\"Same  Game  Deluxe\",\"size\":\"2 GB\",\"uri\":\"magnet:?xt=urn:btih:same\"},{\"title\":\"Same Game Deluxe\",\"size\":\"3 GB\",\"uri\":\"https://fixture/same.torrent\"}]");
+                    if(request.contains("/source-oversized"))body=QByteArray(16*1024*1024+1,'x');
+                    if(request.contains("/source-malformed"))body=QByteArrayLiteral("{malformed");
                 } else if(search) {
                     if(request.contains("/search-malformed"))
                         body=QByteArrayLiteral("{\"filteredCount\":2,\"games\":[{\"name\":\"Good Game\",\"source\":\"Fixture Source A\",\"sourceUrl\":\"https://fixture.invalid/a.json\"},null]}");
@@ -697,8 +716,11 @@ int main(int argc,char** argv) {
         qputenv("XMB_HYDRA_SOURCES_URL",(base+QStringLiteral("/sources")).toUtf8());
         qputenv("XMB_HYDRA_SEARCH_URL",(base+QStringLiteral("/search")).toUtf8());
         QVector<HydraSource> fixtureSources;fixtureError=QStringLiteral("stale error");
-        check(HydraLibrary().listSources(&fixtureSources,&fixtureError) && fixtureSources.size()==2 && fixtureError.isEmpty(),
-              "public listSources returns all valid fixture sources and clears prior error");
+         check(HydraLibrary().listSources(&fixtureSources,&fixtureError) && fixtureSources.size()==2 && fixtureError.isEmpty(),
+               "public listSources returns all valid fixture sources and clears prior error");
+         qputenv("XMB_HYDRA_SOURCES_URL",(base+QStringLiteral("/sources-fail")).toUtf8());fixtureSources.clear();fixtureError.clear();
+         check(!HydraLibrary().listSources(&fixtureSources,&fixtureError) && fixtureSources.isEmpty() && fixtureError.contains(QStringLiteral("retry")),
+               "HTTP source-list failure is actionable and does not publish an empty success");
         qputenv("XMB_HYDRA_SOURCES_URL",(base+QStringLiteral("/sources-malformed")).toUtf8());
         fixtureSources.append(HydraSource{});fixtureError.clear();
         check(!HydraLibrary().listSources(&fixtureSources,&fixtureError) && fixtureSources.isEmpty() &&
@@ -710,9 +732,37 @@ int main(int argc,char** argv) {
               "valid empty sources array clears a previous error");
         qputenv("XMB_HYDRA_SOURCES_URL",(base+QStringLiteral("/sources")).toUtf8());
         QVector<GameResult> searchResults;fixtureError=QStringLiteral("stale error");
-        check(HydraLibrary().searchGames(QStringLiteral("fixture"),&searchResults,&fixtureError) && searchResults.size()==1 &&
+         check(HydraLibrary().searchGames(QStringLiteral("fixture"),&searchResults,&fixtureError) && searchResults.size()==1 &&
               searchResults.first().options.size()==2 && fixtureError.isEmpty(),
-              "public searchGames returns the complete all-source result");
+               "public searchGames returns the complete all-source result");
+         HydraSource feed;feed.title=QStringLiteral("Fixture Feed");feed.url=QUrl(base+QStringLiteral("/source-feed"));
+         QVector<GameResult> feedGames;fixtureError.clear();
+         const bool feedOk=HydraLibrary().browseSource(feed,&feedGames,&fixtureError);
+         check(feedOk && feedGames.size()==1 &&
+               feedGames.first().options.size()==3 && feedGames.first().options[0].releaseTitle!=feedGames.first().options[1].releaseTitle,
+               "source feed keeps two normalized-name editions selectable under one source URL");
+         bool hasDirect=false,hasMagnet=false,hasUnavailable=false;
+         for(const auto& option:feedGames.first().options) {
+             hasDirect|=option.downloads.size()==1 && option.downloads.first().kind==QStringLiteral("direct");
+             hasMagnet|=option.downloads.size()==1 && option.downloads.first().kind==QStringLiteral("magnet");
+             hasUnavailable|=option.downloads.isEmpty() && option.sourceStatus.contains(QStringLiteral("no supported"));
+         }
+         check(hasDirect && hasMagnet && hasUnavailable,"source editions preserve direct/magnet identity and visibly mark unsupported links unavailable");
+         feed.url=QUrl(base+QStringLiteral("/source-malformed"));feedGames.append(GameResult{});fixtureError.clear();
+         check(!HydraLibrary().browseSource(feed,&feedGames,&fixtureError) && feedGames.isEmpty() && fixtureError.contains(QStringLiteral("invalid JSON")),
+               "malformed source feed fails without partial titles");
+         feed.url=QUrl(base+QStringLiteral("/source-oversized"));fixtureError.clear();
+         check(!HydraLibrary().browseSource(feed,&feedGames,&fixtureError) && feedGames.isEmpty() && fixtureError.contains(QStringLiteral("16 MiB")),
+               "single-response source body over 16 MiB is rejected");
+         feed.url=QUrl(base+QStringLiteral("/source-oversized-chunked"));fixtureError.clear();
+         check(!HydraLibrary().browseSource(feed,&feedGames,&fixtureError) && feedGames.isEmpty() && fixtureError.contains(QStringLiteral("16 MiB")),
+               "chunked source body over 16 MiB is rejected while receiving");
+         feed.url=QUrl(base+QStringLiteral("/source-redirect"));fixtureError.clear();
+         check(HydraLibrary().browseSource(feed,&feedGames,&fixtureError) && feedGames.size()==1,
+               "HTTP source redirect remains bounded and follows only a safe same-scheme target");
+         feed.url=QUrl(base+QStringLiteral("/source-unsafe-redirect"));fixtureError.clear();feedGames.append(GameResult{});
+         check(!HydraLibrary().browseSource(feed,&feedGames,&fixtureError) && feedGames.isEmpty() && fixtureError.contains(QStringLiteral("retry")),
+               "non-HTTP(S) redirect target is rejected before it can be followed");
         qputenv("XMB_HYDRA_SEARCH_URL",(base+QStringLiteral("/search-malformed")).toUtf8());
         searchResults.append(GameResult{});fixtureError.clear();
         check(!HydraLibrary().searchGames(QStringLiteral("fixture"),&searchResults,&fixtureError) && searchResults.isEmpty() &&

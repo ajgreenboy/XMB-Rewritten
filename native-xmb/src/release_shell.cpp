@@ -157,30 +157,6 @@ QVector<Entry> downloadHubRows(const QVector<ReleaseSource>& sources) {
 // first paint; they are fetched after the Store page is visible.
 struct BrowseOutcome { QVector<GameResult> games; QHash<int,QImage> covers; QString error; };
 struct HydraSourcesOutcome { QVector<HydraSource> sources; QString error; };
-struct BrowseTitlesOutcome { QVector<PopularTitle> titles; QVector<GameResult> fixtureGames; QHash<int,QImage> covers; QString error; };
-// Offline verification fixture (XMB_LEGACY_STORE_FIXTURE=1): synthetic games with solid-colour 16:9
-// covers, so a scripted run can exercise the legacy-store layout without the Hydra/Steam network. The
-// titles and covers are placeholders and are never shipped data; the hook only replaces the network
-// fetch, exactly like XMB_GAME_LIBRARY_ROOT replaces the drive list.
-QVector<GameResult> hydraNativeFixture(QHash<int,QImage>* covers) {
-    QVector<GameResult> games;
-    const int count=14;
-    for(int i=0;i<count;++i) {
-        GameResult g;
-        g.name=QStringLiteral("Fixture Game %1").arg(i+1);
-        g.title=g.name;g.originalTitle=g.name;
-        GameSourceOption o;
-        o.source=QStringLiteral("Fixture Source");
-        o.fileSize=QStringLiteral("%1 MB").arg(800+i*150);
-        o.releaseTitle=g.name;
-        g.options={o};
-        games.append(std::move(g));
-        QImage cover(480,480,QImage::Format_ARGB32);
-        cover.fill(QColor::fromHsv((i*29)%360,170,205));
-        (*covers)[i]=cover;
-    }
-    return games;
-}
 }
 
 void Shell::refreshReleaseSources(const QUrl& importUrl) {
@@ -455,7 +431,7 @@ void Shell::openBrowseGames() {
         if(page.entries.isEmpty()) { Entry row=releaseRow(QStringLiteral("game:error"),result.error.isEmpty()?tr("No popular games are downloadable right now."):tr("Could not load popular games"),result.error.isEmpty()?Action::Unavailable:Action::GameRetry);row.detail=result.error;page.entries.append(std::move(row)); }
         pages_.push_back(std::move(page));emit changed();
     });
-    watcher->setFuture(QtConcurrent::run([]{BrowseOutcome result;if(qEnvironmentVariableIntValue("XMB_LEGACY_STORE_FIXTURE")>0)result.games=hydraNativeFixture(&result.covers);else HydraLibrary().popularGames(&result.games,&result.error);return result;}));
+    watcher->setFuture(QtConcurrent::run([]{BrowseOutcome result;HydraLibrary().popularGames(&result.games,&result.error);return result;}));
     emit changed();
 }
 
@@ -587,12 +563,14 @@ void Shell::requestGamePageArt() {
     const QString url=pages_.last().downloadResults.first().coverUrl;
     if(url.isEmpty())return;
     const int depth=pages_.size();
+    const quint64 pageIdentity=pages_.last().identity;
+    const quint64 generation=hydraPageGeneration_;
     const QString cache=QDir(dataDirectory_).filePath(QStringLiteral("cache/release-art"));
     auto* watcher=new QFutureWatcher<QString>(this);
-    connect(watcher,&QFutureWatcher<QString>::finished,this,[this,watcher,depth]{
+    connect(watcher,&QFutureWatcher<QString>::finished,this,[this,watcher,depth,pageIdentity,generation]{
         const QString path=watcher->result();watcher->deleteLater();
         // Only the page this fetch was started for: a later back/pick must not repaint an older page.
-        if(path.isEmpty() || pages_.size()!=depth)return;
+        if(path.isEmpty() || generation!=hydraPageGeneration_ || pages_.size()!=depth || pages_.last().identity!=pageIdentity)return;
         for(auto& row:pages_.last().entries)
             if(row.action==Action::GameSourcePick)row.backgroundPath=path;
         emit changed();

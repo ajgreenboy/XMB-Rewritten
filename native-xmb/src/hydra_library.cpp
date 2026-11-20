@@ -23,27 +23,12 @@ QString responseError(const QString& service, QNetworkReply* reply, bool timedOu
     if(status>=400)return QStringLiteral("Hydra %1 request failed (HTTP %2); retry").arg(service).arg(status);
     return QStringLiteral("Hydra %1 request failed; retry").arg(service);
 }
+bool fetchBody(const QUrl& url,const QString& service,QByteArray* out,QString* error);
 
 bool fetchJson(const QUrl& url, QJsonObject* out, QString* error) {
-    QNetworkAccessManager manager;
-    QNetworkRequest request(url);
-    request.setRawHeader("User-Agent","XMB-Release-Sources/0.2");
-    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,QNetworkRequest::NoLessSafeRedirectPolicy);
-    QNetworkReply* reply=manager.get(request);
-    QEventLoop loop; QTimer timer; timer.setSingleShot(true);
-    bool timedOut=false;
-    QObject::connect(&timer,&QTimer::timeout,&loop,[&]{timedOut=true;reply->abort();});
-    QObject::connect(reply,&QNetworkReply::downloadProgress,&loop,[&](qint64 received,qint64){if(received>16*1024*1024){timedOut=true;reply->abort();}}); // a source cannot stream an unbounded body into memory
-    QObject::connect(reply,&QNetworkReply::finished,&loop,&QEventLoop::quit);
-    timer.start(30000); loop.exec();
-    if(timedOut || reply->error()!=QNetworkReply::NoError ||
-       reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt()>=400) {
-        const QString message=responseError(QStringLiteral("library"),reply,timedOut); reply->deleteLater();
-        if(error)*error=message; return false;
-    }
+    QByteArray body; if(!fetchBody(url,QStringLiteral("library"),&body,error))return false;
     QJsonParseError parseError;
-    const QJsonDocument document=QJsonDocument::fromJson(reply->readAll(),&parseError);
-    reply->deleteLater();
+    const QJsonDocument document=QJsonDocument::fromJson(body,&parseError);
     if(document.isNull() || !document.isObject()) {
         if(error)*error=QStringLiteral("Hydra library returned invalid JSON; retry");
         return false;
@@ -52,46 +37,53 @@ bool fetchJson(const QUrl& url, QJsonObject* out, QString* error) {
 }
 // The Hydra Cloud catalogue endpoints (catalogue/hot, catalogue/featured) answer a bare JSON array.
 bool fetchJsonArray(const QUrl& url, QJsonArray* out, QString* error) {
-    QNetworkAccessManager manager;
-    QNetworkRequest request(url);
-    request.setRawHeader("User-Agent","XMB-Release-Sources/0.2");
-    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,QNetworkRequest::NoLessSafeRedirectPolicy);
-    QNetworkReply* reply=manager.get(request);
-    QEventLoop loop; QTimer timer; timer.setSingleShot(true);
-    bool timedOut=false;
-    QObject::connect(&timer,&QTimer::timeout,&loop,[&]{timedOut=true;reply->abort();});
-    QObject::connect(reply,&QNetworkReply::downloadProgress,&loop,[&](qint64 received,qint64){if(received>16*1024*1024){timedOut=true;reply->abort();}}); // a source cannot stream an unbounded body into memory
-    QObject::connect(reply,&QNetworkReply::finished,&loop,&QEventLoop::quit);
-    timer.start(30000); loop.exec();
-    if(timedOut || reply->error()!=QNetworkReply::NoError ||
-       reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt()>=400) {
-        const QString message=responseError(QStringLiteral("catalogue"),reply,timedOut); reply->deleteLater();
-        if(error)*error=message; return false;
-    }
+    QByteArray body; if(!fetchBody(url,QStringLiteral("catalogue"),&body,error))return false;
     QJsonParseError parseError;
-    const QJsonDocument document=QJsonDocument::fromJson(reply->readAll(),&parseError);
-    reply->deleteLater();
+    const QJsonDocument document=QJsonDocument::fromJson(body,&parseError);
     if(document.isNull() || !document.isArray()) { if(error)*error=QStringLiteral("Hydra catalogue returned invalid JSON; retry"); return false; }
     if(out)*out=document.array(); return true;
 }
-bool fetchDocument(const QUrl& url, QJsonDocument* out, QString* error) {
-    if((url.scheme()!=QLatin1String("http") && url.scheme()!=QLatin1String("https")) || url.host().isEmpty()) { if(error)*error=QStringLiteral("Hydra source URL must be HTTP(S); retry"); return false; }
+bool safeRedirect(const QUrl& from, const QUrl& to) {
+    const bool valid=(to.scheme()==QLatin1String("http") || to.scheme()==QLatin1String("https")) && !to.host().isEmpty();
+    if(!valid)return false;
+    return !(from.scheme()==QLatin1String("https") && to.scheme()==QLatin1String("http"));
+}
+
+bool fetchBody(const QUrl& url,const QString& service,QByteArray* out,QString* error) {
+    if((url.scheme()!=QLatin1String("http") && url.scheme()!=QLatin1String("https")) || url.host().isEmpty()) {
+        if(error)*error=QStringLiteral("Hydra %1 URL must be HTTP(S); retry").arg(service); return false;
+    }
+    constexpr qint64 kMaxBody=16*1024*1024;
     QNetworkAccessManager manager; QNetworkRequest request(url);
     request.setRawHeader("User-Agent","XMB-Release-Sources/0.2");
     request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,QNetworkRequest::NoLessSafeRedirectPolicy);
-    QNetworkReply* reply=manager.get(request); QEventLoop loop; QTimer timer; timer.setSingleShot(true);
-    bool timedOut=false;
-    QObject::connect(&timer,&QTimer::timeout,&loop,[&]{timedOut=true;reply->abort();});
-    QObject::connect(reply,&QNetworkReply::downloadProgress,&loop,[&](qint64 received,qint64){if(received>16*1024*1024){timedOut=true;reply->abort();}});
+    QNetworkReply* reply=manager.get(request); reply->setReadBufferSize(kMaxBody+1);
+    QEventLoop loop; QTimer timer; timer.setSingleShot(true); QByteArray body; bool timedOut=false,invalidRedirect=false,overflow=false;
+    const auto abort=[&]{reply->abort();};
+    QObject::connect(&timer,&QTimer::timeout,&loop,[&]{timedOut=true;abort();});
+    QObject::connect(reply,&QNetworkReply::redirected,&loop,[&](const QUrl& target){
+        if(!safeRedirect(reply->url(),target)){invalidRedirect=true;abort();}
+    });
+    QObject::connect(reply,&QNetworkReply::readyRead,&loop,[&]{
+        if(reply->header(QNetworkRequest::ContentLengthHeader).toLongLong()>kMaxBody){overflow=true;abort();return;}
+        const qint64 remaining=kMaxBody-body.size();
+        const QByteArray chunk=reply->read(remaining+1);
+        if(chunk.size()>remaining){overflow=true;abort();return;}
+        body.append(chunk);
+    });
     QObject::connect(reply,&QNetworkReply::finished,&loop,&QEventLoop::quit);
     timer.start(30000); loop.exec();
-    const QUrl finalUrl=reply->url();
-    if(timedOut || reply->error()!=QNetworkReply::NoError || reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt()>=400 ||
-       (finalUrl.scheme()!=QLatin1String("http") && finalUrl.scheme()!=QLatin1String("https"))) {
-        const QString message=responseError(QStringLiteral("source"),reply,timedOut); reply->deleteLater();
-        if(error)*error=message; return false;
+    if(reply->header(QNetworkRequest::ContentLengthHeader).toLongLong()>kMaxBody)overflow=true;
+    if(timedOut || invalidRedirect || overflow || reply->error()!=QNetworkReply::NoError || reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt()>=400) {
+        const QString message=overflow?QStringLiteral("Hydra %1 response exceeds 16 MiB; retry").arg(service)
+            :(invalidRedirect?QStringLiteral("Hydra %1 redirect is not safe HTTP(S); retry").arg(service):responseError(service,reply,timedOut));
+        reply->deleteLater(); if(error)*error=message; return false;
     }
-    QJsonParseError parseError; const auto document=QJsonDocument::fromJson(reply->readAll(),&parseError); reply->deleteLater();
+    if(out)*out=body; reply->deleteLater(); return true;
+}
+bool fetchDocument(const QUrl& url, QJsonDocument* out, QString* error) {
+    QByteArray body; if(!fetchBody(url,QStringLiteral("source"),&body,error))return false;
+    QJsonParseError parseError; const auto document=QJsonDocument::fromJson(body,&parseError);
     if(document.isNull()) { if(error)*error=QStringLiteral("Hydra source returned invalid JSON; retry"); return false; }
     if(out)*out=document; return true;
 }
@@ -100,6 +92,11 @@ bool fetchDocument(const QUrl& url, QJsonDocument* out, QString* error) {
 // case-fold. Editions that differ in this key stay apart; identical names merge across sources.
 QString catalogNameKey(const QString& name) {
     return name.normalized(QString::NormalizationForm_KC).simplified().toCaseFolded();
+}
+QString optionIdentity(const GameSourceOption& option) {
+    QString key=option.source+QLatin1Char('\x1f')+option.sourceUrl+QLatin1Char('\x1f')+option.releaseTitle+QLatin1Char('\x1f')+option.fileSize;
+    for(const auto& download:option.downloads)key+=QLatin1Char('\x1f')+download.kind+QLatin1Char(':')+download.uri+QLatin1Char(':')+download.infohash;
+    return key;
 }
 bool isPreinstalled(const HydraSource& source) {
     const QString desc=source.description.toLower();
@@ -213,19 +210,15 @@ QVector<GameResult> buildGameCatalog(const QVector<GameRecord>& records, const Q
             byName.insert(key,results.size());
             results.append(result);
         } else {
-            // One option per source: identify a source by its release-index URL (unique), falling back
-            // to its display name when the URL is absent.
             auto& dst=results[existing.value()];
-            const QString identity=option.sourceUrl.isEmpty()?option.source:option.sourceUrl;
             bool have=false;
             for(const auto& old:dst.options) {
-                const QString oldIdentity=old.sourceUrl.isEmpty()?old.source:old.sourceUrl;
-                if(!identity.isEmpty() && identity==oldIdentity){have=true;break;}
+                if(optionIdentity(old)==optionIdentity(option)){have=true;break;}
             }
             if(!have)dst.options.append(option);
         }
     }
-    std::sort(results.begin(),results.end(),[&installs](const GameResult& a,const GameResult& b){
+    std::stable_sort(results.begin(),results.end(),[&installs](const GameResult& a,const GameResult& b){
         int pa=0,pb=0;
         for(const auto& o:a.options)pa=std::max(pa,installs.value(o.source,0));
         for(const auto& o:b.options)pb=std::max(pb,installs.value(o.source,0));
@@ -325,35 +318,24 @@ bool HydraLibrary::browseSource(const HydraSource& source, QVector<GameResult>* 
     if(!fetchDocument(source.url,&document,error))return false;
     QString parseError; const auto releases=parseReleaseIndex(document,&parseError);
     if(!parseError.isEmpty()) { if(error)*error=QStringLiteral("Hydra source returned invalid release JSON; retry"); return false; }
-    QVector<GameRecord> records; QHash<QString,int> releaseByName;
+    QVector<GameResult> games; QHash<QString,int> gameIndexes;
     for(const auto& release:releases) {
         QString name=release.raw.value(QStringLiteral("gameTitle")).toString().trimmed();
         if(name.isEmpty())name=release.raw.value(QStringLiteral("name")).toString().trimmed();
         if(name.isEmpty())name=release.title.trimmed();
         if(name.isEmpty())continue;
-        releaseByName.insert(catalogNameKey(name),records.size());
-        GameRecord record; record.name=name; record.title=name; record.originalTitle=release.title;
-        record.source=source.title; record.sourceUrl=source.url.toString(); record.fileSize=release.sizeLabel;
-        records.append(record);
-    }
-    auto games=buildGameCatalog(records,{source});
-    // Preserve the source feed's release identity and links for the selected source. The source browse
-    // is read-only, but a selected title must still flow into the existing source/confirm/download path.
-    for(auto& game:games) {
-        const int releaseIndex=releaseByName.value(catalogNameKey(game.name),-1);
-        if(releaseIndex>=0 && releaseIndex<releases.size()) {
-            const auto& release=releases[releaseIndex];
-            if(game.options.isEmpty())break;
-            auto& option=game.options.first(); option.releaseTitle=release.title;
-            for(const auto& download:release.downloads)
-                if(download.kind==QLatin1String("direct") || download.kind==QLatin1String("magnet"))option.downloads.append(download);
-            for(const auto& mirror:release.mirrors)if(mirror.parts.size()==1)
-                if(mirror.parts.first().kind==QLatin1String("direct") || mirror.parts.first().kind==QLatin1String("magnet"))option.downloads.append(mirror.parts.first());
-            option.mirror=release.mirrors.isEmpty()?QString{}:release.mirrors.first().host;
-            option.sourceStatus=option.downloads.isEmpty()
-                ?QStringLiteral("Only this source is known; no supported direct or magnet download is available")
-                :QStringLiteral("Only this source is known; other sources unavailable");
-            break;
+        GameSourceOption option; option.source=source.title; option.sourceUrl=source.url.toString(); option.fileSize=release.sizeLabel; option.releaseTitle=release.title;
+        for(const auto& download:release.downloads)
+            if(download.kind==QLatin1String("direct") || download.kind==QLatin1String("magnet"))option.downloads.append(download);
+        for(const auto& mirror:release.mirrors)if(mirror.parts.size()==1 &&
+            (mirror.parts.first().kind==QLatin1String("direct") || mirror.parts.first().kind==QLatin1String("magnet")))option.downloads.append(mirror.parts.first());
+        option.mirror=release.mirrors.isEmpty()?QString{}:release.mirrors.first().host;
+        option.sourceStatus=option.downloads.isEmpty()?QStringLiteral("Only this source is known; no supported direct or magnet download is available"):QStringLiteral("Only this source is known; other sources unavailable");
+        const QString key=catalogNameKey(name); int index=gameIndexes.value(key,-1);
+        if(index<0) { GameResult game; game.name=name; game.title=name; game.originalTitle=release.title; game.options.append(option); gameIndexes.insert(key,games.size()); games.append(std::move(game)); }
+        else {
+            bool duplicate=false; for(const auto& old:games[index].options)if(optionIdentity(old)==optionIdentity(option)){duplicate=true;break;}
+            if(!duplicate)games[index].options.append(option);
         }
     }
     if(out)*out=std::move(games); return true;
@@ -455,7 +437,7 @@ GameResult mergePopularGameResults(const QString& name,const QString& coverUrl,
     for(const auto& result:results) {
         if(merged.originalTitle.isEmpty())merged.originalTitle=result.originalTitle;
         for(const auto& option:result.options) {
-            const QString identity=option.sourceUrl.isEmpty()?option.source:option.sourceUrl;
+            const QString identity=optionIdentity(option);
             if(seen.contains(identity))continue;
             seen.insert(identity);merged.options.append(option);
         }
@@ -487,7 +469,7 @@ bool HydraLibrary::popularGame(const PopularTitle& title,GameResult* out,QString
         GameSourceOption option;
         option.source=game.value(QStringLiteral("source")).toString();
         option.sourceUrl=game.value(QStringLiteral("sourceUrl")).toString();
-        const QString identity=option.sourceUrl.isEmpty()?option.source:option.sourceUrl;
+        const QString identity=optionIdentity(option);
         if(seenSource.contains(identity))continue;
         seenSource.insert(identity);
         option.fileSize=game.value(QStringLiteral("fileSize")).toString();
