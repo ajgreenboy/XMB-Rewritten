@@ -864,8 +864,10 @@ void Shell::pumpReleaseJobs() {
                 const QString stagedRecovery=QDir(result.folder->path()).filePath(QStringLiteral(".xmb-pending-recovery.json"));
                 if(!saveAtomic(stagedRecovery,recoveryBytes)) {
                     result.error=tr("Could not write the pending-installer recovery journal; files were left in staging.");
+                    result.folder->setAutoRemove(false);
                 } else if(!destinationReady(job->request,pendingRoot) || !QDir().rename(result.folder->path(),pendingRoot)) {
                     result.error=tr("Could not preserve the pending installer files in the selected library.");
+                    result.folder->setAutoRemove(false);
                 } else {
                     result.folder->setAutoRemove(false);
                     const QString installer=QDir(pendingRoot).filePath(result.pendingInstaller);

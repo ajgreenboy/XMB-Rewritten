@@ -86,11 +86,13 @@ bool validatePendingInstallerRecord(PendingInstaller& e, QString* error) {
     if(e.id.isEmpty() || e.title.isEmpty() || !QDir::isAbsolutePath(e.installerPath) ||
        !QDir::isAbsolutePath(e.archivePath) || !QDir::isAbsolutePath(e.libraryRoot) ||
        !hex.match(e.sha256).hasMatch()) return fail(QStringLiteral("Pending installer record has invalid identity, roots, or hash."));
-    const QString pendingRoot=QDir(QFileInfo(e.archivePath).absolutePath()).canonicalPath();
+    const QString pendingRoot=QDir(QFileInfo(e.installerPath).absolutePath()).canonicalPath();
+    const QString archiveParent=QDir(QFileInfo(e.archivePath).absolutePath()).canonicalPath();
     const QString libraryRoot=QDir(e.libraryRoot).canonicalPath();
     const QString installer=QFileInfo(e.installerPath).canonicalFilePath();
-    if(pendingRoot.isEmpty() || libraryRoot.isEmpty()) return fail(QStringLiteral("Pending installer roots are unavailable."));
+    if(pendingRoot.isEmpty() || archiveParent.isEmpty() || libraryRoot.isEmpty()) return fail(QStringLiteral("Pending installer roots are unavailable."));
     if(!installer.isEmpty() && !installer.startsWith(pendingRoot+QLatin1Char('/'),Qt::CaseInsensitive)) return fail(QStringLiteral("Installer is outside its job-owned pending folder."));
+    if(!archiveParent.startsWith(libraryRoot+QLatin1Char('/'),Qt::CaseInsensitive)) return fail(QStringLiteral("Archive is outside its recorded library root."));
     if(!e.destination.isEmpty()) {
         if(!QDir::isAbsolutePath(e.destination)) return fail(QStringLiteral("Installation destination is not absolute."));
         const QString destination=QDir(e.destination).canonicalPath();
@@ -103,6 +105,29 @@ bool validatePendingInstallerRecord(PendingInstaller& e, QString* error) {
         if(e.status!=QStringLiteral("unavailable") && e.status!=QStringLiteral("helper-failed") && e.status!=QStringLiteral("timeout")) return fail(QStringLiteral("Installer source is missing."));
     }
     return true;
+}
+
+bool pendingInstallerArtifactsAvailable(const QString& registryPath) {
+    QVector<PendingInstaller> entries; QString ignored;
+    if(QFileInfo::exists(registryPath)) {
+        if(!PendingInstallerRegistry::load(registryPath,entries,ignored) || !entries.isEmpty()) return true;
+    }
+    QVector<QString> roots;
+    const QString override=qEnvironmentVariable("XMB_GAME_LIBRARY_ROOT");
+    if(!override.isEmpty()) roots.append(QDir::cleanPath(override));
+    for(const auto& drive:QDir::drives()) roots.append(QDir::cleanPath(drive.absolutePath()));
+    QSet<QString> seen;
+    for(const auto& root:roots) {
+        if(root.isEmpty() || seen.contains(root)) continue;
+        seen.insert(root);
+        const QStringList pendingRoots={QDir(root).filePath(QStringLiteral("XMB Games/Pending Installers")),QDir(root).filePath(QStringLiteral("Pending Installers"))};
+        for(const auto& pendingRoot:pendingRoots) {
+            const QDir dir(pendingRoot);
+            for(const auto& child:dir.entryInfoList(QDir::Dirs|QDir::NoDotAndDotDot|QDir::NoSymLinks))
+                if(QFileInfo::exists(QDir(child.absoluteFilePath()).filePath(QStringLiteral(".xmb-pending-recovery.json")))) return true;
+        }
+    }
+    return false;
 }
 
 bool PendingInstallerRegistry::load(const QString& path, QVector<PendingInstaller>& entries, QString& error) {
@@ -120,7 +145,7 @@ bool PendingInstallerRegistry::load(const QString& path, QVector<PendingInstalle
         e.status=o.value("status").toString(); e.error=o.value("error").toString().left(1024); e.helperPid=qint64(o.value("helperPid").toDouble()); e.helperCreationTime=o.value("helperCreationTime").toString();
         for(const auto value:o.value("retainedProcessIds").toArray())e.retainedProcessIds.append(qint64(value.toDouble()));
         for(const auto value:o.value("retainedProcessCreationTimes").toArray())e.retainedProcessCreationTimes.append(value.toString());
-        if(ids.contains(e.id) || (e.status!=QStringLiteral("pending") && e.status!=QStringLiteral("launching") && e.status!=QStringLiteral("launch-failed") && e.status!=QStringLiteral("helper-exited-needs-verification") && e.status!=QStringLiteral("helper-failed") && e.status!=QStringLiteral("timeout") && e.status!=QStringLiteral("process-still-running") && e.status!=QStringLiteral("no-window") && e.status!=QStringLiteral("nonzero") && e.status!=QStringLiteral("helper-failed-or-still-running") && e.status!=QStringLiteral("unavailable") && e.status!=QStringLiteral("registered")) || !validatePendingInstallerRecord(e,&error)) { if(error.isEmpty())error=QStringLiteral("Pending installer entry is invalid."); entries.clear(); return false; }
+        if(ids.contains(e.id) || (e.status!=QStringLiteral("pending") && e.status!=QStringLiteral("launching") && e.status!=QStringLiteral("launch-failed") && e.status!=QStringLiteral("helper-exited-needs-verification") && e.status!=QStringLiteral("helper-failed") && e.status!=QStringLiteral("timeout") && e.status!=QStringLiteral("process-still-running") && e.status!=QStringLiteral("manual-review") && e.status!=QStringLiteral("no-window") && e.status!=QStringLiteral("nonzero") && e.status!=QStringLiteral("helper-failed-or-still-running") && e.status!=QStringLiteral("unavailable") && e.status!=QStringLiteral("registered")) || !validatePendingInstallerRecord(e,&error)) { if(error.isEmpty())error=QStringLiteral("Pending installer entry is invalid."); entries.clear(); return false; }
         ids.insert(e.id); entries.append(e);
     }
     return true;
@@ -146,10 +171,11 @@ bool verifyAndRegisterPendingInstaller(const QString& registryPath, const QStrin
     const QString root=QDir(entry.libraryRoot).canonicalPath();
     const QString destination=QDir(entry.destination).canonicalPath();
     if(root.isEmpty() || destination.isEmpty() || destination==root || !destination.startsWith(root+QLatin1Char('/'),Qt::CaseInsensitive)) { if(error)*error=QStringLiteral("Installation destination is outside its recorded library root."); return false; }
-    const QString archiveRoot=QFileInfo(entry.archivePath).absolutePath();
+    const QString archiveRoot=QDir(QFileInfo(entry.archivePath).absolutePath()).canonicalPath();
+    const QString pendingRoot=QDir(QFileInfo(entry.installerPath).absolutePath()).canonicalPath();
     const QString installer=QFileInfo(entry.installerPath).canonicalFilePath();
     if(entry.status!=QStringLiteral("registered")) {
-        if(installer.isEmpty() || archiveRoot.isEmpty() || !installer.startsWith(QDir(archiveRoot).canonicalPath()+QLatin1Char('/'),Qt::CaseInsensitive)) { if(error)*error=QStringLiteral("Pending installer source is missing or no longer job-owned."); return false; }
+        if(installer.isEmpty() || pendingRoot.isEmpty() || archiveRoot.isEmpty() || !installer.startsWith(pendingRoot+QLatin1Char('/'),Qt::CaseInsensitive) || !archiveRoot.startsWith(root+QLatin1Char('/'),Qt::CaseInsensitive)) { if(error)*error=QStringLiteral("Pending installer source or archive is missing or no longer job-owned."); return false; }
         QString hash; if(!sha256File(installer,&hash,error) || hash.compare(entry.sha256,Qt::CaseInsensitive)!=0) { if(error && error->isEmpty())*error=QStringLiteral("Installer hash changed."); return false; }
     }
     const QStringList candidates=findGameExecutables(destination);
@@ -162,8 +188,19 @@ bool verifyAndRegisterPendingInstaller(const QString& registryPath, const QStrin
         if(chosen.isEmpty() || !candidates.contains(chosen)) { if(error)*error=QStringLiteral("The selected executable is not a verified game candidate."); return false; }
     }
     ContentApp app; app.id=QStringLiteral("release-game-")+entry.id; app.title=entry.title; app.kind=app.category=QStringLiteral("game"); app.executable=chosen; app.workingDirectory=QFileInfo(app.executable).absolutePath();
-    if(!ContentRegistry::upsert(appsPath,app,*error))return false;
+    QVector<ContentApp> apps; QString appsError;
+    if(!ContentRegistry::load(appsPath,apps,appsError)) { if(error)*error=appsError; return false; }
+    const auto existing=std::find_if(apps.cbegin(),apps.cend(),[&](const auto& candidate){return candidate.id==app.id;});
+    if(existing!=apps.cend()) {
+        const QString existingExecutable=QFileInfo(existing->executable).canonicalFilePath();
+        const QString existingWorking=QFileInfo(existing->workingDirectory).canonicalFilePath();
+        if(existingExecutable!=chosen || existingWorking!=app.workingDirectory) {
+            if(error)*error=QStringLiteral("A different registration already owns this release installer id.");
+            return false;
+        }
+    } else if(!ContentRegistry::upsert(appsPath,app,*error)) return false;
     PendingInstaller updated=entry; updated.status=QStringLiteral("registered");
-    QString ignored; return PendingInstallerRegistry::upsert(registryPath,updated,ignored);
+    QString registryError; if(!PendingInstallerRegistry::upsert(registryPath,updated,registryError)) { if(error)*error=registryError; return false; }
+    return true;
 }
 } // namespace xmb

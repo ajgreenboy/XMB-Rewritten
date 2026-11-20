@@ -2062,14 +2062,10 @@ Shell::Shell(QString dataDirectory,Assets& assets,QObject* parent):QObject(paren
     rebuildFriends();
     for(auto& category:categories_)if(category.id=="game") {
         category.entries.push_back(item("game:download-hub",QObject::tr("Download Games"),"item_tex_plain_folder",full,Action::DownloadHub));
-        QVector<PendingInstaller> pendingEntries; QString pendingError;
         const QString pendingRegistry=QDir(dataDirectory_).filePath(QStringLiteral("pending-installers.json"));
-        const bool pendingRegistryPresent=QFileInfo::exists(pendingRegistry);
-        const bool pendingRegistryValid=PendingInstallerRegistry::load(pendingRegistry,pendingEntries,pendingError);
-        // Keep the catalogue unchanged for users with no pending jobs.  A
-        // corrupt registry remains discoverable so the recovery/quarantine
-        // path is not hidden behind an empty catalogue.
-        if((pendingRegistryValid && !pendingEntries.isEmpty()) || (!pendingRegistryValid && pendingRegistryPresent))
+        // Keep the catalogue unchanged for users with no pending jobs, but
+        // surface same-session registry entries and orphaned recovery manifests.
+        if(pendingInstallerArtifactsAvailable(pendingRegistry))
             category.entries.push_back(item("game:pending-installers",QObject::tr("Pending Installers"),"item_tex_plain_folder",full,Action::PendingInstallers));
         category.entries.push_back(item("game:manage-hub",QObject::tr("Manage"),"item_tex_plain_folder",full,Action::ManageHub));
     }

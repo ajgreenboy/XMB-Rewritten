@@ -28,6 +28,7 @@ bool inspectPendingInstaller(const QString& extractedRoot, QString* installerPat
                              QString* error = nullptr);
 bool sha256File(const QString& path, QString* hash, QString* error = nullptr);
 bool validatePendingInstallerRecord(PendingInstaller& entry, QString* error = nullptr);
+bool pendingInstallerArtifactsAvailable(const QString& registryPath);
 bool verifyAndRegisterPendingInstaller(const QString& registryPath, const QString& appsPath,
                                        const PendingInstaller& entry, QString* error = nullptr,
                                        const QString& selectedExecutable = {});

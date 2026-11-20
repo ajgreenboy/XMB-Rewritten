@@ -44,9 +44,10 @@ bool parseHelperProtocol(const QByteArray& bytes,QString& status,QString& messag
     const auto doc=QJsonDocument::fromJson(line); if(!doc.isObject())return false;
     const auto object=doc.object(); status=object.value(QStringLiteral("status")).toString(); message=object.value(QStringLiteral("message")).toString().left(1024);
     static const QSet<QString> allowed{QStringLiteral("exited"),QStringLiteral("nonzero"),QStringLiteral("no-window"),QStringLiteral("process-still-running"),QStringLiteral("timeout"),QStringLiteral("helper-failed")};
-    if(!allowed.contains(status) || !object.value(QStringLiteral("processIds")).isArray())return false;
+    if((!allowed.contains(status) && status!=QStringLiteral("manual-review")) || !object.value(QStringLiteral("processIds")).isArray() || !object.value(QStringLiteral("processIdentities")).isArray())return false;
     for(const auto value:object.value(QStringLiteral("processIds")).toArray())if(value.isDouble() && value.toDouble()>0)processIds.append(qint64(value.toDouble()));
     for(const auto value:object.value(QStringLiteral("processIdentities")).toArray()) { const auto identity=value.toObject(); if(identity.value(QStringLiteral("pid")).isDouble() && identity.value(QStringLiteral("creationTime")).isDouble()){const qint64 pid=qint64(identity.value(QStringLiteral("pid")).toDouble()); const QString time=QString::number(qint64(identity.value(QStringLiteral("creationTime")).toDouble())); const int index=processIds.indexOf(pid); if(index>=0){while(creationTimes.size()<=index)creationTimes.append(QString()); creationTimes[index]=time; if(index==0)creationTime=time;} } }
+    if(processIds.size()!=creationTimes.size() && status!=QStringLiteral("manual-review"))return false;
     return true;
 }
 bool processIdentityAlive(qint64 pid,const QString& creationTime) {
@@ -95,8 +96,15 @@ void Shell::openPendingInstallers() {
             if(!manifest.open(QIODevice::ReadOnly))continue;
             const auto o=QJsonDocument::fromJson(manifest.readAll()).object(); PendingInstaller recovered;
             recovered.id=o.value("id").toString(); recovered.title=o.value("title").toString(); recovered.installerPath=o.value("installer").toString(); recovered.archivePath=o.value("archive").toString(); recovered.libraryRoot=o.value("libraryRoot").toString(); recovered.status=QStringLiteral("unavailable");
-            const QString manifestRoot=dir.canonicalFilePath(); const QString installer=QFileInfo(recovered.installerPath).canonicalFilePath();
-            if(manifestRoot.isEmpty() || installer.isEmpty() || !installer.startsWith(manifestRoot+QLatin1Char('/'),Qt::CaseInsensitive) || QDir(recovered.libraryRoot).canonicalPath().isEmpty())continue;
+            const QString manifestRoot=dir.canonicalFilePath(); const QString libraryRoot=QDir(recovered.libraryRoot).canonicalPath();
+            const QString expectedPending=QDir(libraryRoot).filePath(QStringLiteral("Pending Installers/")+recovered.id);
+            const QString expectedArchive=QDir(libraryRoot).filePath(QStringLiteral("Download Archives/")+recovered.id);
+            const QString archiveParent=QDir(QFileInfo(recovered.archivePath).absolutePath()).canonicalPath();
+            const QString installer=QFileInfo(recovered.installerPath).canonicalFilePath();
+            if(recovered.id.isEmpty() || manifestRoot.isEmpty() || libraryRoot.isEmpty() ||
+               QDir(expectedPending).canonicalPath().compare(manifestRoot,Qt::CaseInsensitive)!=0 ||
+               QDir(expectedArchive).canonicalPath().compare(archiveParent,Qt::CaseInsensitive)!=0 ||
+               installer.isEmpty() || !installer.startsWith(manifestRoot+QLatin1Char('/'),Qt::CaseInsensitive))continue;
             QString hash; if(recovered.id.isEmpty() || !sha256File(recovered.installerPath,&hash,&error))continue; recovered.sha256=hash;
             QString ignored; PendingInstallerRegistry::upsert(registryPath,recovered,ignored);
         }
@@ -161,7 +169,7 @@ void Shell::installPendingInstaller(const QString& id,const QString& destination
     if(!PendingInstallerRegistry::load(registry,entries,error)){showMessage(tr("Pending Installers"),error,MessageKind::Page);emit changed();return;}
     const auto it=std::find_if(entries.begin(),entries.end(),[&](const auto& e){return e.id==id;});
     if(it==entries.end())return;
-    if(it->status==QStringLiteral("launching")) {
+    if(it->status==QStringLiteral("launching") || it->status==QStringLiteral("process-still-running") || it->status==QStringLiteral("timeout") || it->status==QStringLiteral("manual-review")) {
         showMessage(tr("Install"),tr("This installer is already recorded as running; use Verify Installation after confirming its destination."),MessageKind::Page);
         emit changed();
         return;
@@ -196,7 +204,8 @@ void Shell::installPendingInstaller(const QString& id,const QString& destination
             const QString registry=QDir(dataDirectory_).filePath(QStringLiteral("pending-installers.json"));
             QVector<PendingInstaller> current; QString registryError;
             QString helperStatus,helperMessage,creationTime; QVector<qint64> processIds; QStringList creationTimes;
-            const bool protocolOk=parseHelperProtocol(process->readAllStandardOutput(),helperStatus,helperMessage,processIds,creationTime,creationTimes);
+            const QByteArray helperOutput=process->readAllStandardOutput();
+            const bool protocolOk=parseHelperProtocol(helperOutput,helperStatus,helperMessage,processIds,creationTime,creationTimes);
             if(PendingInstallerRegistry::load(registry,current,registryError)) {
                 const auto found=std::find_if(current.begin(),current.end(),[&](const auto& e){return e.id==id;});
                 if(found!=current.end()) {
@@ -208,14 +217,19 @@ void Shell::installPendingInstaller(const QString& id,const QString& destination
                         if(!verifyAndRegisterPendingInstaller(registry,appRegistryPath(),*found,&verifyError)) { found->status=QStringLiteral("helper-exited-needs-verification"); found->error=verifyError; PendingInstallerRegistry::upsert(registry,*found,registryError); }
                     } else if(helperStatus==QStringLiteral("process-still-running") || helperStatus==QStringLiteral("timeout")) {
                         found->status=helperStatus; found->error=helperMessage; PendingInstallerRegistry::upsert(registry,*found,registryError);
-                    } else { found->status=helperStatus==QStringLiteral("nonzero")||helperStatus==QStringLiteral("no-window")?helperStatus:QStringLiteral("helper-failed"); found->error=helperMessage; PendingInstallerRegistry::upsert(registry,*found,registryError); }
+                    } else { found->status=helperStatus==QStringLiteral("nonzero")||helperStatus==QStringLiteral("no-window")||helperStatus==QStringLiteral("manual-review")?helperStatus:QStringLiteral("helper-failed"); found->error=helperMessage; PendingInstallerRegistry::upsert(registry,*found,registryError); }
                 }
             }
             const QString text=protocolOk?tr("Installer helper result: %1; %2").arg(helperStatus,helperMessage):tr("Installer helper returned an invalid result protocol.");
             notify(tr("Pending Installers"),text); process->deleteLater(); Q_UNUSED(id); emit changed();
             activePendingInstallerIds_.remove(id);
         });
-        QStringList args={QStringLiteral("-NoProfile"),QStringLiteral("-ExecutionPolicy"),QStringLiteral("Bypass"),QStringLiteral("-File"),helper,QStringLiteral("-Setup"),canonical,QStringLiteral("-InstallDir"),destination};
+        // Use one explicitly quoted PowerShell command: this preserves
+        // canonical paths containing spaces through PowerShell's second
+        // command-line parser.
+        const auto psLiteral=[](const QString& value){QString escaped=value;escaped.replace(QLatin1Char('\''),QStringLiteral("''"));return QStringLiteral("'")+escaped+QStringLiteral("'");};
+        const QString command=QStringLiteral("& %1 -Setup %2 -InstallDir %3").arg(psLiteral(helper),psLiteral(canonical),psLiteral(destination));
+        QStringList args={QStringLiteral("-NoProfile"),QStringLiteral("-ExecutionPolicy"),QStringLiteral("Bypass"),QStringLiteral("-Command"),command};
         process->start(QStringLiteral("powershell.exe"),args);
         if(!process->waitForStarted(3000)){
             current->destination=destination; current->status=QStringLiteral("launch-failed"); current->error=process->errorString(); QString saveError; PendingInstallerRegistry::upsert(registry,*current,saveError);

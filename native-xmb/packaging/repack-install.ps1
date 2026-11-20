@@ -61,8 +61,12 @@ public static class ProcessTree {
   [DllImport("kernel32.dll")] static extern bool Process32First(IntPtr snap, ref Entry e);
   [DllImport("kernel32.dll")] static extern bool Process32Next(IntPtr snap, ref Entry e);
   [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr h);
+  [DllImport("kernel32.dll", SetLastError=true)] static extern IntPtr OpenProcess(uint access,bool inherit,uint pid);
+  [DllImport("kernel32.dll")] static extern bool GetProcessTimes(IntPtr h,out System.Runtime.InteropServices.ComTypes.FILETIME created,out System.Runtime.InteropServices.ComTypes.FILETIME exited,out System.Runtime.InteropServices.ComTypes.FILETIME kernel,out System.Runtime.InteropServices.ComTypes.FILETIME user);
+  [StructLayout(LayoutKind.Sequential)] public struct Node { public int Pid; public int ParentPid; public long CreationTime; }
   [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)] struct Entry { public uint Size,Usage,Pid; public IntPtr DefaultHeap; public uint Module,Threads,ParentPid; public int Priority; public uint Flags; [MarshalAs(UnmanagedType.ByValTStr, SizeConst=260)] public string Exe; }
-  public static int[] Children(int[] parents) { var wanted=new HashSet<int>(parents); var result=new List<int>(); IntPtr s=CreateToolhelp32Snapshot(2,0); if(s==new IntPtr(-1)) return result.ToArray(); var e=new Entry(); e.Size=(uint)Marshal.SizeOf(e); if(Process32First(s,ref e)) do { if(wanted.Contains((int)e.ParentPid)) result.Add((int)e.Pid); } while(Process32Next(s,ref e)); CloseHandle(s); return result.ToArray(); }
+  public static long CreationTime(int pid) { IntPtr h=OpenProcess(0x1000,false,(uint)pid); if(h==IntPtr.Zero)return 0; System.Runtime.InteropServices.ComTypes.FILETIME c,x,k,u; bool ok=GetProcessTimes(h,out c,out x,out k,out u); CloseHandle(h); if(!ok)return 0; return ((long)c.dwHighDateTime<<32)+(uint)c.dwLowDateTime; }
+  public static Node[] Snapshot() { var result=new List<Node>(); IntPtr s=CreateToolhelp32Snapshot(2,0); if(s==new IntPtr(-1)) return result.ToArray(); var e=new Entry(); e.Size=(uint)Marshal.SizeOf(e); if(Process32First(s,ref e)) do { result.Add(new Node{Pid=(int)e.Pid,ParentPid=(int)e.ParentPid,CreationTime=CreationTime((int)e.Pid)}); } while(Process32Next(s,ref e)); CloseHandle(s); return result.ToArray(); }
 }
 '@
 Add-Type @'
@@ -76,9 +80,18 @@ public static class UiTarget {
 
 function Write-Result {
     param([string]$Status,[string]$Message,[int]$ExitCode = 0,[int[]]$ProcessIds=@())
-    $identities=@()
-    foreach($processId in @($ProcessIds)) { try { $p=Get-Process -Id $processId -ErrorAction Stop; $identities+=@{pid=$processId;creationTime=$p.StartTime.ToUniversalTime().ToFileTimeUtc()} } catch {} }
-    [Console]::Out.WriteLine((@{ status=$Status; message=$Message; processIds=@($ProcessIds); processIdentities=@($identities) } | ConvertTo-Json -Compress))
+    $identities=@(); $uniqueIds=@($ProcessIds | Sort-Object -Unique)
+    foreach($processId in @($uniqueIds)) {
+        $key=[string]$processId
+        if($script:verifiedIdentities -and $script:verifiedIdentities.ContainsKey($key)) {
+            $identities+=@{pid=$processId;creationTime=[long]$script:verifiedIdentities[$key]}
+        } else {
+            try { $p=Get-Process -Id $processId -ErrorAction Stop; $identities+=@{pid=$processId;creationTime=$p.StartTime.ToUniversalTime().ToFileTimeUtc()} } catch {}
+        }
+    }
+    $complete=(@($identities | ForEach-Object {[int]$_.pid} | Sort-Object -Unique).Count -eq $uniqueIds.Count)
+    if(-not $complete -and $uniqueIds.Count -gt 0) { $Status='manual-review'; $Message='A verified live process identity could not be captured; duplicate launch is blocked until manual review.'; $ExitCode=6 }
+    [Console]::Out.WriteLine((@{ status=$Status; message=$Message; exitCode=$ExitCode; processIds=@($uniqueIds); processIdentities=@($identities) } | ConvertTo-Json -Compress))
     if ($ExitCode -ne 0) { exit $ExitCode }
 }
 
@@ -142,7 +155,7 @@ function Invoke-Click {
 # Wait until the setup process has a visible main window.
 function Wait-SetupWindow {
     param([System.Diagnostics.Process]$Process, [int]$TimeoutMs)
-    $deadline = [DateTime]::UtcNow.AddMilliseconds($TimeoutMs)
+    $deadline = [DateTime]::UtcNow.AddMilliseconds([Math]::Min($TimeoutMs,(Get-RemainingMs)))
     do {
         $handle=Get-VerifiedWindowHandle -RootId $Process.Id
         if ($handle -ne 0) { return $handle }
@@ -153,19 +166,44 @@ function Wait-SetupWindow {
 
 function Get-DescendantProcessIds {
     param([int[]]$ParentIds)
-    $found=New-Object System.Collections.Generic.HashSet[int]
-    $frontier=@($ParentIds)
-    while(@($frontier).Count -gt 0) {
-        $next=@([ProcessTree]::Children([int[]]$frontier) | Where-Object { $found.Add([int]$_) })
-        $frontier=$next
+    foreach($parent in @($ParentIds)) { if(-not $script:verifiedIdentities.ContainsKey([string]$parent)) { try {$created=(Get-Process -Id $parent -ErrorAction Stop).StartTime.ToUniversalTime().ToFileTimeUtc()} catch {$created=[ProcessTree]::CreationTime($parent)}; if($created -gt 0){$script:verifiedIdentities[[string]$parent]=$created} } }
+    $changed=$true; $passes=0
+    while($changed -and (Get-RemainingMs) -gt 0 -and $passes++ -lt 64) {
+        $changed=$false
+        $nodes=[ProcessTree]::Snapshot()
+        foreach($node in $nodes) {
+            $parentKey=[string]$node.ParentPid
+            # Validate the current parent's creation identity, then capture the
+            # child's own identity. A child's timestamp can never equal its
+            # parent's timestamp; comparing those two was an identity bug.
+            if(-not $script:verifiedIdentities.ContainsKey($parentKey)) { continue }
+            $parentTime=0
+            try {$parentTime=(Get-Process -Id $node.ParentPid -ErrorAction Stop).StartTime.ToUniversalTime().ToFileTimeUtc()} catch {continue}
+            $nodeTime=0
+            try {$nodeTime=(Get-Process -Id $node.Pid -ErrorAction Stop).StartTime.ToUniversalTime().ToFileTimeUtc()} catch {continue}
+            if([long]$script:verifiedIdentities[$parentKey] -eq [long]$parentTime) {
+                $key=[string]$node.Pid
+                if($script:verifiedIdentities.ContainsKey($key)) { if([long]$script:verifiedIdentities[$key] -ne $nodeTime){continue} }
+                else { $script:verifiedIdentities[$key]=$nodeTime; $changed=$true }
+            }
+        }
     }
-    return @($found)
+    $live=@()
+    foreach($key in @($script:verifiedIdentities.Keys)) {
+        $pidValue=[int]$key
+        try { $now=(Get-Process -Id $pidValue -ErrorAction Stop).StartTime.ToUniversalTime().ToFileTimeUtc(); if([long]$now -eq [long]$script:verifiedIdentities[$key]){$live+=$pidValue} } catch {}
+    }
+    return $live
 }
 function Get-VerifiedWindowHandle {
     param([int]$RootId)
-    $ids=@($RootId)+@(Get-DescendantProcessIds -ParentIds @($RootId))
+    $ids=Get-DescendantProcessIds -ParentIds @($RootId)
     foreach($id in $ids) { try { $p=Get-Process -Id $id -ErrorAction Stop; $p.Refresh(); if($p.MainWindowHandle -ne 0){ return $p.MainWindowHandle } } catch {} }
     return [IntPtr]::Zero
+}
+function Get-RemainingMs {
+    if(-not $script:globalDeadline){return 0}
+    return [Math]::Max(0,[int][Math]::Ceiling(($script:globalDeadline-[DateTime]::UtcNow).TotalMilliseconds))
 }
 
 # ---------------------------------------------------------------------------
@@ -195,12 +233,15 @@ if ($PSCmdlet.ShouldProcess("setup.exe", "Launch installer and drive it")) {
     # Start-Process accepts an argument array on Windows PowerShell 5.1 and
     # preserves the executable as the tracked process (no explorer handoff).
     $proc = Start-Process -FilePath $setupPath -ArgumentList $innoArgs -WorkingDirectory (Split-Path $setupPath) -PassThru
+    $script:verifiedIdentities=@{}
+    $script:globalDeadline=[DateTime]::UtcNow.AddMilliseconds($InstallTimeoutMs)
 
     # 1. Wait for a window to appear.
     $setupWindow=Wait-SetupWindow -Process $proc -TimeoutMs $PageTimeoutMs
     if ($setupWindow -eq [IntPtr]::Zero) {
         Write-Warning "No installer window appeared within $PageTimeoutMs ms."
-        if (-not $proc.HasExited) { Write-Result -Status 'process-still-running' -Message 'No installer window appeared; process was left running.' -ExitCode 3 -ProcessIds @($proc.Id) }
+        if (-not $proc.HasExited) { Write-Result -Status 'process-still-running' -Message 'No installer window appeared; process was left running.' -ExitCode 3 -ProcessIds @($script:verifiedIdentities.Keys | ForEach-Object {[int]$_}) }
+        if ($proc.ExitCode -ne 0) { Write-Result -Status 'nonzero' -Message ("Installer exited with code {0} before a window appeared." -f $proc.ExitCode) -ExitCode 5 }
         Write-Result -Status 'no-window' -Message 'Installer exited before a window appeared.' -ExitCode 3
     }
 
@@ -209,9 +250,7 @@ if ($PSCmdlet.ShouldProcess("setup.exe", "Launch installer and drive it")) {
     #    and the custom ISDone screen drives itself once started.
     $nextIds = @('Button1','NextButton','FinishButton','InstallButton','btnNext','btnInstall','btnFinish')
     $doneSomething = $true
-    $globalDeadline = [DateTime]::UtcNow.AddMilliseconds($InstallTimeoutMs)
-
-    while ($doneSomething -and [DateTime]::UtcNow -lt $globalDeadline) {
+    while ($doneSomething -and (Get-RemainingMs) -gt 0) {
         $doneSomething = $false
         foreach ($id in $nextIds) {
             $proc.Refresh()
@@ -219,7 +258,7 @@ if ($PSCmdlet.ShouldProcess("setup.exe", "Launch installer and drive it")) {
             $window=Get-VerifiedWindowHandle -RootId $proc.Id
             $root = if($window -ne 0){[System.Windows.Automation.AutomationElement]::FromHandle($window)}else{$null}
             if (-not $root) { continue }
-            $btn = Find-ElementByAutomationId -Ids @($id) -Root $root -TimeoutMs 1000
+            $btn = Find-ElementByAutomationId -Ids @($id) -Root $root -TimeoutMs ([Math]::Min(1000,(Get-RemainingMs)))
             if ($btn) {
                 Write-Verbose "Activating button '$id'"
                 Invoke-Click $btn
@@ -272,22 +311,27 @@ public static class Native {
     # 3. Wait for setup to finish (decompression is slow) or timeout.
     $proc.Refresh()
     $trackedChildren=@()
-    if (-not $proc.HasExited) {
-        Write-Host "Waiting for installer to finish (up to $InstallTimeoutMs ms)..."
-        $proc.WaitForExit($InstallTimeoutMs) | Out-Null
+    if (-not $proc.HasExited -and (Get-RemainingMs) -gt 0) {
+        Write-Host "Waiting for installer to finish (up to $(Get-RemainingMs) ms)..."
+        # Poll rather than WaitForExit: this keeps the same monotonic deadline
+        # while allowing child-process identity checks to run before the root
+        # exits and avoiding PowerShell's process-tree wait behavior.
+        while(-not $proc.HasExited -and (Get-RemainingMs) -gt 0) {
+            $proc.Refresh()
+            Start-Sleep -Milliseconds ([Math]::Min(250,(Get-RemainingMs)))
+        }
     }
 
-    $childDeadline=[DateTime]::UtcNow.AddMilliseconds($InstallTimeoutMs)
     do {
         $trackedChildren=Get-DescendantProcessIds -ParentIds @($proc.Id)
         if(@($trackedChildren).Count -eq 0) { break }
         Start-Sleep -Milliseconds 500
-    } while([DateTime]::UtcNow -lt $childDeadline)
+    } while((Get-RemainingMs) -gt 0)
 
     if (-not $proc.HasExited -or @($trackedChildren).Count -gt 0) {
         Write-Warning "Installer still running after timeout; did not kill it."
         Write-Warning "Check the installer window manually before assuming failure."
-        Write-Result -Status 'timeout' -Message 'Installer or a verified child process exceeded timeout and was not killed.' -ExitCode 4 -ProcessIds (@($proc.Id)+@($trackedChildren))
+        Write-Result -Status 'timeout' -Message 'Installer or a verified child process exceeded timeout and was not killed.' -ExitCode 4 -ProcessIds @($script:verifiedIdentities.Keys | ForEach-Object {[int]$_})
     } else {
         Write-Host ("Installer exited with code {0}." -f $proc.ExitCode)
         if ($proc.ExitCode -eq 0) { Write-Result -Status 'exited' -Message 'Installer exited; destination still requires verification.' }
