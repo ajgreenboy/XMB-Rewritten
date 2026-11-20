@@ -466,9 +466,9 @@ QString ReleaseSources::downloadResolved(const QVector<Download>& candidates,con
     QString lastError;
     int attempted=0;
     for(const auto& candidate:candidates) {
-        if(attempted++>=kMaxDownloadCandidates)break;
         if(cancel && cancel->load()){fail(error,QStringLiteral("Download cancelled"));return {};}
         if(candidate.kind!=QStringLiteral("direct") && candidate.kind!=QStringLiteral("magnet"))continue;
+        if(attempted++>=kMaxDownloadCandidates)break;
 
         QUrl resolved;
         QString candidateError;
@@ -523,7 +523,11 @@ QString ReleaseSources::downloadResolved(const QVector<Download>& candidates,con
             }
         }
         if(downloaded)return path;
-        if(cancel && cancel->load()){fail(error,QStringLiteral("Download cancelled"));return {};}
+        if(cancel && cancel->load()) {
+            if(pausing && pausing->load() && candidateError==QStringLiteral("Download paused"))fail(error,candidateError);
+            else fail(error,QStringLiteral("Download cancelled"));
+            return {};
+        }
         lastError=candidateError;
         if(!eligibleCandidateFallback(candidateError)){fail(error,candidateError);return {};}
     }

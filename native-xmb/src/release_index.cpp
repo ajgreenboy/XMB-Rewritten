@@ -116,8 +116,12 @@ QVector<QJsonValue> children(const QJsonValue& value) {
     return result;
 }
 bool uriLike(const QString& text) {
-    static const QRegularExpression pattern(QStringLiteral("^(?:magnet:|https?://)|\\.torrent(?:\\?|$)"),QRegularExpression::CaseInsensitiveOption);
-    return pattern.match(text).hasMatch();
+    if(text.startsWith(QStringLiteral("magnet:"),Qt::CaseInsensitive))return true;
+    const QUrl url(text);
+    if(!url.isValid() || url.host().isEmpty() || !url.userInfo().isEmpty())return false;
+    const auto scheme=url.scheme().toLower();
+    if(scheme!=QStringLiteral("http") && scheme!=QStringLiteral("https"))return false;
+    return true;
 }
 QStringList collectUris(const QJsonValue& root) {
     QStringList result; QVector<QJsonValue> pending{root};

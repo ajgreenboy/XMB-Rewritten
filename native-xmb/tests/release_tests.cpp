@@ -7,6 +7,7 @@
 #include "release_job_state.h"
 #include "release_archive_cleanup.h"
 #include <QCoreApplication>
+#include <QCryptographicHash>
 #include <QDir>
 #include <QFile>
 #include <QJsonArray>
@@ -73,6 +74,8 @@ int main(int argc,char** argv) {
     check(named.size()==1 && named.first().title==QStringLiteral("Named Example") && named.first().publishedAt.isValid() && named.first().sizeBytesMax==qint64(374*mb),"heuristic date and named title");
     const auto torrentQuery=parseReleaseIndex(QJsonDocument::fromJson(R"([{"name":"Torrent Query","links":["https://example.invalid/game.torrent?download=1"]}])"));
     check(torrentQuery.size()==1 && torrentQuery.first().downloads.size()==1 && torrentQuery.first().downloads.first().kind==QStringLiteral("torrent"),"heuristic torrent query link");
+    const auto torrentText=parseReleaseIndex(QJsonDocument::fromJson(R"([{"name":"readme.torrent?download=1","links":["game.torrent?download=1"],"note":"title.torrent?download=1"}])"));
+    check(torrentText.size()==1 && torrentText.first().downloads.isEmpty(),"heuristic rejects bare torrent-looking text");
     if(argc>1) {
         QFile fixture(QString::fromLocal8Bit(argv[1]));check(fixture.open(QIODevice::ReadOnly),"fixture read");
         const auto releases=parseReleaseIndex(QJsonDocument::fromJson(fixture.readAll()),&error);
@@ -90,11 +93,14 @@ int main(int argc,char** argv) {
     check(!debrid.selectFiles(QStringLiteral("id"),QStringLiteral("all"),&error) && error==QStringLiteral("no Real-Debrid token configured"),"selectFiles missing token");
     QTcpServer server;check(server.listen(QHostAddress::LocalHost,0),"local download server");
     std::atomic_bool slowSeen{false};
+    std::atomic_bool boundedGoodSeen{false};
+    std::atomic_bool resumeBSawRange{false};
     QObject::connect(&server,&QTcpServer::newConnection,&app,[&] {
         auto* socket=server.nextPendingConnection();
         QObject::connect(socket,&QTcpSocket::readyRead,socket,[&,socket]{
             const QByteArray request=socket->readAll();
             const bool bad=request.contains(" /bad");
+            if(request.contains(" /bounded-good"))boundedGoodSeen.store(true);
             if(request.contains(" /slow")) {
                 slowSeen.store(true);
                 QTimer::singleShot(5000,socket,[socket] {
@@ -103,8 +109,36 @@ int main(int argc,char** argv) {
                 });
                 return;
             }
-            if(bad)socket->write("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
-            else socket->write("HTTP/1.1 200 OK\r\nContent-Length: 7\r\nConnection: close\r\n\r\nfixture");
+            if(request.contains(" /resume-a")) {
+                socket->write("HTTP/1.1 200 OK\r\nETag: \"a\"\r\nContent-Length: 14\r\nConnection: close\r\n\r\npartial");
+                socket->flush();
+                QTimer::singleShot(5000,socket,[socket] {
+                    socket->write("payload");socket->disconnectFromHost();
+                });
+                return;
+            }
+            if(request.contains(" /resume-b")) {
+                const bool ranged=request.contains("Range: bytes=");
+                resumeBSawRange.store(ranged);
+                const QByteArray body=QByteArrayLiteral("B-PAYLOAD");
+                const bool validRange=ranged && request.contains("If-Range: \"b\"");
+                const QByteArray status=validRange?QByteArrayLiteral("206 Partial Content"):QByteArrayLiteral("200 OK");
+                const QByteArray range=validRange?QByteArrayLiteral("Content-Range: bytes 4-8/9\r\n"):QByteArray();
+                socket->write("HTTP/1.1 "+status+"\r\nETag: \"b\"\r\n"+range+"Content-Length: "+QByteArray::number(validRange?5:body.size())+"\r\nConnection: close\r\n\r\n"+(validRange?body.mid(4):body));
+                socket->disconnectFromHost();return;
+            }
+            QByteArray status=QByteArrayLiteral("200 OK");
+            if(bad || request.contains(" /status404"))status=QByteArrayLiteral("404 Not Found");
+            else if(request.contains(" /status500"))status=QByteArrayLiteral("500 Internal Server Error");
+            else if(request.contains(" /status503"))status=QByteArrayLiteral("503 Service Unavailable");
+            else if(request.contains(" /status401"))status=QByteArrayLiteral("401 Unauthorized");
+            else if(request.contains(" /status403"))status=QByteArrayLiteral("403 Forbidden");
+            else if(request.contains(" /redirect")) {
+                socket->write("HTTP/1.1 302 Found\r\nLocation: file:///not-a-download.zip\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                socket->disconnectFromHost();return;
+            }
+            const QByteArray body=status==QByteArrayLiteral("200 OK")?QByteArrayLiteral("fixture"):QByteArray();
+            socket->write("HTTP/1.1 "+status+"\r\nContent-Length: "+QByteArray::number(body.size())+"\r\nConnection: close\r\n\r\n"+body);
             socket->disconnectFromHost();
         });
         QObject::connect(socket,&QTcpSocket::disconnected,socket,&QObject::deleteLater);
@@ -134,6 +168,36 @@ int main(int argc,char** argv) {
         QFile fallback(fallbackPath);
         check(!fallbackPath.isEmpty() && error.isEmpty() && fallback.open(QIODevice::ReadOnly) && fallback.readAll()==QByteArray("fixture"),"404 direct candidate falls back in order");
         fallback.close();check(fallback.remove(),"remove fallback fixture");
+        auto reviewed=[&](const QString& name,const QVector<QString>& urls,const QString& destination) {
+            QVector<Download> links;for(const auto& url:urls)links.append(normalizeDownload(url));
+            QString reviewedError;
+            return qMakePair(store.downloadGame(QString(),QUrl(),name,links,destination,&reviewedError,{},nullptr),reviewedError);
+        };
+        QVector<QString> unsupported;for(int i=0;i<9;++i)unsupported.append(QStringLiteral("https://example.invalid/ignored%1.torrent?slot=%1").arg(i));
+        unsupported.append(goodFallback);
+        const auto unsupportedResult=reviewed(QStringLiteral("Unsupported Prefix"),unsupported,QDir(temporary.path()).filePath(QStringLiteral("unsupported-prefix")));
+        check(!unsupportedResult.first.isEmpty() && unsupportedResult.second.isEmpty(),"unsupported candidates do not consume bounded attempts");
+        QVector<QString> bounded;for(int i=0;i<9;++i)bounded.append(QStringLiteral("http://127.0.0.1:%1/bad%2.zip").arg(server.serverPort()).arg(i));
+        bounded.append(QStringLiteral("http://127.0.0.1:%1/bounded-good.zip").arg(server.serverPort()));
+        const auto boundedResult=reviewed(QStringLiteral("Bounded Direct"),bounded,QDir(temporary.path()).filePath(QStringLiteral("bounded-direct")));
+        check(boundedResult.first.isEmpty() && boundedResult.second==QStringLiteral("Server returned HTTP 404") && !boundedGoodSeen.load(),"bounded fallback stops after eight supported candidates");
+        const auto status500=reviewed(QStringLiteral("HTTP 500 Fallback"),{QStringLiteral("http://127.0.0.1:%1/status500.zip").arg(server.serverPort()),goodFallback},QDir(temporary.path()).filePath(QStringLiteral("status500")));
+        const auto status503=reviewed(QStringLiteral("HTTP 503 Fallback"),{QStringLiteral("http://127.0.0.1:%1/status503.zip").arg(server.serverPort()),goodFallback},QDir(temporary.path()).filePath(QStringLiteral("status503")));
+        check(!status500.first.isEmpty() && status500.second.isEmpty() && !status503.first.isEmpty() && status503.second.isEmpty(),"HTTP 500 and 503 candidates fall back");
+        for(const auto& terminal:QStringList{QStringLiteral("status401"),QStringLiteral("status403"),QStringLiteral("redirect")}) {
+            const auto result=reviewed(QStringLiteral("Terminal ")+terminal,{QStringLiteral("http://127.0.0.1:%1/%2.zip").arg(server.serverPort()).arg(terminal),goodFallback},QDir(temporary.path()).filePath(terminal));
+            check(result.first.isEmpty() && !result.second.isEmpty(),"non-404/5xx HTTP candidate is terminal");
+        }
+        const auto network=reviewed(QStringLiteral("Network Terminal"),{QStringLiteral("http://127.0.0.1:1/network.zip"),goodFallback},QDir(temporary.path()).filePath(QStringLiteral("network")));
+        check(network.first.isEmpty() && network.second.startsWith(QStringLiteral("Network error:")),"network failure is terminal");
+        const auto invalid=store.downloadGame(QString(),QUrl(),QStringLiteral("Validation Terminal"),
+            QVector<Download>{{QStringLiteral("direct"),QStringLiteral("file:///not-a-download.zip")},normalizeDownload(goodFallback)},
+            QDir(temporary.path()).filePath(QStringLiteral("validation")),&error,{},nullptr);
+        check(invalid.isEmpty() && error==QStringLiteral("Invalid HTTP(S) URL"),"validation failure is terminal");
+        const QString blockedDir=QDir(temporary.path()).filePath(QStringLiteral("blocked-destination"));
+        QFile blocked(blockedDir);check(blocked.open(QIODevice::WriteOnly),"blocked destination fixture");blocked.write("not a directory");blocked.close();
+        const auto pathFailure=reviewed(QStringLiteral("Path Terminal"),{goodFallback},blockedDir);
+        check(pathFailure.first.isEmpty() && pathFailure.second==QStringLiteral("Cannot create download directory"),"path failure is terminal");
         const QString slow=QStringLiteral("http://127.0.0.1:%1/slow.zip").arg(server.serverPort());
         const QString cancelDir=QDir(temporary.path()).filePath(QStringLiteral("cancel-download"));
         std::atomic_bool cancelled{false};QString cancelError;
@@ -147,6 +211,45 @@ int main(int argc,char** argv) {
         while(!pending.isFinished() && cancelClock.elapsed()<5000)QCoreApplication::processEvents(QEventLoop::AllEvents,10);
         check(pending.isFinished() && pending.result().isEmpty() && cancelError==QStringLiteral("Download cancelled"),"cancellation aborts active candidate");
         check(QDir(cancelDir).entryList(QDir::Files|QDir::NoDotAndDotDot).isEmpty(),"cancellation leaves no partial download");
+
+        const QString resumeA=QStringLiteral("http://127.0.0.1:%1/resume-a.zip").arg(server.serverPort());
+        const QString resumeB=QStringLiteral("http://127.0.0.1:%1/resume-b.zip").arg(server.serverPort());
+        const QString pauseDir=QDir(temporary.path()).filePath(QStringLiteral("pause-download"));
+        std::atomic_bool pauseCancel{false},pausing{false},pauseBytes{false};QString pauseError;
+        QFuture<QString> pauseFuture=QtConcurrent::run([&] {
+            return store.downloadGame(QString(),QUrl(),QStringLiteral("Paused Test"),{normalizeDownload(resumeA)},pauseDir,&pauseError,
+                                       [&](qint64 received,qint64){if(received>=7)pauseBytes.store(true);},&pauseCancel,&pausing);
+        });
+        QElapsedTimer pauseClock;pauseClock.start();
+        while(!pauseBytes.load() && !pauseFuture.isFinished() && pauseClock.elapsed()<3000)QCoreApplication::processEvents(QEventLoop::AllEvents,10);
+        pausing.store(true);pauseCancel.store(true);
+        while(!pauseFuture.isFinished() && pauseClock.elapsed()<5000)QCoreApplication::processEvents(QEventLoop::AllEvents,10);
+        const QString pausePart=QDir(pauseDir).filePath(QStringLiteral(".xmb-game.part"));
+        const QString pauseMeta=QDir(pauseDir).filePath(QStringLiteral(".xmb-game.resume.json"));
+        check(pauseFuture.isFinished() && pauseError==QStringLiteral("Download paused") && QFileInfo(pausePart).size()==7 && QFileInfo(pauseMeta).exists(),"pausing preserves resumable partial and checkpoint");
+        resumeBSawRange.store(false);
+        std::atomic_bool bCancel{false},bPausing{false};QString bError;
+        const auto resumed=store.downloadGame(QString(),QUrl(),QStringLiteral("Paused Test"),{normalizeDownload(resumeB)},pauseDir,&bError,{},&bCancel,&bPausing);
+        QFile resumedFile(resumed);
+        check(!resumed.isEmpty() && bError.isEmpty() && resumedFile.open(QIODevice::ReadOnly) && resumedFile.readAll()==QByteArray("B-PAYLOAD") && !resumeBSawRange.load() && !QFileInfo::exists(pausePart) && !QFileInfo::exists(pauseMeta),"URL B does not resume URL A checkpoint");
+        resumedFile.close();QFile::remove(resumed);
+        const QString partialOnlyDir=QDir(temporary.path()).filePath(QStringLiteral("partial-only"));QDir().mkpath(partialOnlyDir);
+        QFile partialOnly(QDir(partialOnlyDir).filePath(QStringLiteral(".xmb-game.part")));(void)partialOnly.open(QIODevice::WriteOnly);(void)partialOnly.write("AAAA");partialOnly.close();
+        resumeBSawRange.store(false);bError.clear();
+        const auto partialOnlyResult=store.downloadGame(QString(),QUrl(),QStringLiteral("Partial Only"),{normalizeDownload(resumeB)},partialOnlyDir,&bError,{},&bCancel,&bPausing);
+        check(!partialOnlyResult.isEmpty() && bError.isEmpty() && !resumeBSawRange.load() && !QFileInfo::exists(QDir(partialOnlyDir).filePath(QStringLiteral(".xmb-game.part"))),"URL B ignores URL A partial without checkpoint");
+        QFile::remove(partialOnlyResult);
+        const QString mismatchDir=QDir(temporary.path()).filePath(QStringLiteral("mismatched-validator"));QDir().mkpath(mismatchDir);
+        QFile mismatchPart(QDir(mismatchDir).filePath(QStringLiteral(".xmb-game.part")));(void)mismatchPart.open(QIODevice::WriteOnly);(void)mismatchPart.write("AAAA");mismatchPart.close();
+        const QByteArray bResource=QCryptographicHash::hash(QUrl(resumeB).toEncoded(),QCryptographicHash::Sha256).toHex();
+        QFile mismatchMeta(QDir(mismatchDir).filePath(QStringLiteral(".xmb-game.resume.json")));(void)mismatchMeta.open(QIODevice::WriteOnly);
+        (void)mismatchMeta.write(QJsonDocument(QJsonObject{{QStringLiteral("resource"),QString::fromLatin1(bResource)},
+            {QStringLiteral("etag"),QString::fromLatin1(QByteArray("\"wrong\"").toBase64())},{QStringLiteral("length"),QStringLiteral("9")},{QStringLiteral("written"),QStringLiteral("4")}}).toJson(QJsonDocument::Compact));mismatchMeta.close();
+        resumeBSawRange.store(false);bError.clear();
+        const auto mismatchResult=store.downloadGame(QString(),QUrl(),QStringLiteral("Mismatched Validator"),{normalizeDownload(resumeB)},mismatchDir,&bError,{},&bCancel,&bPausing);
+        QFile mismatchFile(mismatchResult);
+        check(!mismatchResult.isEmpty() && bError.isEmpty() && mismatchFile.open(QIODevice::ReadOnly) && mismatchFile.readAll()==QByteArray("B-PAYLOAD") && resumeBSawRange.load() && !QFileInfo::exists(QDir(mismatchDir).filePath(QStringLiteral(".xmb-game.part"))) && !QFileInfo::exists(QDir(mismatchDir).filePath(QStringLiteral(".xmb-game.resume.json"))),"mismatched validator restarts URL B safely");
+        mismatchFile.close();QFile::remove(mismatchResult);
     }
     check(preferences.setValue(QStringLiteral("debrid/realDebridToken"),QStringLiteral("synthetic-test-value")),"token preference accepted");
     check(preferences.setValue(QStringLiteral("downloads/lastGameDrive"),QStringLiteral("C:/")),"last-used install drive accepted");
