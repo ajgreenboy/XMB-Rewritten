@@ -2768,6 +2768,7 @@ void Shell::activate() {
     case Action::PendingInstallers:openPendingInstallers();break;
     case Action::PendingInstaller:openPendingInstaller(entry.value);break;
     case Action::InstallPendingInstaller:{ const auto parts=entry.value.split(QLatin1Char('|')); if(parts.size()==2)installPendingInstaller(parts[0],parts[1]); break; }
+    case Action::VerifyPendingInstaller:{const auto parts=entry.value.split(QLatin1Char('|'));verifyPendingInstaller(parts.value(0),parts.value(1));break;}
     case Action::SearchGames:openGameSearch(entry.value);break;
     case Action::GameSearchResult:pickGameResult(entry.value.toInt());break;
     case Action::GameDetailsDownload:

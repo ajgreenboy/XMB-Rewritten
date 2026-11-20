@@ -50,6 +50,21 @@ $ErrorActionPreference = 'Stop'
 
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type @'
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Runtime.InteropServices;
+public static class ProcessTree {
+  [DllImport("kernel32.dll", SetLastError=true)] static extern IntPtr CreateToolhelp32Snapshot(uint flags,uint pid);
+  [DllImport("kernel32.dll")] static extern bool Process32First(IntPtr snap, ref Entry e);
+  [DllImport("kernel32.dll")] static extern bool Process32Next(IntPtr snap, ref Entry e);
+  [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr h);
+  [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)] struct Entry { public uint Size,Usage,Pid; public IntPtr DefaultHeap; public uint Module,Threads,ParentPid; public int Priority; public uint Flags; [MarshalAs(UnmanagedType.ByValTStr, SizeConst=260)] public string Exe; }
+  public static int[] Children(int[] parents) { var wanted=new HashSet<int>(parents); var result=new List<int>(); IntPtr s=CreateToolhelp32Snapshot(2,0); if(s==new IntPtr(-1)) return result.ToArray(); var e=new Entry(); e.Size=(uint)Marshal.SizeOf(e); if(Process32First(s,ref e)) do { if(wanted.Contains((int)e.ParentPid)) result.Add((int)e.Pid); } while(Process32Next(s,ref e)); CloseHandle(s); return result.ToArray(); }
+}
+'@
 
 function Write-Result {
     param([string]$Status,[string]$Message,[int]$ExitCode = 0)
@@ -60,10 +75,6 @@ function Write-Result {
 # ---------------------------------------------------------------------------
 # UI Automation helpers
 # ---------------------------------------------------------------------------
-
-function Get-AutomationRoot {
-    [System.Windows.Automation.AutomationElement]::RootElement
-}
 
 # Find an element by one or more AutomationId candidates. Returns $null if
 # none found within the timeout (0 = no wait, check immediately).
@@ -126,6 +137,17 @@ function Wait-SetupWindow {
     return $false
 }
 
+function Get-DescendantProcessIds {
+    param([int[]]$ParentIds)
+    $found=New-Object System.Collections.Generic.HashSet[int]
+    $frontier=@($ParentIds)
+    while(@($frontier).Count -gt 0) {
+        $next=@([ProcessTree]::Children([int[]]$frontier) | Where-Object { $found.Add([int]$_) })
+        $frontier=$next
+    }
+    return @($found)
+}
+
 # ---------------------------------------------------------------------------
 # Main flow
 # ---------------------------------------------------------------------------
@@ -143,21 +165,16 @@ $innoArgs = @(
     "/LANG=$Lang"
     '/SP-'
 )
-$startInfo = New-Object System.Diagnostics.ProcessStartInfo
-$startInfo.FileName  = $setupPath
-$startInfo.ArgumentList.Clear()
-foreach ($argument in $innoArgs) { [void]$startInfo.ArgumentList.Add($argument) }
-$startInfo.WorkingDirectory = Split-Path $setupPath
-$startInfo.UseShellExecute = $true   # so elevation works if the installer requests it
-
-    if ($RevertUac) {
-        throw "-RevertUac is not supported: refusing ambiguous explorer.exe tracking."
+if ($RevertUac) {
+    throw "-RevertUac is not supported: refusing ambiguous explorer.exe tracking."
 }
 
-Write-Host ("Launching: {0} {1}" -f $startInfo.FileName, $startInfo.Arguments)
+Write-Host ("Launching: {0} {1}" -f $setupPath, ($innoArgs -join ' '))
 
 if ($PSCmdlet.ShouldProcess("setup.exe", "Launch installer and drive it")) {
-    $proc = [System.Diagnostics.Process]::Start($startInfo)
+    # Start-Process accepts an argument array on Windows PowerShell 5.1 and
+    # preserves the executable as the tracked process (no explorer handoff).
+    $proc = Start-Process -FilePath $setupPath -ArgumentList $innoArgs -WorkingDirectory (Split-Path $setupPath) -PassThru
 
     # 1. Wait for a window to appear.
     if (-not (Wait-SetupWindow -Process $proc -TimeoutMs $PageTimeoutMs)) {
@@ -230,15 +247,23 @@ public static class Native {
 
     # 3. Wait for setup to finish (decompression is slow) or timeout.
     $proc.Refresh()
+    $trackedChildren=@()
     if (-not $proc.HasExited) {
         Write-Host "Waiting for installer to finish (up to $InstallTimeoutMs ms)..."
         $proc.WaitForExit($InstallTimeoutMs) | Out-Null
     }
 
-    if (-not $proc.HasExited) {
+    $childDeadline=[DateTime]::UtcNow.AddMilliseconds($InstallTimeoutMs)
+    do {
+        $trackedChildren=Get-DescendantProcessIds -ParentIds @($proc.Id)
+        if(@($trackedChildren).Count -eq 0) { break }
+        Start-Sleep -Milliseconds 500
+    } while([DateTime]::UtcNow -lt $childDeadline)
+
+    if (-not $proc.HasExited -or @($trackedChildren).Count -gt 0) {
         Write-Warning "Installer still running after timeout; did not kill it."
         Write-Warning "Check the installer window manually before assuming failure."
-        Write-Result -Status 'process-still-running' -Message 'Installer exceeded timeout and was not killed.' -ExitCode 4
+        Write-Result -Status 'process-still-running' -Message 'Installer or a verified child process exceeded timeout and was not killed.' -ExitCode 4
     } else {
         Write-Host ("Installer exited with code {0}." -f $proc.ExitCode)
         if ($proc.ExitCode -eq 0) { Write-Result -Status 'exited' -Message 'Installer exited; destination still requires verification.' }

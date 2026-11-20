@@ -162,7 +162,7 @@ enum class Action { Unavailable, SettingsPage, SettingChoices, SetSetting, EditN
     // Game > Download Games: the folded hub that lists Browse, Import Source and the imported source folders.
     DownloadHub,
     // Game > Manage: the folded hub that lists Refresh Game Library and Import Games and Apps.
-    ManageHub, PendingInstallers, PendingInstaller, InstallPendingInstaller, Seerr, ReleaseGameJob,
+    ManageHub, PendingInstallers, PendingInstaller, InstallPendingInstaller, VerifyPendingInstaller, Seerr, ReleaseGameJob,
     // Game > Manage > Add a Game (add_game_shell.cpp, audit/LOCAL-GAME-ADD.md): the controller-driven local-game
     // add flow. AddGame opens the page; AddGameChooseExe / AddGameChooseArtwork open the in-XMB file browser in
     // .exe / image mode; AddGameField is a field row (Entry::value names it: "title", "artwork"); AddGameSave
@@ -803,6 +803,7 @@ private:
     QHash<QString,QString> releaseArtRequestResource_;
     QSet<QString> releaseRawgArt_;
     QSet<QString> releaseArtRequested_;
+    QSet<QString> activePendingInstallerIds_;
     std::unique_ptr<RawgArtwork> releaseArtwork_;
     // Dedicated RAWG client for the native game-detail lookup (separate from the
     // artwork client, so a detail fetch never contends with the art queue's own client).
@@ -839,6 +840,7 @@ private:
     void openPendingInstallers();
     void openPendingInstaller(const QString& id);
     void installPendingInstaller(const QString& id,const QString& destination);
+    void verifyPendingInstaller(const QString& id,const QString& executable={});
     // Add a Game (add_game_shell.cpp): the page rows, the in-place rebuild, the activation dispatch and close.
     QVector<Entry> addGameRows() const;
     void refreshAddGamePage();

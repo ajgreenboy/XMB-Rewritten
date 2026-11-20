@@ -21,7 +21,8 @@ QStringList findGameExecutables(const QString& folder) {
             if(entry.suffix().compare(QStringLiteral("exe"),Qt::CaseInsensitive)!=0)continue;
             const QString base=entry.completeBaseName().toLower();
             if(base.contains(QStringLiteral("unins")) || base.contains(QStringLiteral("setup")) ||
-               base.contains(QStringLiteral("install")))continue;
+               base.contains(QStringLiteral("install")) || base.contains(QStringLiteral("redist")) ||
+               base.contains(QStringLiteral("helper")) || base==QStringLiteral("vc_redist"))continue;
             result.append(entry.absoluteFilePath());
         }
     }

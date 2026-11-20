@@ -865,10 +865,12 @@ void Shell::pumpReleaseJobs() {
                 } else {
                     result.folder->setAutoRemove(false);
                     const QString installer=QDir(pendingRoot).filePath(result.pendingInstaller);
+                    const QString recovery=QDir(pendingRoot).filePath(QStringLiteral(".xmb-pending-recovery.json"));
+                    saveAtomic(recovery,QJsonDocument(QJsonObject{{"id",job->id},{"title",job->request.title},{"installer",installer},{"archive",result.archive},{"libraryRoot",job->request.gamesDirectory}}).toJson(QJsonDocument::Compact));
                     QString hash;
                     PendingInstaller pending;
                     pending.id=job->id; pending.title=job->request.title; pending.archivePath=result.archive;
-                    pending.installerPath=installer; pending.destination.clear();
+                    pending.installerPath=installer; pending.destination.clear(); pending.libraryRoot=job->request.gamesDirectory;
                     if(!sha256File(installer,&hash,&result.error)) {
                         result.error=tr("Could not verify the pending installer: %1").arg(result.error);
                     } else {
@@ -877,6 +879,7 @@ void Shell::pumpReleaseJobs() {
                         if(!PendingInstallerRegistry::upsert(pendingRegistryPath(dataDirectory_),pending,registryError))
                             result.error=registryError;
                         else {
+                            QFile::remove(recovery);
                             job->state=State::Finished;
                             result.error.clear();
                             notify(tr("Pending Installers"),tr("%1 is ready to install manually.").arg(job->request.title));

@@ -1,5 +1,6 @@
 #include "shell.h"
 #include "pending_installers.h"
+#include "archive_extract.h"
 #include "rawg_artwork.h"
 #include "diagnostics.h"
 #include <QBuffer>
@@ -10,6 +11,7 @@
 #include <QFileInfo>
 #include <QFutureWatcher>
 #include <QImageReader>
+#include <QJsonDocument>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
@@ -33,10 +35,24 @@ Entry pendingRow(const QString& id,const QString& title,Action action,const QStr
 }
 
 void Shell::openPendingInstallers() {
+    const QString registryPath=QDir(dataDirectory_).filePath(QStringLiteral("pending-installers.json"));
     QVector<PendingInstaller> entries; QString error;
-    if(!PendingInstallerRegistry::load(QDir(dataDirectory_).filePath(QStringLiteral("pending-installers.json")),entries,error)) {
+    if(!PendingInstallerRegistry::load(registryPath,entries,error)) {
         showMessage(tr("Pending Installers"),error,MessageKind::Page); emit changed(); return;
     }
+    // Reconcile manifests left by a crash or injected registry-write failure.
+    for(const auto& root:gameLibraryRoots()) {
+        const QDir pendingRoot(QDir(root.second).filePath(QStringLiteral("XMB Games/Pending Installers")));
+        for(const auto& dir:pendingRoot.entryInfoList(QDir::Dirs|QDir::NoDotAndDotDot|QDir::NoSymLinks)) {
+            QFile manifest(QDir(dir.absoluteFilePath()).filePath(QStringLiteral(".xmb-pending-recovery.json")));
+            if(!manifest.open(QIODevice::ReadOnly))continue;
+            const auto o=QJsonDocument::fromJson(manifest.readAll()).object(); PendingInstaller recovered;
+            recovered.id=o.value("id").toString(); recovered.title=o.value("title").toString(); recovered.installerPath=o.value("installer").toString(); recovered.archivePath=o.value("archive").toString(); recovered.libraryRoot=o.value("libraryRoot").toString(); recovered.status=QStringLiteral("unavailable");
+            QString hash; if(recovered.id.isEmpty() || !sha256File(recovered.installerPath,&hash,&error))continue; recovered.sha256=hash;
+            QString ignored; PendingInstallerRegistry::upsert(registryPath,recovered,ignored);
+        }
+    }
+    PendingInstallerRegistry::load(registryPath,entries,error);
     Page page; page.title=tr("Pending Installers");
     for(const auto& pending:entries) {
         Entry row=pendingRow(QStringLiteral("pending:")+pending.id,pending.title,Action::PendingInstaller,pending.id);
@@ -60,6 +76,7 @@ void Shell::openPendingInstaller(const QString& id) {
     status.setting=tr("SHA-256: %1\nDestination must be confirmed before launch.").arg(it->sha256);
     page.entries.append(std::move(status));
     page.entries.append(pendingRow(QStringLiteral("pending:")+id+QStringLiteral(":folder"),tr("Open Download Folder"),Action::Unavailable));
+    page.entries.append(pendingRow(QStringLiteral("pending:")+id+QStringLiteral(":verify"),tr("Verify Installation"),Action::VerifyPendingInstaller,id));
     for(const auto& root:gameLibraryRoots()) {
         const QString destination=QDir(root.second).filePath(QStringLiteral("XMB Games/")+pendingDestinationName(it->title));
         Entry install=pendingRow(QStringLiteral("pending:")+id+QStringLiteral(":install:")+root.second,tr("Install in %1").arg(QDir::toNativeSeparators(destination)),Action::InstallPendingInstaller,id+QLatin1Char('|')+destination);
@@ -68,12 +85,38 @@ void Shell::openPendingInstaller(const QString& id) {
     pages_.push_back(std::move(page)); emit changed();
 }
 
+void Shell::verifyPendingInstaller(const QString& id,const QString& executable) {
+    const QString registry=QDir(dataDirectory_).filePath(QStringLiteral("pending-installers.json"));
+    QVector<PendingInstaller> entries; QString error;
+    if(!PendingInstallerRegistry::load(registry,entries,error)){showMessage(tr("Verify Installation"),error,MessageKind::Page);emit changed();return;}
+    const auto it=std::find_if(entries.cbegin(),entries.cend(),[&](const auto& e){return e.id==id;});
+    if(it==entries.cend() || it->destination.isEmpty()){showMessage(tr("Verify Installation"),tr("No recorded destination is available yet."),MessageKind::Page);emit changed();return;}
+    if(verifyAndRegisterPendingInstaller(registry,appRegistryPath(),*it,&error,executable)){refreshContent();showMessage(tr("Verify Installation"),tr("The installed game was registered."),MessageKind::Page);}
+    else if(executable.isEmpty() && error.contains(QStringLiteral("More than one"))) {
+        const QStringList candidates=findGameExecutables(it->destination); Page chooser; chooser.title=tr("Choose Game Executable");
+        for(const auto& candidate:candidates) chooser.entries.append(pendingRow(QStringLiteral("pending:choose:")+id+QLatin1Char(':' )+candidate,QFileInfo(candidate).fileName(),Action::VerifyPendingInstaller,id+QLatin1Char('|')+candidate));
+        if(chooser.entries.isEmpty()) chooser.entries.append(pendingRow(QStringLiteral("pending:none"),tr("No executable found"),Action::Unavailable));
+        pages_.push_back(std::move(chooser));
+    } else showMessage(tr("Verify Installation"),error.isEmpty()?tr("The destination is not complete."):error,MessageKind::Page);
+    emit changed();
+}
+
 void Shell::installPendingInstaller(const QString& id,const QString& destination) {
+    if (activePendingInstallerIds_.contains(id)) {
+        showMessage(tr("Install"),tr("This installer is already running; use Verify Installation after it exits."),MessageKind::Page);
+        emit changed();
+        return;
+    }
     QVector<PendingInstaller> entries; QString error;
     const QString registry=QDir(dataDirectory_).filePath(QStringLiteral("pending-installers.json"));
     if(!PendingInstallerRegistry::load(registry,entries,error)){showMessage(tr("Pending Installers"),error,MessageKind::Page);emit changed();return;}
     const auto it=std::find_if(entries.begin(),entries.end(),[&](const auto& e){return e.id==id;});
     if(it==entries.end())return;
+    if(it->status==QStringLiteral("launching")) {
+        showMessage(tr("Install"),tr("This installer is already recorded as running; use Verify Installation after confirming its destination."),MessageKind::Page);
+        emit changed();
+        return;
+    }
     QString hash; QString validation;
     if(!sha256File(it->installerPath,&hash,&validation) || hash.compare(it->sha256,Qt::CaseInsensitive)!=0) {
         showMessage(tr("Install"),tr("The installer changed since it was downloaded. It will not be launched."),MessageKind::Page);emit changed();return;
@@ -83,6 +126,25 @@ void Shell::installPendingInstaller(const QString& id,const QString& destination
         showMessage(tr("Install"),tr("The installer or destination could not be verified."),MessageKind::Page);emit changed();return;
     }
     showConfirm(tr("Install %1?").arg(it->title),tr("Executable:\n%1\n\nDestination:\n%2").arg(QDir::toNativeSeparators(canonical),QDir::toNativeSeparators(destination)),[this,id,canonical,destination]{
+        // Re-read and revalidate after the confirmation dialog: the source may
+        // have been replaced while the user was deciding.
+        const QString registry=QDir(dataDirectory_).filePath(QStringLiteral("pending-installers.json"));
+        QVector<PendingInstaller> latest; QString validationError;
+        if(!PendingInstallerRegistry::load(registry,latest,validationError)) { showMessage(tr("Install"),validationError,MessageKind::Page); emit changed(); return; }
+        const auto current=std::find_if(latest.begin(),latest.end(),[&](const auto& e){return e.id==id;});
+        QString currentHash;
+        const QString currentCanonical=current==latest.end()?QString{}:QFileInfo(current->installerPath).canonicalFilePath();
+        const QString root=current==latest.end()?QString{}:QDir(current->libraryRoot).canonicalPath();
+        const QString parent=QFileInfo(destination).absolutePath();
+        if(current==latest.end() || currentCanonical!=canonical || root.isEmpty() || QDir(parent).canonicalPath()!=root || QFileInfo(destination).exists() ||
+           !sha256File(currentCanonical,&currentHash,&validationError) || currentHash.compare(current->sha256,Qt::CaseInsensitive)!=0) {
+            showMessage(tr("Install"),tr("The installer or destination changed after confirmation. Nothing was launched."),MessageKind::Page); emit changed(); return;
+        }
+        current->destination=destination; current->status=QStringLiteral("launching");
+        // The manifest is written before launch so a crash leaves a discoverable
+        // recovery record rather than an untracked installation.
+        if(!PendingInstallerRegistry::upsert(registry,*current,validationError)) { showMessage(tr("Install"),validationError,MessageKind::Page); emit changed(); return; }
+        activePendingInstallerIds_.insert(id);
         const QString helper=QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("repack-install.ps1"));
         if(!QFileInfo(helper).isFile()){showMessage(tr("Install"),tr("The packaged installer helper is missing."),MessageKind::Page);emit changed();return;}
         auto* process=new QProcess(this);
@@ -91,14 +153,20 @@ void Shell::installPendingInstaller(const QString& id,const QString& destination
             QVector<PendingInstaller> current; QString registryError;
             if(PendingInstallerRegistry::load(registry,current,registryError)) {
                 const auto found=std::find_if(current.begin(),current.end(),[&](const auto& e){return e.id==id;});
-                if(found!=current.end()) { found->status=status==QProcess::NormalExit && code==0 ? QStringLiteral("helper-exited-needs-verification") : QStringLiteral("helper-failed-or-still-running"); found->error=QStringLiteral("Helper exit code %1; destination was not auto-registered.").arg(code); PendingInstallerRegistry::upsert(registry,*found,registryError); }
+                if(found!=current.end()) {
+                    if(status==QProcess::NormalExit && code==0) {
+                        QString verifyError;
+                        if(!verifyAndRegisterPendingInstaller(registry,appRegistryPath(),*found,&verifyError)) { found->status=QStringLiteral("helper-exited-needs-verification"); found->error=verifyError; PendingInstallerRegistry::upsert(registry,*found,registryError); }
+                    } else { found->status=QStringLiteral("helper-failed-or-still-running"); found->error=QStringLiteral("Helper exit code %1; destination was not registered.").arg(code); PendingInstallerRegistry::upsert(registry,*found,registryError); }
+                }
             }
             const QString text=status==QProcess::NormalExit?tr("Installer helper exited with code %1; verify the destination before launching the game.").arg(code):tr("Installer helper did not exit normally; the installer may still be running.");
             notify(tr("Pending Installers"),text); process->deleteLater(); Q_UNUSED(id); emit changed();
+            activePendingInstallerIds_.remove(id);
         });
         QStringList args={QStringLiteral("-NoProfile"),QStringLiteral("-ExecutionPolicy"),QStringLiteral("Bypass"),QStringLiteral("-File"),helper,QStringLiteral("-Setup"),canonical,QStringLiteral("-InstallDir"),destination};
         process->start(QStringLiteral("powershell.exe"),args);
-        if(!process->waitForStarted(3000)){showMessage(tr("Install"),tr("Could not start the packaged installer helper."),MessageKind::Page);process->deleteLater();}
+        if(!process->waitForStarted(3000)){activePendingInstallerIds_.remove(id);showMessage(tr("Install"),tr("Could not start the packaged installer helper."),MessageKind::Page);process->deleteLater();}
     });
 }
 namespace {

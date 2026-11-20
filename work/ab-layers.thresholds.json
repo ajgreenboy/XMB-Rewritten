@@ -107,7 +107,7 @@
       "expect": {
         "category": "game",
         "depth": 0,
-        "catalogueRowIds": ["steam:*", "steam-hub", "data", "memory", "ps2", "ps3", "store", "artwork-settings", "game:download-hub", "game:manage-hub"],
+        "catalogueRowIds": ["steam:*", "steam-hub", "data", "memory", "ps2", "ps3", "store", "artwork-settings", "game:download-hub", "game:pending-installers", "game:manage-hub"],
         "catalogueDetails": [{ "id": "steam-hub", "formula": "ownedGamesLabel" }],
         "noStoreDump": true
       },
@@ -128,7 +128,7 @@
       "expect": {
         "category": "game",
         "depth": 0,
-        "catalogueRowIds": ["steam:*", "steam-hub", "data", "memory", "ps2", "ps3", "store", "artwork-settings", "game:download-hub", "game:manage-hub"],
+        "catalogueRowIds": ["steam:*", "steam-hub", "data", "memory", "ps2", "ps3", "store", "artwork-settings", "game:download-hub", "game:pending-installers", "game:manage-hub"],
         "noStoreDump": true,
         "sidecar": { "width": 1920, "height": 1080 }
       },

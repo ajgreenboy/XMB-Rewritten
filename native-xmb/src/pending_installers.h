@@ -11,6 +11,7 @@ struct PendingInstaller {
     QString installerPath;
     QString archivePath;
     QString destination;
+    QString libraryRoot;
     QString sha256;
     QString status = QStringLiteral("pending");
     QString error;
@@ -22,6 +23,9 @@ struct PendingInstaller {
 bool inspectPendingInstaller(const QString& extractedRoot, QString* installerPath,
                              QString* error = nullptr);
 bool sha256File(const QString& path, QString* hash, QString* error = nullptr);
+bool verifyAndRegisterPendingInstaller(const QString& registryPath, const QString& appsPath,
+                                       const PendingInstaller& entry, QString* error = nullptr,
+                                       const QString& selectedExecutable = {});
 
 class PendingInstallerRegistry {
 public:

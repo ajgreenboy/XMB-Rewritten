@@ -1,4 +1,5 @@
 #include "pending_installers.h"
+#include "content_registry.h"
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
@@ -21,5 +22,21 @@ int main(int argc,char** argv) {
         check(loaded.first().installerPath==candidate,"registry preserves exact path");
     QFile second(QDir(root).filePath("install.exe")); Q_UNUSED(second.open(QIODevice::WriteOnly)); Q_UNUSED(second.write("fixture")); second.close();
     ok &= check(!xmb::inspectPendingInstaller(root,&candidate,&error)&&error.contains(QStringLiteral("More than one")),"ambiguous installer candidates are refused");
+    const QString library=temp.filePath("library"); QDir().mkpath(library); const QString destination=QDir(library).filePath("Synthetic Game"); QDir().mkpath(destination);
+    QFile game(QDir(destination).filePath("game.exe")); Q_UNUSED(game.open(QIODevice::WriteOnly)); Q_UNUSED(game.write("game")); game.close();
+    entry.libraryRoot=library; entry.destination=destination; entry.installerPath=QDir(root).filePath("setup.exe"); entry.status=QStringLiteral("pending");
+    const QString apps=temp.filePath("data/apps.json"); QString verifyError;
+    ok &= check(xmb::verifyAndRegisterPendingInstaller(registry,apps,entry,&verifyError),"verified destination registers exactly one game executable");
+    QFile redist(QDir(destination).filePath("vc_redist.exe")); Q_UNUSED(redist.open(QIODevice::WriteOnly)); Q_UNUSED(redist.write("redist")); redist.close();
+    QVector<xmb::ContentApp> registered; QString registryError; Q_UNUSED(registryError);
+    ok &= check(xmb::ContentRegistry::load(apps,registered,registryError)&&registered.size()==1&&registered.first().executable.endsWith(QStringLiteral("game.exe")),"redist is never registered");
+    QFile replacement(entry.installerPath); Q_UNUSED(replacement.open(QIODevice::WriteOnly|QIODevice::Truncate)); Q_UNUSED(replacement.write("replacement")); replacement.close();
+    ok &= check(!xmb::verifyAndRegisterPendingInstaller(registry,apps,entry,&verifyError),"post-confirm installer replacement is refused");
+    Q_UNUSED(replacement.open(QIODevice::WriteOnly|QIODevice::Truncate)); Q_UNUSED(replacement.write("fixture")); replacement.close();
+    QFile secondGame(QDir(destination).filePath("second.exe")); Q_UNUSED(secondGame.open(QIODevice::WriteOnly)); Q_UNUSED(secondGame.write("second")); secondGame.close();
+    ok &= check(!xmb::verifyAndRegisterPendingInstaller(registry,apps,entry,&verifyError),"multiple post-install candidates require a chooser");
+    ok &= check(xmb::verifyAndRegisterPendingInstaller(registry,apps,entry,&verifyError,secondGame.fileName()),"selected executable completes chooser registration");
+    xmb::PendingInstaller bad=entry; bad.destination=temp.filePath("outside");
+    ok &= check(!xmb::verifyAndRegisterPendingInstaller(registry,apps,bad,&verifyError),"unsafe destination is refused");
     return ok?0:1;
 }
