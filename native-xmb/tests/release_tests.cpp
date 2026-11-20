@@ -71,6 +71,8 @@ int main(int argc,char** argv) {
     check(error.isEmpty() && guessed.size()==1 && guessed.first().title==QStringLiteral("Example Game") && guessed.first().downloads.size()==1 && guessed.first().sizeBytes==qint64(2*gb),"heuristic adapter");
     const auto named=parseReleaseIndex(QJsonDocument::fromJson(R"([{"name":"Named Example","date":"2026-11-11T00:00:00Z","size":"215/374 MB"}])"));
     check(named.size()==1 && named.first().title==QStringLiteral("Named Example") && named.first().publishedAt.isValid() && named.first().sizeBytesMax==qint64(374*mb),"heuristic date and named title");
+    const auto torrentQuery=parseReleaseIndex(QJsonDocument::fromJson(R"([{"name":"Torrent Query","links":["https://example.invalid/game.torrent?download=1"]}])"));
+    check(torrentQuery.size()==1 && torrentQuery.first().downloads.size()==1 && torrentQuery.first().downloads.first().kind==QStringLiteral("torrent"),"heuristic torrent query link");
     if(argc>1) {
         QFile fixture(QString::fromLocal8Bit(argv[1]));check(fixture.open(QIODevice::ReadOnly),"fixture read");
         const auto releases=parseReleaseIndex(QJsonDocument::fromJson(fixture.readAll()),&error);
@@ -87,22 +89,38 @@ int main(int argc,char** argv) {
     debrid.instantAvailability(QStringLiteral("abc"),&error);check(error==QStringLiteral("no Real-Debrid token configured"),"availability missing token");
     check(!debrid.selectFiles(QStringLiteral("id"),QStringLiteral("all"),&error) && error==QStringLiteral("no Real-Debrid token configured"),"selectFiles missing token");
     QTcpServer server;check(server.listen(QHostAddress::LocalHost,0),"local download server");
+    std::atomic_bool slowSeen{false};
     QObject::connect(&server,&QTcpServer::newConnection,&app,[&] {
         auto* socket=server.nextPendingConnection();
-        QObject::connect(socket,&QTcpSocket::readyRead,socket,[socket]{
-            socket->readAll();socket->write("HTTP/1.1 200 OK\r\nContent-Length: 7\r\nConnection: close\r\n\r\nfixture");socket->disconnectFromHost();
+        QObject::connect(socket,&QTcpSocket::readyRead,socket,[&,socket]{
+            const QByteArray request=socket->readAll();
+            const bool bad=request.contains(" /bad");
+            if(request.contains(" /slow")) {
+                slowSeen.store(true);
+                QTimer::singleShot(5000,socket,[socket] {
+                    socket->write("HTTP/1.1 200 OK\r\nContent-Length: 7\r\nConnection: close\r\n\r\nfixture");
+                    socket->disconnectFromHost();
+                });
+                return;
+            }
+            if(bad)socket->write("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+            else socket->write("HTTP/1.1 200 OK\r\nContent-Length: 7\r\nConnection: close\r\n\r\nfixture");
+            socket->disconnectFromHost();
         });
         QObject::connect(socket,&QTcpSocket::disconnected,socket,&QObject::deleteLater);
     });
     const QString direct=QStringLiteral("http://127.0.0.1:%1/test.zip").arg(server.serverPort());
+    const QString badDirect=QStringLiteral("http://127.0.0.1:%1/bad.zip").arg(server.serverPort());
+    const QString goodFallback=QStringLiteral("http://127.0.0.1:%1/good.zip").arg(server.serverPort());
     const QJsonObject raw{{QStringLiteral("name"),QStringLiteral("Local Test")},{QStringLiteral("downloads"),QJsonArray{
         QJsonObject{{QStringLiteral("title"),QStringLiteral("CON: Test/Game")},{QStringLiteral("uris"),direct}},
+        QJsonObject{{QStringLiteral("title"),QStringLiteral("Fallback Test")},{QStringLiteral("uris"),QJsonArray{badDirect,goodFallback}}},
         QJsonObject{{QStringLiteral("title"),QStringLiteral("Magnet Only")},{QStringLiteral("uris"),bare.uri}}}}};
     const QString input=QDir(temporary.path()).filePath(QStringLiteral("index.json"));QFile file(input);
     check(file.open(QIODevice::WriteOnly),"source fixture open");file.write(QJsonDocument(raw).toJson());file.close();
     ReleaseSources store(temporary.path(),preferences);
     check(store.importSource(QUrl::fromLocalFile(input),&error) && error.isEmpty(),"local source import");
-    const auto stored=store.listSources(&error);check(stored.size()==1 && stored.first().releases.size()==2 && error.isEmpty(),"offline source readback");
+    const auto stored=store.listSources(&error);check(stored.size()==1 && stored.first().releases.size()==3 && error.isEmpty(),"offline source readback");
     if(!stored.isEmpty()) {
         check(store.downloadedPath(stored.first().slug,QStringLiteral("CON: Test/Game")).isEmpty(),"undownloaded release has no local path");
         check(store.downloadRelease(stored.first().slug,QStringLiteral("Magnet Only"),&error).isEmpty() && error==QStringLiteral("no Real-Debrid token configured"),"orchestration missing token");
@@ -112,6 +130,23 @@ int main(int argc,char** argv) {
         check(store.downloadedPath(stored.first().slug,QStringLiteral("CON: Test/Game"))==path,"download lookup uses the same sanitized title");
         downloaded.close();check(downloaded.remove(),"remove completed fixture");
         check(store.downloadedPath(stored.first().slug,QStringLiteral("CON: Test/Game")).isEmpty(),"deleted download is not treated as local");
+        const auto fallbackPath=store.downloadRelease(stored.first().slug,QStringLiteral("Fallback Test"),&error);
+        QFile fallback(fallbackPath);
+        check(!fallbackPath.isEmpty() && error.isEmpty() && fallback.open(QIODevice::ReadOnly) && fallback.readAll()==QByteArray("fixture"),"404 direct candidate falls back in order");
+        fallback.close();check(fallback.remove(),"remove fallback fixture");
+        const QString slow=QStringLiteral("http://127.0.0.1:%1/slow.zip").arg(server.serverPort());
+        const QString cancelDir=QDir(temporary.path()).filePath(QStringLiteral("cancel-download"));
+        std::atomic_bool cancelled{false};QString cancelError;
+        QFuture<QString> pending=QtConcurrent::run([&] {
+            return store.downloadGame(QString(),QUrl(),QStringLiteral("Cancelled Test"),
+                                       QVector<Download>{normalizeDownload(slow)},cancelDir,&cancelError,{},&cancelled);
+        });
+        QElapsedTimer cancelClock;cancelClock.start();
+        while(!slowSeen.load() && !pending.isFinished() && cancelClock.elapsed()<3000)QCoreApplication::processEvents(QEventLoop::AllEvents,10);
+        cancelled.store(true);
+        while(!pending.isFinished() && cancelClock.elapsed()<5000)QCoreApplication::processEvents(QEventLoop::AllEvents,10);
+        check(pending.isFinished() && pending.result().isEmpty() && cancelError==QStringLiteral("Download cancelled"),"cancellation aborts active candidate");
+        check(QDir(cancelDir).entryList(QDir::Files|QDir::NoDotAndDotDot).isEmpty(),"cancellation leaves no partial download");
     }
     check(preferences.setValue(QStringLiteral("debrid/realDebridToken"),QStringLiteral("synthetic-test-value")),"token preference accepted");
     check(preferences.setValue(QStringLiteral("downloads/lastGameDrive"),QStringLiteral("C:/")),"last-used install drive accepted");

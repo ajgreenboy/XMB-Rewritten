@@ -116,7 +116,7 @@ QVector<QJsonValue> children(const QJsonValue& value) {
     return result;
 }
 bool uriLike(const QString& text) {
-    static const QRegularExpression pattern(QStringLiteral("^(?:magnet:|https?://)|\\.torrent$"),QRegularExpression::CaseInsensitiveOption);
+    static const QRegularExpression pattern(QStringLiteral("^(?:magnet:|https?://)|\\.torrent(?:\\?|$)"),QRegularExpression::CaseInsensitiveOption);
     return pattern.match(text).hasMatch();
 }
 QStringList collectUris(const QJsonValue& root) {

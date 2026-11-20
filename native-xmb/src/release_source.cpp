@@ -24,6 +24,7 @@
 namespace xmb {
 namespace {
 constexpr qint64 kRefreshCooldownMs=15LL*60*1000;
+constexpr int kMaxDownloadCandidates=8;
 void fail(QString* error,const QString& message) { if(error)*error=message; }
 bool looksLikeHtml(const QByteArray& bytes) {
     const QString head=QString::fromLatin1(bytes.left(512)).trimmed().toLower();
@@ -90,10 +91,10 @@ bool fetch(const QUrl& url,QIODevice* output,qint64 limit,int timeoutMs,QString*
     if(cancel && cancel->load())fail(error,QStringLiteral("Download cancelled"));
     else if(timedOut)fail(error,QStringLiteral("Download timed out"));
     else if(failedWrite)fail(error,QStringLiteral("Response too large or cannot write download"));
+    else if(status>0 && (status<200 || status>=300))
+        fail(error,QStringLiteral("Server returned HTTP %1").arg(status));
     else if(reply->error()!=QNetworkReply::NoError)
         fail(error,QStringLiteral("Network error: %1").arg(reply->errorString()));
-    else if(status<200 || status>=300)
-        fail(error,QStringLiteral("Server returned HTTP %1").arg(status));
     else return true;
     return false;
 }
@@ -110,6 +111,12 @@ bool strongValidator(const QByteArray& value) {
     for(qsizetype i=1;i+1<value.size();++i)
         if(uchar(value[i])<0x21 || value[i]=='"' || value[i]==0x7f)return false;
     return true;
+}
+
+bool eligibleCandidateFallback(const QString& error) {
+    static const QRegularExpression httpFailure(
+        QStringLiteral("^Server returned HTTP (?:404|5[0-9]{2})$"));
+    return httpFailure.match(error).hasMatch();
 }
 
 struct Checkpoint {
@@ -453,53 +460,76 @@ QString ReleaseSources::downloadedPath(const QString& source,const QString& titl
 QString ReleaseSources::downloadResolved(const QVector<Download>& candidates,const QString& title,const QString& destDir,
                                          QString* error,const ReleaseProgress& progress,const std::atomic_bool* cancel,const std::atomic_bool* pausing) const {
     if(cancel && cancel->load()){fail(error,QStringLiteral("Download cancelled"));return {};}
-    QString direct,magnet;
-    for(const auto& download:candidates) {
-        if(direct.isEmpty() && download.kind==QStringLiteral("direct"))direct=download.uri;
-        if(magnet.isEmpty() && download.kind==QStringLiteral("magnet"))magnet=download.uri;
-    }
-    RealDebrid debrid(preferences_,cancel);QUrl resolved;
-    QString debridError;
-    if(!direct.isEmpty()) {
-        // The spec permits ordinary HTTP downloads when no manager token was configured.
-        resolved=debrid.hasToken()?debrid.unrestrict(QUrl(direct),&debridError):QUrl(direct);
-    } else if(!magnet.isEmpty()) {
-        const QString id=debrid.addMagnet(magnet,&debridError);
-        if(id.isEmpty()){fail(error,debridError);return {};}
-        QElapsedTimer polling;polling.start();bool selected=false;
-        while(polling.elapsed()<10*60*1000 && !(cancel && cancel->load())) {
-            const auto info=debrid.torrentInfo(id,&debridError);
-            if(!debridError.isEmpty())break;
-            if(info.status==QStringLiteral("waiting_files_selection") && !selected) {
-                if(!debrid.selectFiles(id,QStringLiteral("all"),&debridError))break;
-                selected=true;
-            } else if(info.status==QStringLiteral("downloaded")) {
-                if(info.links.isEmpty())debridError=QStringLiteral("Real-Debrid torrent has no download links");
-                else resolved=debrid.unrestrict(QUrl(info.links.first()),&debridError);
-                break;
-            } else if(info.status==QStringLiteral("error") || info.status==QStringLiteral("magnet_error") || info.status==QStringLiteral("virus") || info.status==QStringLiteral("dead")) {
-                debridError=QStringLiteral("Real-Debrid torrent failed: ")+info.status;break;
-            }
-            if(progress)progress(0,-1);pause(2000);
-        }
-        if(resolved.isEmpty() && debridError.isEmpty())debridError=QStringLiteral("Real-Debrid torrent timed out");
-    } else {
-        fail(error,QStringLiteral("No direct download or supported magnet for this release"));return {};
-    }
-    if(cancel && cancel->load()){fail(error,QStringLiteral("Download cancelled"));return {};}
-    if(!debridError.isEmpty()){fail(error,debridError);return {};}
-    QString extension=QFileInfo(safeName(resolved.fileName())).suffix();
-    if(extension.isEmpty())extension=QStringLiteral("bin");
     const QDir directory(destDir);
     if(!QDir().mkpath(directory.path())){fail(error,QStringLiteral("Cannot create download directory"));return {};}
-    const QString path=directory.filePath(safeName(title)+QLatin1Char('.')+extension);
-    if(pausing)return downloadGameArchive(resolved,path,error,progress,cancel,pausing)?path:QString{};
-    QSaveFile file(path);file.setDirectWriteFallback(false);
-    if(!file.open(QIODevice::WriteOnly)){fail(error,QStringLiteral("Cannot open download: ")+file.errorString());return {};}
-    if(!fetch(resolved,&file,std::numeric_limits<qint64>::max(),60000,error,progress,false,cancel))return {};
-    if(cancel && cancel->load()){fail(error,QStringLiteral("Download cancelled"));return {};}
-    if(!file.commit()){fail(error,QStringLiteral("Cannot save download: ")+file.errorString());return {};}
-    return path;
+    RealDebrid debrid(preferences_,cancel);
+    QString lastError;
+    int attempted=0;
+    for(const auto& candidate:candidates) {
+        if(attempted++>=kMaxDownloadCandidates)break;
+        if(cancel && cancel->load()){fail(error,QStringLiteral("Download cancelled"));return {};}
+        if(candidate.kind!=QStringLiteral("direct") && candidate.kind!=QStringLiteral("magnet"))continue;
+
+        QUrl resolved;
+        QString candidateError;
+        if(candidate.kind==QStringLiteral("direct")) {
+            const QUrl direct(candidate.uri);
+            // The spec permits ordinary HTTP downloads when no manager token was configured.
+            resolved=debrid.hasToken()?debrid.unrestrict(direct,&candidateError):direct;
+        } else {
+            const QString id=debrid.addMagnet(candidate.uri,&candidateError);
+            if(!id.isEmpty()) {
+                QElapsedTimer polling;polling.start();bool selected=false;
+                while(polling.elapsed()<10*60*1000 && !(cancel && cancel->load())) {
+                    const auto info=debrid.torrentInfo(id,&candidateError);
+                    if(!candidateError.isEmpty())break;
+                    if(info.status==QStringLiteral("waiting_files_selection") && !selected) {
+                        if(!debrid.selectFiles(id,QStringLiteral("all"),&candidateError))break;
+                        selected=true;
+                    } else if(info.status==QStringLiteral("downloaded")) {
+                        if(info.links.isEmpty())candidateError=QStringLiteral("Real-Debrid torrent has no download links");
+                        else resolved=debrid.unrestrict(QUrl(info.links.first()),&candidateError);
+                        break;
+                    } else if(info.status==QStringLiteral("error") || info.status==QStringLiteral("magnet_error") || info.status==QStringLiteral("virus") || info.status==QStringLiteral("dead")) {
+                        candidateError=QStringLiteral("Real-Debrid torrent failed: ")+info.status;break;
+                    }
+                    if(progress)progress(0,-1);pause(2000);
+                }
+                if(resolved.isEmpty() && candidateError.isEmpty())candidateError=QStringLiteral("Real-Debrid torrent timed out");
+            }
+        }
+        if(cancel && cancel->load()){fail(error,QStringLiteral("Download cancelled"));return {};}
+        if(!candidateError.isEmpty()){
+            if(!eligibleCandidateFallback(candidateError)){fail(error,candidateError);return {};}
+            lastError=candidateError;
+            continue;
+        }
+        if(!resolved.isValid()){
+            fail(error,QStringLiteral("Invalid resolved download URL"));
+            return {};
+        }
+        QString extension=QFileInfo(safeName(resolved.fileName())).suffix();
+        if(extension.isEmpty())extension=QStringLiteral("bin");
+        const QString path=directory.filePath(safeName(title)+QLatin1Char('.')+extension);
+        bool downloaded=false;
+        if(pausing)downloaded=downloadGameArchive(resolved,path,&candidateError,progress,cancel,pausing);
+        else {
+            QSaveFile file(path);file.setDirectWriteFallback(false);
+            if(!file.open(QIODevice::WriteOnly))candidateError=QStringLiteral("Cannot open download: ")+file.errorString();
+            else if(fetch(resolved,&file,std::numeric_limits<qint64>::max(),60000,&candidateError,progress,false,cancel)) {
+                if(cancel && cancel->load())candidateError=QStringLiteral("Download cancelled");
+                else if(file.commit())downloaded=true;
+                else candidateError=QStringLiteral("Cannot save download: ")+file.errorString();
+            }
+        }
+        if(downloaded)return path;
+        if(cancel && cancel->load()){fail(error,QStringLiteral("Download cancelled"));return {};}
+        lastError=candidateError;
+        if(!eligibleCandidateFallback(candidateError)){fail(error,candidateError);return {};}
+    }
+    if(lastError.isEmpty())lastError=QStringLiteral("No direct download or supported magnet for this release");
+    fail(error,lastError);
+    return {};
 }
 QString ReleaseSources::downloadRelease(const QString& source,const QString& title,QString* error,const ReleaseProgress& progress) const {
     if(error)error->clear();
