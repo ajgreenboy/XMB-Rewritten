@@ -220,3 +220,14 @@ prefetch off for an A/B; the ribbon's settled state is cached in `<data>/cache/r
   does not affect it.
 - Test the watchdog loop safely by pointing `xmb-config.json` at a scratch `dataDir` and quitting the app
   (exit 0) to confirm it stops, or by killing the app to confirm it restarts.
+### Pending Installers
+
+Game downloads containing one supported `setup.exe`/`install.exe` candidate are kept in the durable
+Pending Installers registry instead of being registered as a portable game. From **Game > Pending
+Installers**, the XMB shows the exact executable and SHA-256, asks for the destination, and requires an
+explicit confirmation before launching `repack-install.ps1`. The helper passes Inno Setup's documented
+`/DIR`, `/LANG`, `/NORESTART`, `/SP-`, `/VERYSILENT`, and `/SUPPRESSMSGBOXES` switches, but this is still
+UI automation rather than a universal silent-install contract. It does not auto-launch after download or
+startup, retries, kill a timed-out installer, or delete an existing destination. The original
+`KeepRamLimitOn` option is intentionally not exposed because it was only a placeholder and cannot be
+truthfully promised across repack variants.

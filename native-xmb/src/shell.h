@@ -162,7 +162,7 @@ enum class Action { Unavailable, SettingsPage, SettingChoices, SetSetting, EditN
     // Game > Download Games: the folded hub that lists Browse, Import Source and the imported source folders.
     DownloadHub,
     // Game > Manage: the folded hub that lists Refresh Game Library and Import Games and Apps.
-    ManageHub, Seerr, ReleaseGameJob,
+    ManageHub, PendingInstallers, PendingInstaller, InstallPendingInstaller, Seerr, ReleaseGameJob,
     // Game > Manage > Add a Game (add_game_shell.cpp, audit/LOCAL-GAME-ADD.md): the controller-driven local-game
     // add flow. AddGame opens the page; AddGameChooseExe / AddGameChooseArtwork open the in-XMB file browser in
     // .exe / image mode; AddGameField is a field row (Entry::value names it: "title", "artwork"); AddGameSave
@@ -836,6 +836,9 @@ private:
     void retryHydraPage();
     void openDownloadHub();
     void openManageHub();
+    void openPendingInstallers();
+    void openPendingInstaller(const QString& id);
+    void installPendingInstaller(const QString& id,const QString& destination);
     // Add a Game (add_game_shell.cpp): the page rows, the in-place rebuild, the activation dispatch and close.
     QVector<Entry> addGameRows() const;
     void refreshAddGamePage();

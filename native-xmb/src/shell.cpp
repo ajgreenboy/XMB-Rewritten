@@ -1,4 +1,5 @@
 #include "shell.h"
+#include "pending_installers.h"
 #include "diagnostics.h"
 #include "elevation.h"
 #include "display_mode.h"
@@ -2061,6 +2062,7 @@ Shell::Shell(QString dataDirectory,Assets& assets,QObject* parent):QObject(paren
     rebuildFriends();
     for(auto& category:categories_)if(category.id=="game") {
         category.entries.push_back(item("game:download-hub",QObject::tr("Download Games"),"item_tex_plain_folder",full,Action::DownloadHub));
+        category.entries.push_back(item("game:pending-installers",QObject::tr("Pending Installers"),"item_tex_plain_folder",full,Action::PendingInstallers));
         category.entries.push_back(item("game:manage-hub",QObject::tr("Manage"),"item_tex_plain_folder",full,Action::ManageHub));
     }
     xmb::bootprof::mark("Shell friends+connects");
@@ -2763,6 +2765,9 @@ void Shell::activate() {
     case Action::BrowseGames:openBrowseGames();break;
     case Action::DownloadHub:openDownloadHub();break;
     case Action::ManageHub:openManageHub();break;
+    case Action::PendingInstallers:openPendingInstallers();break;
+    case Action::PendingInstaller:openPendingInstaller(entry.value);break;
+    case Action::InstallPendingInstaller:{ const auto parts=entry.value.split(QLatin1Char('|')); if(parts.size()==2)installPendingInstaller(parts[0],parts[1]); break; }
     case Action::SearchGames:openGameSearch(entry.value);break;
     case Action::GameSearchResult:pickGameResult(entry.value.toInt());break;
     case Action::GameDetailsDownload:

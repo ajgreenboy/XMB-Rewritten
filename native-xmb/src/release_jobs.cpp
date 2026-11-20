@@ -3,6 +3,7 @@
 #include "release_archive_cleanup.h"
 #include "archive_extract.h"
 #include "content_registry.h"
+#include "pending_installers.h"
 #include "diagnostics.h"
 #include <QDesktopServices>
 #include <QDir>
@@ -58,6 +59,7 @@ struct Result {
     QString error;
     QString relativeExecutable;
     std::shared_ptr<QTemporaryDir> folder;
+    QString pendingInstaller;
 };
 
 struct Job {
@@ -94,6 +96,12 @@ QString queuePath(const QString& data) {
 
 QString installedDirectory(const Job& job) {
     return QDir(job.request.gamesDirectory).filePath(QStringLiteral("game-")+job.id);
+}
+QString pendingInstallerDirectory(const Job& job) {
+    return QDir(job.request.gamesDirectory).filePath(QStringLiteral("Pending Installers/")+job.id);
+}
+QString pendingRegistryPath(const QString& data) {
+    return QDir(data).filePath(QStringLiteral("pending-installers.json"));
 }
 
 QString finalWindowsPath(const QString& path) {
@@ -527,6 +535,21 @@ Result prepareGame(const QString& data,const Request& request,const QString& id,
         return result;
     }
     if(!extractGameArchive(result.archive,stage->path(),control.cancel,result.error) || control.cancel.load())return result;
+    QString installer;
+    QString installerError;
+    if (inspectPendingInstaller(stage->path(),&installer,&installerError)) {
+        result.pendingInstaller = QDir(stage->path()).relativeFilePath(installer);
+        result.folder = std::move(stage);
+        return result;
+    }
+    // Multiple installer candidates are never silently treated as a portable
+    // game.  A single setup candidate is handled above; this branch only
+    // rejects an ambiguous installer archive.
+    if (installerError.contains(QStringLiteral("More than one installer candidate"))) {
+        result.error = installerError;
+        return result;
+    }
+    result.error.clear();
     const QString executable = findGameExecutable(stage->path(),&result.error);
     if(executable.isEmpty())return result;
     result.relativeExecutable = QDir(stage->path()).relativeFilePath(executable);
@@ -834,6 +857,33 @@ void Shell::pumpReleaseJobs() {
         job->state = xmb::releaseJobSettledState(paused, cancelled);
         job->archiveForResume = paused ? result.archive : QString();
         if(!cancelled && result.folder) {
+            if(!result.pendingInstaller.isEmpty()) {
+                const QString pendingRoot=pendingInstallerDirectory(*job);
+                QDir().mkpath(QFileInfo(pendingRoot).absolutePath());
+                if(!destinationReady(job->request,pendingRoot) || !QDir().rename(result.folder->path(),pendingRoot)) {
+                    result.error=tr("Could not preserve the pending installer files in the selected library.");
+                } else {
+                    result.folder->setAutoRemove(false);
+                    const QString installer=QDir(pendingRoot).filePath(result.pendingInstaller);
+                    QString hash;
+                    PendingInstaller pending;
+                    pending.id=job->id; pending.title=job->request.title; pending.archivePath=result.archive;
+                    pending.installerPath=installer; pending.destination.clear();
+                    if(!sha256File(installer,&hash,&result.error)) {
+                        result.error=tr("Could not verify the pending installer: %1").arg(result.error);
+                    } else {
+                        pending.sha256=hash;
+                        QString registryError;
+                        if(!PendingInstallerRegistry::upsert(pendingRegistryPath(dataDirectory_),pending,registryError))
+                            result.error=registryError;
+                        else {
+                            job->state=State::Finished;
+                            result.error.clear();
+                            notify(tr("Pending Installers"),tr("%1 is ready to install manually.").arg(job->request.title));
+                        }
+                    }
+                }
+            } else {
             const QString installed=installedDirectory(*job);
             if(!destinationReady(job->request,installed) || !QDir().rename(result.folder->path(),installed)) {
                 result.error=tr("Could not move the game files into the selected library.");
@@ -844,6 +894,7 @@ void Shell::pumpReleaseJobs() {
                     refreshContent();
                     fetchGameArtwork(QStringLiteral("release-game-")+id,job->request.title);
                 } else result.error+="\n"+tr("Game files are still in %1.").arg(QDir::toNativeSeparators(installed));
+            }
             }
         }
         if(paused || cancelled)result.error.clear();
