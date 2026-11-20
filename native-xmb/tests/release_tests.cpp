@@ -733,8 +733,15 @@ int main(int argc,char** argv) {
         qputenv("XMB_HYDRA_SOURCES_URL",(base+QStringLiteral("/sources")).toUtf8());
         QVector<GameResult> searchResults;fixtureError=QStringLiteral("stale error");
          check(HydraLibrary().searchGames(QStringLiteral("fixture"),&searchResults,&fixtureError) && searchResults.size()==1 &&
-              searchResults.first().options.size()==2 && fixtureError.isEmpty(),
+               searchResults.first().options.size()==2 && fixtureError.isEmpty(),
                "public searchGames returns the complete all-source result");
+         QVector<GameResult> ranked;
+         for(const auto& name:{QStringLiteral("Fixture Game Deluxe"),QStringLiteral("Fixture Game"),QStringLiteral("A Fixture Game"),QStringLiteral("Fixture Games"),QStringLiteral("Unrelated")}) { GameResult game;game.name=name;ranked.append(game); }
+         rankGameResults(&ranked,QStringLiteral("fixture game"));
+         check(ranked.size()==5 && ranked[0].name==QStringLiteral("Fixture Game") && ranked[1].name==QStringLiteral("Fixture Game Deluxe"),
+               "search ranking places exact then contained matches before broad results");
+         check(ranked[2].name==QStringLiteral("A Fixture Game") && ranked[3].name==QStringLiteral("Fixture Games") && ranked[4].name==QStringLiteral("Unrelated"),
+               "search ranking is stable within matching tiers and never drops unmatched rows");
          HydraSource feed;feed.title=QStringLiteral("Fixture Feed");feed.url=QUrl(base+QStringLiteral("/source-feed"));
          QVector<GameResult> feedGames;fixtureError.clear();
          const bool feedOk=HydraLibrary().browseSource(feed,&feedGames,&fixtureError);

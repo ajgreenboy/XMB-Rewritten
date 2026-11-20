@@ -61,7 +61,10 @@ struct GameRecord {
 // its display name and download size. Editions that differ in `name` stay separate. Games are ordered
 // by their most-installed source, descending. `sources` only supplies the install counts.
 QVector<GameResult> buildGameCatalog(const QVector<GameRecord>& records,
-                                     const QVector<HydraSource>& sources);
+                                      const QVector<HydraSource>& sources);
+// Stable local ranking for a returned search batch: exact normalized title, then prefix,
+// contained phrase, then token overlap, then broad/unmatched. It never drops editions or sources.
+void rankGameResults(QVector<GameResult>* results,const QString& query);
 
 // One page of api.hydralibrary.com/sources. Exposed (with hasMoreSources) so the pagination that
 // guarantees every source is included can be unit-tested without network access.

@@ -226,6 +226,21 @@ QVector<GameResult> buildGameCatalog(const QVector<GameRecord>& records, const Q
     });
     return results;
 }
+void rankGameResults(QVector<GameResult>* results,const QString& query) {
+    if(!results)return;
+    const QString needle=catalogNameKey(query);
+    const QStringList tokens=needle.split(QLatin1Char(' '),Qt::SkipEmptyParts);
+    auto score=[&](const GameResult& game) {
+        const QString name=catalogNameKey(game.name);
+        if(name==needle)return 0;
+        if(!needle.isEmpty() && name.startsWith(needle) && (name.size()==needle.size() || name[needle.size()]==QLatin1Char(' ')))return 1;
+        if(!needle.isEmpty() && name.contains(needle))return 2;
+        int matched=0;for(const auto& token:tokens)if(name.contains(token))++matched;
+        if(matched>0)return 3+int(tokens.size())-matched;
+        return 100;
+    };
+    std::stable_sort(results->begin(),results->end(),[&](const GameResult& left,const GameResult& right){return score(left)<score(right);});
+}
 bool HydraLibrary::listSources(QVector<HydraSource>* out, QString* error) const {
     if(error)error->clear();
     if(out)out->clear();
@@ -308,7 +323,7 @@ bool HydraLibrary::searchGames(const QString& query, QVector<GameResult>* out, Q
         const int filtered=root.value(QStringLiteral("filteredCount")).toInt();
         if(names.size()>=filtered || names.size()>=500)break;
     }
-    const QVector<GameResult> results=buildGameCatalog(records,sources);
+    QVector<GameResult> results=buildGameCatalog(records,sources); rankGameResults(&results,query);
     if(out)*out=results; return true;
 }
 bool HydraLibrary::browseSource(const HydraSource& source, QVector<GameResult>* out, QString* error) const {
