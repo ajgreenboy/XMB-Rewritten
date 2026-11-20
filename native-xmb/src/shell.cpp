@@ -877,10 +877,27 @@ void Shell::pollSteamGame() {
     if(steamFake()) {
         QString dir;for(const auto& g:steamInstalled_.games)if(g.appId==steamGameId_){dir=g.installDirectory;break;}
         state={};state.running=qEnvironmentVariable("XMB_STEAM_FAKE_FORCE_RUNNING")==QLatin1String("1") || (!dir.isEmpty() && !steamquit::selectGameProcesses(steamquit::snapshotProcesses(),dir,{quint32(QCoreApplication::applicationPid())}).isEmpty());
+        state.status=state.running?SteamAppStatus::Running:SteamAppStatus::Stopped;
     }
     constexpr qint64 startTimeoutMs=5*60*1000;   // Steam may download/update before the title runs
-    if(state.updating && !steamGameSeen_) { steamWatchAge_.restart(); return; }
-    if(state.running) {
+    if(state.status==SteamAppStatus::Unavailable) {
+        // A restarting/signed-out Steam client and a transient registry read failure are
+        // not evidence that the title stopped. In particular, reset the exit debounce.
+        steamGameClear_=0;
+        return;
+    }
+    if(state.status==SteamAppStatus::Updating) {
+        steamGameClear_=0;
+        if(!steamGameSeen_ && steamWatchAge_.elapsed()>=startTimeoutMs) {
+            steamWatch_.stop();const QString title=gameTitle_;steamGameId_.clear();gameTitle_.clear();
+            clearInGame();
+            showMessage(title,"Steam did not confirm this title started before the launch wait expired.",MessageKind::Page);
+            qWarning().noquote()<<"steam:"<<title<<"launch observation timed out while updating";
+            emit changed();
+        }
+        return;
+    }
+    if(state.status==SteamAppStatus::Running) {
         const bool wasRunning=titleRunning();
         if(!steamGameSeen_)qInfo().noquote()<<"steam:"<<gameTitle_<<"is running";
         steamGameSeen_=true;steamGameClear_=0;
@@ -891,8 +908,8 @@ void Shell::pollSteamGame() {
         if(steamWatchAge_.elapsed()<startTimeoutMs)return;
         steamWatch_.stop();const QString title=gameTitle_;steamGameId_.clear();gameTitle_.clear();
         clearInGame();
-        showMessage(title,"Steam did not report this title as running.",MessageKind::Page);
-        qWarning().noquote()<<"steam:"<<title<<"never reported running";
+        showMessage(title,"Steam did not confirm this title started before the launch wait expired.",MessageKind::Page);
+        qWarning().noquote()<<"steam:"<<title<<"launch observation timed out without confirmed running";
         emit changed();return;
     }
     // Steam clears the flag when the last process exits; require two polls so a launcher-to-game
@@ -3223,11 +3240,13 @@ void Shell::quitSteamTitle() {
     if(!ok || grace<0)grace=10000;
     const QString folder=QFileInfo(installDir).fileName();
     const auto state=steamAppState(appId);
+    const QString observedRunning = state.status==SteamAppStatus::Unavailable
+        ? QStringLiteral("unknown") : state.running ? QStringLiteral("1") : QStringLiteral("0");
     if(!installDir.isEmpty()) {
         const auto started=steamQuitter_.start(installDir,grace);
         if(started.processes>0) {
             qInfo().noquote()<<QStringLiteral("ingame: quit stage 1 WM_CLOSE posted to %1 window(s) of %2 process(es) [%3] in game folder \"%4\", waiting up to %5 ms (Steam registry running=%6)")
-                .arg(started.windows).arg(started.processes).arg(started.names).arg(folder).arg(grace).arg(state.running?1:0);
+                .arg(started.windows).arg(started.processes).arg(started.names).arg(folder).arg(grace).arg(observedRunning);
             return;
         }
     }
@@ -3239,11 +3258,16 @@ void Shell::quitSteamTitle() {
     QString stopError;
     if(steamStopApp(appId,steamRoot_,&stopError)) {
         qInfo().noquote()<<"shell: asked Steam to stop"<<appId<<"(fallback; no game process was found to close)";
-        QTimer::singleShot(15000,this,[this,appId,reason]{
+        QTimer::singleShot(15000,this,[this,appId,reason,observationUnavailable=state.status==SteamAppStatus::Unavailable]{
             if(steamGameId_!=appId)return;
-            qWarning().noquote()<<"ingame: quit fallback: Steam still reports"<<appId<<"running after 15 s";
+            qWarning().noquote()<<(observationUnavailable
+                ? QStringLiteral("ingame: quit fallback: Steam status remained unavailable for %1 after 15 s").arg(appId)
+                : QStringLiteral("ingame: quit fallback: Steam still reports %1 running after 15 s").arg(appId));
             quitStage_=0;
-            showMessage(quitTitle_,reason+QObject::tr(" Steam was asked to stop the title but it is still running. Close it from its own menu."),MessageKind::Page);
+            const QString detail=observationUnavailable
+                ? QObject::tr(" Steam was asked to stop the title, but Steam's status could not be confirmed. Close it from its own menu.")
+                : QObject::tr(" Steam was asked to stop the title but it is still running. Close it from its own menu.");
+            showMessage(quitTitle_,reason+detail,MessageKind::Page);
             emit changed();
         });
     } else {

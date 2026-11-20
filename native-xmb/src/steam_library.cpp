@@ -741,13 +741,76 @@ SteamAppState steamAppState(const QString& appId) {
     }
     const QSettings steam(base, QSettings::NativeFormat);
     const QSettings app(base + QStringLiteral("\\Apps\\") + appId, QSettings::NativeFormat);
-    state.running = steam.value(QStringLiteral("RunningAppID")).toString() == appId ||
-                    app.value(QStringLiteral("Running")).toInt() == 1;
-    state.updating = app.value(QStringLiteral("Updating")).toInt() == 1;
+    // QSettings reports an empty value for a missing key, and can also mask a registry
+    // read/parse failure. Do not turn either case into "stopped". ActiveProcess is Steam's
+    // own liveness/sign-in record: while it is absent, malformed, or signed out, the
+    // Apps values are not a reliable observation (Steam is commonly rewriting them while
+    // restarting).
+    const QSettings active(base + QStringLiteral("\\ActiveProcess"), QSettings::NativeFormat);
+    bool validPid = false;
+    bool validUser = false;
+    const qulonglong pid = active.value(QStringLiteral("pid")).toULongLong(&validPid);
+    const qulonglong user = active.value(QStringLiteral("ActiveUser")).toULongLong(&validUser);
+    if (steam.status() != QSettings::NoError || app.status() != QSettings::NoError ||
+        active.status() != QSettings::NoError || !active.contains(QStringLiteral("pid")) ||
+        !active.contains(QStringLiteral("ActiveUser")) || !validPid || pid == 0 ||
+        !validUser || user == 0)
+        return state;
+
+    const QString runningId = steam.value(QStringLiteral("RunningAppID")).toString().trimmed();
+    const QString runningValue = app.value(QStringLiteral("Running")).toString().trimmed();
+    const QString updatingValue = app.value(QStringLiteral("Updating")).toString().trimmed();
+    const bool runningFlag = runningValue == QStringLiteral("1");
+    const bool updatingFlag = updatingValue == QStringLiteral("1");
+    const bool foreground = runningId == appId;
+    bool validRunningId = runningId.isEmpty();
+    if (!validRunningId) {
+        bool numericRunningId = false;
+        runningId.toULongLong(&numericRunningId);
+        validRunningId = numericRunningId;
+    }
+    // A present app record or RunningAppID with a non-boolean/non-numeric value is
+    // malformed, not stopped. With a readable signed-in client, no app flag means
+    // the client has confirmed this title is stopped.
+    if ((!runningValue.isEmpty() && runningValue != QStringLiteral("0") && !runningFlag) ||
+        (!updatingValue.isEmpty() && updatingValue != QStringLiteral("0") && !updatingFlag) ||
+        !validRunningId)
+        return state;
+    state.running = foreground || runningFlag;
+    state.updating = updatingFlag;
+    state.status = state.updating ? SteamAppStatus::Updating :
+                   state.running ? SteamAppStatus::Running : SteamAppStatus::Stopped;
 #else
     Q_UNUSED(appId);
 #endif
     return state;
+}
+
+SteamTrackTransition steamTrackObservation(SteamTrackState current, SteamAppStatus status) {
+    SteamTrackTransition result;
+    result.state = current;
+    switch (status) {
+    case SteamAppStatus::Unavailable:
+        result.unavailable = true;
+        result.state.consecutiveStopped = 0;
+        break;
+    case SteamAppStatus::Running:
+        result.confirmedRunning = true;
+        result.state.seenRunning = true;
+        result.state.consecutiveStopped = 0;
+        break;
+    case SteamAppStatus::Updating:
+        result.state.consecutiveStopped = 0;
+        break;
+    case SteamAppStatus::Stopped:
+        if (result.state.seenRunning && ++result.state.consecutiveStopped >= 2) {
+            result.confirmedStopped = true;
+            result.state.seenRunning = false;
+            result.state.consecutiveStopped = 0;
+        }
+        break;
+    }
+    return result;
 }
 
 } // namespace xmb

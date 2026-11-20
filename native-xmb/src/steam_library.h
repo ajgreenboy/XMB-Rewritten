@@ -26,13 +26,36 @@ struct SteamInstallation {
 // performs no network access and makes no changes to Steam files.
 SteamInstallation scanSteam(const QString& explicitRoot = {});
 
+enum class SteamAppStatus {
+    Unavailable, // Steam's observation could not be read or is not trustworthy.
+    Stopped,     // Steam was readable and confirmed the title is not running.
+    Running,
+    Updating
+};
+
 // Live state of one title as the running Steam client reports it in the registry
-// (HKCU\Software\Valve\Steam). Read-only; always false off Windows.
+// (HKCU\Software\Valve\Steam). Read-only; always unavailable off Windows.
 struct SteamAppState {
+    SteamAppStatus status = SteamAppStatus::Unavailable;
     bool running = false;
     bool updating = false;
 };
 SteamAppState steamAppState(const QString& appId);
+
+// Pure lifecycle reducer used by the shell and fixture runner. Unknown observations never
+// contribute to the stopped streak; two confirmed stopped observations are required after a
+// confirmed run. This keeps registry outages/restarts from becoming false exits.
+struct SteamTrackState {
+    bool seenRunning = false;
+    int consecutiveStopped = 0;
+};
+struct SteamTrackTransition {
+    SteamTrackState state;
+    bool unavailable = false;
+    bool confirmedRunning = false;
+    bool confirmedStopped = false;
+};
+SteamTrackTransition steamTrackObservation(SteamTrackState current, SteamAppStatus status);
 
 // Ask the running Steam client to stop a title through its console command line. The client executes
 // "+<command>" arguments handed to steam.exe, so this is the supported-by-observation way to quit a
