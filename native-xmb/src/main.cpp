@@ -1747,12 +1747,15 @@ int main(int argc,char** argv) {
                 QJsonArray entryRows;
                 for(int i=0;i<shell.entries().size() && i<128;++i) {
                     const auto& row=shell.entries()[i];
+                    const QRgb artworkPixel=row.artwork.isNull()?0:row.artwork.pixel(0,0);
                     entryRows.append(QJsonObject{{"id",row.id},{"title",row.title},{"detail",row.detail},
                         {"fieldValue",row.fieldValue},{"artworkUrl",row.artworkUrl},{"backgroundPath",row.backgroundPath},
+                        {"artworkReady",!row.artwork.isNull()},{"artworkRgb",QStringLiteral("%1,%2,%3").arg(qRed(artworkPixel)).arg(qGreen(artworkPixel)).arg(qBlue(artworkPixel))},
                         {"action",int(row.action)}});
                 }
                 const QJsonObject state{{"category",shell.categories()[shell.category()].id},
                     {"categoryIndex",shell.category()},{"depth",shell.depth()},{"selection",shell.selection()},
+                    {"pageIdentity",QString::number(shell.pageIdentity())},
                     {"width",image.width()},{"height",image.height()},{"clock",shell.clockText()},
                     {"entryId",shell.entries().isEmpty()?QString{}:shell.entries()[shell.selection()].id},
                     {"entryTitle",shell.entries().isEmpty()?QString{}:shell.entries()[shell.selection()].title},

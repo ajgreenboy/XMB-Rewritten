@@ -181,6 +181,13 @@ void Shell::refreshReleaseSources(const QUrl& importUrl) {
         if(importing)store.importSource(importUrl,&result.error);
         QString listError;result.sources=store.listSources(&listError);
         if(result.error.isEmpty())result.error=listError;
+        if(qEnvironmentVariableIntValue("XMB_RELEASE_ART_STALE_FIXTURE")==1) {
+            ReleaseSource fixture;fixture.slug=QStringLiteral("stale-art-fixture");fixture.name=QStringLiteral("Stale Art Fixture");
+            fixture.url=QUrl(qEnvironmentVariable("XMB_RELEASE_ART_FIXTURE_SOURCE_URL"));
+            IndexedRelease release;release.title=QStringLiteral("Delayed Cover Release");release.sizeLabel=QStringLiteral("1 GB");
+            release.raw=QJsonObject{{QStringLiteral("artwork"),qEnvironmentVariable("XMB_RELEASE_ART_RED_URL")}};
+            fixture.releases.append(std::move(release));result.sources.append(std::move(fixture));
+        }
         for(const auto& source:result.sources)for(const auto& release:source.releases)
             result.paths.insert(releaseId(source.slug,release.title),store.downloadedPath(source.slug,release.title));
         return result;
@@ -233,8 +240,14 @@ void Shell::rebuildReleaseSources() {
 void Shell::openReleaseSource(const QString& slug) {
     if(pages_.size()>=32)return;
     for(const auto& source:releaseSources_)if(source.slug==slug) {
-        Page page;page.title=source.name;
-        for(const auto& release:source.releases) {
+        QVector<IndexedRelease> releases=source.releases;
+        if(qEnvironmentVariableIntValue("XMB_RELEASE_ART_STALE_FIXTURE")==1 && !releases.isEmpty()) {
+            const QString url=qEnvironmentVariable(releaseArtFixtureOpenCount_++==0
+                ? "XMB_RELEASE_ART_RED_URL" : "XMB_RELEASE_ART_BLUE_URL");
+            releases[0].raw.insert(QStringLiteral("artwork"),url);
+        }
+        Page page;page.title=source.name;page.identity=++pageIdentityCounter_;
+        for(const auto& release:releases) {
             Entry entry=releaseRow(releaseId(slug,release.title),release.title,Action::ReleaseDownload,slug);
             entry.setting=release.title;entry.artwork=releaseArt_.value(entry.id);entry.iconSized=true;
             entry.rawgArtworkVisible=releaseRawgArt_.contains(entry.id);
@@ -247,7 +260,7 @@ void Shell::openReleaseSource(const QString& slug) {
         }
         pages_.push_back(std::move(page));
         if(source.releases.isEmpty())showMessage(tr("There are no content items."),MessageKind::Inline);
-        for(int i=0;i<source.releases.size();++i)requestReleaseArt(pages_.last().entries[i],source.releases[i],source.url);
+        for(int i=0;i<releases.size();++i)requestReleaseArt(pages_.last().entries[i],releases[i],source.url);
         emit changed();return;
     }
 }
@@ -265,6 +278,9 @@ void Shell::requestReleaseArt(const Entry& entry,const IndexedRelease& release,c
     }
     const QString imageUrl=coverUrl(release);
     const quint64 pageIdentity=pages_.isEmpty()?0:pages_.last().identity;
+    const quint64 previousPageIdentity=releaseArtPageIdentity_.value(entry.id,0);
+    if(releaseArtRequested_.contains(entry.id) && previousPageIdentity==pageIdentity)return;
+    releaseArtRequested_.remove(entry.id);
     releaseArtPageIdentity_.insert(entry.id,pageIdentity);
     const auto fallback=[this,pageIdentity]{
         QVector<QPair<QString,QString>> targets;
@@ -275,7 +291,6 @@ void Shell::requestReleaseArt(const Entry& entry,const IndexedRelease& release,c
         releaseArtwork_->refresh(targets);
     };
     if(imageUrl.isEmpty()){fallback();return;}
-    if(releaseArtRequested_.contains(entry.id))return;
     releaseArtRequested_.insert(entry.id);
     const QString cache=QDir(dataDirectory_).filePath(QStringLiteral("cache/release-covers/")+
         QString::fromLatin1(QCryptographicHash::hash((entry.id+imageUrl).toUtf8(),QCryptographicHash::Sha256).toHex())+QStringLiteral(".png"));
@@ -353,6 +368,8 @@ void Shell::openDownloadHub() {
     if(pages_.size()>=32)return;
     Page page;page.title=tr("Download Games");page.downloadHub=true;
     page.entries=downloadHubRows(releaseSources_);
+    if(qEnvironmentVariableIntValue("XMB_RELEASE_ART_STALE_FIXTURE")==1)
+        page.entries.append(releaseRow(QStringLiteral("release:stale-art-fixture"),QStringLiteral("Stale Art Fixture"),Action::ReleaseFolder,QStringLiteral("stale-art-fixture")));
     pages_.push_back(std::move(page));
     refreshGameFeeds();
     emit changed();

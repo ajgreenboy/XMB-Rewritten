@@ -362,6 +362,7 @@ public:
     int category() const { return category_; }
     int selection() const { return pages_.isEmpty()?selections_[category_]:pages_.last().selection; }
     int depth() const { return int(pages_.size()); }
+    quint64 pageIdentity() const { return pages_.isEmpty()?0:pages_.last().identity; }
     // True when the open top page is one the console's sysconf_plugin draws (the Settings rows' pages).
     bool topPageLoadsPlugin() const { return !pages_.isEmpty() && pages_.back().sysconfPlugin; }
     const QVector<Entry>& entriesAt(int depth) const;
@@ -811,6 +812,7 @@ private:
     bool releaseFeedsRefreshing_=false;
     quint64 releaseSourcesGeneration_=0;
     quint64 pageIdentityCounter_=0;
+    quint64 releaseArtFixtureOpenCount_=0;
     quint64 hydraPageGeneration_=0;
     bool gameArtHooked_=false;
     void refreshReleaseSources(const QUrl& importUrl={});
