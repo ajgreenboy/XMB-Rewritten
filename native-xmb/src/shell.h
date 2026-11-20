@@ -797,6 +797,7 @@ private:
     QVector<ReleaseSource> releaseSources_;
     QHash<QString,QString> releaseLocalPaths_;
     QHash<QString,QImage> releaseArt_;
+    QHash<QString,quint64> releaseArtPageIdentity_;
     QSet<QString> releaseRawgArt_;
     QSet<QString> releaseArtRequested_;
     std::unique_ptr<RawgArtwork> releaseArtwork_;

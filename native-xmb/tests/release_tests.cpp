@@ -535,9 +535,10 @@ int main(int argc,char** argv) {
                     socket->write(response);socket->disconnectFromHost();return;
                 }
                 if(request.contains("/source-oversized-chunked")) {
-                    const QByteArray chunk(16*1024*1024+1,'x');
+                    const QByteArray first(8*1024*1024,'x'),second(8*1024*1024+1,'x');
                     const QByteArray header=QByteArrayLiteral("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n");
-                    socket->write(header+QByteArray::number(chunk.size(),16)+"\r\n"+chunk+"\r\n0\r\n\r\n");socket->disconnectFromHost();return;
+                    socket->write(header+QByteArray::number(first.size(),16)+"\r\n"+first+"\r\n");
+                    QTimer::singleShot(25,socket,[socket,second]{socket->write(QByteArray::number(second.size(),16)+"\r\n"+second+"\r\n0\r\n\r\n");socket->disconnectFromHost();});return;
                 }
                 if(!hot && title==7)fail=++attempts[title]==1;
                 if(!hot && duplicate)fail=++attempts[-1]==1;
@@ -602,6 +603,8 @@ int main(int argc,char** argv) {
                     body=QJsonDocument(QJsonObject{{QStringLiteral("games"),QJsonArray{}}}).toJson(QJsonDocument::Compact);
                 } else if(!fail && title==25) {
                     body=QByteArrayLiteral("{\"games\":[{\"source\":\"Fixture Direct\",\"sourceUrl\":\"https://fixture/direct.json\"},null]}");
+                } else if(!fail && request.contains("Same%20Source")) {
+                    body=QByteArrayLiteral("{\"games\":[{\"source\":\"Same Source\",\"sourceUrl\":\"https://fixture/same-source.json\",\"originalTitle\":\"Same Source Standard\",\"fileSize\":\"1 GB\"},{\"source\":\"Same Source\",\"sourceUrl\":\"https://fixture/same-source.json\",\"originalTitle\":\"Same Source Deluxe\",\"fileSize\":\"2 GB\"},{\"source\":\"Same Source\",\"sourceUrl\":\"https://fixture/same-source.json\",\"originalTitle\":\"Same Source Standard\",\"fileSize\":\"1 GB\"}]}");
                 } else if(!fail) {
                     const bool deluxe=request.contains("Deluxe");
                     const QString first=deluxe?QStringLiteral("Fixture Deluxe A"):(duplicate?QStringLiteral("Fixture Duplicate Direct"):QStringLiteral("Fixture Direct"));
@@ -657,9 +660,14 @@ int main(int argc,char** argv) {
               merged.options[1].source==QStringLiteral("Fixture Torrent") && merged.options[2].source==QStringLiteral("Fixture Duplicate Direct") &&
               merged.options[3].source==QStringLiteral("Fixture Duplicate Torrent") && merged.options[3].fileSize==QStringLiteral("2 GB"),
               "duplicate hot tile unions all source records in stable raw and record order");
-        check(HydraLibrary().popularGame(titles[12],&deluxe,&fixtureError) && deluxe.options.size()==2 &&
-              deluxe.options[0].source==QStringLiteral("Fixture Deluxe A") && deluxe.options[1].source==QStringLiteral("Fixture Deluxe B"),
-              "edition keeps its distinct exact all-source order");
+         check(HydraLibrary().popularGame(titles[12],&deluxe,&fixtureError) && deluxe.options.size()==2 &&
+               deluxe.options[0].source==QStringLiteral("Fixture Deluxe A") && deluxe.options[1].source==QStringLiteral("Fixture Deluxe B"),
+               "edition keeps its distinct exact all-source order");
+         PopularTitle sameSourceTitle;sameSourceTitle.title=QStringLiteral("Same Source");GameResult sameSourceGame;
+         check(HydraLibrary().popularGame(sameSourceTitle,&sameSourceGame,&fixtureError) && sameSourceGame.options.size()==2 &&
+               sameSourceGame.options[0].releaseTitle==QStringLiteral("Same Source Standard") &&
+               sameSourceGame.options[1].releaseTitle==QStringLiteral("Same Source Deluxe"),
+               "popularGame preserves distinct editions sharing one source URL and collapses only the exact duplicate");
         GameResult invalid; fixtureError.clear();
         check(!HydraLibrary().popularGame(titles[20],&invalid,&fixtureError) && invalid.options.isEmpty() &&
               fixtureError.contains(QStringLiteral("HTTP 500")) && fixtureError.contains(QStringLiteral("retry")) &&
@@ -740,8 +748,11 @@ int main(int argc,char** argv) {
          rankGameResults(&ranked,QStringLiteral("fixture game"));
          check(ranked.size()==5 && ranked[0].name==QStringLiteral("Fixture Game") && ranked[1].name==QStringLiteral("Fixture Game Deluxe"),
                "search ranking places exact then contained matches before broad results");
-         check(ranked[2].name==QStringLiteral("A Fixture Game") && ranked[3].name==QStringLiteral("Fixture Games") && ranked[4].name==QStringLiteral("Unrelated"),
+         check(ranked[2].name==QStringLiteral("Fixture Games") && ranked[3].name==QStringLiteral("A Fixture Game") && ranked[4].name==QStringLiteral("Unrelated"),
                "search ranking is stable within matching tiers and never drops unmatched rows");
+         QVector<GameResult> doomRanked;for(const auto& name:{QStringLiteral("a doom"),QStringLiteral("doom2"),QStringLiteral("doom")}){GameResult game;game.name=name;doomRanked.append(game);}rankGameResults(&doomRanked,QStringLiteral("doom"));
+         check(doomRanked[0].name==QStringLiteral("doom") && doomRanked[1].name==QStringLiteral("doom2") && doomRanked[2].name==QStringLiteral("a doom"),
+               "literal prefix ranking keeps doom2 ahead of broad a-doom matches");
          HydraSource feed;feed.title=QStringLiteral("Fixture Feed");feed.url=QUrl(base+QStringLiteral("/source-feed"));
          QVector<GameResult> feedGames;fixtureError.clear();
          const bool feedOk=HydraLibrary().browseSource(feed,&feedGames,&fixtureError);

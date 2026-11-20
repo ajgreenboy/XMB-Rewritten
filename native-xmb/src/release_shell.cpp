@@ -258,16 +258,20 @@ void Shell::requestReleaseArt(const Entry& entry,const IndexedRelease& release,c
         connect(releaseArtwork_.get(),&RawgArtwork::ready,this,[this](const QString& id,const QString&,const QString&,const QImage& image){
             releaseArt_.insert(id,image);
             releaseRawgArt_.insert(id);
-            for(auto& page:pages_)for(auto& row:page.entries)if(row.id==id){row.artwork=image;row.rawgArtworkVisible=true;}
+            const quint64 identity=releaseArtPageIdentity_.value(id,0);
+            for(auto& page:pages_)if(page.identity==identity)for(auto& row:page.entries)if(row.id==id){row.artwork=image;row.rawgArtworkVisible=true;}
             emit changed();
         });
     }
     const QString imageUrl=coverUrl(release);
-    const auto fallback=[this]{
+    const quint64 pageIdentity=pages_.isEmpty()?0:pages_.last().identity;
+    releaseArtPageIdentity_.insert(entry.id,pageIdentity);
+    const auto fallback=[this,pageIdentity]{
         QVector<QPair<QString,QString>> targets;
-        for(const auto& page:pages_)for(const auto& row:page.entries)
-            if(row.action==Action::ReleaseDownload && row.artwork.isNull() && row.artworkUrl.isEmpty() && !releaseArtRequested_.contains(row.id))
-                targets.append(qMakePair(row.id,row.title));
+        for(const auto& page:pages_)if(page.identity==pageIdentity)for(const auto& row:page.entries)
+            if(row.action==Action::ReleaseDownload && row.artwork.isNull() && row.artworkUrl.isEmpty() && !releaseArtRequested_.contains(row.id)) {
+                releaseArtPageIdentity_.insert(row.id,pageIdentity); targets.append(qMakePair(row.id,row.title));
+            }
         releaseArtwork_->refresh(targets);
     };
     if(imageUrl.isEmpty()){fallback();return;}
@@ -276,14 +280,14 @@ void Shell::requestReleaseArt(const Entry& entry,const IndexedRelease& release,c
     const QString cache=QDir(dataDirectory_).filePath(QStringLiteral("cache/release-covers/")+
         QString::fromLatin1(QCryptographicHash::hash((entry.id+imageUrl).toUtf8(),QCryptographicHash::Sha256).toHex())+QStringLiteral(".png"));
     auto* watcher=new QFutureWatcher<QImage>(this);
-    connect(watcher,&QFutureWatcher<QImage>::finished,this,[this,watcher,id=entry.id,fallback]{
+    connect(watcher,&QFutureWatcher<QImage>::finished,this,[this,watcher,id=entry.id,pageIdentity,fallback]{
         const QImage image=watcher->result();watcher->deleteLater();releaseArtRequested_.remove(id);
         if(image.isNull()) {
-            for(auto& page:pages_)for(auto& row:page.entries)if(row.id==id)row.artworkUrl.clear();
+            for(auto& page:pages_)if(page.identity==pageIdentity)for(auto& row:page.entries)if(row.id==id)row.artworkUrl.clear();
             fallback();return;
         }
         releaseArt_.insert(id,image);
-        for(auto& page:pages_)for(auto& row:page.entries)if(row.id==id)row.artwork=image;
+        for(auto& page:pages_)if(page.identity==pageIdentity)for(auto& row:page.entries)if(row.id==id)row.artwork=image;
         emit changed();
     });
     watcher->setFuture(QtConcurrent::run([url=sourceUrl.resolved(QUrl(imageUrl)),cache]{return fetchCover(url,cache);}));
@@ -403,6 +407,7 @@ void Shell::openHydraSource(const QString& sourceIndex,const QString& sourceName
             QVector<GameResult> unionGames;QString unionError;
             if(library.searchGames(game.name,&unionGames,&unionError)) {
                 for(const auto& candidate:unionGames)if(gameSearchKey(candidate.name)==gameSearchKey(game.name)) {
+                    if(game.coverUrl.isEmpty())game.coverUrl=candidate.coverUrl;
                     game=mergePopularGameResults(game.name,game.coverUrl,{game,candidate});
                     if(game.options.size()>1)for(auto& option:game.options)option.sourceStatus.clear();
                     break;
@@ -503,7 +508,7 @@ void Shell::runGameSearch(const QString& query,const QString& scope) {
                         const QString uri=option.downloads.isEmpty()?QString{}:option.downloads.first().uri;
                         return old.sourceUrl==option.sourceUrl && old.releaseTitle==option.releaseTitle && oldUri==uri;
                     });
-                    if(!duplicate && existing.options.size()<48)existing.options.append(std::move(option));
+                    if(!duplicate)existing.options.append(std::move(option));
                 }
             } else if(result.games.size()<100) {
                 indexes.insert(key,int(result.games.size()));

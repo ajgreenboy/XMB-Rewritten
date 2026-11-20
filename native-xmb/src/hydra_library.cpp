@@ -206,6 +206,7 @@ QVector<GameResult> buildGameCatalog(const QVector<GameRecord>& records, const Q
             result.name=name;
             result.title=record.title;
             result.originalTitle=record.originalTitle;
+            result.coverUrl=record.coverUrl;
             result.options.append(option);
             byName.insert(key,results.size());
             results.append(result);
@@ -233,7 +234,7 @@ void rankGameResults(QVector<GameResult>* results,const QString& query) {
     auto score=[&](const GameResult& game) {
         const QString name=catalogNameKey(game.name);
         if(name==needle)return 0;
-        if(!needle.isEmpty() && name.startsWith(needle) && (name.size()==needle.size() || name[needle.size()]==QLatin1Char(' ')))return 1;
+        if(!needle.isEmpty() && name.startsWith(needle))return 1;
         if(!needle.isEmpty() && name.contains(needle))return 2;
         int matched=0;for(const auto& token:tokens)if(name.contains(token))++matched;
         if(matched>0)return 3+int(tokens.size())-matched;
@@ -315,6 +316,7 @@ bool HydraLibrary::searchGames(const QString& query, QVector<GameResult>* out, Q
             record.sourceUrl=game.value(QStringLiteral("sourceUrl")).toString();
             record.fileSize=game.value(QStringLiteral("fileSize")).toString();
             record.sourceStatus=game.value(QStringLiteral("sourceStatus")).toString();
+            record.coverUrl=game.value(QStringLiteral("coverUrl")).toString();
             const QString key=catalogNameKey(record.name);
             if(key.isEmpty())continue;
             names.insert(key);
@@ -484,13 +486,13 @@ bool HydraLibrary::popularGame(const PopularTitle& title,GameResult* out,QString
         GameSourceOption option;
         option.source=game.value(QStringLiteral("source")).toString();
         option.sourceUrl=game.value(QStringLiteral("sourceUrl")).toString();
-        const QString identity=optionIdentity(option);
-        if(seenSource.contains(identity))continue;
-        seenSource.insert(identity);
         option.fileSize=game.value(QStringLiteral("fileSize")).toString();
         option.sourceStatus=game.value(QStringLiteral("sourceStatus")).toString();
         option.releaseTitle=game.value(QStringLiteral("originalTitle")).toString();
         if(option.releaseTitle.isEmpty())option.releaseTitle=game.value(QStringLiteral("title")).toString();
+        const QString identity=optionIdentity(option);
+        if(seenSource.contains(identity))continue;
+        seenSource.insert(identity);
         if(result.originalTitle.isEmpty())result.originalTitle=game.value(QStringLiteral("originalTitle")).toString();
         result.options.append(option);
     }

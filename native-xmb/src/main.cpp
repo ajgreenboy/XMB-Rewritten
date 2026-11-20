@@ -1744,12 +1744,19 @@ int main(int argc,char** argv) {
             else if(token.startsWith("grab=")) {
                 const auto image=view->grabFramebuffer();
                 qInfo().noquote()<<"script: grab"<<token.mid(5)<<image.size()<<(image.save(token.mid(5))?"saved":"FAILED");
+                QJsonArray entryRows;
+                for(int i=0;i<shell.entries().size() && i<128;++i) {
+                    const auto& row=shell.entries()[i];
+                    entryRows.append(QJsonObject{{"id",row.id},{"title",row.title},{"detail",row.detail},
+                        {"fieldValue",row.fieldValue},{"artworkUrl",row.artworkUrl},{"backgroundPath",row.backgroundPath},
+                        {"action",int(row.action)}});
+                }
                 const QJsonObject state{{"category",shell.categories()[shell.category()].id},
                     {"categoryIndex",shell.category()},{"depth",shell.depth()},{"selection",shell.selection()},
                     {"width",image.width()},{"height",image.height()},{"clock",shell.clockText()},
                     {"entryId",shell.entries().isEmpty()?QString{}:shell.entries()[shell.selection()].id},
                     {"entryTitle",shell.entries().isEmpty()?QString{}:shell.entries()[shell.selection()].title},
-                    {"entryCount",shell.entries().size()},{"mediaOpen",shell.mediaOpen()},{"mediaPaused",shell.mediaPaused()},
+                    {"entryCount",shell.entries().size()},{"entryRows",entryRows},{"mediaOpen",shell.mediaOpen()},{"mediaPaused",shell.mediaPaused()},
                     {"mediaProvider",shell.mediaProvider()},{"playMethod",shell.mediaPlayMethod()},{"mediaPosition",shell.mediaPosition()},{"mediaDuration",shell.mediaDuration()},{"idleMilliseconds",shell.idleMilliseconds()},{"screensaverMinutes",shell.screensaverMinutes()},
                     // Auto-Off (Phase 4.1): the display-off request this build made, and the last console display
                     // state Windows reported (-1 = never observed). The capture cannot power a monitor, so these are

@@ -54,6 +54,7 @@ struct GameRecord {
     QString sourceUrl;     // the source's release-index JSON
     QString fileSize;      // download size label; empty means "unknown"
     QString sourceStatus;  // Trusted / Safe For Use / ...
+    QString coverUrl;      // optional provider art URL carried through search results
 };
 
 // Deterministic catalogue merge: every source is kept (no silent torrent/direct filtering), each game
