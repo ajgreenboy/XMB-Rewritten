@@ -126,6 +126,13 @@ bool validGameArray(const QJsonArray& values, bool requireName) {
     return true;
 }
 
+bool validPopularTitleArray(const QJsonArray& values) {
+    for(const auto& value:values) {
+        if(!value.isObject() || value.toObject().value(QStringLiteral("title")).toString().trimmed().isEmpty())return false;
+    }
+    return true;
+}
+
 struct PopularLookup {
     bool ok=false;
     GameResult game;
@@ -342,6 +349,10 @@ bool HydraLibrary::popularTitles(QVector<PopularTitle>* out,QString* error) cons
     const QString url=loopbackEndpoint("XMB_HYDRA_HOT_URL",
         QStringLiteral("https://api.hydralauncher.gg/catalogue/hot?take=40&skip=0"));
     if(!fetchJsonArray(QUrl(url),&hot,error))return false;
+    if(!validPopularTitleArray(hot)) {
+        if(error)*error=QStringLiteral("Hydra catalogue returned an invalid popular title entry; retry");
+        return false;
+    }
     for(const auto& value:hot) {
         const auto object=value.toObject();
         PopularTitle title;

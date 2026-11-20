@@ -403,6 +403,14 @@ int main(int argc,char** argv) {
                         body=QByteArrayLiteral("{\"filteredCount\":0,\"games\":[]}");
                     else
                         body=QByteArrayLiteral("{\"filteredCount\":2,\"games\":[{\"name\":\"Fixture Search Game\",\"title\":\"Fixture Search Game\",\"source\":\"Fixture Source A\",\"sourceUrl\":\"https://fixture.invalid/a.json\",\"fileSize\":\"1 GB\"},{\"name\":\"Fixture Search Game\",\"title\":\"Fixture Search Game\",\"source\":\"Fixture Source B\",\"sourceUrl\":\"https://fixture.invalid/b.json\",\"fileSize\":\"2 GB\"}]}");
+                } else if(hot && request.contains("/hot-retry") && ++attempts[-2]==1) {
+                    body=QByteArrayLiteral("{malformed");
+                } else if(hot && request.contains("/hot-null")) {
+                    body=QByteArrayLiteral("[null]");
+                } else if(hot && request.contains("/hot-empty-object")) {
+                    body=QByteArrayLiteral("[{}]");
+                } else if(hot && request.contains("/hot-mixed")) {
+                    body=QByteArrayLiteral("[{\"title\":\"Good Title\"},null]");
                 } else if(hot && request.contains("/error-hot")) {
                     fail=true;
                 } else if(hot && request.contains("/malformed-hot")) {
@@ -530,6 +538,19 @@ int main(int argc,char** argv) {
         const bool emptyHotOk=HydraLibrary().popularTitles(&titles,&fixtureError);
         check(emptyHotOk && titles.isEmpty() && fixtureError.isEmpty(),
               "valid empty hot catalogue clears a previous error");
+        for(const auto& path:{QStringLiteral("/hot-null"),QStringLiteral("/hot-empty-object"),QStringLiteral("/hot-mixed")}) {
+            qputenv("XMB_HYDRA_HOT_URL",(base+path).toUtf8());titles.clear();fixtureError=QStringLiteral("stale error");
+            check(!HydraLibrary().popularTitles(&titles,&fixtureError) && titles.isEmpty() &&
+                  fixtureError.contains(QStringLiteral("invalid popular title entry")),
+                  "malformed hot member fails without publishing partial titles");
+        }
+        qputenv("XMB_HYDRA_HOT_URL",(base+QStringLiteral("/hot-retry")).toUtf8());
+        titles.clear();fixtureError=QStringLiteral("stale error");
+        const bool firstRetry=HydraLibrary().popularTitles(&titles,&fixtureError);
+        check(!firstRetry && titles.isEmpty() && !fixtureError.isEmpty(),"malformed hot response exposes retry state");
+        titles.clear();
+        const bool secondRetry=HydraLibrary().popularTitles(&titles,&fixtureError);
+        check(secondRetry && titles.size()==40 && fixtureError.isEmpty(),"explicit hot retry succeeds and clears a reused error");
         for(const auto& path:{QStringLiteral("/error-hot"),QStringLiteral("/malformed-hot"),QStringLiteral("/wrong-hot")}) {
             qputenv("XMB_HYDRA_HOT_URL",(base+path).toUtf8());titles.clear();fixtureError.clear();
             check(!HydraLibrary().popularTitles(&titles,&fixtureError) && titles.isEmpty() && !fixtureError.isEmpty(),
