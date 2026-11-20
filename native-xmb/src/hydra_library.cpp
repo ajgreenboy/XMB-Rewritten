@@ -16,6 +16,8 @@
 namespace xmb {
 namespace {
 QString responseError(const QString& service, QNetworkReply* reply, bool timedOut) {
+    // Retry is explicit: callers surface this to the Store's Retry action rather than hammering a
+    // rate-limited endpoint. We intentionally do not sleep or replay requests from this blocking client.
     if(timedOut)return QStringLiteral("Hydra %1 request timed out; retry").arg(service);
     const int status=reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
     if(status>=400)return QStringLiteral("Hydra %1 request failed (HTTP %2); retry").arg(service).arg(status);
@@ -101,6 +103,29 @@ QString loopbackEndpoint(const char* variable,const QString& fallback) {
     return fallback;
 }
 
+bool validSourceArray(const QJsonArray& values) {
+    for(const auto& value:values) {
+        if(!value.isObject())return false;
+        const auto object=value.toObject();
+        const QString title=object.value(QStringLiteral("title")).toString().trimmed();
+        const QUrl url(object.value(QStringLiteral("url")).toString().trimmed());
+        if(title.isEmpty() || !url.isValid() || url.scheme().isEmpty() || url.host().isEmpty())return false;
+    }
+    return true;
+}
+
+bool validGameArray(const QJsonArray& values, bool requireName) {
+    for(const auto& value:values) {
+        if(!value.isObject())return false;
+        const auto object=value.toObject();
+        if(requireName && object.value(QStringLiteral("name")).toString().trimmed().isEmpty())return false;
+        if(object.value(QStringLiteral("source")).toString().trimmed().isEmpty())return false;
+        const QUrl sourceUrl(object.value(QStringLiteral("sourceUrl")).toString().trimmed());
+        if(!sourceUrl.isValid() || sourceUrl.scheme().isEmpty() || sourceUrl.host().isEmpty())return false;
+    }
+    return true;
+}
+
 struct PopularLookup {
     bool ok=false;
     GameResult game;
@@ -179,14 +204,21 @@ QVector<GameResult> buildGameCatalog(const QVector<GameRecord>& records, const Q
     return results;
 }
 bool HydraLibrary::listSources(QVector<HydraSource>* out, QString* error) const {
+    if(error)error->clear();
     if(out)out->clear();
     QVector<HydraSource> all;
     int pageNumber=1;
+    const QString endpoint=loopbackEndpoint("XMB_HYDRA_SOURCES_URL",
+        QStringLiteral("https://api.hydralibrary.com/sources"));
     for(;;) {
         QJsonObject root;
-        if(!fetchJson(QUrl(QStringLiteral("https://api.hydralibrary.com/sources?page=%1&limit=100").arg(pageNumber)),&root,error))return false;
+        if(!fetchJson(QUrl(endpoint+QStringLiteral("?page=%1&limit=100").arg(pageNumber)),&root,error))return false;
         if(!root.contains(QStringLiteral("sources")) || !root.value(QStringLiteral("sources")).isArray()) {
             if(error)*error=QStringLiteral("Hydra library returned an invalid sources response; retry");
+            return false;
+        }
+        if(!validSourceArray(root.value(QStringLiteral("sources")).toArray())) {
+            if(error)*error=QStringLiteral("Hydra library returned an invalid source entry; retry");
             return false;
         }
         const SourcesPage page=parseSourcesPage(root);
@@ -197,6 +229,8 @@ bool HydraLibrary::listSources(QVector<HydraSource>* out, QString* error) const 
     if(out)*out=all; return true;
 }
 bool HydraLibrary::preinstalledSources(QStringList* out, QString* error) const {
+    if(error)error->clear();
+    if(out)out->clear();
     QVector<HydraSource> sources;
     if(!listSources(&sources,error))return false;
     QStringList names;
@@ -204,14 +238,17 @@ bool HydraLibrary::preinstalledSources(QStringList* out, QString* error) const {
     if(out)*out=names; return true;
 }
 bool HydraLibrary::searchGames(const QString& query, QVector<GameResult>* out, QString* error) const {
+    if(error)error->clear();
     if(out)out->clear();
     QVector<HydraSource> sources;
     if(!listSources(&sources,error))return false;
     QVector<GameRecord> records;
+    const QString endpoint=loopbackEndpoint("XMB_HYDRA_SEARCH_URL",
+        QStringLiteral("https://api.hydralibrary.com/games"));
     QSet<QString> names;   // distinct game names, so pagination stops at the API's filteredCount
     for(int page=1;page<=5;++page) {
         QJsonObject root;
-        const QUrl url(QStringLiteral("https://api.hydralibrary.com/games?q=%1&limit=100&page=%2")
+        const QUrl url(endpoint+QStringLiteral("?q=%1&limit=100&page=%2")
             .arg(QString::fromUtf8(QUrl::toPercentEncoding(query))).arg(page));
         if(!fetchJson(url,&root,error))return false;
         if(!root.contains(QStringLiteral("games")) || !root.value(QStringLiteral("games")).isArray()) {
@@ -219,6 +256,10 @@ bool HydraLibrary::searchGames(const QString& query, QVector<GameResult>* out, Q
             return false;
         }
         const QJsonArray games=root.value(QStringLiteral("games")).toArray();
+        if(!validGameArray(games,true)) {
+            if(error)*error=QStringLiteral("Hydra library returned an invalid game entry; retry");
+            return false;
+        }
         if(games.isEmpty())break;
         for(const auto& value:games) {
             const QJsonObject game=value.toObject();
@@ -242,6 +283,7 @@ bool HydraLibrary::searchGames(const QString& query, QVector<GameResult>* out, Q
     if(out)*out=results; return true;
 }
 bool HydraLibrary::popularGames(QVector<GameResult>* out, QString* error) const {
+    if(error)error->clear();
     if(out)out->clear();
 
     QVector<PopularTitle> titles;
@@ -294,6 +336,7 @@ bool HydraLibrary::popularGames(QVector<GameResult>* out, QString* error) const 
 }
 
 bool HydraLibrary::popularTitles(QVector<PopularTitle>* out,QString* error) const {
+    if(error)error->clear();
     if(out)out->clear();
     QJsonArray hot;
     const QString url=loopbackEndpoint("XMB_HYDRA_HOT_URL",
@@ -341,6 +384,7 @@ GameResult mergePopularGameResults(const QString& name,const QString& coverUrl,
 }
 
 bool HydraLibrary::popularGame(const PopularTitle& title,GameResult* out,QString* error) const {
+    if(error)error->clear();
     if(out)*out=GameResult{};
     const QString endpoint=loopbackEndpoint("XMB_HYDRA_GAMES_URL",
         QStringLiteral("https://api.hydralibrary.com/games"));
@@ -350,6 +394,10 @@ bool HydraLibrary::popularGame(const PopularTitle& title,GameResult* out,QString
     if(!fetchJson(QUrl(searchUrl),&root,error))return false;
     if(!root.contains(QStringLiteral("games")) || !root.value(QStringLiteral("games")).isArray()) {
         if(error)*error=QStringLiteral("Hydra library returned an invalid games response; retry");
+        return false;
+    }
+    if(!validGameArray(root.value(QStringLiteral("games")).toArray(),false)) {
+        if(error)*error=QStringLiteral("Hydra library returned an invalid game entry; retry");
         return false;
     }
     GameResult result;result.name=title.title;result.title=title.title;result.coverUrl=title.coverUrl;

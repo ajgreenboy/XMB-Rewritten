@@ -373,6 +373,7 @@ int main(int argc,char** argv) {
         QTcpServer fixture;
         check(fixture.listen(QHostAddress::LocalHost,0),"popular HTTP fixture listen");
         QHash<int,int> attempts;
+        int rateLimitRequests=0;
         QObject::connect(&fixture,&QTcpServer::newConnection,&app,[&] {
             auto* socket=fixture.nextPendingConnection();
             QObject::connect(socket,&QTcpSocket::readyRead,socket,[&,socket] {
@@ -380,13 +381,29 @@ int main(int argc,char** argv) {
                 int title=-1;
                 for(int i=0;i<40;++i)if(request.contains(QStringLiteral("Hot%20%1").arg(i,2,10,QChar('0')).toLatin1())){title=i;break;}
                 const bool hot=request.contains("/hot") || request.contains("-hot");
+                const bool sources=request.contains("/sources");
+                const bool search=request.contains("/search");
                 const bool duplicate=request.contains("hot%20%20%20");
                 QByteArray body;
                 int delay=hot?0:(title==39?900:(title%5)*15);
                 bool fail=false;
                 if(!hot && title==7)fail=++attempts[title]==1;
                 if(!hot && duplicate)fail=++attempts[-1]==1;
-                if(hot && request.contains("/error-hot")) {
+                if(sources) {
+                    if(request.contains("/sources-malformed"))
+                        body=QByteArrayLiteral("{\"total\":1,\"limit\":100,\"sources\":[{\"title\":\"Good\",\"url\":\"https://good.invalid/index.json\"},null]}");
+                    else if(request.contains("/sources-empty"))
+                        body=QByteArrayLiteral("{\"total\":0,\"limit\":100,\"sources\":[]}");
+                    else
+                        body=QByteArrayLiteral("{\"total\":2,\"limit\":100,\"sources\":[{\"title\":\"Fixture Source A\",\"url\":\"https://fixture.invalid/a.json\",\"stats\":{\"installs\":3}},{\"title\":\"Fixture Source B\",\"url\":\"https://fixture.invalid/b.json\",\"stats\":{\"installs\":2}}]}");
+                } else if(search) {
+                    if(request.contains("/search-malformed"))
+                        body=QByteArrayLiteral("{\"filteredCount\":2,\"games\":[{\"name\":\"Good Game\",\"source\":\"Fixture Source A\",\"sourceUrl\":\"https://fixture.invalid/a.json\"},null]}");
+                    else if(request.contains("/search-empty"))
+                        body=QByteArrayLiteral("{\"filteredCount\":0,\"games\":[]}");
+                    else
+                        body=QByteArrayLiteral("{\"filteredCount\":2,\"games\":[{\"name\":\"Fixture Search Game\",\"title\":\"Fixture Search Game\",\"source\":\"Fixture Source A\",\"sourceUrl\":\"https://fixture.invalid/a.json\",\"fileSize\":\"1 GB\"},{\"name\":\"Fixture Search Game\",\"title\":\"Fixture Search Game\",\"source\":\"Fixture Source B\",\"sourceUrl\":\"https://fixture.invalid/b.json\",\"fileSize\":\"2 GB\"}]}");
+                } else if(hot && request.contains("/error-hot")) {
                     fail=true;
                 } else if(hot && request.contains("/malformed-hot")) {
                     body=QByteArrayLiteral("{malformed");
@@ -406,8 +423,9 @@ int main(int argc,char** argv) {
                 } else if(!fail && title==20) {
                     fail=true;
                 } else if(!fail && title==21) {
+                    ++rateLimitRequests;
                     QTimer::singleShot(delay,socket,[socket] {
-                        const QByteArray response=QByteArrayLiteral("HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}");
+                        const QByteArray response=QByteArrayLiteral("HTTP/1.1 429 Too Many Requests\r\nRetry-After: 7\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}");
                         socket->write(response);socket->disconnectFromHost();
                     });
                     return;
@@ -417,6 +435,8 @@ int main(int argc,char** argv) {
                     body=QByteArrayLiteral("{\"games\":{}}");
                 } else if(!fail && title==24) {
                     body=QJsonDocument(QJsonObject{{QStringLiteral("games"),QJsonArray{}}}).toJson(QJsonDocument::Compact);
+                } else if(!fail && title==25) {
+                    body=QByteArrayLiteral("{\"games\":[{\"source\":\"Fixture Direct\",\"sourceUrl\":\"https://fixture/direct.json\"},null]}");
                 } else if(!fail) {
                     const bool deluxe=request.contains("Deluxe");
                     const QString first=deluxe?QStringLiteral("Fixture Deluxe A"):(duplicate?QStringLiteral("Fixture Duplicate Direct"):QStringLiteral("Fixture Direct"));
@@ -458,7 +478,7 @@ int main(int argc,char** argv) {
         }
         check(early,"at least one game completes before the slow response");
         int complete=0;for(const auto& future:futures)if(future.result().options.size()==2)++complete;
-        check(complete==33 && futures[11].result().options.isEmpty(),"failed or empty titles are not exposed with partial source options");
+        check(complete==32 && futures[11].result().options.isEmpty(),"failed or empty titles are not exposed with partial source options");
         GameResult retry;check(HydraLibrary().popularGame(titles[7],&retry,&fixtureError) && retry.options.size()==2,"failed title succeeds on explicit retry");
         GameResult baseGame,duplicateGame,deluxe;
         check(HydraLibrary().popularGame(titles[10],&baseGame,&fixtureError) && baseGame.options.size()==2 &&
@@ -479,18 +499,23 @@ int main(int argc,char** argv) {
         check(!HydraLibrary().popularGame(titles[20],&invalid,&fixtureError) && invalid.options.isEmpty() &&
               fixtureError.contains(QStringLiteral("HTTP 500")) && fixtureError.contains(QStringLiteral("retry")) &&
               !fixtureError.contains(QStringLiteral("127.0.0.1")),"HTTP 500 is actionable without URL leakage");
+        const int rateLimitBefore=rateLimitRequests;
         fixtureError.clear();
         check(!HydraLibrary().popularGame(titles[21],&invalid,&fixtureError) && fixtureError.contains(QStringLiteral("HTTP 429")),
               "HTTP 429 is surfaced as retryable");
+        check(rateLimitRequests==rateLimitBefore+1,"429 Retry-After does not trigger an automatic retry");
         fixtureError.clear();
         check(!HydraLibrary().popularGame(titles[22],&invalid,&fixtureError) && fixtureError.contains(QStringLiteral("invalid JSON")),
               "malformed JSON is not treated as an empty game list");
         fixtureError.clear();
         check(!HydraLibrary().popularGame(titles[23],&invalid,&fixtureError) && fixtureError.contains(QStringLiteral("invalid games response")),
               "wrong top-level shape is rejected");
-        GameResult emptyGame;fixtureError.clear();
+        GameResult emptyGame;fixtureError=QStringLiteral("stale error");
         check(HydraLibrary().popularGame(titles[24],&emptyGame,&fixtureError) && emptyGame.options.isEmpty() && fixtureError.isEmpty(),
-              "valid empty games response is distinct from an error");
+              "valid empty games response clears a previous error");
+        check(!HydraLibrary().popularGame(titles[25],&invalid,&fixtureError) && invalid.options.isEmpty() &&
+              fixtureError.contains(QStringLiteral("invalid game entry")),
+              "one malformed game member fails the entire popular source result");
         const auto progressiveFuture=QtConcurrent::run([] {
             QVector<GameResult> games;QString error;
             HydraLibrary().popularGames(&games,&error);
@@ -501,16 +526,45 @@ int main(int argc,char** argv) {
         check(progressiveResult.first.isEmpty() && !progressiveResult.second.isEmpty(),
               "progressive catalogue does not publish partial tiles after a source failure");
         qputenv("XMB_HYDRA_HOT_URL",(base+QStringLiteral("/empty-hot")).toUtf8());
-        titles.clear();fixtureError.clear();
+        titles.clear();fixtureError=QStringLiteral("stale error");
         const bool emptyHotOk=HydraLibrary().popularTitles(&titles,&fixtureError);
         check(emptyHotOk && titles.isEmpty() && fixtureError.isEmpty(),
-              "valid empty hot catalogue is distinct from an error");
+              "valid empty hot catalogue clears a previous error");
         for(const auto& path:{QStringLiteral("/error-hot"),QStringLiteral("/malformed-hot"),QStringLiteral("/wrong-hot")}) {
             qputenv("XMB_HYDRA_HOT_URL",(base+path).toUtf8());titles.clear();fixtureError.clear();
             check(!HydraLibrary().popularTitles(&titles,&fixtureError) && titles.isEmpty() && !fixtureError.isEmpty(),
                   "invalid hot catalogue response is actionable");
         }
-        qunsetenv("XMB_HYDRA_TEST_FIXTURE");qunsetenv("XMB_HYDRA_HOT_URL");qunsetenv("XMB_HYDRA_GAMES_URL");fixture.close();
+        qputenv("XMB_HYDRA_SOURCES_URL",(base+QStringLiteral("/sources")).toUtf8());
+        qputenv("XMB_HYDRA_SEARCH_URL",(base+QStringLiteral("/search")).toUtf8());
+        QVector<HydraSource> fixtureSources;fixtureError=QStringLiteral("stale error");
+        check(HydraLibrary().listSources(&fixtureSources,&fixtureError) && fixtureSources.size()==2 && fixtureError.isEmpty(),
+              "public listSources returns all valid fixture sources and clears prior error");
+        qputenv("XMB_HYDRA_SOURCES_URL",(base+QStringLiteral("/sources-malformed")).toUtf8());
+        fixtureSources.append(HydraSource{});fixtureError.clear();
+        check(!HydraLibrary().listSources(&fixtureSources,&fixtureError) && fixtureSources.isEmpty() &&
+              fixtureError.contains(QStringLiteral("invalid source entry")),
+              "malformed source member fails the entire sources response");
+        qputenv("XMB_HYDRA_SOURCES_URL",(base+QStringLiteral("/sources-empty")).toUtf8());
+        fixtureSources.append(HydraSource{});fixtureError=QStringLiteral("stale error");
+        check(HydraLibrary().listSources(&fixtureSources,&fixtureError) && fixtureSources.isEmpty() && fixtureError.isEmpty(),
+              "valid empty sources array clears a previous error");
+        qputenv("XMB_HYDRA_SOURCES_URL",(base+QStringLiteral("/sources")).toUtf8());
+        QVector<GameResult> searchResults;fixtureError=QStringLiteral("stale error");
+        check(HydraLibrary().searchGames(QStringLiteral("fixture"),&searchResults,&fixtureError) && searchResults.size()==1 &&
+              searchResults.first().options.size()==2 && fixtureError.isEmpty(),
+              "public searchGames returns the complete all-source result");
+        qputenv("XMB_HYDRA_SEARCH_URL",(base+QStringLiteral("/search-malformed")).toUtf8());
+        searchResults.append(GameResult{});fixtureError.clear();
+        check(!HydraLibrary().searchGames(QStringLiteral("fixture"),&searchResults,&fixtureError) && searchResults.isEmpty() &&
+              fixtureError.contains(QStringLiteral("invalid game entry")),
+              "malformed search game member fails without publishing partial records");
+        qputenv("XMB_HYDRA_SEARCH_URL",(base+QStringLiteral("/search-empty")).toUtf8());
+        searchResults.append(GameResult{});fixtureError=QStringLiteral("stale error");
+        check(HydraLibrary().searchGames(QStringLiteral("fixture"),&searchResults,&fixtureError) && searchResults.isEmpty() && fixtureError.isEmpty(),
+              "valid empty search games array clears a previous error");
+        qunsetenv("XMB_HYDRA_TEST_FIXTURE");qunsetenv("XMB_HYDRA_HOT_URL");qunsetenv("XMB_HYDRA_GAMES_URL");
+        qunsetenv("XMB_HYDRA_SOURCES_URL");qunsetenv("XMB_HYDRA_SEARCH_URL");fixture.close();
     }
     {
         // Malformed source JSON: a null document and unparseable bytes report an error; an empty
