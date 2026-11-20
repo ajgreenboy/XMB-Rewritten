@@ -268,7 +268,9 @@ void Shell::requestReleaseArt(const Entry& entry,const IndexedRelease& release,c
     if(!entry.artwork.isNull())return;
     if(!releaseArtwork_) {
         releaseArtwork_=std::make_unique<RawgArtwork>(QDir(dataDirectory_).filePath(QStringLiteral("cache/release-art")),this);
-        connect(releaseArtwork_.get(),&RawgArtwork::ready,this,[this](const QString& id,const QString&,const QString&,const QImage& image){
+        connect(releaseArtwork_.get(),&RawgArtwork::ready,this,[this](const QString& id,const QString& title,const QString&,const QImage& image){
+            const quint64 generation=releaseArtRequestGeneration_.value(id,0);
+            if(generation==0 || releaseArtRequestResource_.value(id)!=QStringLiteral("rawg:")+title)return;
             releaseArt_.insert(id,image);
             releaseRawgArt_.insert(id);
             const quint64 identity=releaseArtPageIdentity_.value(id,0);
@@ -279,14 +281,23 @@ void Shell::requestReleaseArt(const Entry& entry,const IndexedRelease& release,c
     const QString imageUrl=coverUrl(release);
     const quint64 pageIdentity=pages_.isEmpty()?0:pages_.last().identity;
     const quint64 previousPageIdentity=releaseArtPageIdentity_.value(entry.id,0);
-    if(releaseArtRequested_.contains(entry.id) && previousPageIdentity==pageIdentity)return;
+    const QString resource=imageUrl.isEmpty()
+        ? QStringLiteral("rawg:")+entry.title
+        : sourceUrl.resolved(QUrl(imageUrl)).toString();
+    if(releaseArtRequested_.contains(entry.id) && previousPageIdentity==pageIdentity &&
+       releaseArtRequestResource_.value(entry.id)==resource)return;
     releaseArtRequested_.remove(entry.id);
     releaseArtPageIdentity_.insert(entry.id,pageIdentity);
+    const quint64 generation=++releaseArtRequestCounter_;
+    releaseArtRequestGeneration_.insert(entry.id,generation);
+    releaseArtRequestResource_.insert(entry.id,resource);
     const auto fallback=[this,pageIdentity]{
         QVector<QPair<QString,QString>> targets;
         for(const auto& page:pages_)if(page.identity==pageIdentity)for(const auto& row:page.entries)
             if(row.action==Action::ReleaseDownload && row.artwork.isNull() && row.artworkUrl.isEmpty() && !releaseArtRequested_.contains(row.id)) {
                 releaseArtPageIdentity_.insert(row.id,pageIdentity); targets.append(qMakePair(row.id,row.title));
+                releaseArtRequestGeneration_.insert(row.id,++releaseArtRequestCounter_);
+                releaseArtRequestResource_.insert(row.id,QStringLiteral("rawg:")+row.title);
             }
         releaseArtwork_->refresh(targets);
     };
@@ -295,8 +306,10 @@ void Shell::requestReleaseArt(const Entry& entry,const IndexedRelease& release,c
     const QString cache=QDir(dataDirectory_).filePath(QStringLiteral("cache/release-covers/")+
         QString::fromLatin1(QCryptographicHash::hash((entry.id+imageUrl).toUtf8(),QCryptographicHash::Sha256).toHex())+QStringLiteral(".png"));
     auto* watcher=new QFutureWatcher<QImage>(this);
-    connect(watcher,&QFutureWatcher<QImage>::finished,this,[this,watcher,id=entry.id,pageIdentity,fallback]{
-        const QImage image=watcher->result();watcher->deleteLater();releaseArtRequested_.remove(id);
+    connect(watcher,&QFutureWatcher<QImage>::finished,this,[this,watcher,id=entry.id,pageIdentity,generation,resource,fallback]{
+        const QImage image=watcher->result();watcher->deleteLater();
+        if(releaseArtRequestGeneration_.value(id,0)!=generation || releaseArtRequestResource_.value(id)!=resource)return;
+        releaseArtRequested_.remove(id);
         if(image.isNull()) {
             for(auto& page:pages_)if(page.identity==pageIdentity)for(auto& row:page.entries)if(row.id==id)row.artworkUrl.clear();
             fallback();return;

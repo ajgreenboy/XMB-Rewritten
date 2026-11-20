@@ -799,6 +799,8 @@ private:
     QHash<QString,QString> releaseLocalPaths_;
     QHash<QString,QImage> releaseArt_;
     QHash<QString,quint64> releaseArtPageIdentity_;
+    QHash<QString,quint64> releaseArtRequestGeneration_;
+    QHash<QString,QString> releaseArtRequestResource_;
     QSet<QString> releaseRawgArt_;
     QSet<QString> releaseArtRequested_;
     std::unique_ptr<RawgArtwork> releaseArtwork_;
@@ -813,6 +815,7 @@ private:
     quint64 releaseSourcesGeneration_=0;
     quint64 pageIdentityCounter_=0;
     quint64 releaseArtFixtureOpenCount_=0;
+    quint64 releaseArtRequestCounter_=0;
     quint64 hydraPageGeneration_=0;
     bool gameArtHooked_=false;
     void refreshReleaseSources(const QUrl& importUrl={});
