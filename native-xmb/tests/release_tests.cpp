@@ -512,6 +512,10 @@ int main(int argc,char** argv) {
         check(fixture.listen(QHostAddress::LocalHost,0),"popular HTTP fixture listen");
         QHash<int,int> attempts;
         int rateLimitRequests=0;
+        int source500ThenSuccessRequests=0;
+        int source500AlwaysRequests=0;
+        int source404Requests=0;
+        int source503RetryAfterRequests=0;
         QObject::connect(&fixture,&QTcpServer::newConnection,&app,[&] {
             auto* socket=fixture.nextPendingConnection();
             QObject::connect(socket,&QTcpSocket::readyRead,socket,[&,socket] {
@@ -539,6 +543,31 @@ int main(int argc,char** argv) {
                     const QByteArray header=QByteArrayLiteral("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n");
                     socket->write(header+QByteArray::number(first.size(),16)+"\r\n"+first+"\r\n");
                     QTimer::singleShot(25,socket,[socket,second]{socket->write(QByteArray::number(second.size(),16)+"\r\n"+second+"\r\n0\r\n\r\n");socket->disconnectFromHost();});return;
+                }
+                if(request.contains("/source-500-then-success")) {
+                    ++source500ThenSuccessRequests;
+                    if(source500ThenSuccessRequests==1) {
+                        socket->write("HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                        socket->disconnectFromHost();return;
+                    }
+                    const QByteArray feed=QByteArrayLiteral("[{\"title\":\"Retry Then Success Game\",\"size\":\"1 GB\",\"uri\":\"https://fixture/retry.zip\"}]");
+                    socket->write("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: "+QByteArray::number(feed.size())+"\r\nConnection: close\r\n\r\n"+feed);
+                    socket->disconnectFromHost();return;
+                }
+                if(request.contains("/source-500-always")) {
+                    ++source500AlwaysRequests;
+                    socket->write("HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                    socket->disconnectFromHost();return;
+                }
+                if(request.contains("/source-404")) {
+                    ++source404Requests;
+                    socket->write("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                    socket->disconnectFromHost();return;
+                }
+                if(request.contains("/source-503-retry-after")) {
+                    ++source503RetryAfterRequests;
+                    socket->write("HTTP/1.1 503 Service Unavailable\r\nRetry-After: 3600\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                    socket->disconnectFromHost();return;
                 }
                 if(!hot && title==7)fail=++attempts[title]==1;
                 if(!hot && duplicate)fail=++attempts[-1]==1;
@@ -781,6 +810,36 @@ int main(int argc,char** argv) {
          feed.url=QUrl(base+QStringLiteral("/source-unsafe-redirect"));fixtureError.clear();feedGames.append(GameResult{});
          check(!HydraLibrary().browseSource(feed,&feedGames,&fixtureError) && feedGames.isEmpty() && fixtureError.contains(QStringLiteral("retry")),
                "non-HTTP(S) redirect target is rejected before it can be followed");
+         // Automatic retry on the selected-feed GET: one transient 500 is retried and the feed
+         // succeeds; repeated 500 is bounded with a useful error and no partial output; a permanent
+         // 404 and a gateway 503 whose Retry-After exceeds the budget are terminal (not retried).
+         feed.url=QUrl(base+QStringLiteral("/source-500-then-success"));feedGames.clear();fixtureError=QStringLiteral("stale error");
+         check(HydraLibrary().browseSource(feed,&feedGames,&fixtureError) && feedGames.size()==1 &&
+               feedGames.first().name==QStringLiteral("Retry Then Success Game") &&
+               feedGames.first().options.size()==1 && feedGames.first().options.first().downloads.size()==1 &&
+               feedGames.first().options.first().downloads.first().kind==QStringLiteral("direct") && fixtureError.isEmpty(),
+               "transient HTTP 500 on a selected feed is retried once and then succeeds");
+         check(source500ThenSuccessRequests==2,"a single 500 costs exactly one automatic retry (two requests)");
+         feed.url=QUrl(base+QStringLiteral("/source-500-always"));feedGames.append(GameResult{});fixtureError.clear();
+         QElapsedTimer retryClock;retryClock.start();
+         check(!HydraLibrary().browseSource(feed,&feedGames,&fixtureError) && feedGames.isEmpty() &&
+               fixtureError.contains(QStringLiteral("HTTP 500")) && fixtureError.contains(QStringLiteral("retry")) &&
+               !fixtureError.contains(QStringLiteral("127.0.0.1")),
+               "repeated HTTP 500 fails bounded with a useful error and no partial output");
+         check(source500AlwaysRequests==3,"repeated 500 is bounded to the retry attempt cap");
+         check(retryClock.elapsed()<10000,"repeated 500 returns within the short backoff budget");
+         feed.url=QUrl(base+QStringLiteral("/source-404"));fixtureError.clear();
+         check(!HydraLibrary().browseSource(feed,&feedGames,&fixtureError) && feedGames.isEmpty() &&
+               fixtureError.contains(QStringLiteral("HTTP 404")) && source404Requests==1,
+               "permanent HTTP 404 on a selected feed is terminal (never retried)");
+         feed.url=QUrl(base+QStringLiteral("/source-503-retry-after"));fixtureError.clear();
+         const int retryAfterBefore=source503RetryAfterRequests;
+         QElapsedTimer retryAfterClock;retryAfterClock.start();
+         check(!HydraLibrary().browseSource(feed,&feedGames,&fixtureError) && feedGames.isEmpty() &&
+               fixtureError.contains(QStringLiteral("HTTP 503")),
+               "gateway 503 with Retry-After is surfaced as retryable");
+         check(source503RetryAfterRequests==retryAfterBefore+1 && retryAfterClock.elapsed()<2000,
+               "Retry-After beyond the budget stops retries without early repetition or an unbounded wait");
         qputenv("XMB_HYDRA_SEARCH_URL",(base+QStringLiteral("/search-malformed")).toUtf8());
         searchResults.append(GameResult{});fixtureError.clear();
         check(!HydraLibrary().searchGames(QStringLiteral("fixture"),&searchResults,&fixtureError) && searchResults.isEmpty() &&

@@ -1,4 +1,6 @@
 #include "hydra_library.h"
+#include <QDateTime>
+#include <QElapsedTimer>
 #include <QEventLoop>
 #include <QHash>
 #include <QJsonArray>
@@ -15,15 +17,74 @@
 
 namespace xmb {
 namespace {
-QString responseError(const QString& service, QNetworkReply* reply, bool timedOut) {
-    // Retry is explicit: callers surface this to the Store's Retry action rather than hammering a
-    // rate-limited endpoint. We intentionally do not sleep or replay requests from this blocking client.
-    if(timedOut)return QStringLiteral("Hydra %1 request timed out; retry").arg(service);
-    const int status=reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
-    if(status>=400)return QStringLiteral("Hydra %1 request failed (HTTP %2); retry").arg(service).arg(status);
+// The result of one blocking GET, kept separate from the error string so the retry loop can
+// classify a failure instead of guessing from prose. `status` is the final HTTP status (0 when
+// none), and `networkError` the reply's own error (which aborts turn into OperationCanceledError,
+// so `timedOut`/`invalidRedirect`/`overflow` carry those cases instead).
+struct FetchOutcome {
+    bool ok=false;
+    bool invalidUrl=false;
+    QByteArray body;
+    int status=0;
+    QNetworkReply::NetworkError networkError=QNetworkReply::NoError;
+    bool timedOut=false;
+    bool invalidRedirect=false;
+    bool overflow=false;
+    int retryAfterSeconds=-1;   // parsed Retry-After, -1 when absent or unparsable
+};
+bool fetchBody(const QUrl& url,const QString& service,QByteArray* out,QString* error);
+
+// Retry-After per RFC 7231 §7.1.3: a non-negative decimal second count or an HTTP-date.
+// A value we cannot parse is treated as absent, never as a licence to wait unboundedly.
+int parseRetryAfterSeconds(const QByteArray& value) {
+    if(value.trimmed().isEmpty())return -1;
+    bool ok=false;
+    const long seconds=QString::fromLatin1(value).trimmed().toLong(&ok);
+    if(ok && seconds>=0)return int(seconds);
+    const QDateTime when=QDateTime::fromString(QString::fromLatin1(value).trimmed(),Qt::RFC2822Date);
+    if(when.isValid()) {
+        const qint64 delta=QDateTime::currentDateTimeUtc().secsTo(when.toUTC());
+        return delta>0?int(delta):0;
+    }
+    return -1;
+}
+
+// A curated set of genuinely temporary network conditions worth one bounded retry. Permanent or
+// security failures (host not found, TLS handshake, insecure redirect, content/protocol errors)
+// are deliberately excluded: replaying those cannot succeed and would only delay the error.
+bool isTransientNetworkError(QNetworkReply::NetworkError error) {
+    switch(error) {
+    case QNetworkReply::ConnectionRefusedError:
+    case QNetworkReply::RemoteHostClosedError:
+    case QNetworkReply::TimeoutError:
+    case QNetworkReply::TemporaryNetworkFailureError:
+    case QNetworkReply::NetworkSessionFailedError:
+        return true;
+    default:
+        return false;
+    }
+}
+
+// Retry only an idempotent GET on a transient failure: HTTP 500 and the temporary
+// gateway/unavailable statuses (502/503/504), timeouts, and the curated network set above.
+// Permanent HTTP errors (any 4xx, 429 rate-limits, and unlisted 5xx), unsafe redirects, TLS
+// failures and oversized bodies are never retried.
+bool fetchRetryable(const FetchOutcome& outcome) {
+    if(outcome.invalidUrl || outcome.invalidRedirect || outcome.overflow)return false;
+    if(outcome.timedOut)return true;
+    if(outcome.status>0)return outcome.status==500 || outcome.status==502 || outcome.status==503 || outcome.status==504;
+    if(outcome.networkError!=QNetworkReply::NoError)return isTransientNetworkError(outcome.networkError);
+    return false;
+}
+
+QString fetchErrorString(const QString& service,const FetchOutcome& outcome) {
+    if(outcome.overflow)return QStringLiteral("Hydra %1 response exceeds 16 MiB; retry").arg(service);
+    if(outcome.invalidRedirect)return QStringLiteral("Hydra %1 redirect is not safe HTTP(S); retry").arg(service);
+    if(outcome.invalidUrl)return QStringLiteral("Hydra %1 URL must be HTTP(S); retry").arg(service);
+    if(outcome.timedOut)return QStringLiteral("Hydra %1 request timed out; retry").arg(service);
+    if(outcome.status>=400)return QStringLiteral("Hydra %1 request failed (HTTP %2); retry").arg(service).arg(outcome.status);
     return QStringLiteral("Hydra %1 request failed; retry").arg(service);
 }
-bool fetchBody(const QUrl& url,const QString& service,QByteArray* out,QString* error);
 
 bool fetchJson(const QUrl& url, QJsonObject* out, QString* error) {
     QByteArray body; if(!fetchBody(url,QStringLiteral("library"),&body,error))return false;
@@ -49,16 +110,19 @@ bool safeRedirect(const QUrl& from, const QUrl& to) {
     return !(from.scheme()==QLatin1String("https") && to.scheme()==QLatin1String("http"));
 }
 
-bool fetchBody(const QUrl& url,const QString& service,QByteArray* out,QString* error) {
+// One blocking GET. The body, status and failure reason are returned through FetchOutcome.
+FetchOutcome fetchBodyOnce(const QUrl& url,int timeoutMs) {
+    FetchOutcome outcome;
     if((url.scheme()!=QLatin1String("http") && url.scheme()!=QLatin1String("https")) || url.host().isEmpty()) {
-        if(error)*error=QStringLiteral("Hydra %1 URL must be HTTP(S); retry").arg(service); return false;
+        outcome.invalidUrl=true; return outcome;
     }
     constexpr qint64 kMaxBody=16*1024*1024;
     QNetworkAccessManager manager; QNetworkRequest request(url);
     request.setRawHeader("User-Agent","XMB-Release-Sources/0.2");
     request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,QNetworkRequest::NoLessSafeRedirectPolicy);
     QNetworkReply* reply=manager.get(request); reply->setReadBufferSize(kMaxBody+1);
-    QEventLoop loop; QTimer timer; timer.setSingleShot(true); QByteArray body; bool timedOut=false,invalidRedirect=false,overflow=false;
+    QEventLoop loop; QTimer timer; timer.setSingleShot(true); QByteArray body;
+    bool timedOut=false,invalidRedirect=false,overflow=false;
     const auto abort=[&]{reply->abort();};
     QObject::connect(&timer,&QTimer::timeout,&loop,[&]{timedOut=true;abort();});
     QObject::connect(reply,&QNetworkReply::redirected,&loop,[&](const QUrl& target){
@@ -72,17 +136,72 @@ bool fetchBody(const QUrl& url,const QString& service,QByteArray* out,QString* e
         body.append(chunk);
     });
     QObject::connect(reply,&QNetworkReply::finished,&loop,&QEventLoop::quit);
-    timer.start(30000); loop.exec();
+    timer.start(timeoutMs); loop.exec();
     if(reply->header(QNetworkRequest::ContentLengthHeader).toLongLong()>kMaxBody)overflow=true;
-    if(timedOut || invalidRedirect || overflow || reply->error()!=QNetworkReply::NoError || reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt()>=400) {
-        const QString message=overflow?QStringLiteral("Hydra %1 response exceeds 16 MiB; retry").arg(service)
-            :(invalidRedirect?QStringLiteral("Hydra %1 redirect is not safe HTTP(S); retry").arg(service):responseError(service,reply,timedOut));
-        reply->deleteLater(); if(error)*error=message; return false;
+    const int status=reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    const auto networkError=reply->error();
+    const bool failed=timedOut || invalidRedirect || overflow || networkError!=QNetworkReply::NoError || status>=400;
+    if(!failed) {
+        outcome.ok=true; outcome.body=std::move(body);
+    } else {
+        outcome.status=status;
+        outcome.networkError=networkError;
+        outcome.timedOut=timedOut;
+        outcome.invalidRedirect=invalidRedirect;
+        outcome.overflow=overflow;
+        if(status>=400)outcome.retryAfterSeconds=parseRetryAfterSeconds(reply->rawHeader("Retry-After"));
     }
-    if(out)*out=body; reply->deleteLater(); return true;
+    reply->deleteLater(); return outcome;
 }
+
+bool fetchBody(const QUrl& url,const QString& service,QByteArray* out,QString* error) {
+    const FetchOutcome outcome=fetchBodyOnce(url,30000);
+    if(!outcome.ok) { if(error)*error=fetchErrorString(service,outcome); return false; }
+    if(out)*out=outcome.body; return true;
+}
+
+void sleepFor(int msecs) {
+    if(msecs<=0)return;
+    QEventLoop loop; QTimer::singleShot(msecs,&loop,&QEventLoop::quit); loop.exec();
+}
+
+// Bounded automatic retry of the idempotent selected-feed GET (the Browse Sources path). A
+// transient failure gets a short, growing backoff that honours Retry-After: it never repeats before
+// the server says it is safe, and it never waits past the remaining budget. The whole sequence is
+// capped by kMaxAttempts and kBudgetMs, so a stuck endpoint cannot hold the caller.
+bool fetchBodyWithRetry(const QUrl& url,const QString& service,QByteArray* out,QString* error) {
+    constexpr int kMaxAttempts=3;
+    constexpr int kBudgetMs=20000;
+    constexpr int kBackoffBaseMs=400;
+    QElapsedTimer budget; budget.start();
+    FetchOutcome outcome;
+    for(int attempt=1;;++attempt) {
+        const int elapsed=int(budget.elapsed());
+        if(elapsed>=kBudgetMs)break;
+        outcome=fetchBodyOnce(url,qMin(30000,kBudgetMs-elapsed));
+        if(outcome.ok) { if(out)*out=outcome.body; return true; }
+        if(attempt>=kMaxAttempts || !fetchRetryable(outcome))break;
+        int wait=kBackoffBaseMs<<(attempt-1);
+        if(outcome.retryAfterSeconds>0) {
+            const qint64 retryAfterMs=qMin<qint64>(qint64(outcome.retryAfterSeconds)*1000,kBudgetMs);
+            if(retryAfterMs>wait)wait=int(retryAfterMs);
+        }
+        const int remaining=kBudgetMs-int(budget.elapsed());
+        if(wait>=remaining)break;   // never wait past the budget (no unbounded wait)
+        sleepFor(wait);
+    }
+    if(error)*error=fetchErrorString(service,outcome);
+    return false;
+}
+
 bool fetchDocument(const QUrl& url, QJsonDocument* out, QString* error) {
     QByteArray body; if(!fetchBody(url,QStringLiteral("source"),&body,error))return false;
+    QJsonParseError parseError; const auto document=QJsonDocument::fromJson(body,&parseError);
+    if(document.isNull()) { if(error)*error=QStringLiteral("Hydra source returned invalid JSON; retry"); return false; }
+    if(out)*out=document; return true;
+}
+bool fetchDocumentWithRetry(const QUrl& url, QJsonDocument* out, QString* error) {
+    QByteArray body; if(!fetchBodyWithRetry(url,QStringLiteral("source"),&body,error))return false;
     QJsonParseError parseError; const auto document=QJsonDocument::fromJson(body,&parseError);
     if(document.isNull()) { if(error)*error=QStringLiteral("Hydra source returned invalid JSON; retry"); return false; }
     if(out)*out=document; return true;
@@ -332,7 +451,7 @@ bool HydraLibrary::browseSource(const HydraSource& source, QVector<GameResult>* 
     if(error)error->clear(); if(out)out->clear();
     if(!source.url.isValid()) { if(error)*error=QStringLiteral("Hydra source has an invalid URL; retry"); return false; }
     QJsonDocument document;
-    if(!fetchDocument(source.url,&document,error))return false;
+    if(!fetchDocumentWithRetry(source.url,&document,error))return false;
     QString parseError; const auto releases=parseReleaseIndex(document,&parseError);
     if(!parseError.isEmpty()) { if(error)*error=QStringLiteral("Hydra source returned invalid release JSON; retry"); return false; }
     QVector<GameResult> games; QHash<QString,int> gameIndexes;
