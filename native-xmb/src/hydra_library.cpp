@@ -123,10 +123,11 @@ bool safeRedirect(const QUrl& from, const QUrl& to) {
 }
 
 // One blocking GET. The body, status and failure reason are returned through FetchOutcome.
-// When `inactivity` is true the timeout is an idle deadline that restarts on every body chunk, so a
-// slowly progressing feed is never cut off while a stalled one is aborted and can be retried; when
-// false it is a hard cap (the catalogue callers' historical behaviour).
-FetchOutcome fetchBodyOnce(const QUrl& url,int timeoutMs,bool inactivity) {
+// `idleMs` is an idle deadline that restarts on every body chunk (0 disables it), so a slowly
+// progressing feed is never cut off while a stalled one is aborted and can be retried; `deadlineMs`
+// is an absolute, non-rearmed deadline that always bounds the attempt, so a drip-fed body cannot
+// outlive the overall retry budget. Catalogue callers pass idleMs=0 and the historical 30s deadline.
+FetchOutcome fetchBodyOnce(const QUrl& url,int idleMs,int deadlineMs) {
     FetchOutcome outcome;
     if((url.scheme()!=QLatin1String("http") && url.scheme()!=QLatin1String("https")) || url.host().isEmpty()) {
         outcome.invalidUrl=true; return outcome;
@@ -136,10 +137,12 @@ FetchOutcome fetchBodyOnce(const QUrl& url,int timeoutMs,bool inactivity) {
     request.setRawHeader("User-Agent","XMB-Release-Sources/0.2");
     request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,QNetworkRequest::NoLessSafeRedirectPolicy);
     QNetworkReply* reply=manager.get(request); reply->setReadBufferSize(kMaxBody+1);
-    QEventLoop loop; QTimer timer; timer.setSingleShot(true); QByteArray body;
-    bool timedOut=false,invalidRedirect=false,overflow=false;
+    QEventLoop loop; QTimer idleTimer,deadlineTimer; idleTimer.setSingleShot(true); deadlineTimer.setSingleShot(true);
+    QByteArray body; bool timedOut=false,invalidRedirect=false,overflow=false;
     const auto abort=[&]{reply->abort();};
-    QObject::connect(&timer,&QTimer::timeout,&loop,[&]{timedOut=true;abort();});
+    const auto expire=[&]{timedOut=true;abort();};
+    QObject::connect(&idleTimer,&QTimer::timeout,&loop,expire);
+    QObject::connect(&deadlineTimer,&QTimer::timeout,&loop,expire);
     QObject::connect(reply,&QNetworkReply::redirected,&loop,[&](const QUrl& target){
         if(!safeRedirect(reply->url(),target)){invalidRedirect=true;abort();}
     });
@@ -149,10 +152,12 @@ FetchOutcome fetchBodyOnce(const QUrl& url,int timeoutMs,bool inactivity) {
         const QByteArray chunk=reply->read(remaining+1);
         if(chunk.size()>remaining){overflow=true;abort();return;}
         body.append(chunk);
-        if(inactivity)timer.start(timeoutMs);   // reset the idle deadline on progress
+        if(idleMs>0)idleTimer.start(idleMs);   // re-arm the idle deadline on progress
     });
     QObject::connect(reply,&QNetworkReply::finished,&loop,&QEventLoop::quit);
-    timer.start(timeoutMs); loop.exec();
+    if(idleMs>0)idleTimer.start(idleMs);
+    deadlineTimer.start(deadlineMs);   // absolute: never re-armed, bounds even a progressing body
+    loop.exec();
     if(reply->header(QNetworkRequest::ContentLengthHeader).toLongLong()>kMaxBody)overflow=true;
     const int status=reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
     const auto networkError=reply->error();
@@ -171,7 +176,7 @@ FetchOutcome fetchBodyOnce(const QUrl& url,int timeoutMs,bool inactivity) {
 }
 
 bool fetchBody(const QUrl& url,const QString& service,QByteArray* out,QString* error) {
-    const FetchOutcome outcome=fetchBodyOnce(url,30000,false);
+    const FetchOutcome outcome=fetchBodyOnce(url,0,30000);
     if(!outcome.ok) { if(error)*error=fetchErrorString(service,outcome); return false; }
     if(out)*out=outcome.body; return true;
 }
@@ -187,7 +192,7 @@ void sleepFor(int msecs) {
 // in production.
 struct RetryPolicy {
     int maxAttempts=3;
-    int budgetMs=20000;      // hard ceiling on the whole sequence
+    int budgetMs=20000;      // absolute ceiling on the whole sequence (enforced per attempt)
     int backoffBaseMs=400;   // short backoff before the first retry (doubles per retry)
     int inactivityMs=8000;   // per-attempt idle deadline, reset on each body chunk
 };
@@ -206,10 +211,12 @@ RetryPolicy retryPolicy() {
 }
 
 // Bounded automatic retry of the idempotent selected-feed GET (the Browse Sources path). Each
-// attempt runs under the inactivity deadline (not a hard cap on a progressing feed); a transient
-// failure gets a short, growing backoff that honours Retry-After — never repeating before the server
-// says it is safe, never waiting past the remaining budget, and never retrying at all when a
-// Retry-After is present but unparseable. The whole sequence is capped by maxAttempts and budgetMs.
+// attempt runs under the idle deadline (re-armed on progress, so a slowly progressing feed is not
+// hard-capped) AND an absolute deadline of the remaining budget (never re-armed, so a drip-fed body
+// cannot outlive the budget). A transient failure gets a short, growing backoff that honours
+// Retry-After — never repeating before the server says it is safe, never waiting past the remaining
+// budget, and never retrying at all when a Retry-After is present but unparseable. The whole sequence
+// is capped by maxAttempts and budgetMs.
 bool fetchBodyWithRetry(const QUrl& url,const QString& service,QByteArray* out,QString* error) {
     const RetryPolicy policy=retryPolicy();
     QElapsedTimer budget; budget.start();
@@ -217,7 +224,7 @@ bool fetchBodyWithRetry(const QUrl& url,const QString& service,QByteArray* out,Q
     for(int attempt=1;;++attempt) {
         const int elapsed=int(budget.elapsed());
         if(elapsed>=policy.budgetMs)break;
-        outcome=fetchBodyOnce(url,qMin(policy.inactivityMs,policy.budgetMs-elapsed),true);
+        outcome=fetchBodyOnce(url,policy.inactivityMs,policy.budgetMs-elapsed);
         if(outcome.ok) { if(out)*out=outcome.body; return true; }
         if(attempt>=policy.maxAttempts || !fetchRetryable(outcome))break;
         if(outcome.retryAfterSeconds==kRetryAfterMalformed)break;   // unparseable Retry-After: no premature retry

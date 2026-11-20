@@ -520,6 +520,8 @@ int main(int argc,char** argv) {
         int source429Requests=0;
         int source503RetryAfterShortRequests=0;
         int source503RetryAfterMalformedRequests=0;
+        int sourceDripFeedRequests=0;
+        int sourceDripFeedOkRequests=0;
         QObject::connect(&fixture,&QTcpServer::newConnection,&app,[&] {
             auto* socket=fixture.nextPendingConnection();
             QObject::connect(socket,&QTcpSocket::readyRead,socket,[&,socket] {
@@ -599,6 +601,38 @@ int main(int argc,char** argv) {
                     ++source503RetryAfterMalformedRequests;
                     socket->write("HTTP/1.1 503 Service Unavailable\r\nRetry-After: nonsense\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
                     socket->disconnectFromHost();return;
+                }
+                if(request.contains("/source-drip-feed")) {
+                    // Dribble a valid release-index body over ~5s in tiny chunks: each slice arrives
+                    // well inside any reasonable idle deadline, but the whole body would outlive a
+                    // shortened test budget. Only the absolute deadline should cut it off. `socket`
+                    // is each timer's context, so the whole schedule dies if the client aborts.
+                    ++sourceDripFeedRequests;
+                    const QByteArray body=QByteArrayLiteral("[{\"title\":\"Drip Feed Game\",\"size\":\"1 GB\",\"uri\":\"https://fixture/drip.zip\"}]");
+                    socket->write("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n");
+                    const int slice=2,tick=150;
+                    int delay=0;
+                    for(int offset=0;offset<body.size();offset+=slice,delay+=tick) {
+                        const QByteArray chunk=body.mid(offset,slice);
+                        QTimer::singleShot(delay,socket,[socket,chunk]{ socket->write(QByteArray::number(chunk.size(),16)+"\r\n"+chunk+"\r\n"); });
+                    }
+                    QTimer::singleShot(delay,socket,[socket]{ socket->write("0\r\n\r\n"); socket->disconnectFromHost(); });
+                    return;
+                }
+                if(request.contains("/source-progress-ok")) {
+                    // A progressing feed that finishes inside the budget: dribbled fast enough to
+                    // complete normally without tripping the idle or absolute deadline.
+                    ++sourceDripFeedOkRequests;
+                    const QByteArray body=QByteArrayLiteral("[{\"title\":\"Drip Feed Ok Game\",\"size\":\"1 GB\",\"uri\":\"https://fixture/dripok.zip\"}]");
+                    socket->write("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n");
+                    const int slice=12,tick=100;
+                    int delay=0;
+                    for(int offset=0;offset<body.size();offset+=slice,delay+=tick) {
+                        const QByteArray chunk=body.mid(offset,slice);
+                        QTimer::singleShot(delay,socket,[socket,chunk]{ socket->write(QByteArray::number(chunk.size(),16)+"\r\n"+chunk+"\r\n"); });
+                    }
+                    QTimer::singleShot(delay,socket,[socket]{ socket->write("0\r\n\r\n"); socket->disconnectFromHost(); });
+                    return;
                 }
                 if(!hot && title==7)fail=++attempts[title]==1;
                 if(!hot && duplicate)fail=++attempts[-1]==1;
@@ -901,6 +935,27 @@ int main(int argc,char** argv) {
          check(!HydraLibrary().browseSource(feed,&feedGames,&fixtureError) && feedGames.isEmpty() &&
                fixtureError.contains(QStringLiteral("HTTP 503")) && source503RetryAfterMalformedRequests==1,
                "an unsupported/malformed Retry-After does not trigger a premature retry");
+         // Absolute deadline: a progressing (drip-fed) body that would outlive the budget is cut off
+         // at the budget (idle deadline set far above it, so the cutoff is unambiguously absolute),
+         // with no partial output and no further attempt once the budget is exhausted.
+         qputenv("XMB_HYDRA_RETRY_BUDGET_MS","1000");
+         qputenv("XMB_HYDRA_RETRY_INACTIVITY_MS","5000");
+         feed.url=QUrl(base+QStringLiteral("/source-drip-feed"));feedGames.clear();fixtureError=QStringLiteral("stale error");
+         QElapsedTimer dripClock;dripClock.start();
+         check(!HydraLibrary().browseSource(feed,&feedGames,&fixtureError) && feedGames.isEmpty() &&
+               fixtureError.contains(QStringLiteral("timed out")) && sourceDripFeedRequests==1,
+               "a drip-fed body past the budget is cut off by the absolute deadline, with no partial output and no retry");
+         check(dripClock.elapsed()<4000,"the absolute deadline bounds a progressing feed well short of its full drip");
+         qunsetenv("XMB_HYDRA_RETRY_BUDGET_MS");qunsetenv("XMB_HYDRA_RETRY_INACTIVITY_MS");
+         // Within-budget progressing feed: a drip that finishes inside the budget completes normally.
+         qputenv("XMB_HYDRA_RETRY_BUDGET_MS","3000");
+         qputenv("XMB_HYDRA_RETRY_INACTIVITY_MS","800");
+         feed.url=QUrl(base+QStringLiteral("/source-progress-ok"));feedGames.clear();fixtureError=QStringLiteral("stale error");
+         check(HydraLibrary().browseSource(feed,&feedGames,&fixtureError) && feedGames.size()==1 &&
+               feedGames.first().name==QStringLiteral("Drip Feed Ok Game") && fixtureError.isEmpty(),
+               "a progressing feed that finishes within the budget completes normally");
+         check(sourceDripFeedOkRequests==1,"the within-budget progressing feed succeeds on the first attempt");
+         qunsetenv("XMB_HYDRA_RETRY_BUDGET_MS");qunsetenv("XMB_HYDRA_RETRY_INACTIVITY_MS");
         qputenv("XMB_HYDRA_SEARCH_URL",(base+QStringLiteral("/search-malformed")).toUtf8());
         searchResults.append(GameResult{});fixtureError.clear();
         check(!HydraLibrary().searchGames(QStringLiteral("fixture"),&searchResults,&fixtureError) && searchResults.isEmpty() &&
