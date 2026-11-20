@@ -156,7 +156,7 @@ enum class Action { Unavailable, SettingsPage, SettingChoices, SetSetting, EditN
     Setup,
     // Game > Saved Data / Memory Card Utility: presentation only, no console save-data backend.
     SaveData, ImportSource, ReleaseFolder, ReleaseDownload, DownloadManager, DebridToken, FlareSolverrUrl,
-    BrowseGames, SearchGames, GameSearchResult, GameSourcePick, GameRetry, GameDownloadDrive, GameDownloadConfirm,
+    BrowseGames, SearchGames, GameSearchResult, GameDetailsDownload, GameSourcePick, GameRetry, GameDownloadDrive, GameDownloadConfirm,
     // Game > Steam: the folded hub that lists Steam Store and All Games behind one column folder.
     SteamHub,
     // Game > Download Games: the folded hub that lists Browse, Import Source and the imported source folders.
@@ -377,8 +377,8 @@ public:
     // layout in View::drawLegacySurface (view.cpp). `selection` is the focused grid cell's game index
     // (0..N-1; the left panel follows it), so the ordinary selection()<entries().size() invariant holds;
     // the top Search button is a separate focus flag (Page::legacySearchFocus).
-    bool legacyStoreOpen() const { return !pages_.isEmpty() && pages_.last().legacyStore; }
-    bool legacyDetailOpen() const { return !pages_.isEmpty() && pages_.last().legacyDetail; }
+    bool legacyStoreOpen() const { return false; }
+    bool legacyDetailOpen() const { return false; }
     // The grid window's first visible row (Shell::legacyStoreMove keeps the focused cell inside it).
     int legacyStoreScroll() const { return pages_.isEmpty()?0:pages_.last().legacyScroll; }
     // True while the catalogue's top Search button has focus (instead of a game row).
@@ -388,9 +388,7 @@ public:
     // loading, when no key is configured, or when no exact title match exists, so
     // the view falls back to its honest "Not available" lines rather than inventing
     // a description, genre, year, developer, publisher or platform.
-    RawgGameDetails legacyDetails() const {
-        return !pages_.isEmpty() && pages_.last().legacyDetail ? pages_.last().legacyDetails : RawgGameDetails{};
-    }
+    RawgGameDetails legacyDetails() const { return {}; }
     // The compact-cover grid's column count, shared by Shell (cursor moves) and View (layout). Five columns,
     // per the 2008 browse reference (a selected-game panel left, a 5-column cover grid right).
     static constexpr int legacyStoreGridColumns=5;
@@ -853,6 +851,8 @@ private:
     void saveFlareSolverrUrl(const QString& url);
     void openGameSearch(const QString& scope={});
     void openBrowseGames();
+    void openHydraSources();
+    void openHydraSource(const QString& sourceIndex,const QString& sourceName);
     void requestLegacyStoreGame(int groupIndex,int rawIndex,const PopularTitle& title,quint64 generation,
                                 quint64 pageIdentity,quint64 requestToken);
     void retryLegacyStoreGame(int index);
@@ -866,6 +866,7 @@ private:
     void closeAddGamePage();
     void runGameSearch(const QString& query,const QString& scope);
     void pickGameResult(int index);
+    void openGameDetails(const GameResult& game,const QImage& artwork={});
     void openGameSources(const GameResult& game);
     void pickGameSource(const QString& value);
     void beginGameConfirm(const QString& title,const GameSourceOption& option);
@@ -1384,7 +1385,7 @@ private:
     int columnSink_=0;
     // `grouped` is a page the item menu's Group Content level rebuilt into letter folders: `groupedSource` keeps
     // the ungrouped rows so All can put them back without a rescan, and the folders' rows are the same entries.
-    struct Page { QString title; QVector<Entry> entries; int selection=0; quint64 identity=0; QString directory; bool jellyfin=false,jellyfinViews=false,jellyfinSearch=false; QString jellyfinParent; QString jellyfinMusic,jellyfinLibrary; QString jellyfinHome; int jellyfinStart=0; bool downloads=false; QString steamCmd,seerr; bool continuePage=false; bool signIn=false; bool jfSetup=false; bool steamAccounts=false; bool grouped=false; QString groupKey; QVector<Entry> groupedSource; bool sysconfPlugin=false; QString playlistsType,playlistId; QString spotify,spotifyContext; QString dlna; int dlnaServer=-1; QString tailscale; QString wol,ha; bool weather=false; bool systemCheck=false; QString userInfo; int userInfoStep=0; bool browse=false; QString browsePath; QString browseFiles; bool libraryRoot=false; QVector<GameResult> downloadResults; QVector<int> legacyGameState; QVector<QString> legacyGameError; QVector<quint64> legacyGameRequest; QVector<QVector<PopularTitle>> legacyGameTitles; QVector<QVector<GameResult>> legacyGameResults; QVector<int> legacyGamePending; QVector<int> legacyGameFailed; bool downloadHub=false; bool addGame=false; bool legacyStore=false; bool legacyDetail=false; int legacyScroll=0; bool legacySearchFocus=false; RawgGameDetails legacyDetails; };
+    struct Page { QString title; QVector<Entry> entries; int selection=0; quint64 identity=0; QString directory; bool jellyfin=false,jellyfinViews=false,jellyfinSearch=false; QString jellyfinParent; QString jellyfinMusic,jellyfinLibrary; QString jellyfinHome; int jellyfinStart=0; bool downloads=false; QString steamCmd,seerr; bool continuePage=false; bool signIn=false; bool jfSetup=false; bool steamAccounts=false; bool grouped=false; QString groupKey; QVector<Entry> groupedSource; bool sysconfPlugin=false; QString playlistsType,playlistId; QString spotify,spotifyContext; QString dlna; int dlnaServer=-1; QString tailscale; QString wol,ha; bool weather=false; bool systemCheck=false; QString userInfo; int userInfoStep=0; bool browse=false; QString browsePath; QString browseFiles; bool libraryRoot=false; QVector<GameResult> downloadResults; bool gameDetails=false; RawgGameDetails gameDetailsData; QVector<int> legacyGameState; QVector<QString> legacyGameError; QVector<quint64> legacyGameRequest; QVector<QVector<PopularTitle>> legacyGameTitles; QVector<QVector<GameResult>> legacyGameResults; QVector<int> legacyGamePending; QVector<int> legacyGameFailed; bool downloadHub=false; bool addGame=false; bool legacyStore=false; bool legacyDetail=false; int legacyScroll=0; bool legacySearchFocus=false; RawgGameDetails legacyDetails; };
     QVector<Page> pages_;
     bool psMenu_=false;              // the PS-button system menu is showing
     bool desktopMode_=false;         // the XMB window is hidden for Desktop Mode (main.cpp DesktopMode)

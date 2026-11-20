@@ -2738,7 +2738,11 @@ void Shell::activate() {
     case Action::File:openFile(entry);break;
     case Action::ImportSource:
         emit requestJellyfinFieldEdit(QStringLiteral("release:url"),tr("Import Source URL"),{},false);break;
-    case Action::ReleaseFolder:openReleaseSource(entry.value);break;
+    case Action::ReleaseFolder:
+        if(entry.id==QStringLiteral("game:sources"))openHydraSources();
+        else if(entry.id.startsWith(QStringLiteral("hydra:source:")))openHydraSource(entry.value,entry.title);
+        else openReleaseSource(entry.value);
+        break;
     case Action::ReleaseDownload:activateRelease(entry);break;
     case Action::DownloadManager:openDownloadManager();break;
     case Action::DebridToken:editDebridToken();break;
@@ -2748,6 +2752,9 @@ void Shell::activate() {
     case Action::ManageHub:openManageHub();break;
     case Action::SearchGames:openGameSearch(entry.value);break;
     case Action::GameSearchResult:pickGameResult(entry.value.toInt());break;
+    case Action::GameDetailsDownload:
+        if(!pages_.isEmpty() && pages_.last().gameDetails && !pages_.last().downloadResults.isEmpty())openGameSources(pages_.last().downloadResults.first());
+        break;
     case Action::GameSourcePick:pickGameSource(entry.value);break;
     case Action::GameRetry:retryLegacyStoreGame(entry.value.toInt());break;
     case Action::GameDownloadConfirm:confirmGameDownload();break;

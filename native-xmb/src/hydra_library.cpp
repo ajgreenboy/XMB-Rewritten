@@ -72,6 +72,22 @@ bool fetchJsonArray(const QUrl& url, QJsonArray* out, QString* error) {
     if(document.isNull() || !document.isArray()) { if(error)*error=QStringLiteral("Hydra catalogue returned invalid JSON; retry"); return false; }
     if(out)*out=document.array(); return true;
 }
+bool fetchDocument(const QUrl& url, QJsonDocument* out, QString* error) {
+    QNetworkAccessManager manager; QNetworkRequest request(url);
+    request.setRawHeader("User-Agent","XMB-Release-Sources/0.2");
+    QNetworkReply* reply=manager.get(request); QEventLoop loop; QTimer timer; timer.setSingleShot(true);
+    bool timedOut=false;
+    QObject::connect(&timer,&QTimer::timeout,&loop,[&]{timedOut=true;reply->abort();});
+    QObject::connect(reply,&QNetworkReply::finished,&loop,&QEventLoop::quit);
+    timer.start(30000); loop.exec();
+    if(timedOut || reply->error()!=QNetworkReply::NoError || reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt()>=400) {
+        const QString message=responseError(QStringLiteral("source"),reply,timedOut); reply->deleteLater();
+        if(error)*error=message; return false;
+    }
+    QJsonParseError parseError; const auto document=QJsonDocument::fromJson(reply->readAll(),&parseError); reply->deleteLater();
+    if(document.isNull()) { if(error)*error=QStringLiteral("Hydra source returned invalid JSON; retry"); return false; }
+    if(out)*out=document; return true;
+}
 // The catalogue's dedup key. It must agree with the shell's gameSearchKey() so a game merged here
 // matches the imported/online merge in runGameSearch(): Unicode-normalise, collapse whitespace, then
 // case-fold. Editions that differ in this key stay apart; identical names merge across sources.
@@ -288,6 +304,41 @@ bool HydraLibrary::searchGames(const QString& query, QVector<GameResult>* out, Q
     }
     const QVector<GameResult> results=buildGameCatalog(records,sources);
     if(out)*out=results; return true;
+}
+bool HydraLibrary::browseSource(const HydraSource& source, QVector<GameResult>* out, QString* error) const {
+    if(error)error->clear(); if(out)out->clear();
+    if(!source.url.isValid()) { if(error)*error=QStringLiteral("Hydra source has an invalid URL; retry"); return false; }
+    QJsonDocument document;
+    if(!fetchDocument(source.url,&document,error))return false;
+    QString parseError; const auto releases=parseReleaseIndex(document,&parseError);
+    if(!parseError.isEmpty()) { if(error)*error=QStringLiteral("Hydra source returned invalid release JSON; retry"); return false; }
+    QVector<GameRecord> records;
+    for(const auto& release:releases) {
+        QString name=release.raw.value(QStringLiteral("gameTitle")).toString().trimmed();
+        if(name.isEmpty())name=release.raw.value(QStringLiteral("name")).toString().trimmed();
+        if(name.isEmpty())name=release.title.trimmed();
+        if(name.isEmpty())continue;
+        GameRecord record; record.name=name; record.title=name; record.originalTitle=release.title;
+        record.source=source.title; record.sourceUrl=source.url.toString(); record.fileSize=release.sizeLabel;
+        records.append(record);
+    }
+    auto games=buildGameCatalog(records,{source});
+    // Preserve the source feed's release identity and links for the selected source. The source browse
+    // is read-only, but a selected title must still flow into the existing source/confirm/download path.
+    for(auto& game:games) {
+        for(const auto& release:releases) {
+            QString name=release.raw.value(QStringLiteral("gameTitle")).toString().trimmed();
+            if(name.isEmpty())name=release.raw.value(QStringLiteral("name")).toString().trimmed();
+            if(name.isEmpty())name=release.title.trimmed();
+            if(catalogNameKey(name)!=catalogNameKey(game.name))continue;
+            if(game.options.isEmpty())break;
+            auto& option=game.options.first(); option.releaseTitle=release.title; option.downloads=release.downloads;
+            option.mirror=release.mirrors.isEmpty()?QString{}:release.mirrors.first().host;
+            option.sourceStatus=QStringLiteral("Only this source is known; other sources unavailable");
+            break;
+        }
+    }
+    if(out)*out=std::move(games); return true;
 }
 bool HydraLibrary::popularGames(QVector<GameResult>* out, QString* error) const {
     if(error)error->clear();

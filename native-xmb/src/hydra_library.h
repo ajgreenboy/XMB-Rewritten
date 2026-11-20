@@ -80,6 +80,9 @@ public:
     // Full-text search across /games, deduplicated by name. All sources are included (direct and
     // torrent); each game carries one option per source with its display name and download size.
     bool searchGames(const QString& query, QVector<GameResult>* out, QString* error=nullptr) const;
+    // Read one source's release-index JSON without importing or mutating saved feeds. The returned
+    // records are intentionally source-scoped; callers may resolve a selected title through /games.
+    bool browseSource(const HydraSource& source, QVector<GameResult>* out, QString* error=nullptr) const;
     bool popularTitles(QVector<PopularTitle>* out, QString* error=nullptr) const;
     bool popularGame(const PopularTitle& title, GameResult* out, QString* error=nullptr) const;
     // Genuinely-popular games, in popularity order: the Hydra Cloud "hot" catalogue

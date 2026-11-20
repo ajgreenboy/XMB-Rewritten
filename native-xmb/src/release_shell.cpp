@@ -148,18 +148,8 @@ QString optionCount(const GameResult& game) {
 QVector<Entry> downloadHubRows(const QVector<ReleaseSource>& sources) {
     QVector<Entry> rows;
     rows.append(releaseRow(QStringLiteral("game:search"),QObject::tr("Search Games"),Action::SearchGames));
-    rows.append(releaseRow(QStringLiteral("game:browse"),QObject::tr("Browse Popular"),Action::BrowseGames));
-    rows.append(releaseRow(QStringLiteral("release:import"),QObject::tr("Import Source"),Action::ImportSource));
-    for(const auto& source:sources) {
-        auto row=releaseRow(QStringLiteral("release:source:")+source.slug,source.name,Action::ReleaseFolder,source.slug);
-        row.detail=QObject::tr("%n release(s)",nullptr,int(source.releases.size()));
-        rows.append(std::move(row));
-    }
-    if(sources.isEmpty()) {
-        auto row=releaseRow(QStringLiteral("release:none"),QObject::tr("No sources imported yet."),Action::Unavailable);
-        row.detail=QObject::tr("Import Source adds a release index to download from.");
-        rows.append(std::move(row));
-    }
+    rows.append(releaseRow(QStringLiteral("game:browse"),QObject::tr("Popular Games"),Action::BrowseGames));
+    rows.append(releaseRow(QStringLiteral("game:sources"),QObject::tr("Browse Sources"),Action::ReleaseFolder));
     return rows;
 }
 
@@ -374,9 +364,7 @@ void Shell::openGameSearch(const QString& scope) {
     }
     if(pages_.size()>=32)return;
     Page page;page.title=tr("Search Games");
-    page.entries.append(releaseRow(QStringLiteral("game:scope:all"),tr("All sources"),Action::SearchGames,QStringLiteral("all")));
-    page.entries.append(releaseRow(QStringLiteral("game:scope:imported"),tr("Imported feeds"),Action::SearchGames,QStringLiteral("imported")));
-    page.entries.append(releaseRow(QStringLiteral("game:scope:online"),tr("Online Browse"),Action::SearchGames,QStringLiteral("online")));
+    page.entries.append(releaseRow(QStringLiteral("game:scope:online"),tr("Hydra library"),Action::SearchGames,QStringLiteral("online")));
     pages_.push_back(std::move(page));
     emit changed();
 }
@@ -389,95 +377,83 @@ void Shell::openDownloadHub() {
     emit changed();
 }
 
-void Shell::openBrowseGames() {
-    if(busy())return;
+void Shell::openHydraSources() {
+    if(busy() || pages_.size()>=32)return;
     const quint64 generation=++legacyStoreGeneration_;
-    const int parentDepth=pages_.size();
-    busy_=true;status_=tr("Loading popular games...");
-    busyProgress_=-1.;busySpinnerPhase_=0.;busyClock_.start();
-    auto* watcher=new QFutureWatcher<BrowseTitlesOutcome>(this);
-    connect(watcher,&QFutureWatcher<BrowseTitlesOutcome>::finished,this,[this,watcher,generation,parentDepth]{
+    busy_=true; status_=tr("Loading Hydra sources..."); busyProgress_=-1.; busySpinnerPhase_=0.; busyClock_.start();
+    auto* watcher=new QFutureWatcher<QVector<HydraSource>>(this);
+    const int depth=pages_.size();
+    connect(watcher,&QFutureWatcher<QVector<HydraSource>>::finished,this,[this,watcher,generation,depth]{
+        const auto sources=watcher->result(); watcher->deleteLater();
+        if(generation!=legacyStoreGeneration_)return;
+        busy_=false;status_.clear();busyProgress_=-1.;busySpinnerPhase_=-1.;
+        if(pages_.size()!=depth)return;
+        Page page; page.title=tr("Browse Sources"); page.identity=++pageIdentityCounter_;
+        if(sources.isEmpty())page.entries.append(releaseRow(QStringLiteral("hydra:sources:empty"),tr("No Hydra sources available."),Action::Unavailable));
+        for(const auto& source:sources) {
+            Entry row=releaseRow(QStringLiteral("hydra:source:")+source.url.toString(),source.title,Action::ReleaseFolder,source.url.toString());
+            row.detail=source.gamesCount>0?tr("%n game(s)",nullptr,source.gamesCount):tr("Open source feed");
+            page.entries.append(std::move(row));
+        }
+        if(page.entries.isEmpty()) { Entry row=releaseRow(QStringLiteral("hydra:sources:error"),tr("Could not load Hydra sources"),Action::GameRetry); row.detail=tr("Retry"); page.entries.append(row); }
+        pages_.push_back(std::move(page)); emit changed();
+    });
+    watcher->setFuture(QtConcurrent::run([]{ QVector<HydraSource> sources; QString error; HydraLibrary().listSources(&sources,&error); return sources; }));
+    emit changed();
+}
+
+void Shell::openHydraSource(const QString& sourceIndex,const QString& sourceName) {
+    if(busy() || pages_.size()>=32)return;
+    const quint64 generation=++legacyStoreGeneration_; const int depth=pages_.size();
+    const QUrl url(sourceIndex); busy_=true;status_=tr("Loading source feed...");busyProgress_=-1.;busySpinnerPhase_=0.;busyClock_.start();
+    auto* watcher=new QFutureWatcher<QPair<QVector<GameResult>,QString>>(this);
+    connect(watcher,&QFutureWatcher<QPair<QVector<GameResult>,QString>>::finished,this,[this,watcher,generation,depth,url]{
         const auto result=watcher->result();watcher->deleteLater();
         if(generation!=legacyStoreGeneration_)return;
-        if(pages_.size()!=parentDepth) {
-            busy_=false;status_.clear();busyProgress_=-1.;busySpinnerPhase_=-1.;
-            emit changed();
-            return;
-        }
         busy_=false;status_.clear();busyProgress_=-1.;busySpinnerPhase_=-1.;
-        if(pages_.size()<32) {
-            // The legacy PlayStation Store catalogue (GEN 2, 2008-2012): a full-screen "featured left +
-            // compact cover grid right" layout over this Hydra feed. The page carries the games as its
-            // rows (so the entry dump and the cover art stay available) but the View renders it with its
-            // own layout (View::drawLegacySurface), not as an XMB column. The top Search button in the
-            // blue chrome replaces the old inline Search row and opens the same OSK search (openGameSearch).
-            Page page;page.title=tr("PlayStation Store");page.identity=++pageIdentityCounter_;
-            page.legacyStore=true;   // selection 0 (the default) is the featured pane; the Search button is a separate focus flag
-            if(!result.error.isEmpty()) {
-                Entry error=releaseRow(QStringLiteral("game:error"),tr("Could not load games"),Action::Unavailable);
-                error.detail=result.error;page.entries.append(error);
-            } else if(result.titles.isEmpty() && result.fixtureGames.isEmpty()) {
-                page.entries.append(releaseRow(QStringLiteral("game:empty"),tr("No popular games are downloadable right now."),Action::Unavailable));
-            } else {
-                page.downloadResults=result.fixtureGames;
-                if(page.downloadResults.isEmpty()) {
-                    const auto groups=groupPopularTitles(result.titles);
-                    for(const auto& group:groups) {
-                        GameResult skeleton;skeleton.name=group.name;skeleton.title=group.name;skeleton.coverUrl=group.coverUrl;
-                        page.downloadResults.append(std::move(skeleton));
-                        page.legacyGameTitles.append(group.entries);
-                    }
-                    page.legacyGameResults.resize(page.downloadResults.size());
-                    page.legacyGamePending.resize(page.downloadResults.size());
-                    page.legacyGameFailed=QVector<int>(page.downloadResults.size());
-                    for(int i=0;i<page.legacyGameTitles.size();++i) {
-                        page.legacyGameResults[i].resize(page.legacyGameTitles[i].size());
-                        page.legacyGamePending[i]=page.legacyGameTitles[i].size();
-                    }
-                }
-                page.legacyGameState=QVector<int>(page.downloadResults.size(),result.fixtureGames.isEmpty()?0:1);
-                page.legacyGameError=QVector<QString>(page.downloadResults.size());
-                page.legacyGameRequest=QVector<quint64>(page.downloadResults.size());
-                const int shown=qMin(100,page.downloadResults.size());
-                for(int i=0;i<shown;++i) {
-                    const auto& game=page.downloadResults[i];
-                    Entry entry=releaseRow(QStringLiteral("game:result:")+QString::number(i),game.name,Action::GameSearchResult,QString::number(i));
-                    entry.detail=page.legacyGameState[i]==0?tr("Loading sources..."):optionCount(game);
-                    entry.fieldValue=game.options.isEmpty()?QString{}:game.options.first().fileSize;
-                    entry.gameTile=true;
-                    entry.artwork=result.covers.value(i);
-                    entry.artworkUrl=game.coverUrl;
-                    page.entries.append(entry);
-                }
-            }
-            pages_.push_back(std::move(page));
-            if(!result.covers.isEmpty()) {
-                for(auto it=result.covers.cbegin();it!=result.covers.cend();++it)
-                    if(it.key()>=0 && it.key()<pages_.last().entries.size())
-                        pages_.last().entries[it.key()].artwork=it.value();
-            }
-            if(result.fixtureGames.isEmpty() && result.error.isEmpty()) {
-                const auto identity=pages_.last().identity;
-                const int count=qMin(100,pages_.last().legacyGameTitles.size());
-                for(int group=0;group<count;++group) {
-                    const quint64 token=++legacyGameRequestCounter_;
-                    pages_.last().legacyGameRequest[group]=token;
-                    for(int raw=0;raw<pages_.last().legacyGameTitles[group].size();++raw)
-                        requestLegacyStoreGame(group,raw,pages_.last().legacyGameTitles[group][raw],generation,identity,token);
-                }
-            }
-        }
-        emit changed();
+        if(pages_.size()!=depth)return;
+        Page page;page.title=url.fileName().isEmpty()?tr("Hydra Source"):url.fileName();page.identity=++pageIdentityCounter_;page.downloadResults=result.first;
+        for(int i=0;i<page.downloadResults.size();++i) { const auto& game=page.downloadResults[i]; Entry row=releaseRow(QStringLiteral("game:result:")+QString::number(i),game.name,Action::GameSearchResult,QString::number(i)); row.detail=optionCount(game);row.gameTile=true;page.entries.append(std::move(row)); }
+        if(page.entries.isEmpty())page.entries.append(releaseRow(QStringLiteral("hydra:source:empty"),tr("No games in this source."),Action::Unavailable));
+        if(!result.second.isEmpty()) { Entry row=releaseRow(QStringLiteral("hydra:source:error"),tr("Source unavailable"),Action::GameRetry);row.detail=result.second;page.entries.append(std::move(row)); }
+        pages_.push_back(std::move(page));emit changed();
     });
-    watcher->setFuture(QtConcurrent::run([]{
-        BrowseTitlesOutcome result;
-        if(qEnvironmentVariableIntValue("XMB_LEGACY_STORE_FIXTURE")>0) {
-            result.fixtureGames=legacyStoreFixture(&result.covers);
-        } else {
-            HydraLibrary().popularTitles(&result.titles,&result.error);
+    watcher->setFuture(QtConcurrent::run([url,sourceName]{
+        HydraLibrary library;HydraSource source;source.title=sourceName;source.url=url;QVector<GameResult> games;QString error;
+        if(!library.browseSource(source,&games,&error))return qMakePair(games,error);
+        for(auto& game:games) {
+            QVector<GameResult> unionGames;QString unionError;
+            if(library.searchGames(game.name,&unionGames,&unionError)) {
+                for(const auto& candidate:unionGames)if(gameSearchKey(candidate.name)==gameSearchKey(game.name)) {
+                    game=mergePopularGameResults(game.name,game.coverUrl,{game,candidate});
+                    if(game.options.size()>1)for(auto& option:game.options)option.sourceStatus.clear();
+                    break;
+                }
+            }
         }
-        return result;
-    }));
+        return qMakePair(games,error);
+    })); emit changed();
+}
+
+void Shell::openBrowseGames() {
+    if(busy() || pages_.size()>=32)return;
+    const quint64 generation=++legacyStoreGeneration_; const int depth=pages_.size();
+    busy_=true;status_=tr("Loading popular games...");busyProgress_=-1.;busySpinnerPhase_=0.;busyClock_.start();
+    auto* watcher=new QFutureWatcher<BrowseOutcome>(this);
+    connect(watcher,&QFutureWatcher<BrowseOutcome>::finished,this,[this,watcher,generation,depth]{
+        const auto result=watcher->result();watcher->deleteLater();
+        if(generation!=legacyStoreGeneration_)return;
+        busy_=false;status_.clear();busyProgress_=-1.;busySpinnerPhase_=-1.;
+        if(pages_.size()!=depth)return;
+        Page page;page.title=tr("Popular Games");page.identity=++pageIdentityCounter_;page.downloadResults=result.games;
+        for(int i=0;i<page.downloadResults.size() && i<100;++i) {
+            const auto& game=page.downloadResults[i]; Entry row=releaseRow(QStringLiteral("game:result:")+QString::number(i),game.name,Action::GameSearchResult,QString::number(i));
+            row.detail=optionCount(game);row.fieldValue=game.options.isEmpty()?QString{}:game.options.first().fileSize;row.gameTile=true;row.artwork=result.covers.value(i);row.artworkUrl=game.coverUrl;page.entries.append(std::move(row));
+        }
+        if(page.entries.isEmpty()) { Entry row=releaseRow(QStringLiteral("game:error"),result.error.isEmpty()?tr("No popular games are downloadable right now."):tr("Could not load popular games"),result.error.isEmpty()?Action::Unavailable:Action::GameRetry);row.detail=result.error;page.entries.append(std::move(row)); }
+        pages_.push_back(std::move(page));emit changed();
+    });
+    watcher->setFuture(QtConcurrent::run([]{BrowseOutcome result;if(qEnvironmentVariableIntValue("XMB_LEGACY_STORE_FIXTURE")>0)result.games=legacyStoreFixture(&result.covers);else HydraLibrary().popularGames(&result.games,&result.error);return result;}));
     emit changed();
 }
 
@@ -546,9 +522,8 @@ void Shell::requestLegacyStoreCover(int index,const QString& url,quint64 pageIde
 void Shell::runGameSearch(const QString& query,const QString& scope) {
     const QString term=query.trimmed();
     if(term.isEmpty() || busy() || pages_.size()>=32)return;
-    const bool online=scope==QLatin1String("all") || scope==QLatin1String("online");
-    const bool imported=scope==QLatin1String("all") || scope==QLatin1String("imported");
-    if(!online && !imported)return;
+    const bool online=scope==QLatin1String("online");
+    if(!online)return;
     busy_=true;status_=tr("Searching games...");
     busyProgress_=-1.;busySpinnerPhase_=0.;busyClock_.start();
     auto* watcher=new QFutureWatcher<BrowseOutcome>(this);
@@ -580,7 +555,7 @@ void Shell::runGameSearch(const QString& query,const QString& scope) {
         }
         emit changed();
     });
-    const auto sources=imported?releaseSources_:QVector<ReleaseSource>{};
+    const QVector<ReleaseSource> sources;
     const QString cache=QDir(dataDirectory_).filePath(QStringLiteral("cache/release-art"));
     watcher->setFuture(QtConcurrent::run([term,online,sources,cache]{
         BrowseOutcome result;
@@ -607,11 +582,6 @@ void Shell::runGameSearch(const QString& query,const QString& scope) {
             }
         };
         const QString normalizedTerm=gameSearchKey(term);
-        for(const auto& source:sources)
-            for(const auto& release:source.releases) {
-                auto game=importedGame(source,release);
-                if(gameSearchKey(game.name).contains(normalizedTerm) || gameSearchKey(release.title).contains(normalizedTerm))add(std::move(game));
-            }
         if(online) {
             QVector<GameResult> results;
             if(HydraLibrary().searchGames(term,&results,&result.error))
@@ -626,7 +596,8 @@ void Shell::runGameSearch(const QString& query,const QString& scope) {
 void Shell::pickGameResult(int index) {
     if(pages_.isEmpty() || index<0 || index>=pages_.last().downloadResults.size())return;
     const GameResult game=pages_.last().downloadResults[index];
-    openGameSources(game);
+    const QImage artwork=pages_.last().entries.value(index).artwork;
+    openGameDetails(game,artwork);
 }
 
 void Shell::openGameSources(const GameResult& game) {
@@ -646,6 +617,7 @@ void Shell::openGameSources(const GameResult& game) {
             entry.title+=QStringLiteral(" / ")+option.mirror;
         }
         entry.detail=option.releaseTitle.isEmpty()?game.name:option.releaseTitle;
+        if(!option.sourceStatus.isEmpty())entry.detail+=QStringLiteral(" · ")+option.sourceStatus;
         entry.fieldValue=option.fileSize.isEmpty()?tr("Size unknown"):option.fileSize;
         page.entries.append(std::move(entry));
     }
