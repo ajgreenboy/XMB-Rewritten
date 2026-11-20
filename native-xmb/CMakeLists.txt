@@ -17,7 +17,6 @@ qt_add_executable(re-ps3-native
     src/raf_render.cpp src/raf_render.h
     src/vsmx_eval.cpp src/vsmx_eval.h
     src/rco_objects.cpp src/rco_objects.h
-    src/store_wave.cpp src/store_wave.h
     src/osk_layout.cpp src/osk_layout.h
     src/xmbml_view.cpp src/xmbml_view.h
     src/preferences.cpp src/preferences.h
@@ -74,7 +73,7 @@ qt_add_executable(re-ps3-native
     src/sabnzbd_client.cpp src/sabnzbd_client.h
     src/jellyfin_player.cpp src/jellyfin_player.h src/jellyfin_shell.cpp src/jellyfin_music_shell.cpp src/jellyfin_setup.cpp src/jellyfin_setup.h src/jellyfin_setup_shell.cpp
     src/rsx_program.cpp src/rsx_program.h src/ribbon.cpp src/ribbon.h src/uniform_cache.cpp src/uniform_cache.h src/render_gate.cpp src/render_gate.h src/idle_profile.h src/frame_trace.h src/hdr.cpp src/hdr.h src/icons.cpp src/icons.h src/particles.cpp src/particles.h src/coldboot.cpp src/coldboot.h
-    src/setup.cpp src/setup.h src/setup_shell.cpp src/release_shell.cpp src/release_jobs.cpp src/legacy_store.cpp src/add_game_shell.cpp
+    src/setup.cpp src/setup.h src/setup_shell.cpp src/release_shell.cpp src/release_jobs.cpp src/game_details.cpp src/add_game_shell.cpp
     src/autostart.cpp src/autostart.h src/autologon.cpp src/autologon.h src/cec.cpp src/cec.h src/display_mode.cpp src/display_mode.h src/display_spec.h src/diagnostics.cpp src/diagnostics.h src/game_capture.cpp src/game_capture.h src/elevation.cpp src/elevation.h src/text_entry.cpp src/text_entry.h src/shell.cpp src/shell.h src/host.cpp src/host.h src/pad.cpp src/pad.h src/ps_watcher.cpp src/ps_watcher.h src/web_adopt.cpp src/web_adopt.h src/desktop_mode.cpp src/desktop_mode.h src/desktop_pad.cpp src/desktop_pad_win.cpp src/desktop_pad.h src/view.cpp src/view.h src/dialogs.cpp)
 target_link_libraries(re-ps3-native PRIVATE Qt6::Widgets Qt6::OpenGLWidgets Qt6::Multimedia Qt6::Concurrent Qt6::Network)
 target_link_libraries(re-ps3-native PRIVATE Qt6::ZlibPrivate)

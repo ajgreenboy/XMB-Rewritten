@@ -28,6 +28,7 @@ bool fetchJson(const QUrl& url, QJsonObject* out, QString* error) {
     QNetworkAccessManager manager;
     QNetworkRequest request(url);
     request.setRawHeader("User-Agent","XMB-Release-Sources/0.2");
+    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,QNetworkRequest::NoLessSafeRedirectPolicy);
     QNetworkReply* reply=manager.get(request);
     QEventLoop loop; QTimer timer; timer.setSingleShot(true);
     bool timedOut=false;
@@ -54,6 +55,7 @@ bool fetchJsonArray(const QUrl& url, QJsonArray* out, QString* error) {
     QNetworkAccessManager manager;
     QNetworkRequest request(url);
     request.setRawHeader("User-Agent","XMB-Release-Sources/0.2");
+    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,QNetworkRequest::NoLessSafeRedirectPolicy);
     QNetworkReply* reply=manager.get(request);
     QEventLoop loop; QTimer timer; timer.setSingleShot(true);
     bool timedOut=false;
@@ -73,14 +75,19 @@ bool fetchJsonArray(const QUrl& url, QJsonArray* out, QString* error) {
     if(out)*out=document.array(); return true;
 }
 bool fetchDocument(const QUrl& url, QJsonDocument* out, QString* error) {
+    if((url.scheme()!=QLatin1String("http") && url.scheme()!=QLatin1String("https")) || url.host().isEmpty()) { if(error)*error=QStringLiteral("Hydra source URL must be HTTP(S); retry"); return false; }
     QNetworkAccessManager manager; QNetworkRequest request(url);
     request.setRawHeader("User-Agent","XMB-Release-Sources/0.2");
+    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,QNetworkRequest::NoLessSafeRedirectPolicy);
     QNetworkReply* reply=manager.get(request); QEventLoop loop; QTimer timer; timer.setSingleShot(true);
     bool timedOut=false;
     QObject::connect(&timer,&QTimer::timeout,&loop,[&]{timedOut=true;reply->abort();});
+    QObject::connect(reply,&QNetworkReply::downloadProgress,&loop,[&](qint64 received,qint64){if(received>16*1024*1024){timedOut=true;reply->abort();}});
     QObject::connect(reply,&QNetworkReply::finished,&loop,&QEventLoop::quit);
     timer.start(30000); loop.exec();
-    if(timedOut || reply->error()!=QNetworkReply::NoError || reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt()>=400) {
+    const QUrl finalUrl=reply->url();
+    if(timedOut || reply->error()!=QNetworkReply::NoError || reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt()>=400 ||
+       (finalUrl.scheme()!=QLatin1String("http") && finalUrl.scheme()!=QLatin1String("https"))) {
         const QString message=responseError(QStringLiteral("source"),reply,timedOut); reply->deleteLater();
         if(error)*error=message; return false;
     }
@@ -125,7 +132,7 @@ bool validSourceArray(const QJsonArray& values) {
         const auto object=value.toObject();
         const QString title=object.value(QStringLiteral("title")).toString().trimmed();
         const QUrl url(object.value(QStringLiteral("url")).toString().trimmed());
-        if(title.isEmpty() || !url.isValid() || url.scheme().isEmpty() || url.host().isEmpty())return false;
+        if(title.isEmpty() || !url.isValid() || (url.scheme()!=QLatin1String("http") && url.scheme()!=QLatin1String("https")) || url.host().isEmpty())return false;
     }
     return true;
 }
@@ -246,7 +253,13 @@ bool HydraLibrary::listSources(QVector<HydraSource>* out, QString* error) const 
         }
         const SourcesPage page=parseSourcesPage(root);
         all+=page.sources;
-        if(!hasMoreSources(pageNumber,all.size(),page))break;
+        if(!hasMoreSources(pageNumber,all.size(),page)) {
+            if(page.limit>0 && all.size()<page.total && pageNumber>=100) {
+                if(error)*error=QStringLiteral("Hydra sources response is truncated after 100 pages; retry");
+                if(out)out->clear(); return false;
+            }
+            break;
+        }
         ++pageNumber;
     }
     if(out)*out=all; return true;
@@ -312,12 +325,13 @@ bool HydraLibrary::browseSource(const HydraSource& source, QVector<GameResult>* 
     if(!fetchDocument(source.url,&document,error))return false;
     QString parseError; const auto releases=parseReleaseIndex(document,&parseError);
     if(!parseError.isEmpty()) { if(error)*error=QStringLiteral("Hydra source returned invalid release JSON; retry"); return false; }
-    QVector<GameRecord> records;
+    QVector<GameRecord> records; QHash<QString,int> releaseByName;
     for(const auto& release:releases) {
         QString name=release.raw.value(QStringLiteral("gameTitle")).toString().trimmed();
         if(name.isEmpty())name=release.raw.value(QStringLiteral("name")).toString().trimmed();
         if(name.isEmpty())name=release.title.trimmed();
         if(name.isEmpty())continue;
+        releaseByName.insert(catalogNameKey(name),records.size());
         GameRecord record; record.name=name; record.title=name; record.originalTitle=release.title;
         record.source=source.title; record.sourceUrl=source.url.toString(); record.fileSize=release.sizeLabel;
         records.append(record);
@@ -326,15 +340,19 @@ bool HydraLibrary::browseSource(const HydraSource& source, QVector<GameResult>* 
     // Preserve the source feed's release identity and links for the selected source. The source browse
     // is read-only, but a selected title must still flow into the existing source/confirm/download path.
     for(auto& game:games) {
-        for(const auto& release:releases) {
-            QString name=release.raw.value(QStringLiteral("gameTitle")).toString().trimmed();
-            if(name.isEmpty())name=release.raw.value(QStringLiteral("name")).toString().trimmed();
-            if(name.isEmpty())name=release.title.trimmed();
-            if(catalogNameKey(name)!=catalogNameKey(game.name))continue;
+        const int releaseIndex=releaseByName.value(catalogNameKey(game.name),-1);
+        if(releaseIndex>=0 && releaseIndex<releases.size()) {
+            const auto& release=releases[releaseIndex];
             if(game.options.isEmpty())break;
-            auto& option=game.options.first(); option.releaseTitle=release.title; option.downloads=release.downloads;
+            auto& option=game.options.first(); option.releaseTitle=release.title;
+            for(const auto& download:release.downloads)
+                if(download.kind==QLatin1String("direct") || download.kind==QLatin1String("magnet"))option.downloads.append(download);
+            for(const auto& mirror:release.mirrors)if(mirror.parts.size()==1)
+                if(mirror.parts.first().kind==QLatin1String("direct") || mirror.parts.first().kind==QLatin1String("magnet"))option.downloads.append(mirror.parts.first());
             option.mirror=release.mirrors.isEmpty()?QString{}:release.mirrors.first().host;
-            option.sourceStatus=QStringLiteral("Only this source is known; other sources unavailable");
+            option.sourceStatus=option.downloads.isEmpty()
+                ?QStringLiteral("Only this source is known; no supported direct or magnet download is available")
+                :QStringLiteral("Only this source is known; other sources unavailable");
             break;
         }
     }

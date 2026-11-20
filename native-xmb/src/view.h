@@ -15,7 +15,6 @@
 #include "text_renderer.h"
 #include "osk_layout.h"
 #include "rco_objects.h"
-#include "store_wave.h"
 #include "media_keys.h"
 #include "game_capture.h"
 #include "text_entry.h"
@@ -586,20 +585,6 @@ private:
     QDateTime backgroundOverride_;                                    // fixed clock for measurement, invalid = now
     double secondsOverride_=-1;                                       // fixed animation time for A/B captures, -1 = now
     void drawScene(QPainter& painter);
-    // The GEN 2 (2008-2012) PlayStation Store catalogue/detail, drawn full-screen instead of the XMB
-    // column (audit/LEGACY-STORE.md). Read from Shell::legacyStoreOpen()/legacyDetailOpen() and the same
-    // Page rows openBrowseGames()/openLegacyDetail() build. Layout follows the 2008 period references'
-    // region descriptions (selected-game panel left + 5-column grid right; dark inset product detail);
-    // the navy palette and every exact rectangle are authored approximations, not measured; the wave's
-    // colour comes from the firmware's datacom/store.mnu, its shape is a fitted open curve (store_wave.h).
-    void drawLegacySurface(QPainter& painter);
-    // The legacy Store wave material (store_wave.h), read once from the firmware's datacom/store.mnu on the
-    // first legacy-store frame and cached. Only the colours come from the firmware (bk_color HSV, glow_col /
-    // glow_intensity); the crest's shape is a fitted open curve. When store.qrc is absent the struct stays
-    // !present and drawLegacySurface uses fallback colours for the same fitted shape.
-    storewave::Params legacyStoreWave_;
-    bool legacyStoreWaveParsed_ = false;
-    const storewave::Params& legacyStoreWave();
     // The system menu's black frame (warm: 0 the real draw, 1 and 2 the idle prewarm's text and bloom passes).
     void drawPsMenuBody(QPainter& painter,double content,double bloom,int warm,int part=0);
     // Idle prewarm of what a first-opened surface would otherwise build on its first frame (audit/PS-MENU-HITCH.md):
