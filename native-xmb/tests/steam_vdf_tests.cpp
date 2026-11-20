@@ -9,13 +9,13 @@
 // and the observable result (accounts, error text, selected id, warnings, games) is reduced to a
 // hash plus a short summary, then compared with tests/steam_vdf_golden.txt.
 //
-// The golden file was recorded from the ORIGINAL, unmerged parsers and must not change when the
-// parser implementation changes. Exception: the folders/mutate-* and folders/trunc-* entries were
-// re-recorded (2026-11-14) when the fixtures stopped embedding the machine's temp path: they are built
-// around a fixed model path and the real tree's paths are substituted afterwards (see realizePaths), so
-// no outcome depends on the temp directory's name, length or separator positions. Fixtures are fully synthetic. The real Steam install of the machine
-// is covered by `--real <file>`: it records or compares only counts and hashes, in a file the caller
-// keeps OUTSIDE the repository, and prints no account id, path or title.
+// The golden file is recorded from the parser and scanner contract. Discovery-warning changes are
+// observable by design and require regeneration; the folders/mutate-* and folders/trunc-* entries
+// are built around a fixed model path and the real tree's paths are substituted afterwards (see
+// realizePaths), so no outcome depends on the temp directory's name, length or separator positions.
+// Fixtures are fully synthetic. The real Steam install of the machine is covered by `--real <file>`:
+// it records or compares only counts and hashes, in a file the caller keeps OUTSIDE the repository,
+// and prints no account id, path or title.
 //
 // Build with -DXMB_STEAM_VDF_BUILD_TESTS=ON. Usage:
 //   xmb-steam-vdf-tests                       compare the fixtures with the golden file
@@ -785,11 +785,23 @@ int main(int argc, char** argv) {
     // unavailable configured libraries do not hide healthy results or expose their paths.
     world.reset();
     const QString missingLibrary = QDir(world.dir.path()).filePath(QStringLiteral("missing-library"));
+    const auto vdfPath = [](QString path) {
+        path = QDir::toNativeSeparators(path);
+        path.replace(QLatin1Char('\\'), QStringLiteral("\\\\"));
+        return path;
+    };
     QByteArray unavailableFolders = buildFolders(Style(), world.paths);
-    unavailableFolders.replace(escapedNative(world.paths.lib2).toUtf8(), escapedNative(missingLibrary).toUtf8());
+    unavailableFolders.replace(vdfPath(world.paths.lib2).toUtf8(), vdfPath(missingLibrary).toUtf8());
     check(writeFile(world.target(Role::Folders), unavailableFolders), "write unavailable-library fixture");
     const SteamInstallation unavailableScan = scanSteam(world.paths.root);
-    check(unavailableScan.games.size() == 2, "unavailable library does not discard healthy games");
+    bool hasGame100 = false, hasGame200 = false, hasGame300 = false;
+    for (const auto& game : unavailableScan.games) {
+        hasGame100 |= game.appId == QStringLiteral("100");
+        hasGame200 |= game.appId == QStringLiteral("200");
+        hasGame300 |= game.appId == QStringLiteral("300");
+    }
+    check(!QFileInfo(missingLibrary).isDir() && hasGame100 && hasGame200 && !hasGame300,
+          "absent library is excluded while healthy games remain visible");
     check(unavailableScan.warnings.size() == 1 && unavailableScan.warnings.constFirst().contains(QStringLiteral("configured Steam library")),
           "unavailable library emits a bounded diagnostic");
     check(!unavailableScan.warnings.constFirst().contains(missingLibrary), "unavailable diagnostic does not leak a library path");

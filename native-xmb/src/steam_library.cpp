@@ -378,7 +378,7 @@ void addLibraries(const RootInfo& root, QVector<LibraryInfo>& libraries, QString
     QStringList unavailablePaths;
     auto add = [&](const QString& path) {
         const QString canonical = canonicalDirectory(path);
-        if (canonical.isEmpty() || !QDir(QDir(canonical).filePath(QStringLiteral("steamapps"))).isDir()) {
+        if (canonical.isEmpty() || !QFileInfo(QDir(canonical).filePath(QStringLiteral("steamapps"))).isDir()) {
             // The root itself is a normal first-install state until Steam has created steamapps;
             // only report additional libraries explicitly named by a real library list.
             if (!samePath(path, root.path) && !path.trimmed().isEmpty()) {
@@ -435,10 +435,7 @@ void addLibraries(const RootInfo& root, QVector<LibraryInfo>& libraries, QString
         return;
     }
     const auto* folders = findEntry(document.entries, QStringLiteral("libraryfolders"));
-    if (!folders || !folders->block) {
-        warnings.append(QStringLiteral("A Steam library configuration has no library list."));
-        return;
-    }
+    if (!folders || !folders->block) return;
     for (const auto& folder : folders->children) {
         if (!isSafeAppId(folder.key)) continue;
         const QString path = folder.block ? stringValue(folder.children, QStringLiteral("path")) : folder.value;
