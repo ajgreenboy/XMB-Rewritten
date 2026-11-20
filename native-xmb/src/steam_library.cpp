@@ -365,10 +365,40 @@ QStringList rootsToTry(const QString& explicitRoot) {
     return unique;
 }
 
+bool samePath(const QString& left, const QString& right) {
+#ifdef Q_OS_WIN
+    return normalizedPath(left).compare(normalizedPath(right), Qt::CaseInsensitive) == 0;
+#else
+    return normalizedPath(left) == normalizedPath(right);
+#endif
+}
+
 void addLibraries(const RootInfo& root, QVector<LibraryInfo>& libraries, QStringList& warnings) {
+    int unavailable = 0;
+    QStringList unavailablePaths;
     auto add = [&](const QString& path) {
         const QString canonical = canonicalDirectory(path);
-        if (canonical.isEmpty() || !QDir(QDir(canonical).filePath(QStringLiteral("steamapps"))).exists()) return;
+        if (canonical.isEmpty() || !QDir(QDir(canonical).filePath(QStringLiteral("steamapps"))).isDir()) {
+            // The root itself is a normal first-install state until Steam has created steamapps;
+            // only report additional libraries explicitly named by a real library list.
+            if (!samePath(path, root.path) && !path.trimmed().isEmpty()) {
+                const QString normalized = normalizedPath(path);
+                bool duplicate = false;
+                for (const auto& prior : unavailablePaths) {
+#ifdef Q_OS_WIN
+                    duplicate = prior.compare(normalized, Qt::CaseInsensitive) == 0;
+#else
+                    duplicate = prior == normalized;
+#endif
+                    if (duplicate) break;
+                }
+                if (!duplicate && unavailablePaths.size() < MaximumLibraries) {
+                    unavailablePaths.append(normalized);
+                    ++unavailable;
+                }
+            }
+            return;
+        }
         for (const auto& previous : libraries) {
 #ifdef Q_OS_WIN
             if (previous.path.compare(canonical, Qt::CaseInsensitive) == 0) return;
@@ -385,21 +415,38 @@ void addLibraries(const RootInfo& root, QVector<LibraryInfo>& libraries, QString
     };
 
     add(root.path);
-    const QString config = QDir(root.path).filePath(QStringLiteral("steamapps/libraryfolders.vdf"));
+    // Steam has used both locations. The steamapps form is canonical when present; do not
+    // silently prefer a stale alternate file when the canonical file is corrupt.
+    const QString canonicalConfig = QDir(root.path).filePath(QStringLiteral("steamapps/libraryfolders.vdf"));
+    const QString alternateConfig = QDir(root.path).filePath(QStringLiteral("config/libraryfolders.vdf"));
+    QString config;
+    if (QFileInfo(canonicalConfig).isFile()) config = canonicalConfig;
+    else if (QFileInfo(alternateConfig).isFile()) config = alternateConfig;
+    else return; // The optional library list has not been written yet.
+
     QByteArray bytes;
-    if (!readBounded(config, MaximumConfigBytes, &bytes)) return;
+    if (!readBounded(config, MaximumConfigBytes, &bytes)) {
+        warnings.append(QStringLiteral("A Steam library configuration could not be read."));
+        return;
+    }
     const auto document = parseKeyValues(bytes);
     if (!document.error.isEmpty()) {
         warnings.append(QStringLiteral("A Steam library configuration could not be parsed."));
         return;
     }
     const auto* folders = findEntry(document.entries, QStringLiteral("libraryfolders"));
-    if (!folders || !folders->block) return;
+    if (!folders || !folders->block) {
+        warnings.append(QStringLiteral("A Steam library configuration has no library list."));
+        return;
+    }
     for (const auto& folder : folders->children) {
         if (!isSafeAppId(folder.key)) continue;
         const QString path = folder.block ? stringValue(folder.children, QStringLiteral("path")) : folder.value;
         if (!path.trimmed().isEmpty()) add(path);
     }
+    if (unavailable > 0)
+        warnings.append(QStringLiteral("%1 configured Steam librar%2 unavailable; healthy libraries remain visible.")
+                            .arg(unavailable).arg(unavailable == 1 ? QStringLiteral("y is") : QStringLiteral("ies are")));
 }
 
 void scanLibrary(const QString& steamRoot, const QString& steamId, const QString& library,

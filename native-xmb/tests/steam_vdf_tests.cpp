@@ -780,6 +780,59 @@ int main(int argc, char** argv) {
     check(byName.value(QStringLiteral("login/plain")).startsWith(QStringLiteral("a=2 ae=0")), "plain loginusers.vdf yields two accounts");
     check(byName.value(QStringLiteral("manifest/plain")).contains(QStringLiteral("g=3")), "plain manifest yields all three games");
     check(byName.value(QStringLiteral("folders/plain")).contains(QStringLiteral("g=3 w=0")), "plain libraryfolders.vdf yields three libraries");
+
+    // Targeted discovery regressions: the alternate config location is a fallback only, while
+    // unavailable configured libraries do not hide healthy results or expose their paths.
+    world.reset();
+    const QString missingLibrary = QDir(world.dir.path()).filePath(QStringLiteral("missing-library"));
+    QByteArray unavailableFolders = buildFolders(Style(), world.paths);
+    unavailableFolders.replace(escapedNative(world.paths.lib2).toUtf8(), escapedNative(missingLibrary).toUtf8());
+    check(writeFile(world.target(Role::Folders), unavailableFolders), "write unavailable-library fixture");
+    const SteamInstallation unavailableScan = scanSteam(world.paths.root);
+    check(unavailableScan.games.size() == 2, "unavailable library does not discard healthy games");
+    check(unavailableScan.warnings.size() == 1 && unavailableScan.warnings.constFirst().contains(QStringLiteral("configured Steam library")),
+          "unavailable library emits a bounded diagnostic");
+    check(!unavailableScan.warnings.constFirst().contains(missingLibrary), "unavailable diagnostic does not leak a library path");
+
+    world.reset();
+    const QByteArray folders = buildFolders(Style(), world.paths);
+    check(QFile::remove(world.target(Role::Folders)), "remove canonical libraryfolders fixture");
+    check(writeFile(QDir(world.paths.root).filePath(QStringLiteral("config/libraryfolders.vdf")), folders),
+          "write alternate libraryfolders fixture");
+    const SteamInstallation alternateScan = scanSteam(world.paths.root);
+    check(alternateScan.games.size() == 3 && alternateScan.warnings.isEmpty(),
+          "config/libraryfolders.vdf is used when steamapps config is absent");
+
+    // Both files present: the canonical steamapps location wins, even if the alternate file is bad.
+    check(writeFile(world.target(Role::Folders), folders), "write canonical precedence fixture");
+    check(writeFile(QDir(world.paths.root).filePath(QStringLiteral("config/libraryfolders.vdf")), QByteArray("not valid vdf")),
+          "write corrupt alternate fixture");
+    const SteamInstallation precedenceScan = scanSteam(world.paths.root);
+    check(precedenceScan.games.size() == 3 && precedenceScan.warnings.isEmpty(),
+          "canonical libraryfolders.vdf takes precedence over alternate config");
+
+    check(writeFile(world.target(Role::Folders), QByteArray("not valid vdf")), "write corrupt canonical fixture");
+    check(writeFile(QDir(world.paths.root).filePath(QStringLiteral("config/libraryfolders.vdf")), folders),
+          "restore valid alternate fixture");
+    const SteamInstallation corruptCanonicalScan = scanSteam(world.paths.root);
+    check(corruptCanonicalScan.games.size() == 1 && corruptCanonicalScan.warnings.size() == 1 &&
+              corruptCanonicalScan.warnings.constFirst().contains(QStringLiteral("could not be parsed")),
+          "corrupt canonical config is not silently replaced by alternate config");
+
+    check(QFile::remove(world.target(Role::Folders)), "remove corrupt canonical fixture");
+    check(QFile::remove(QDir(world.paths.root).filePath(QStringLiteral("config/libraryfolders.vdf"))),
+          "remove optional libraryfolders fixtures");
+    const SteamInstallation absentConfigScan = scanSteam(world.paths.root);
+    check(absentConfigScan.games.size() == 1 && absentConfigScan.warnings.isEmpty(),
+          "absent optional library config is not reported as corruption or disconnection");
+
+    world.reset();
+    check(QDir(QDir(world.paths.lib2).filePath(QStringLiteral("steamapps"))).removeRecursively(),
+          "remove configured library steamapps fixture");
+    const SteamInstallation missingSteamAppsScan = scanSteam(world.paths.root);
+    check(missingSteamAppsScan.games.size() == 2 && missingSteamAppsScan.warnings.size() == 1,
+          "missing steamapps reports unavailable library without losing healthy games");
+
     QSet<QString> distinct;
     for (const QString& l : lines) distinct.insert(l.section(QLatin1Char('\t'), 1, 1));
     check(distinct.size() > 40, "the fixtures exercise many distinct outcomes");
