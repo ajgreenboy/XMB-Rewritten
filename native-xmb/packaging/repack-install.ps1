@@ -42,7 +42,7 @@ param(
     [int]    $InstallTimeoutMs = 7200000,         # 2h default; fits large repacks
     [int]    $PageTimeoutMs    = 600000,          # wait for a page before failing
     [string] $Lang             = 'en',
-    [switch] $RevertUac,                          # strip elevation if run from admin shell
+    [switch] $RevertUac                           # elevation through explorer is intentionally unsupported
 )
 
 Set-StrictMode -Version 2.0
