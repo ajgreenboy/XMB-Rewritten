@@ -45,6 +45,10 @@ int main(int argc,char** argv) {
     ok &= check(xmb::verifyAndRegisterPendingInstaller(registry,apps,chooserEntry,&verifyError,QFileInfo(secondGame).canonicalFilePath()),"selected executable completes chooser registration with canonical full path");
     xmb::PendingInstaller bad=entry; bad.destination=temp.filePath("outside");
     ok &= check(!xmb::verifyAndRegisterPendingInstaller(registry,apps,bad,&verifyError),"unsafe destination is refused");
+    xmb::PendingInstaller launching=entry; launching.id=QStringLiteral("launch-job"); launching.destination=QDir(library).filePath("Not Yet Created"); launching.status=QStringLiteral("launching"); launching.helperPid=12345; launching.helperCreationTime=QStringLiteral("1337");
+    ok &= check(xmb::PendingInstallerRegistry::upsert(registry,launching,verifyError),"launching record with a not-yet-created destination is accepted");
+    xmb::PendingInstaller escaping=launching; escaping.id=QStringLiteral("escape-job"); escaping.destination=temp.filePath("outside-escape");
+    ok &= check(!xmb::PendingInstallerRegistry::upsert(registry,escaping,verifyError),"launching record with an escaping destination is still refused");
     QFile corrupt(registry); Q_UNUSED(corrupt.open(QIODevice::WriteOnly|QIODevice::Truncate)); Q_UNUSED(corrupt.write("{broken")); corrupt.close(); QVector<xmb::PendingInstaller> rejected; ok &= check(!xmb::PendingInstallerRegistry::load(registry,rejected,error),"corrupt registry is rejected without bypass");
     return ok?0:1;
 }

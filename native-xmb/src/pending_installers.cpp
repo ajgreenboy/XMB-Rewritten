@@ -95,8 +95,13 @@ bool validatePendingInstallerRecord(PendingInstaller& e, QString* error) {
     if(!archiveParent.startsWith(libraryRoot+QLatin1Char('/'),Qt::CaseInsensitive)) return fail(QStringLiteral("Archive is outside its recorded library root."));
     if(!e.destination.isEmpty()) {
         if(!QDir::isAbsolutePath(e.destination)) return fail(QStringLiteral("Installation destination is not absolute."));
-        const QString destination=QDir(e.destination).canonicalPath();
-        if(destination.isEmpty() || destination==libraryRoot || !destination.startsWith(libraryRoot+QLatin1Char('/'),Qt::CaseInsensitive)) return fail(QStringLiteral("Installation destination is outside its library root."));
+        // The destination may legitimately not exist yet while the installer
+        // runs ("launching"). Prefer the canonical path when the folder exists;
+        // otherwise fall back to the cleaned absolute path, which still resolves
+        // "." and ".." so an escaping destination is rejected either way.
+        QString destination=QDir(e.destination).canonicalPath();
+        if(destination.isEmpty()) destination=QDir(e.destination).absolutePath();
+        if(destination.isEmpty() || destination.compare(libraryRoot,Qt::CaseInsensitive)==0 || !destination.startsWith(libraryRoot+QLatin1Char('/'),Qt::CaseInsensitive)) return fail(QStringLiteral("Installation destination is outside its library root."));
     }
     if(e.status==QStringLiteral("registered") && e.destination.isEmpty()) return fail(QStringLiteral("Registered installer has no verified destination."));
     if(e.status==QStringLiteral("launching") && e.helperPid<=0) return fail(QStringLiteral("Launching installer has no process identity."));
