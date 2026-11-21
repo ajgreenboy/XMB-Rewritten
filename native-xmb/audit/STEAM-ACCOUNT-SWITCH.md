@@ -117,7 +117,7 @@ after every run. No real Steam process or `loginusers.vdf` was touched.
 
 ## Verification
 
-- `tests/steam_switch_tests.cpp` (target `xmb-steam-switch-tests`, `-DXMB_STEAM_SWITCH_BUILD_TESTS=ON`, in CI): 143
+- `tests/steam_switch_tests.cpp` (target `xmb-steam-switch-tests`, `-DXMB_STEAM_SWITCH_BUILD_TESTS=ON`, in CI): 143 before the library refresh work, 178 now
   checks, 0 failures. Pure rewrite: exact output for two accounts, one account, thirty accounts; unknown keys, nested
   blocks, comments, trailing comments; CRLF stays CRLF; missing keys inserted in the block's style; compact one-line
   blocks; bare and quoted values; escapes; byte-order mark; offline keys; the current `AutoLogin`/`timestamp` format;
@@ -133,6 +133,62 @@ after every run. No real Steam process or `loginusers.vdf` was touched.
   (file byte-identical). The real `AutoLoginUser` was compared before and after each run.
 - Gate: see the final report of the commit; no existing gate state reaches these pages (the gate points
   `XMB_STEAM_ROOT` at an empty folder, so there are no accounts), so no pinned frame changed and no reference was saved.
+
+## Library refresh after a switch (2026-11-21)
+
+Until this change `Shell::steamSwitchFinished` only re-scanned `steamAccounts_` and armed the window sweep, so after a
+successful switch the Game column still showed the previous account: `steamId_`, the play records (`steamActivity_`,
+which also drive the last-played order and the detail text), `ownedGames_`/`ownedSignature_`, `collections_`, the
+family list and the per-user grid artwork all belonged to the old account until the XMB restarted.
+
+| Outcome | Library |
+|---|---|
+| `SignedIn`, `OtherAccount` (Steam is signed in as someone) | refreshed for whoever Steam's record names |
+| `LoginWindow` | not yet; refreshed later if Steam reports an ActiveUser (below) |
+| `NotRunning`, `Started`, `Held`, `Failed` | unchanged (nothing the library depends on changed, or the user is still signing in) |
+
+`Shell::steamLibraryAccountChanged(name)` clears `ownedGames_`, `ownedSignature_` and `collections_`, cancels any in-flight
+owned request, then runs `refreshContent()`. That pass re-reads the manifests, the new account's `localconfig.vdf`
+play records, family sharing and the new account's `userdata/<id>/config/grid` art, rebuilds the column, **keeps each
+column's selection by row id where the row still exists**, and at its end calls `refreshOwnedGames()` (only when an API
+key exists) with the new `steamId_`. A notification "Library refreshed for <persona>" follows the last pass (a queued
+second rescan postpones it). The name is what Steam reported, else the active account's persona, else the prompt's label.
+
+**Stale-response guard.** `SteamOwned::requestedId()` is the account its latest `refresh()` asked for; `cancel()` already
+drops older requests, and the `loaded` handler also drops a response whose requested id differs from `steamId_`
+(`ownedResponseIsStale`, src/steam_refresh.h), clears the in-flight flag and asks again for the current account, so an
+owned list for the old account can neither replace the new one nor leave the in-flight flag stuck. An unknown id on
+either side is never called stale.
+
+**LoginWindow and changes made inside Steam.** The window sweep that already polls Steam's `ActiveProcessActiveUser`
+is reused (no new timer): after a `LoginWindow` result it is armed for 10 minutes, and each tick feeds
+`ActiveUserWatch`. The first observation only primes; a later change to a non-zero ActiveUser that differs from the
+column's `steamId_` runs the same refresh. That also catches an account change made inside Steam, but **only while the
+sweep is armed** (after a switch, a LoginWindow result, or the first 8 s / 120 s after a kiosk start) and **only when
+Steam background mode is active** (the sweep does not run with `XMB_STEAM_HIDE=0`, an elevated XMB or the setting
+off). There is deliberately no permanent watcher: a plain account change inside Steam long after those windows is not
+noticed until the library is refreshed some other way (restart, Retry Artwork, a content refresh).
+
+**Not refreshed.** Collections only come from the owned-games handler (they need an API key, as before); without a key the
+collection list stays empty for either account. The Family Shared list is read from the XMB's own `family-shared.json`,
+which is not per account.
+
+### Verification of the refresh
+
+- `tests/steam_switch_tests.cpp`: +35 checks (178 in total, 0 failures): which outcomes refresh or watch, the stale-id
+  rule, ActiveUser to SteamID64, the notice name, and the ActiveUserWatch sequence (prime, quiet, sign-out, change,
+  switch back, reset, login-window then sign-in).
+- `work/steam-switch-refresh-e2e.ts` (a focused script, not a gate state: it needs a scratch registry key and a stand-in
+  that plays Steam): builds a synthetic Steam root (two accounts, three manifests, different play records and grid art per
+  account), runs the real app with `XMB_STEAM_SWITCH_NOPROC=1`, a scratch key and `XMB_STEAM_HIDE=0`, opens Users > Steam
+  Account, picks the other account, answers both prompts, lets the stand-in write ActiveUser, and compares the Game
+  column before and after: order (Bravo, Alpha, Charlie to Charlie, Alpha, Bravo), detail text, grid artwork colour, kept
+  selection by id, the log lines, and that the real `AutoLoginUser` is unchanged. 20 checks pass on this build; the same
+  script against the 0.3.20 build fails the five after-switch checks (the bug).
+- Unverified: a real Steam (the ActiveUser stand-in is a registry write by the script), the owned list and collections
+  after a switch (no network or API key in the run; only the pure guard and the unchanged cancel/generation code are
+  tested), and the LoginWindow-then-sign-in refresh and in-Steam change path (they need a live `steam.exe` pid; the pure
+  watch is tested, the sweep wiring is not run).
 
 ## Not verified
 

@@ -245,7 +245,10 @@ Steam's own record names it. The account switch never handles a password, token 
 takes a Steam password is the SteamCMD sign-in below). What it writes is exactly:
 `configloginusers.vdf` (account flags only, after a timestamped `loginusers.vdf.xmb-backup-<time>` copy next to it) and
 the `AutoLoginUser` / `RememberPassword` values under `HKCUSoftwareValveSteam`; a failure puts both back. An account
-without a saved sign-in is not changed: Steam restarts and the page says to sign in as it once inside Steam. Details,
+without a saved sign-in is not changed: Steam restarts and the page says to sign in as it once inside Steam. When Steam
+comes back signed in (as the account you chose or another), the Game column is refreshed for that account: installed titles,
+last-played order, play records, family sharing, per-user artwork and the owned list (with an API key); the previous
+account's owned list and collections are dropped first. Details,
 flow and test seams: [audit/STEAM-ACCOUNT-SWITCH.md](audit/STEAM-ACCOUNT-SWITCH.md).
 
 **Installing with SteamCMD.** Optionally, **Users > Steam Account > SteamCMD** sets up Valve's command-line Steam client
