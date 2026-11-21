@@ -2087,19 +2087,31 @@ Shell::Shell(QString dataDirectory,Assets& assets,QObject* parent):QObject(paren
     xmb::bootprof::mark("Shell refreshReleaseSources");
     QTimer::singleShot(0,this,&Shell::refreshContent);
     QTimer::singleShot(0,this,&Shell::restoreReleaseJobs);
-    // Test hook (env-gated, never set in production): enqueue a synthetic release
-    // job pointing at a loopback archive so a scripted run can drive the real
-    // download -> extract -> stage -> register -> refresh pipeline with no network.
+#ifdef XMB_TEST_HOOKS
+    // Test-build-only hook (compiled out of release binaries): enqueue a synthetic
+    // release job pointing at a literal loopback archive so a scripted run can drive
+    // the real download -> extract -> stage -> register -> refresh pipeline with no
+    // network. The URL is validated as a literal loopback HTTP endpoint; anything
+    // else is refused so the hook can never fetch from a remote host.
     const QString loopbackUrl=qEnvironmentVariable("XMB_PENDING_LOOPBACK_JOB_URL");
     if(!loopbackUrl.isEmpty()) {
-        QTimer::singleShot(0,this,[this,loopbackUrl]{
-            QString title=qEnvironmentVariable("XMB_PENDING_LOOPBACK_JOB_TITLE");
-            if(title.trimmed().isEmpty())title=QStringLiteral("Loopback Game");
-            Download candidate; candidate.kind=QStringLiteral("direct"); candidate.uri=loopbackUrl;
-            const QString gamesDirectory=QDir(qEnvironmentVariable("XMB_GAME_LIBRARY_ROOT")).filePath(QStringLiteral("XMB Games"));
-            enqueueReleaseGame(title,title,QUrl(),QString(),gamesDirectory,QVector<Download>{candidate});
-        });
+        const QUrl url(loopbackUrl);
+        const QString host=url.host().toLower();
+        const bool loopback=url.isValid() && url.scheme()==QStringLiteral("http") && url.userInfo().isEmpty() &&
+            (host==QStringLiteral("127.0.0.1") || host==QStringLiteral("localhost") || host==QStringLiteral("::1"));
+        if(loopback) {
+            QTimer::singleShot(0,this,[this,loopbackUrl]{
+                QString title=qEnvironmentVariable("XMB_PENDING_LOOPBACK_JOB_TITLE");
+                if(title.trimmed().isEmpty())title=QStringLiteral("Loopback Game");
+                Download candidate; candidate.kind=QStringLiteral("direct"); candidate.uri=loopbackUrl;
+                const QString gamesDirectory=QDir(qEnvironmentVariable("XMB_GAME_LIBRARY_ROOT")).filePath(QStringLiteral("XMB Games"));
+                enqueueReleaseGame(title,title,QUrl(),QString(),gamesDirectory,QVector<Download>{candidate});
+            });
+        } else {
+            qWarning().noquote()<<"test hook: refusing non-loopback job URL";
+        }
     }
+#endif
     connect(qApp,&QCoreApplication::aboutToQuit,this,&Shell::stopReleaseJobs);
     connect(&profiles_,&Profiles::changed,this,[this]{rebuildUsers();emit changed();});
     connect(&profiles_,&Profiles::failed,this,[this](const QString& error){showMessage(error,MessageKind::Page);emit changed();});

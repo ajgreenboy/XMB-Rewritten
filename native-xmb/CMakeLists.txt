@@ -80,6 +80,12 @@ target_link_libraries(re-ps3-native PRIVATE Qt6::ZlibPrivate)
 qt_add_resources(re-ps3-native seerr_icon PREFIX "/service-icons" BASE "src" FILES "src/seerr.png" "src/seerr-icon-LICENSE.txt")
 # The app reports this version to the updater; set it only in project(VERSION ...) above.
 target_compile_definitions(re-ps3-native PRIVATE XMB_APP_VERSION="${PROJECT_VERSION}")
+# Env-gated test hooks are compiled out of release binaries. The only current hook
+# injects a loopback-only download job for the pending-installer completion test.
+option(XMB_TEST_HOOKS "Enable env-gated test hooks in the app (loopback-only download injection)" OFF)
+if(XMB_TEST_HOOKS)
+    target_compile_definitions(re-ps3-native PRIVATE XMB_TEST_HOOKS)
+endif()
 option(XMB_FIRMWARE_BUILD_TESTS "Build firmware synthetic fixture tests" OFF)
 option(XMB_RELEASE_BUILD_TESTS "Build release index and source backend fixture tests" OFF)
 option(XMB_PENDING_INSTALLER_BUILD_TESTS "Build pending installer fixture tests" OFF)

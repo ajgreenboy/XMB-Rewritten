@@ -24,7 +24,7 @@ $vcvars=Join-Path $vs 'VC\Auxiliary\Build\vcvars64.bat'
 $cmake=Join-Path $vs 'Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe'
 $ninja=Join-Path $vs 'Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja\ninja.exe'
 $output=if($OutputDirectory){[IO.Path]::GetFullPath($OutputDirectory)}else{Join-Path $root 'out\integration'}
-$configure='"'+$cmake+'" -S "'+$PSScriptRoot+'" -B "'+$output+'" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="'+$QtRoot+'" -DCMAKE_MAKE_PROGRAM="'+$ninja+'"'
+$configure='"'+$cmake+'" -S "'+$PSScriptRoot+'" -B "'+$output+'" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="'+$QtRoot+'" -DCMAKE_MAKE_PROGRAM="'+$ninja+'" -DXMB_TEST_HOOKS=OFF'
 if($SteamworksHeaders){$configure+=' -DXMB_STEAMWORKS_HEADERS="'+[IO.Path]::GetFullPath($SteamworksHeaders)+'"'}
 cmd /d /c ('call "'+$vcvars+'" >nul && '+$configure)
 if($LASTEXITCODE){throw 'Native CMake configuration failed.'}
