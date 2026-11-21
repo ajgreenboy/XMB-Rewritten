@@ -1,5 +1,6 @@
 #include "coldboot.h"
 #include "design_space.h"
+#include "gameboot_background.h"
 #include "view.h"
 #include <QAudioDecoder>
 #include <QAudioSink>
@@ -454,6 +455,8 @@ struct GameBootState {
     qint64 idleMs=0;int minutes=0;bool allowed=false;QString family;
     bool guideShown=false;QElapsedTimer guideHidden;
     QString guideKey;QImage guideImage;
+    // gameboot1..5 backdrop levels (gameboot_background.h), read from the firmware's BACKGROUND.mnu in attach().
+    std::array<double,5> presetLevel=gameboot::fallbackPresetLevel;
     double guideAmount() {
         const bool want=allowed && GameBoot::guideDue(idleMs,minutes);
         if(want){guideShown=true;return 1;}
@@ -463,6 +466,8 @@ struct GameBootState {
     }
 };
 GameBootState& gameBoot() { static GameBootState state;return state; }
+// XMB_GAMEBOOT_FLAT=1 (local verification): the pre-preset look, a flat black plane, for before/after captures.
+bool gameBootFlat() { static const bool flat=qEnvironmentVariableIntValue("XMB_GAMEBOOT_FLAT")!=0;return flat; }
 bool gameBootDisabled() { static const bool off=qEnvironmentVariableIntValue("XMB_NO_GAMEBOOT")!=0;return off; }
 // XMB_GAMEBOOT_AT=<seconds> (local verification, the pinned-state gate): the sequence is held at that time of
 // anim_gameboot. The clock does not run, the Finished timer is not armed, a press does not skip it and the title is
@@ -501,7 +506,22 @@ bool GameBoot::guideDue(qint64 idleMs,int minutes) {
     return minutes>0 && double(idleMs)>=minutes*60000.-guideWindowSeconds*1000.;
 }
 
-void GameBoot::attach(Assets& assets) { gameBoot().assets=&assets; }
+void GameBoot::attach(Assets& assets) {
+    auto& s=gameBoot();
+    s.assets=&assets;
+    // override/gameboot<n>/BACKGROUND.mnu keys 1 and 2 (the two background colours): their mean is the preset's backdrop
+    // level (gameboot_background.h, INFERRED reduction). A missing file keeps the 4.93 values.
+    Materials& materials=sceneMaterials(assets);
+    for(int n=1;n<=5;++n) {
+        const Materials::Mnu& mnu=materials.background(QStringLiteral("gameboot%1").arg(n));
+        if(!mnu.ok)continue;
+        double sum=0;
+        for(const char* key:{"1 RED","1 GREEN","1 BLUE","2 RED","2 GREEN","2 BLUE"})sum+=mnu.number(QString::fromLatin1(key),0);
+        s.presetLevel[size_t(n-1)]=sum/6;
+    }
+}
+
+double GameBoot::backdropVeil(double t) { return gameBootFlat()?1.:gameboot::veilAt(t,gameBoot().presetLevel); }
 bool GameBoot::active() { return gameBoot().active; }
 double GameBoot::seconds() { auto& s=gameBoot();return s.active?(gameBootPinned()>=0?gameBootPinned():s.clock.nsecsElapsed()/1e9):-1; }
 
@@ -546,11 +566,16 @@ void GameBoot::render(QOpenGLFunctions_3_3_Core& gl,int pixelWidth,int pixelHeig
     QPainter painter(&device);
     painter.setRenderHints(QPainter::Antialiasing|QPainter::TextAntialiasing|QPainter::SmoothPixmapTransform);
     if(boot) {
+        // The XMB's own background, ribbon and particles are already in the target; BG2 (0.25 s) and BG3 (1.25 s) move
+        // them to override/gameboot2 and gameboot3 (TRACED events), modelled as a black veil whose opacity is one minus
+        // the preset blend's backdrop level (gameboot_background.h; the blend curve and the level reduction are INFERRED,
+        // no RPCS3 reference). XMB_GAMEBOOT_FLAT=1 keeps the old flat black plane.
         // game_plugin page_gameboot_bg: ps3logo_back_color, a black plane at alpha 1 (INFERRED to sit under the logo,
         // as gamelib_plugin's page does); custom_render_plugin's ps3logo plane is the RCO's tex_ps3logo, centred.
-        painter.fillRect(QRect(0,0,pixelWidth,pixelHeight),Qt::black);
+        const double bootSeconds=gameBootPinned()>=0?gameBootPinned():s.clock.nsecsElapsed()/1e9;
+        painter.fillRect(QRect(0,0,pixelWidth,pixelHeight),QColor(0,0,0,int(std::lround(255*std::clamp(GameBoot::backdropVeil(bootSeconds),0.,1.)))));
         painter.setTransform(DesignSpace(pixelWidth,pixelHeight).transform());
-        const Logo logo=logoAt(gameBootPinned()>=0?gameBootPinned():s.clock.nsecsElapsed()/1e9);
+        const Logo logo=logoAt(bootSeconds);
         const QImage& image=s.assets->image(QStringLiteral("custom_render_plugin"),QStringLiteral("tex_ps3logo"));
         if(!image.isNull() && logo.alpha>0) {
             painter.setOpacity(logo.alpha);

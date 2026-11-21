@@ -813,7 +813,7 @@ identical results. The generator refuses to touch a folder it did not write.
 | `music-visual-player-panel` | Same, then Triangle and Left: focus on the eighth cell, Visual Player. |
 | `music-visual-player-on` | Visualizer on, playing a silent track. `XMB_MUSICVIS_FIXED=1` feeds a fixed spectrum in place of the audio tap. Only regions above the moving time bar are scored. Live audio levels are NOT gated. |
 | `photo-gallery-piles`, `photo-gallery-grid` | Fixed 374-photo library, pinned render clock, grab after the 7 s help card has timed out (`pause=` token). The log lines are the oracle (no sidecar fields). |
-| `game-boot-logo`, `game-boot-fade-out` | `XMB_GAMEBOOT_AT=<s>` holds the sequence at that time of `anim_gameboot` and never launches the title. |
+| `game-boot-logo`, `game-boot-fade-out` | `XMB_GAMEBOOT_AT=<s>` holds the sequence at that time of `anim_gameboot` and never launches the title (the backdrop veil is part of the frame; `XMB_GAMEBOOT_FLAT=1` gives the old flat black plane). |
 | `auto-off-guide` | `power/idleMinutes` 11 plus the `idle=70000` token; `XMB_POWER_DRY_RUN=1`. |
 | `ingame-xmb` | The stub game is launched by the script's own Enter, then a PS tap. The recipe's `stubLog` lets the harness end exactly the stub pid it logged. Pinned for this machine's window theme only (compositor capture). |
 | `raf-static-scene` | `rafRender` recipes run `--raf-render` on dev_flash `coldboot.raf`; no window, no clock. Gates the renderer only: no XMB surface shows a RAF scene yet. |

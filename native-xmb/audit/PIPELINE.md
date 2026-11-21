@@ -160,7 +160,7 @@ music_1 run during first-time setup and music playback. Updated 2026-10-26: the 
 (`Shell::startTracked`) but still does not schedule gameboot1-5; it has no
 first-time-setup or background-music flow, so welcome_1/2 and music_1 are not scheduled either.
 Updated 2026-11-08: the launch sequence itself is now played ("Game boot and the Auto-Off guide" below); the
-gameboot1-5 background presets it triggers are still not scheduled.
+gameboot2/3 background presets it triggers are modelled by an INFERRED veil (2026-11-21, below); gameboot1/4/5 are not scheduled.
 
 ## Cold boot (ported 2026-10-25)
 
@@ -279,8 +279,11 @@ running skips the splash and gets `startTracked`'s own message. `XMB_NO_GAMEBOOT
 INFERRED: black behind the logo (the black planes are `game_plugin`'s and `gamelib_plugin`'s, and `custom_render_plugin`'s
 own page has none, so the ribbon may show through on the console); the 0.4 s press guard (a held Enter repeats); UI hidden
 from t 0 (the explore plugin's hide is not in `custom_render_plugin`).
-Not modelled: the `gameboot1-5` background presets (the ribbon, HDR, particles and background blends the BG events start;
-hidden under the black plane in the reading above) and any sound.
+Background presets (2026-11-21, INFERRED model, `src/gameboot_background.h`): the sequence plays over the live XMB background,
+which BG2 (t 0, 0.25 s) and BG3 (t 0.5 s, 1.25 s) move to `override/gameboot2` and `gameboot3`, drawn as a black veil
+whose opacity is 1 minus a backdrop level (mean of BACKGROUND.mnu keys 1/2: gameboot2 0.8, gameboot3 0). The blend curve
+(linear), the start level and the one-number reduction are INFERRED; no RPCS3 reference exists. Not modelled: the ribbon,
+HDR and particle presets as real layer inputs, gameboot1/4/5 (not fired by anim_gameboot) and any sound.
 
 **Auto-Off guide (S29).** `FUN_000c3bb4` (vsh.elf 0xc3bb4), per frame, TRACED:
 - The settings (`FUN_000c357c`, 0xc357c) are read from the registry-style table: ids 0x32 / 0x33 give hours, stored as

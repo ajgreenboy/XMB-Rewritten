@@ -106,6 +106,9 @@ public:
     struct Logo { double alpha=0,scale=1; };
     // The logo plane's opacity and scale at t seconds. Pure: the same call answers a capture and a live frame.
     static Logo logoAt(double t);
+    // Opacity (0..1) of the black veil over the live XMB backdrop at t seconds: the gameboot2/3 preset blend
+    // (gameboot_background.h, curve INFERRED). 1 under XMB_GAMEBOOT_FLAT=1.
+    static double backdropVeil(double t);
     // Auto-Off guide: true when idleMs is within the window before minutes elapse (and Auto-Off is on and allowed).
     static bool guideDue(qint64 idleMs,int minutes);
     // Titles and fonts come from the firmware tree; the assets outlive the process's frames.

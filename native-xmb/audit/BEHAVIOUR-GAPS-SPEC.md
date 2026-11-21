@@ -186,7 +186,7 @@ A title launch plays `gameboot1-5` background presets plus the `anim_gameboot` l
   BG events start. The native plays the logo over a plain black fill (`coldboot.cpp:551`).
 
 ### Gap
-1. **B5 (open, narrowed):** the `gameboot1-5` background presets are absent; the logo plays over flat
+1. **B5 (implemented 2026-11-21 as an INFERRED model, see "Implemented" below; was: open, narrowed):** the `gameboot1-5` background presets are absent; the logo plays over flat
    black where the console runs the `gameboot2/3/4/5` background events (0.25 s / 1.25 s / 0.5 s / 0.5 s)
    behind it. The wordmark itself, its timing and the skip rule are done.
 
@@ -197,6 +197,20 @@ A title launch plays `gameboot1-5` background presets plus the `anim_gameboot` l
   `particles.cpp` so no new backend is needed. The logo plane is unchanged. Verify with
   `XMB_GAMEBOOT_AT=<s>` against the traced BG timings; the preset blend curve is the open detail (mark
   INFERRED).
+
+### Implemented (2026-11-21, INFERRED model, not firmware-verified)
+- `src/gameboot_background.h` (pure, `tests/gameboot_background_tests.cpp`): the BG2 (0 s, 0.25 s) and BG3 (0.5 s,
+  1.25 s) events anim_gameboot fires (TRACED), preset selection (from the XMB backdrop to `gameboot2`, then `gameboot3`)
+  and a linear blend. `GameBoot::render` replaces the flat black plane by a black veil of opacity 1 - level over the
+  live XMB background, ribbon and particles; each preset reduces to one backdrop level, the mean of its
+  `BACKGROUND.mnu` keys 1 and 2 read at run time (gameboot2 0.8, gameboot3/4/5 0, gameboot1 about 0.002).
+- INFERRED, with no RPCS3 reference: the linear blend curve, the start level 1 (the XMB backdrop as it was), the
+  one-number reduction of a preset, and a veil standing in for the per-layer blends. NOT modelled: the ribbon
+  (`LINE1`), HDR and particle presets of gameboot2/3 as real layer inputs (only their effect on overall brightness is
+  approximated), and gameboot1/4/5, which anim_gameboot does not fire (their levels are read but nothing schedules them).
+- Verify with `XMB_GAMEBOOT_AT=<s>`; `XMB_GAMEBOOT_FLAT=1` restores the old flat black plane for a before/after
+  capture from the same build. Gate states `game-boot-logo` (1.4 s) and `game-boot-fade-out` (1.68 s) change
+  intentionally (a dimmed XMB backdrop shows behind the wordmark); their references were not re-saved.
 
 ---
 
@@ -300,7 +314,7 @@ None for the chain and result page. Two **deliberate deviations** remain, record
 3. **PS-menu confirm-step back + charge plate (behaviour 1, items 1/3)** — small but on the console's only
    system surface, and the charge panel fix is a ready hunk (`SESSION-POWER.md` 4.3). `shell.cpp` +
    `view.cpp`.
-4. **gameboot1-5 background presets (behaviour 4)** — narrow: the logo, timing and skip rule are done;
+4. **gameboot1-5 background presets (behaviour 4)** — DONE as an INFERRED veil model (2026-11-21); was narrow: the logo, timing and skip rule are done;
    only the background preset blend behind the logo remains. `coldboot.cpp` (+ `ribbon.cpp`/`particles.cpp`).
 5. **Stale confirm text (behaviour 1, item 4)** — trivial string fix tied to item 3's view pass.
 
