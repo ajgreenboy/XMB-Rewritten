@@ -469,6 +469,9 @@ public:
     int mediaChapterCount() const { return int(mediaChapters_.size()); }   // chapter marks of the open title (Jellyfin only), 0 = none
     bool mediaPaused() const;
     bool videoOpen() const;
+    // A video item is open but the player has not reported its video track yet (a local file still loading,
+    // a Jellyfin stream still resolving): the load card is the video card, not the music player's.
+    bool videoPending() const;
     bool mediaSeekable() const;
     // The video control panel's selector buttons. "audio" and "subtitle" open the console-titled lists, "extras" the
     // native-only panel. Returns the sentence to show instead when there is nothing to choose (the container's

@@ -1,6 +1,7 @@
 #include "shell.h"
 #include "pending_installers.h"
 #include "diagnostics.h"
+#include "player_chrome.h"
 #include "elevation.h"
 #include "display_mode.h"
 #include "notify_overlay.h"
@@ -6236,6 +6237,13 @@ QString Shell::appRegistryPath()const{return QDir(dataDirectory_).filePath("apps
 bool Shell::idleDisplayAllowed()const{return !mediaOpen_ && !gameRunning() && message_.isEmpty() && !QApplication::activeModalWidget();}
 bool Shell::mediaPaused()const{return photoOpen()?!slideshow_.isActive():player_->playbackState()!=QMediaPlayer::PlayingState;}
 bool Shell::videoOpen()const{return mediaOpen_ && player_->hasVideo();}
+bool Shell::videoPending()const{
+    if(!mediaOpen_ || photoOpen() || player_->hasVideo())return false;
+    const auto* item=mediaQueue_.current();
+    if(!item)return false;
+    if(jellyfinQueue_)return !jellyfinAudio_.value(item->path);
+    return playerchrome::isVideoPath(item->path.toStdString());
+}
 void Shell::seekMedia(qint64 delta){
     if(!mediaOpen_ || photoOpen() || !player_->isSeekable())return;
     touch();

@@ -403,6 +403,9 @@ private:
     PhotoViewport photoViewport_;
     MediaControls mediaControls_;
     bool previousMediaOpen_=false;
+    qint64 videoLoadSince_=-1;            // clock_ ms when the video load card first drew, -1 when it is not up
+    bool videoChromeShadow_=false;        // the tight shadow for the player chrome over video (playerchrome::kShadow*)
+    void drawVideoBuffering(QPainter& painter,bool card);
     QString previousMediaTitle_;
     // ---- Couch volume: the PC's master volume, the pad's L2/R2, the Windows media keys, and the HUD ----
     // The firmware's own volume display is one page holding a single level meter (videoplayer_plugin.rco

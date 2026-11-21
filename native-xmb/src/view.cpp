@@ -1,5 +1,6 @@
 #include "view.h"
 #include "video_panel.h"
+#include "player_chrome.h"
 #include "live_overlay.h"
 #include "gallery_view.h"
 #include "app_editor.h"
@@ -2309,7 +2310,10 @@ void View::drawSubtitle(QPainter& p,const QString& cue) {
     // readable over a bright frame. The band is centred in the lower third but stops at y 850: the
     // player overlay draws its queue line at 895, the progress bar at 941 and the title at 970, so a cue
     // never lands on the controls, and the long line wraps upward from its bottom edge.
-    const QRectF band(210,650,1500,200);
+    // The bottom edge moves above the control matrix while it is open (playerchrome::subtitleBandBottom), so a cue
+    // is never drawn through the matrix icons, the Repeat icon or the Native plate.
+    const double bandBottom=playerchrome::subtitleBandBottom(videoPanelOpen_);
+    const QRectF band(210,bandBottom-200.,1500,200);
     const int size=32;
     const int flags=Qt::AlignHCenter|Qt::AlignBottom|Qt::TextWordWrap;
     const QColor fill(248,248,248),outline(0,0,0,215);
@@ -2846,19 +2850,28 @@ void View::drawScene(QPainter& p) {
         }
         p.restore();
     };
-    if(shell_.jellyfinVideoSelected() && mediaFrame_.isNull() && shell_.message().isEmpty()) {
+    // The video load card: one presentation for a local file and a Jellyfin stream, from the moment a video
+    // item is opened until its first frame is drawn (playerchrome::loadCardActive). Title on black, the
+    // firmware's loading icon and wait bar with msg_buffering, and the circle key with its label. The music
+    // player's card is never used for a video, and no control bar shows over black.
+    bool videoLoadCard=false;
+    if(shell_.mediaOpen() && !shell_.photoOpen() && mediaFrame_.isNull() && shell_.message().isEmpty() &&
+       (shell_.videoPending() || shell_.videoOpen())) {
+        const auto loadNow=clock_.elapsed();
+        if(videoLoadSince_<0)videoLoadSince_=loadNow;
+        playerchrome::LoadInput in;
+        in.pendingVideo=shell_.videoPending();in.videoOpen=shell_.videoOpen();in.haveFrame=false;
+        in.elapsedMs=loadNow-videoLoadSince_;
+        videoLoadCard=playerchrome::loadCardActive(in);
+    } else videoLoadSince_=-1;
+    if(videoLoadCard) {
         previousMediaOpen_=false;
-        const auto now=clock_.elapsed();
         p.fillRect(QRectF(0,0,1920,1080),Qt::black);
-        text({220,430,1480,52},shell_.mediaTitle(),38,Qt::white,Qt::AlignCenter);
-        p.save();
-        p.setPen(QPen(QColor(255,255,255,180),3,Qt::SolidLine,Qt::RoundCap));
-        p.drawArc(QRectF(943,502,34,34),-int((now%1000)*5760/1000),125*16);
-        p.restore();
-        text({220,554,1480,40},tr("Buffering…"),25,QColor(225,225,225),Qt::AlignCenter);
+        text({220,400,1480,52},shell_.mediaTitle(),38,Qt::white,Qt::AlignCenter);
+        drawVideoBuffering(p,true);
         const auto& back=assets_.image("videoplayer_plugin","tex_cp_help_circle");
         if(!back.isNull())p.drawImage(QRectF(110,1026,86,30),back);
-        text({205,1021,420,42},tr("Back"),21,QColor(230,230,230));
+        text({205,1021,420,42},assets_.text("videoplayer_plugin","msg_quit_playback"),21,QColor(230,230,230));
     } else if(shell_.mediaOpen()) {
         const auto now=clock_.elapsed();
         if(!previousMediaOpen_ || previousMediaTitle_!=shell_.mediaTitle()) {
@@ -2912,6 +2925,17 @@ void View::drawScene(QPainter& p) {
         const double controlOpacity=shell_.mediaOpen() && shell_.mediaDisplayPinned()
             ?1.:(shell_.videoOpen()?mediaControls_.state(now).opacity:1.);
         p.save();p.setOpacity(controlOpacity*panelDim);
+        // Legibility over video: a soft scrim under the bottom band (hints, bar, title) and a tight shadow for the
+        // player's own text. Both are this build's design choice (playerchrome constants), scaled with the scene.
+        videoChromeShadow_=shell_.videoOpen();
+        if(shell_.videoOpen() && !mediaFrame_.isNull()) {
+            QLinearGradient scrim(0,playerchrome::kScrimTop,0,playerchrome::kScrimBottom);
+            for(int i=0;i<=8;++i) {
+                const double y=playerchrome::kScrimTop+(playerchrome::kScrimBottom-playerchrome::kScrimTop)*i/8.;
+                scrim.setColorAt(i/8.,QColor(0,0,0,playerchrome::scrimAlpha(y)));
+            }
+            p.fillRect(QRectF(0,playerchrome::kScrimTop,1920,playerchrome::kScrimBottom-playerchrome::kScrimTop),scrim);
+        }
         // Vertical order of the chrome, bottom band (surface A, audit 3.5): the time bar (941..961), its
         // 16x16 digit cells (963..979), the title (984..1022) and the direct-key hint strip (1026..1056).
         // The ASCII sentence survives only where this build has no firmware icon set to draw: the photo
@@ -2920,19 +2944,17 @@ void View::drawScene(QPainter& p) {
         // The title sits above the hint row. Only the video player needs 984: its 16x16 digit row ends at
         // 979. The photo viewer and the audio player have no such row and keep the 970 this build had, so
         // surface D and the audio chrome are unchanged down to the pixel of their text layout.
-        if(!mediaAudioOnly() && !(shell_.videoOpen() && videoPanelOpen_))text({110,shell_.videoOpen()?984.:970.,1500,38},shell_.mediaTitle(),27,Qt::white);
+        if(!mediaAudioOnly() && !shell_.videoPending() && !(shell_.videoOpen() && videoPanelOpen_)) {
+            if(shell_.videoOpen())mediaPanelText(p,{110,984.,1500,38},shell_.mediaTitle(),27,Qt::white,Qt::AlignLeft|Qt::AlignVCenter);
+            else text({110,970.,1500,38},shell_.mediaTitle(),27,Qt::white);
+        }
         if(shell_.photoOpen())
             text({110,1020,1700,35},QString("Circle Back   Cross ")+(shell_.slideshowActive()?"Pause":"Slideshow")+"   L1/R1 or +/- Zoom   Square/0 Reset   Triangle/Q/E Rotate   Arrows Pan when zoomed   [/] Photo",21,QColor(230,230,230));
-        else if(!shell_.videoOpen() && !mediaAudioOnly())
+        else if(!shell_.videoOpen() && !mediaAudioOnly() && !shell_.videoPending())
             text({110,1020,1700,35},"Circle Back   Cross Play/Pause   Left/Right Seek   L1/R1 or [/] Track   Square/M Shuffle   R Repeat   Triangle Control Panel",21,QColor(230,230,230));
         if(shell_.busy()) {
-            if(shell_.videoOpen()) {
-                text({310,910,1300,36},assets_.text("videoplayer_plugin","msg_buffering"),26,Qt::white);
-                const QImage& loading=assets_.image("videoplayer_plugin","tex_loading_icon");
-                const QImage& wait=assets_.image("videoplayer_plugin","tex_wait_bar");
-                if(!loading.isNull())p.drawImage(QRectF(110,805,90,90),loading);
-                if(!wait.isNull())p.drawImage(QRectF(110,895,90,38),wait);
-            } else text({110,910,1000,45},"Loading…",26,Qt::white);
+            if(shell_.videoOpen())drawVideoBuffering(p,false);
+            else text({110,910,1000,45},"Loading…",26,Qt::white);
         }
         else if(!shell_.photoOpen()) {
             // The queue line's separator arrives doubled ("A-circumflex middot") from
@@ -2945,7 +2967,10 @@ void View::drawScene(QPainter& p) {
             // shell side is fixed.
             QString queueLine=shell_.mediaQueueSummary();
             queueLine.replace(QString(QChar(0x00C2))+QChar(0x00B7),QString(QChar(0x00B7)));
-            if(!mediaAudioOnly() && !videoPanelOpen_ && !gotoActive_)text({110,895,1700,36},queueLine,21,QColor(230,230,230));
+            if(!mediaAudioOnly() && !videoPanelOpen_ && !gotoActive_) {
+                if(shell_.videoOpen())mediaPanelText(p,{110,895,1700,36},queueLine,21,QColor(230,230,230),Qt::AlignLeft|Qt::AlignVCenter);
+                else text({110,895,1700,36},queueLine,21,QColor(230,230,230));
+            }
         }
         else if(photoViewport_.valid())text({110,895,1700,36},QString("Zoom %1%").arg(photoViewport_.zoomPercent(),0,'f',0),21,QColor(230,230,230));
         if(shell_.videoOpen() && !shell_.photoOpen()) {
@@ -2962,6 +2987,7 @@ void View::drawScene(QPainter& p) {
             drawMusicPage(p);
         }
         p.restore();
+        videoChromeShadow_=false;
         if(shell_.videoOpen()) {
             // The console's information page follows an audio or subtitle choice the shell made.
             if(shell_.playerInfoSerial()!=infoSerialSeen_) {
@@ -4240,6 +4266,19 @@ void View::drawVolumeHud(QPainter& p,double opacity) {
 void View::mediaPanelText(QPainter& p,const QRectF& rect,const QString& value,int size,const QColor& colour,int flags) {
     if(textRenderer_.ready()) {
         QFont font(shell_.fontFamily());font.setPixelSize(size);
+        if(videoChromeShadow_) {
+            // The player's own text over video: the XMB default shadow (4/5 px) reads as a doubled glyph on a
+            // bright frame, so it is replaced by a tight dark one (scene px, DPI-scaled like the text).
+            static const Materials::TextMaterial tight=[]{
+                auto material=TextRenderer::defaultMaterial();
+                material.shadowX=playerchrome::kShadowDx;
+                material.shadowY=-playerchrome::kShadowDy;
+                const float grey=float(playerchrome::kShadowGrey);
+                material.shadow=QColor::fromRgbF(grey,grey,grey,1.f);
+                return material;
+            }();
+            textRenderer_.draw(*this,p,rect,value,font,colour,flags,tight,"player-chrome");return;
+        }
         textRenderer_.draw(*this,p,rect,value,font,colour,flags);return;
     }
     QFont font(shell_.fontFamily());font.setPixelSize(size);font.setStyleStrategy(QFont::PreferAntialias);
@@ -4274,12 +4313,21 @@ void View::drawVideoTimeBar(QPainter& p,qint64 position,qint64 duration,double o
             23,Qt::white,Qt::AlignRight|Qt::AlignVCenter);
         return;
     }
+    // Contrast (design choice): the firmware art is a thin pale track that vanishes over light video. A dark rounded
+    // channel behind it gives the track an edge on any frame, and the played part gets a bright core line on top of
+    // the firmware fill, so the position reads at a glance. Both scale with the scene and follow the chrome opacity.
+    p.save();p.setPen(Qt::NoPen);
+    p.setBrush(QColor(0,0,0,150));p.drawRoundedRect(QRectF(bar.left()-3.,bar.top()+2.,bar.width()+6.,bar.height()-4.),7.,7.);
+    p.restore();
     // The track: the 30x20 progression tile nine-sliced (8 px caps keep the end caps at their own width).
     drawNineSlice(p,"videoplayer_plugin","tex_progress_bar",bar,8.,opacity);
     if(ratio>0.) {
         const QRectF played(bar.left(),bar.top(),bar.width()*ratio,bar.height());
         if(played.width()>=16.)drawNineSlice(p,"videoplayer_plugin","tex_progress_bar_in",played,8.,opacity);
         else{p.save();p.setOpacity(opacity);p.drawImage(played,fill);p.restore();}
+        p.save();p.setPen(Qt::NoPen);p.setBrush(QColor(255,255,255,235));
+        p.drawRoundedRect(QRectF(played.left()+1.,bar.top()+bar.height()/2.-2.5,std::max(0.,played.width()-2.),5.),2.5,2.5);
+        p.restore();
     }
     // The jump indicator marks a position on the bar (its own 20x12 art). This build seeks
     // instantaneously and has no scrub state, so there is no pending jump target to mark: it marks the
@@ -4295,12 +4343,9 @@ void View::drawVideoTimeBar(QPainter& p,qint64 position,qint64 duration,double o
     // Two 8-cell groups, as the firmware lays them out (videoplayer_display_playing_time_h1..c2 and
     // play_time_h1..c2, all 16x16): the playing time on the left, the duration on the right.
     const auto time=[&](qint64 ms) {
-        QString value=MediaControls::formatTime(ms);
-        if(shell_.videoOpen() && ms>=0) {
-            if(value.size()==5)value.prepend(QStringLiteral("00:"));
-            else if(value.size()==7)value.prepend(QLatin1Char('0'));
-        }
-        return value;
+        // Video: always HH:MM:SS (playerchrome::clockLabel), so both labels keep one width across a minute or hour.
+        if(shell_.videoOpen() && ms>=0)return QString::fromLatin1(playerchrome::clockLabel(ms).c_str());
+        return MediaControls::formatTime(ms);
     };
     if(gotoActive_ && shell_.videoOpen())drawVideoGoto(p,bar,opacity);   // the jump spinners replace the playing time
     else drawTimeCells(p,time(position),bar.left(),bar.bottom()+2.,false,opacity);
@@ -4386,6 +4431,25 @@ void View::drawTrickplayPreview(QPainter& p,double opacity) {
     mediaPanelText(p,QRectF(panel.left()+8,image.bottom()+3,panelW-16,21),time,17,Qt::white,Qt::AlignCenter);
     p.restore();
 }
+// The one buffering presentation: the firmware's loading icon and wait bar with msg_buffering, used both on the
+// video load card (centred under the title, before the first frame) and as the overlay when a started video has to
+// rebuffer (bottom left, over the picture and its scrim). Layout is this build's design choice; the icon, bar and
+// string are the container's. No hardcoded user-facing text: a missing string shows its resource id.
+void View::drawVideoBuffering(QPainter& p,bool card) {
+    const QImage& loading=assets_.image("videoplayer_plugin","tex_loading_icon");
+    const QImage& wait=assets_.image("videoplayer_plugin","tex_wait_bar");
+    const QString label=assets_.text("videoplayer_plugin","msg_buffering");
+    if(card) {
+        const QRectF iconRect(960.-45.,500.,90.,90.);
+        if(!loading.isNull())p.drawImage(iconRect,loading);
+        if(!wait.isNull())p.drawImage(QRectF(960.-45.,iconRect.bottom()+4.,90.,38.),wait);
+        mediaPanelText(p,QRectF(460,iconRect.bottom()+50.,1000,40),label,26,Qt::white,Qt::AlignHCenter|Qt::AlignVCenter);
+        return;
+    }
+    if(!loading.isNull())p.drawImage(QRectF(110,800,90,90),loading);
+    if(!wait.isNull())p.drawImage(QRectF(110,894,90,38),wait);
+    mediaPanelText(p,QRectF(214,894,900,38),label,26,Qt::white,Qt::AlignLeft|Qt::AlignVCenter);
+}
 // Surface A, the direct-key hint strip. The firmware's panel hint is one 86x30 tex_cp_help_* key icon plus
 // the focused control's own name from videoplayer_plugin's text table (videoplayer_cp_help and
 // videoplayer_cp_button_name, audit 3.2/3.4/3.6); this build has six bindings, so six pairs are drawn in
@@ -4399,9 +4463,27 @@ void View::drawVideoHelpStrip(QPainter& p) {
         // All eight direct-key materials provided by this RCO. Pixel spacing is a fit in 110..1810;
         // the template help plane has no image/rect and its runtime composition is not available.
         const char* keys[]={"circle","cross","l1","l2_left","r1","r2_right","select","start"};
+        // Each key carries its name, as the closed strip and the OSD do. The words are the containers' own: the
+        // video plugin's strings (trailing key gaiji dropped, the art is drawn instead) and system_plugin's
+        // Back / Enter for the two keys that navigate the matrix. Which word goes with which key is a design choice.
+        const auto word=[&](const char* container,const char* key) {
+            QString value=assets_.text(container,key);
+            while(!value.isEmpty() && value.back().unicode()>=0xE000 && value.back().unicode()<=0xF8FF)value.chop(1);
+            return value.trimmed();
+        };
+        QString panelWord=assets_.text("videoplayer_plugin","msg_help_control_panel_home_menu").split(QLatin1Char('\n')).value(0);
+        if(!panelWord.isEmpty() && panelWord.front().unicode()>=0xE000 && panelWord.front().unicode()<=0xF8FF)panelWord.remove(0,1);
+        panelWord=panelWord.trimmed();
+        if(panelWord.startsWith(QLatin1Char(':')))panelWord=panelWord.mid(1).trimmed();
+        const QString words[8]={word("system_plugin","msg_back"),word("system_plugin","msg_enter"),word("videoplayer_plugin","msg_prev_with_icon"),
+            word("videoplayer_plugin","msg_fast_r_with_icon"),word("videoplayer_plugin","msg_next_with_icon"),word("videoplayer_plugin","msg_fast_f_with_icon"),
+            word("videoplayer_plugin","msg_display_display_with_icon"),panelWord};
+        const qreal pitch=1700./8.;   // eight slots in the 110..1810 band, icon then label
         for(int i=0;i<8;++i) {
+            const qreal x=110.+i*pitch;
             const QImage& art=assets_.image("videoplayer_plugin",QStringLiteral("tex_cp_help_")+keys[i]);
-            if(!art.isNull())p.drawImage(QRectF(110.+i*(1700.-86.)/7.,1026.,86.,30.),art);
+            if(!art.isNull())p.drawImage(QRectF(x,1026.,86.,30.),art);
+            mediaPanelText(p,QRectF(x+86.+4.,1026.,pitch-86.-6.,30.),words[i],17,QColor(238,238,238),Qt::AlignLeft|Qt::AlignVCenter);
         }
         return;
     }
@@ -4688,8 +4770,8 @@ void View::drawVideoPanel(QPainter& p) {
         }
         const QString name=QString::fromLatin1(button.icon);
         const QImage& art=assets_.image("videoplayer_plugin",name);
-        // Reuse the XMB's existing disabled-row icon dim, not a claimed firmware availability alpha.
-        p.save();p.setOpacity(inherited*(button.command==Command::Unavailable?.5:1.));
+        // Unavailable controls sit clearly below the available ones (design choice; the container has no availability alpha).
+        p.save();p.setOpacity(inherited*(button.command==Command::Unavailable?.3:1.));
         const QImage& shadow=assets_.image("videoplayer_plugin",name+"_shadow");
         if(!shadow.isNull())p.drawImage(box,shadow);
         if(!art.isNull())p.drawImage(box,art);
@@ -5082,7 +5164,7 @@ void View::drawMusicPage(QPainter& p) {
 }
 // A local audio item is what the XMB panel belongs to: no video track, and not the photo viewer.
 bool View::mediaAudioOnly() const {
-    return shell_.mediaOpen() && !shell_.videoOpen() && !shell_.photoOpen() && !shell_.jellyfinVideoSelected();
+    return shell_.mediaOpen() && !shell_.videoOpen() && !shell_.photoOpen() && !shell_.jellyfinVideoSelected() && !shell_.videoPending();
 }
 void View::toggleMusicPanel() {
     if(!mediaAudioOnly())return;
