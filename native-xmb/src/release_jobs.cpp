@@ -756,6 +756,22 @@ void Shell::refreshReleaseJobRows() {
     emit changed();
 }
 
+QStringList Shell::configuredGameLibraryRoots() const {
+    QStringList roots;
+    const QString override=qEnvironmentVariable("XMB_GAME_LIBRARY_ROOT");
+    if(!override.isEmpty()) roots.append(QDir::cleanPath(override));
+    // A recovery journal is written to <gamesDirectory>/Pending Installers/<id>,
+    // and the scan roots are the directories that own "XMB Games" (the drive),
+    // matching gameLibraryRoots()'s drive semantics but only for roots that are
+    // actually configured, so a disconnected drive is never enumerated.
+    if(releaseJobs_) for(const auto& job:releaseJobs_->jobs) {
+        const QString gamesDirectory=QDir::cleanPath(job.request.gamesDirectory);
+        if(gamesDirectory.isEmpty()) continue;
+        roots.append(QFileInfo(gamesDirectory).absolutePath());
+    }
+    return roots;
+}
+
 bool Shell::enqueueReleaseGame(const QString& title,const QString& releaseTitle,const QUrl& sourceUrl,
                               const QString& sourceSlug,const QString& gamesDirectory,const QVector<Download>& candidates) {
     if(diagnostics::safeMode()) {

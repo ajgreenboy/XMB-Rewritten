@@ -12,10 +12,12 @@
 #     [-Exe <path-to-re-ps3-native.exe>] [-DevFlash <path-to-dev_flash>]
 # ---------------------------------------------------------------------------
 param(
-    [string]$Exe = 'C:\Users\Albert\.local\share\opencode\worktree\5d5811\pending-recheck-build\re-ps3-native.exe',
-    [string]$DevFlash = 'C:\dev\rpcs3\bin\dev_flash'
+    [Parameter(Mandatory)][string]$Exe,
+    [Parameter(Mandatory)][string]$DevFlash
 )
 $ErrorActionPreference = 'Stop'
+if (-not (Test-Path $Exe)) { throw "Exe not found: $Exe" }
+if (-not (Test-Path $DevFlash)) { throw "DevFlash not found: $DevFlash" }
 
 $root = Join-Path $env:TEMP ('xmb-row-reg-' + [guid]::NewGuid())
 $library = Join-Path $root 'drive'

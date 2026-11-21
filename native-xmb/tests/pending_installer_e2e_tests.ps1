@@ -17,11 +17,14 @@
 # ---------------------------------------------------------------------------
 param(
     [ValidateSet('single','chooser')] [string]$Mode = 'single',
-    [string]$Exe = 'C:\Users\Albert\.local\share\opencode\worktree\5d5811\pending-recheck-build\re-ps3-native.exe',
-    [string]$Helper = 'C:\Users\Albert\.local\share\opencode\worktree\5d5811\pending-recheck-build\repack-install.ps1',
-    [string]$DevFlash = 'C:\dev\rpcs3\bin\dev_flash'
+    [Parameter(Mandatory)][string]$Exe,
+    [Parameter(Mandatory)][string]$DevFlash,
+    [string]$Helper = ''
 )
 $ErrorActionPreference = 'Stop'
+if (-not (Test-Path $Exe)) { throw "Exe not found: $Exe" }
+if (-not (Test-Path $DevFlash)) { throw "DevFlash not found: $DevFlash" }
+if (-not $Helper) { $Helper = Join-Path (Split-Path $Exe) 'repack-install.ps1' }
 
 $root = Join-Path $env:TEMP ('xmb-e2e-' + [guid]::NewGuid())
 $library = Join-Path $root 'drive'

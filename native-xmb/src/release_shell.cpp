@@ -102,8 +102,8 @@ void Shell::openPendingInstallers() {
     }
     if(registryChanged) { QString saveError; PendingInstallerRegistry::upsert(registryPath,entries.first(),saveError); for(int i=1;i<entries.size();++i)PendingInstallerRegistry::upsert(registryPath,entries[i],saveError); }
     // Reconcile manifests left by a crash or injected registry-write failure.
-    for(const auto& root:gameLibraryRoots()) {
-        const QDir pendingRoot(QDir(root.second).filePath(QStringLiteral("XMB Games/Pending Installers")));
+    for(const auto& root:configuredGameLibraryRoots()) {
+        const QDir pendingRoot(QDir(root).filePath(QStringLiteral("XMB Games/Pending Installers")));
         for(const auto& dir:pendingRoot.entryInfoList(QDir::Dirs|QDir::NoDotAndDotDot|QDir::NoSymLinks)) {
             QFile manifest(QDir(dir.absoluteFilePath()).filePath(QStringLiteral(".xmb-pending-recovery.json")));
             if(!manifest.open(QIODevice::ReadOnly))continue;

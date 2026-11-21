@@ -1512,7 +1512,7 @@ void Shell::refreshContent() {
                 // between Download Games and Manage, matching the direct Game placement.
                 category.entries.erase(std::remove_if(category.entries.begin(),category.entries.end(),
                     [](const Entry& e){return e.id==QStringLiteral("game:pending-installers");}),category.entries.end());
-                if(pendingInstallerArtifactsAvailable(QDir(dataDirectory_).filePath(QStringLiteral("pending-installers.json")))) {
+                if(pendingInstallerArtifactsAvailable(QDir(dataDirectory_).filePath(QStringLiteral("pending-installers.json")), configuredGameLibraryRoots())) {
                     auto pend=item(QStringLiteral("game:pending-installers"),QObject::tr("Pending Installers"),QStringLiteral("item_tex_plain_folder"),QStringLiteral("explore_plugin_full"),Action::PendingInstallers);
                     const auto manage=std::find_if(category.entries.cbegin(),category.entries.cend(),[](const Entry& e){return e.id==QStringLiteral("game:manage-hub");});
                     category.entries.insert(manage==category.entries.cend()?category.entries.end():manage,std::move(pend));
@@ -2087,6 +2087,19 @@ Shell::Shell(QString dataDirectory,Assets& assets,QObject* parent):QObject(paren
     xmb::bootprof::mark("Shell refreshReleaseSources");
     QTimer::singleShot(0,this,&Shell::refreshContent);
     QTimer::singleShot(0,this,&Shell::restoreReleaseJobs);
+    // Test hook (env-gated, never set in production): enqueue a synthetic release
+    // job pointing at a loopback archive so a scripted run can drive the real
+    // download -> extract -> stage -> register -> refresh pipeline with no network.
+    const QString loopbackUrl=qEnvironmentVariable("XMB_PENDING_LOOPBACK_JOB_URL");
+    if(!loopbackUrl.isEmpty()) {
+        QTimer::singleShot(0,this,[this,loopbackUrl]{
+            QString title=qEnvironmentVariable("XMB_PENDING_LOOPBACK_JOB_TITLE");
+            if(title.trimmed().isEmpty())title=QStringLiteral("Loopback Game");
+            Download candidate; candidate.kind=QStringLiteral("direct"); candidate.uri=loopbackUrl;
+            const QString gamesDirectory=QDir(qEnvironmentVariable("XMB_GAME_LIBRARY_ROOT")).filePath(QStringLiteral("XMB Games"));
+            enqueueReleaseGame(title,title,QUrl(),QString(),gamesDirectory,QVector<Download>{candidate});
+        });
+    }
     connect(qApp,&QCoreApplication::aboutToQuit,this,&Shell::stopReleaseJobs);
     connect(&profiles_,&Profiles::changed,this,[this]{rebuildUsers();emit changed();});
     connect(&profiles_,&Profiles::failed,this,[this](const QString& error){showMessage(error,MessageKind::Page);emit changed();});

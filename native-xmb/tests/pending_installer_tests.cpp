@@ -66,6 +66,20 @@ int main(int argc,char** argv) {
             ok &= check(!xmb::PendingInstallerRegistry::upsert(registry,reparse,verifyError),"launching record with a junction parent escaping the library is refused");
             QDir().rmdir(junction);   // removes the junction, not its target
         }
+        // A junction at the destination leaf itself must also be rejected: the
+        // existing path is fully canonicalized, so a leaf reparse point that
+        // escapes the library is caught by the same policy.
+        QTemporaryDir outsideLeaf;
+        const QString leafJunction=QDir(library).filePath(QStringLiteral("escape-leaf"));
+        QProcess leafMklink;
+        leafMklink.start(QStringLiteral("cmd.exe"),{QStringLiteral("/c"),QStringLiteral("mklink"),QStringLiteral("/J"),
+            QDir::toNativeSeparators(leafJunction),QDir::toNativeSeparators(outsideLeaf.path())});
+        leafMklink.waitForFinished(10000);
+        if(leafMklink.exitStatus()==QProcess::NormalExit && leafMklink.exitCode()==0) {
+            QString leafError;
+            ok &= check(xmb::canonicalInstallDestination(library,leafJunction,&leafError).isEmpty(),"destination leaf junction escaping the library is refused");
+            QDir().rmdir(leafJunction);
+        }
     }
 #endif
     {

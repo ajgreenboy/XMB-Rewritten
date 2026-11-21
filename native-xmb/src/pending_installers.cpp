@@ -85,13 +85,27 @@ QString canonicalInstallDestination(const QString& libraryRoot, const QString& d
     const QString rootCanon=QDir(libraryRoot).canonicalPath();
     if(rootCanon.isEmpty()) return fail(QStringLiteral("Pending installer roots are unavailable."));
     if(!QDir::isAbsolutePath(destination)) return fail(QStringLiteral("Installation destination is not absolute."));
+    // When the destination already exists, canonicalize it in full: this resolves
+    // a reparse point (junction/symlink) at the leaf and rejects one that escapes
+    // the library root (matching the verify/register boundary).
+    const QString existing=QDir(destination).canonicalPath();
+    if(!existing.isEmpty()) {
+        const QFileInfo existingInfo(destination);
+        // A destination leaf that is itself a reparse point (NTFS junction or
+        // symlink) is refused outright: the installer creates a real directory,
+        // never a link that could redirect writes elsewhere.
+        if(existingInfo.isJunction() || existingInfo.isSymLink())
+            return fail(QStringLiteral("Installation destination is a link."));
+        if(existing.compare(rootCanon,Qt::CaseInsensitive)==0 || !existing.startsWith(rootCanon+QLatin1Char('/'),Qt::CaseInsensitive))
+            return fail(QStringLiteral("Installation destination is outside its library root."));
+        return existing;
+    }
+    // Leaf does not exist yet: canonicalize the existing parent (resolving every
+    // junction/symlink in the parent chain) and require the direct-child layout
+    // the launcher enforces.
     const QFileInfo info(QDir(destination).absolutePath());
     const QString leaf=info.fileName();
     if(leaf.isEmpty() || leaf==QLatin1Char('.') || leaf==QLatin1String("..")) return fail(QStringLiteral("Installation destination is invalid."));
-    // Canonicalize the deepest existing ancestor: the leaf may not exist yet,
-    // and canonicalPath() resolves every junction/symlink in the parent chain,
-    // so an escape through a reparse point is rejected instead of being masked
-    // by a lexical prefix. The launcher requires a direct child of the library.
     const QString parentCanon=QDir(info.dir().absolutePath()).canonicalPath();
     if(parentCanon.isEmpty()) return fail(QStringLiteral("Installation destination parent is unavailable."));
     if(parentCanon.compare(rootCanon,Qt::CaseInsensitive)!=0) return fail(QStringLiteral("Installation destination is outside its library root."));
@@ -144,17 +158,14 @@ bool validatePendingInstallerRecord(PendingInstaller& e, QString* error) {
     return true;
 }
 
-bool pendingInstallerArtifactsAvailable(const QString& registryPath) {
+bool pendingInstallerArtifactsAvailable(const QString& registryPath, const QStringList& libraryRoots) {
     QVector<PendingInstaller> entries; QString ignored;
     if(QFileInfo::exists(registryPath)) {
         if(!PendingInstallerRegistry::load(registryPath,entries,ignored) || !entries.isEmpty()) return true;
     }
-    QVector<QString> roots;
-    const QString override=qEnvironmentVariable("XMB_GAME_LIBRARY_ROOT");
-    if(!override.isEmpty()) roots.append(QDir::cleanPath(override));
-    for(const auto& drive:QDir::drives()) roots.append(QDir::cleanPath(drive.absolutePath()));
     QSet<QString> seen;
-    for(const auto& root:roots) {
+    for(const auto& raw:libraryRoots) {
+        const QString root=QDir::cleanPath(raw);
         if(root.isEmpty() || seen.contains(root)) continue;
         seen.insert(root);
         const QStringList pendingRoots={QDir(root).filePath(QStringLiteral("XMB Games/Pending Installers")),QDir(root).filePath(QStringLiteral("Pending Installers"))};

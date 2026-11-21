@@ -1313,6 +1313,11 @@ private:
     void restoreReleaseJobs();
     bool saveReleaseJobs() const;
     bool hasPausableReleaseJobs() const;
+    // The configured game-library roots (the XMB_GAME_LIBRARY_ROOT override plus
+    // every queued/restored release job's gamesDirectory). This is what the
+    // routine pending-installer refresh scans for recovery manifests; it never
+    // enumerates all drives, so a disconnected network drive cannot freeze XMB.
+    QStringList configuredGameLibraryRoots() const;
     bool hasPausedReleaseJobs() const;
     void pauseAllReleaseJobs();
     void resumeAllReleaseJobs();

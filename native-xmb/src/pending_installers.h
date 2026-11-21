@@ -41,7 +41,11 @@ QString canonicalInstallDestination(const QString& libraryRoot, const QString& d
 // XMB_PENDING_STAGING_RENAME_FAIL force each stage to fail. On failure the
 // staging folder is left in place so the caller decides whether to keep it.
 QString stagePendingInstallerFolder(const QString& stagingPath, const QString& pendingRoot, const QByteArray& recoveryBytes);
-bool pendingInstallerArtifactsAvailable(const QString& registryPath);
+// Reports whether a pending-installer record or an orphaned recovery manifest
+// exists. Only the caller-supplied library roots are scanned for recovery
+// manifests (never all drives), so the routine UI refresh cannot block on a
+// disconnected network drive.
+bool pendingInstallerArtifactsAvailable(const QString& registryPath, const QStringList& libraryRoots);
 bool verifyAndRegisterPendingInstaller(const QString& registryPath, const QString& appsPath,
                                        const PendingInstaller& entry, QString* error = nullptr,
                                        const QString& selectedExecutable = {});
