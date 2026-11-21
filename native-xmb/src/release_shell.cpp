@@ -213,7 +213,7 @@ void Shell::installPendingInstaller(const QString& id,const QString& destination
         const QString helper=QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("repack-install.ps1"));
         if(!QFileInfo(helper).isFile()){showMessage(tr("Install"),tr("The packaged installer helper is missing."),MessageKind::Page);emit changed();return;}
         auto* process=new QProcess(this);
-        connect(process, qOverload<int,QProcess::ExitStatus>(&QProcess::finished), this, [this,process,id](int code,QProcess::ExitStatus exitStatus){
+        connect(process, qOverload<int,QProcess::ExitStatus>(&QProcess::finished), this, [this,process,id](int, QProcess::ExitStatus exitStatus){
             const QString registry=QDir(dataDirectory_).filePath(QStringLiteral("pending-installers.json"));
             QVector<PendingInstaller> current; QString registryError;
             QString helperStatus,helperMessage,creationTime; QVector<qint64> processIds; QStringList creationTimes;

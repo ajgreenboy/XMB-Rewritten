@@ -191,8 +191,8 @@ bool PendingInstallerRegistry::load(const QString& path, QVector<PendingInstalle
         e.id=o.value("id").toString(); e.title=o.value("title").toString(); e.installerPath=o.value("installer").toString();
         e.archivePath=o.value("archive").toString(); e.destination=o.value("destination").toString(); e.libraryRoot=o.value("libraryRoot").toString(); e.sha256=o.value("sha256").toString();
         e.status=o.value("status").toString(); e.error=o.value("error").toString().left(1024); e.helperPid=qint64(o.value("helperPid").toDouble()); e.helperCreationTime=o.value("helperCreationTime").toString();
-        for(const auto value:o.value("retainedProcessIds").toArray())e.retainedProcessIds.append(qint64(value.toDouble()));
-        for(const auto value:o.value("retainedProcessCreationTimes").toArray())e.retainedProcessCreationTimes.append(value.toString());
+        for(const auto pid:o.value("retainedProcessIds").toArray())e.retainedProcessIds.append(qint64(pid.toDouble()));
+        for(const auto ts:o.value("retainedProcessCreationTimes").toArray())e.retainedProcessCreationTimes.append(ts.toString());
         if(ids.contains(e.id) || (e.status!=QStringLiteral("pending") && e.status!=QStringLiteral("launching") && e.status!=QStringLiteral("launch-failed") && e.status!=QStringLiteral("helper-exited-needs-verification") && e.status!=QStringLiteral("helper-failed") && e.status!=QStringLiteral("timeout") && e.status!=QStringLiteral("process-still-running") && e.status!=QStringLiteral("manual-review") && e.status!=QStringLiteral("no-window") && e.status!=QStringLiteral("nonzero") && e.status!=QStringLiteral("helper-failed-or-still-running") && e.status!=QStringLiteral("unavailable") && e.status!=QStringLiteral("registered")) || !validatePendingInstallerRecord(e,&error)) { if(error.isEmpty())error=QStringLiteral("Pending installer entry is invalid."); entries.clear(); return false; }
         ids.insert(e.id); entries.append(e);
     }
