@@ -5,10 +5,23 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 find_package(Qt6 6.8 REQUIRED COMPONENTS Widgets OpenGLWidgets Multimedia Concurrent Network)
 find_package(Freetype QUIET)
-find_package(Qt6ZlibPrivate CONFIG REQUIRED)
 if(NOT Freetype_FOUND)
     find_package(Qt6BundledFreetype CONFIG REQUIRED)
     find_package(Qt6FreetypePrivate CONFIG REQUIRED)
+endif()
+# zlib: Qt ships Qt6ZlibPrivate only in the Windows SDK, so fall back to the
+# system zlib on other platforms. XMB_ZLIB is referenced at every link site.
+find_package(Qt6ZlibPrivate CONFIG QUIET)
+if(TARGET Qt6::ZlibPrivate)
+    set(XMB_ZLIB Qt6::ZlibPrivate)
+else()
+    find_package(ZLIB REQUIRED)
+    set(XMB_ZLIB ZLIB::ZLIB)
+endif()
+if(WIN32)
+    set(XMB_WIN32_ONLY_SOURCES src/desktop_pad_win.cpp)
+else()
+    set(XMB_WIN32_ONLY_SOURCES "")
 endif()
 qt_add_executable(re-ps3-native
     src/main.cpp src/assets.cpp src/assets.h src/p3t.cpp src/p3t.h src/qrc.cpp src/qrc.h src/catalog.cpp src/catalog.h
@@ -74,9 +87,9 @@ qt_add_executable(re-ps3-native
     src/jellyfin_player.cpp src/jellyfin_player.h src/jellyfin_shell.cpp src/jellyfin_music_shell.cpp src/jellyfin_setup.cpp src/jellyfin_setup.h src/jellyfin_setup_shell.cpp
     src/rsx_program.cpp src/rsx_program.h src/ribbon.cpp src/ribbon.h src/uniform_cache.cpp src/uniform_cache.h src/render_gate.cpp src/render_gate.h src/idle_profile.h src/frame_trace.h src/hdr.cpp src/hdr.h src/icons.cpp src/icons.h src/particles.cpp src/particles.h src/coldboot.cpp src/coldboot.h
     src/setup.cpp src/setup.h src/setup_shell.cpp src/release_shell.cpp src/release_jobs.cpp src/game_details.cpp src/add_game_shell.cpp
-    src/autostart.cpp src/autostart.h src/autologon.cpp src/autologon.h src/cec.cpp src/cec.h src/display_mode.cpp src/display_mode.h src/display_spec.h src/diagnostics.cpp src/diagnostics.h src/game_capture.cpp src/game_capture.h src/elevation.cpp src/elevation.h src/text_entry.cpp src/text_entry.h src/shell.cpp src/shell.h src/host.cpp src/host.h src/pad.cpp src/pad.h src/ps_watcher.cpp src/ps_watcher.h src/web_adopt.cpp src/web_adopt.h src/desktop_mode.cpp src/desktop_mode.h src/desktop_pad.cpp src/desktop_pad_win.cpp src/desktop_pad.h src/view.cpp src/view.h src/dialogs.cpp)
+    src/autostart.cpp src/autostart.h src/autologon.cpp src/autologon.h src/cec.cpp src/cec.h src/display_mode.cpp src/display_mode.h src/display_spec.h src/diagnostics.cpp src/diagnostics.h src/game_capture.cpp src/game_capture.h src/elevation.cpp src/elevation.h src/text_entry.cpp src/text_entry.h src/shell.cpp src/shell.h src/host.cpp src/host.h src/pad.cpp src/pad.h src/ps_watcher.cpp src/ps_watcher.h src/web_adopt.cpp src/web_adopt.h src/desktop_mode.cpp src/desktop_mode.h src/desktop_pad.cpp ${XMB_WIN32_ONLY_SOURCES} src/desktop_pad.h src/view.cpp src/view.h src/dialogs.cpp)
 target_link_libraries(re-ps3-native PRIVATE Qt6::Widgets Qt6::OpenGLWidgets Qt6::Multimedia Qt6::Concurrent Qt6::Network)
-target_link_libraries(re-ps3-native PRIVATE Qt6::ZlibPrivate)
+target_link_libraries(re-ps3-native PRIVATE ${XMB_ZLIB})
 qt_add_resources(re-ps3-native seerr_icon PREFIX "/service-icons" BASE "src" FILES "src/seerr.png" "src/seerr-icon-LICENSE.txt")
 # The app reports this version to the updater; set it only in project(VERSION ...) above.
 target_compile_definitions(re-ps3-native PRIVATE XMB_APP_VERSION="${PROJECT_VERSION}")
@@ -103,7 +116,7 @@ if(XMB_FIRMWARE_BUILD_TESTS)
     qt_add_executable(xmb-firmware-tests tests/firmware_tests.cpp src/firmware_install.cpp src/firmware_extract.cpp src/firmware_crypto.cpp)
     target_include_directories(xmb-firmware-tests PRIVATE src)
     target_compile_definitions(xmb-firmware-tests PRIVATE XMB_FIRMWARE_NO_EMBEDDED_KEYS)
-    target_link_libraries(xmb-firmware-tests PRIVATE Qt6::Core Qt6::ZlibPrivate)
+    target_link_libraries(xmb-firmware-tests PRIVATE Qt6::Core ${XMB_ZLIB})
 endif()
 qt_add_executable(xmb-updater updater/updater_main.cpp src/updater.cpp src/updater.h)
 target_include_directories(xmb-updater PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -389,14 +402,16 @@ endif()
 # trigger another link. build.ps1 calls the same helper with the start-of-build
 # snapshot; a direct build snapshots the sources at link time instead.
 get_filename_component(XMB_REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/.." ABSOLUTE)
-add_custom_command(TARGET re-ps3-native POST_BUILD
-    COMMAND powershell -NoProfile -ExecutionPolicy Bypass -File
-            "${CMAKE_CURRENT_SOURCE_DIR}/write-build-info.ps1"
-            -OutputDirectory "${CMAKE_BINARY_DIR}"
-            -ProjectRoot "${XMB_REPO_ROOT}"
-            -Configuration "$<CONFIG>"
-    COMMENT "Refresh build-info.json"
-    VERBATIM)
+if(WIN32)
+    add_custom_command(TARGET re-ps3-native POST_BUILD
+        COMMAND powershell -NoProfile -ExecutionPolicy Bypass -File
+                "${CMAKE_CURRENT_SOURCE_DIR}/write-build-info.ps1"
+                -OutputDirectory "${CMAKE_BINARY_DIR}"
+                -ProjectRoot "${XMB_REPO_ROOT}"
+                -Configuration "$<CONFIG>"
+        COMMENT "Refresh build-info.json"
+        VERBATIM)
+endif()
 
 # XMB Manager: the standalone companion tool (CLI + Qt UI). It shares the
 # output directory with re-ps3-native, so windeployqt's Qt runtime deployment
