@@ -1,5 +1,6 @@
 #include "hydra_library.h"
 #include "flare_solverr.h"
+#include "hydra_catalogue_cache.h"
 #include <QDateTime>
 #include <QCryptographicHash>
 #include <QDir>
@@ -475,7 +476,7 @@ QStringList parseGenreTags(const QJsonValue& value) {
     return tags;
 }
 
-HydraLibrary::HydraLibrary(QString flareSolverrEndpoint):flareSolverrEndpoint_(std::move(flareSolverrEndpoint)) {}
+HydraLibrary::HydraLibrary(QString flareSolverrEndpoint,QString cacheDirectory):flareSolverrEndpoint_(std::move(flareSolverrEndpoint)),cacheDirectory_(std::move(cacheDirectory)) {}
 void HydraLibrary::setFlareSolverrEndpoint(const QString& endpoint) { flareSolverrEndpoint_=endpoint; }
 
 SourcesPage parseSourcesPage(const QJsonObject& root) {
@@ -795,22 +796,36 @@ bool HydraLibrary::popularGames(const QVector<PopularTitleGroup>& groups,const Q
 bool HydraLibrary::popularTitles(QVector<PopularTitle>* out,QString* error) const {
     if(error)error->clear();
     if(out)out->clear();
-    QJsonArray hot;
     const QString url=loopbackEndpoint("XMB_HYDRA_HOT_URL",
         QStringLiteral("https://api.hydralauncher.gg/catalogue/hot?take=40&skip=0"));
+    // Serve a fresh, identity- and schema-matched cache entry without a network round-trip. A stale,
+    // expired, corrupt, mismatched or old-schema entry is a miss; a fetch failure (including HTTP
+    // 403) surfaces the error and never serves a stale copy, because only a validated successful
+    // result is ever stored.
+    if(!cacheDirectory_.isEmpty()) {
+        HydraCatalogueCache cache(cacheDirectory_);
+        QVector<PopularTitle> cached;
+        if(cache.load(url,&cached)) { if(out)*out=std::move(cached); return true; }
+    }
+    QJsonArray hot;
     if(!fetchJsonArrayWithRetry(QUrl(url),&hot,error,flareSolverrEndpoint_))return false;
     if(!validPopularTitleArray(hot)) {
         if(error)*error=QStringLiteral("Hydra catalogue returned an invalid popular title entry; retry");
         return false;
     }
+    QVector<PopularTitle> titles;
     for(const auto& value:hot) {
         const auto object=value.toObject();
         PopularTitle title;
         title.title=object.value(QStringLiteral("title")).toString().trimmed();
         title.coverUrl=object.value(QStringLiteral("libraryImageUrl")).toString();
         title.genres=parseGenreTags(object.value(QStringLiteral("genres")));
-        if(!title.title.isEmpty() && out)out->append(title);
+        if(!title.title.isEmpty())titles.append(title);
     }
+    // Only a validated, non-empty, successful catalogue is persisted (after the retry path above).
+    if(!cacheDirectory_.isEmpty() && !titles.isEmpty())
+        HydraCatalogueCache(cacheDirectory_).store(url,titles);
+    if(out)*out=std::move(titles);
     return true;
 }
 

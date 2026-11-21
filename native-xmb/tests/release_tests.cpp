@@ -1,6 +1,7 @@
 #include "release_index.h"
 #include "release_source.h"
 #include "hydra_library.h"
+#include "hydra_catalogue_cache.h"
 #include "async_identity.h"
 #include "real_debrid.h"
 #include "preferences.h"
@@ -8,6 +9,7 @@
 #include "release_archive_cleanup.h"
 #include <QCoreApplication>
 #include <QCryptographicHash>
+#include <QDateTime>
 #include <QDir>
 #include <QFile>
 #include <QJsonArray>
@@ -536,6 +538,50 @@ int main(int argc,char** argv) {
         check(groupGenres({PopularTitleGroup{}}).isEmpty(),"a genre-less game never fabricates a genre");
     }
     {
+        // Local ranked-catalogue cache (pure, no network): the persisted entry carries the complete
+        // PopularTitle (title, cover URL and structured genres), is versioned, and is keyed by the
+        // resolved endpoint. Genres round-trip verbatim, missing/empty genres stay empty, and an
+        // old-schema, corrupt, oversized, expired or identity-mismatched file is always a miss.
+        QTemporaryDir cacheDir;
+        check(cacheDir.isValid(),"hydra catalogue cache tempdir");
+        HydraCatalogueCache cache(cacheDir.path());
+        const QString endpointA=QStringLiteral("https://example.invalid/hot");
+        const QString endpointB=QStringLiteral("https://example.invalid/other");
+        QVector<PopularTitle> titles;
+        PopularTitle one;one.title=QStringLiteral("Alpha");one.genres={QStringLiteral("Action"),QStringLiteral("RPG")};titles.append(one);
+        PopularTitle two;two.title=QStringLiteral("Beta");two.coverUrl=QStringLiteral("https://c.invalid/b.png");titles.append(two);
+        const qint64 now=QDateTime::currentMSecsSinceEpoch();
+        check(cache.store(endpointA,titles,now),"cache store succeeds");
+        QVector<PopularTitle> hit;
+        check(cache.load(endpointA,&hit,now) && hit.size()==2 && hit[0].title==QStringLiteral("Alpha") &&
+              hit[0].genres==(QStringList{QStringLiteral("Action"),QStringLiteral("RPG")}) &&
+              hit[1].coverUrl==QStringLiteral("https://c.invalid/b.png") && hit[1].genres.isEmpty(),
+              "cache hit round-trips structured genres and preserves a missing genre list");
+        QVector<PopularTitle> inside;
+        check(cache.load(endpointA,&inside,now+HydraCatalogueCache::ttlMs()-1),"cache hit just inside the TTL window");
+        QVector<PopularTitle> expired;
+        check(!cache.load(endpointA,&expired,now+HydraCatalogueCache::ttlMs()+1) && expired.isEmpty(),
+              "cache miss once past the TTL window");
+        check(QFile::copy(cache.pathFor(endpointA),cache.pathFor(endpointB)),"identity mismatch fixture copy");
+        QVector<PopularTitle> mismatch;
+        check(!cache.load(endpointB,&mismatch,now) && mismatch.isEmpty(),"cache miss on in-file endpoint identity mismatch");
+        { QFile f(cache.pathFor(endpointA));check(f.open(QIODevice::WriteOnly),"old-schema fixture open");
+          f.write(QByteArrayLiteral("{\"endpoint\":\"https://example.invalid/hot\",\"storedAtMs\":")+
+                  QByteArray::number(now)+QByteArrayLiteral(",\"titles\":[{\"title\":\"Old Schema Game\"}]}")); }
+        QVector<PopularTitle> oldSchema;
+        check(!cache.load(endpointA,&oldSchema,now) && oldSchema.isEmpty(),"an unversioned old-schema entry is a miss");
+        { QFile f(cache.pathFor(endpointA));check(f.open(QIODevice::WriteOnly),"corrupt fixture open");f.write("not json"); }
+        QVector<PopularTitle> corrupt;
+        check(!cache.load(endpointA,&corrupt,now) && corrupt.isEmpty(),"corrupt cache file is a miss, not an error");
+        { QFile f(cache.pathFor(endpointA));check(f.open(QIODevice::WriteOnly),"oversize fixture open");f.write(QByteArray(int(HydraCatalogueCache::maxBytes())+1,'x')); }
+        QVector<PopularTitle> oversize;
+        check(!cache.load(endpointA,&oversize,now),"oversized cache file is rejected as a miss");
+        check(cache.store(endpointB,titles,now-HydraCatalogueCache::ttlMs()-1000),"stale store for a later miss");
+        QVector<PopularTitle> stale;
+        check(!cache.load(endpointB,&stale,now) && stale.isEmpty(),"a stored stale entry is a miss");
+        check(!cache.store(endpointA,QVector<PopularTitle>{},now),"an empty result is never persisted");
+    }
+    {
         // Deterministic local HTTP fixture for the progressive popular feed: forty hot entries are
         // returned in ranking order, including one normalized duplicate and a separate edition.
         // Game responses complete out of order, title 39 is deliberately
@@ -572,6 +618,8 @@ int main(int argc,char** argv) {
         int sourceFeedRequests=0;
         int sourcesListRequests=0;
         int searchRequests=0;
+        int hotRequests=0;
+        int hotCache500ThenSuccessRequests=0;
         QObject::connect(&fixture,&QTcpServer::newConnection,&app,[&] {
             auto* socket=fixture.nextPendingConnection();
             QObject::connect(socket,&QTcpSocket::readyRead,socket,[&,socket] {
@@ -603,6 +651,20 @@ int main(int argc,char** argv) {
                 if(request.contains("/hot-500-always")) {
                     ++hot500AlwaysRequests;
                     socket->write("HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                    socket->disconnectFromHost();return;
+                }
+                // A cache-scoped transient 500 that retries to a genre-bearing success, so the
+                // cache composition check is independent of the earlier retry counter's state.
+                if(request.contains("/hot-cache-500-then-success")) {
+                    ++hotCache500ThenSuccessRequests;
+                    if(hotCache500ThenSuccessRequests==1) {
+                        socket->write("HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                        socket->disconnectFromHost();return;
+                    }
+                    QJsonArray rows;
+                    for(int i=0;i<40;++i)rows.append(QJsonObject{{QStringLiteral("title"),QStringLiteral("Hot %1").arg(i,2,10,QChar('0'))},{QStringLiteral("genres"),QJsonArray{QStringLiteral("Action")}}});
+                    const QByteArray hotBody=QJsonDocument(rows).toJson(QJsonDocument::Compact);
+                    socket->write("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: "+QByteArray::number(hotBody.size())+"\r\nConnection: close\r\n\r\n"+hotBody);
                     socket->disconnectFromHost();return;
                 }
                 if(request.contains("/hot-403")) {
@@ -849,6 +911,7 @@ int main(int argc,char** argv) {
                 } else if(hot && request.contains("/empty-hot")) {
                     body=QByteArrayLiteral("[]");
                 } else if(hot) {
+                    ++hotRequests;
                     QJsonArray rows;
                     for(int i=0;i<40;++i) {
                         QString title=QStringLiteral("Hot %1").arg(i,2,10,QChar('0'));
@@ -1071,6 +1134,79 @@ int main(int argc,char** argv) {
               fixtureError.contains(QStringLiteral("HTTP 429")),
               "hot catalogue 429 rate limit is terminal");
         check(hot429Requests==1,"hot catalogue 429 is never auto-retried");
+        // Local ranked-catalogue cache (opt-in): genres survive a cache hit, live vs cached
+        // grouping/rank/genre counts are identical, an old-schema entry refetches, the bounded hot
+        // retry stores only its eventual success, and a 403 stays terminal with no stale fallback.
+        {
+            QTemporaryDir cacheDir;
+            check(cacheDir.isValid(),"hydra cache integration tempdir");
+
+            qputenv("XMB_HYDRA_HOT_URL",(base+QStringLiteral("/hot")).toUtf8());
+            const int hotBefore=hotRequests;
+            QVector<PopularTitle> live;QString cerr;
+            check(HydraLibrary(QString{},cacheDir.path()).popularTitles(&live,&cerr) && live.size()==40 && cerr.isEmpty(),
+                  "cache: live fetch stores the ranked catalogue");
+            check(hotRequests==hotBefore+1,"cache: live fetch issues exactly one request");
+            QVector<PopularTitle> cached;cerr.clear();
+            check(HydraLibrary(QString{},cacheDir.path()).popularTitles(&cached,&cerr) && cached.size()==40 && cerr.isEmpty(),
+                  "cache: second call within TTL returns the cached catalogue");
+            check(hotRequests==hotBefore+1,"cache: a fresh hit issues no new request");
+            check(cached[0].genres==(QStringList{QStringLiteral("Action")}),"cache: genres survive a hit (first title)");
+            check(cached[10].genres==(QStringList{QStringLiteral("RPG"),QStringLiteral("Action")}),"cache: multi-genre order survives a hit");
+            check(cached[12].genres==(QStringList{QStringLiteral("RPG")}),"cache: edition genre survives a hit");
+            const auto liveGroups=groupPopularTitles(live);
+            const auto cachedGroups=groupPopularTitles(cached);
+            check(liveGroups.size()==cachedGroups.size(),"cache: grouped tile count matches live");
+            check(cachedGroups[10].genres==(QStringList{QStringLiteral("RPG"),QStringLiteral("Action")}),"cache: grouped genre union survives a hit");
+            const auto liveGenres=groupGenres(liveGroups);
+            const auto cachedGenres=groupGenres(cachedGroups);
+            check(liveGenres.size()==cachedGenres.size() && cachedGenres.size()==3,"cache: distinct genre count matches live");
+            check(cachedGenres[0].name==QStringLiteral("Adventure") && cachedGenres[0].count==27,"cache: ranked genre counts match live (Adventure 27)");
+            check(cachedGenres[1].name==QStringLiteral("Action") && cachedGenres[1].count==11,"cache: ranked genre counts match live (Action 11)");
+            check(cachedGenres[2].name==QStringLiteral("RPG") && cachedGenres[2].count==2,"cache: ranked genre counts match live (RPG 2)");
+
+            const QString hotUrl=base+QStringLiteral("/hot");
+            { QFile f(HydraCatalogueCache(cacheDir.path()).pathFor(hotUrl));check(f.open(QIODevice::WriteOnly),"old-schema fixture open");
+              f.write(QByteArrayLiteral("{\"endpoint\":\"")+hotUrl.toUtf8()+QByteArrayLiteral("\",\"storedAtMs\":")+
+                      QByteArray::number(QDateTime::currentMSecsSinceEpoch())+
+                      QByteArrayLiteral(",\"titles\":[{\"title\":\"Old Schema Game\"}]}")); }
+            const int oldBefore=hotRequests;
+            QVector<PopularTitle> refetched;cerr.clear();
+            check(HydraLibrary(QString{},cacheDir.path()).popularTitles(&refetched,&cerr) && refetched.size()==40 && cerr.isEmpty(),
+                  "cache: an old-schema entry is a miss and refetches");
+            check(hotRequests==oldBefore+1,"cache: the old-schema miss still costs exactly one refetch");
+            check(refetched[0].genres==(QStringList{QStringLiteral("Action")}),"cache: refetch repopulates genres under the current schema");
+
+            qputenv("XMB_HYDRA_HOT_URL",(base+QStringLiteral("/hot-cache-500-then-success")).toUtf8());
+            const int retryBefore=hotCache500ThenSuccessRequests;
+            QVector<PopularTitle> r1;cerr.clear();
+            check(HydraLibrary(QString{},cacheDir.path()).popularTitles(&r1,&cerr) && r1.size()==40 && cerr.isEmpty() &&
+                  r1[0].genres==(QStringList{QStringLiteral("Action")}),
+                  "cache: a transient 500 is retried to a genre-bearing success and stored");
+            check(hotCache500ThenSuccessRequests==retryBefore+2,"cache: the 500->success path costs two requests then stores");
+            QVector<PopularTitle> r2;cerr.clear();
+            check(HydraLibrary(QString{},cacheDir.path()).popularTitles(&r2,&cerr) && r2.size()==40 && cerr.isEmpty() &&
+                  r2[0].genres==(QStringList{QStringLiteral("Action")}),
+                  "cache: the retried success (with genres) is served from cache on the next call");
+            check(hotCache500ThenSuccessRequests==retryBefore+2,"cache: the cached retried success issues no new request");
+
+            qputenv("XMB_HYDRA_HOT_URL",(base+QStringLiteral("/hot-403")).toUtf8());
+            const QString hot403=base+QStringLiteral("/hot-403");
+            QVector<PopularTitle> seed;PopularTitle st;st.title=QStringLiteral("Stale Cached");seed.append(st);
+            check(HydraCatalogueCache(cacheDir.path()).store(hot403,seed,
+                  QDateTime::currentMSecsSinceEpoch()-HydraCatalogueCache::ttlMs()-1000),
+                  "cache: seed a stale, identity-matched entry for the 403 endpoint");
+            const int c403Before=hot403Requests;
+            QVector<PopularTitle> c3;cerr.clear();
+            check(!HydraLibrary(QString{},cacheDir.path()).popularTitles(&c3,&cerr) && c3.isEmpty() &&
+                  cerr.contains(QStringLiteral("403")) && cerr.contains(QStringLiteral("refused access")),
+                  "cache: a 403 surfaces the access refusal and never serves the stale copy");
+            check(hot403Requests==c403Before+1,"cache: the 403 fetch still issues its request");
+            QVector<PopularTitle> c4;cerr.clear();
+            check(!HydraLibrary(QString{},cacheDir.path()).popularTitles(&c4,&cerr) && c4.isEmpty() && cerr.contains(QStringLiteral("403")),
+                  "cache: 403 is never persisted, so a retry still fails");
+            check(hot403Requests==c403Before+2,"cache: a second 403 fetch issues another request");
+        }
         qputenv("XMB_HYDRA_SOURCES_URL",(base+QStringLiteral("/sources")).toUtf8());
         qputenv("XMB_HYDRA_SEARCH_URL",(base+QStringLiteral("/search")).toUtf8());
         QVector<HydraSource> fixtureSources;fixtureError=QStringLiteral("stale error");

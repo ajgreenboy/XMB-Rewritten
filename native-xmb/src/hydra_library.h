@@ -135,7 +135,10 @@ public:
     // falls back to the direct fetch only when the solver fails. The catalogue API paths (listSources,
     // popularTitles, popularGame, searchGames) keep the solver as a last-resort fallback after a failed
     // or HTML-challenged direct fetch. Empty (the default) leaves every fetch path byte-identical.
-    explicit HydraLibrary(QString flareSolverrEndpoint);
+    // `cacheDirectory`, when non-empty, enables a local cache for the ranked (hot) catalogue
+    // metadata returned by popularTitles(); an empty directory keeps every call network-only. A cache
+    // hit skips the network (and so FlareSolverr) entirely; only a validated live success is stored.
+    explicit HydraLibrary(QString flareSolverrEndpoint,QString cacheDirectory=QString{});
     void setFlareSolverrEndpoint(const QString& endpoint);
 
     bool listSources(QVector<HydraSource>* out, QString* error=nullptr, HydraFailure* failure=nullptr) const;
@@ -176,5 +179,6 @@ public:
                       QVector<GameResult>* out, QString* error=nullptr) const;
 private:
     QString flareSolverrEndpoint_;
+    QString cacheDirectory_;
 };
 } // namespace xmb
