@@ -85,6 +85,7 @@ void SteamOwned::refresh(QString steamId64) {
         // Fall back to the account Steam recorded as active, then the sole valid one.
         steamId64 = scanSteam().steamId;
     }
+    requestedId_ = steamId64;
     if (steamId64.isEmpty()) {
         emit loaded({}, tr("No Steam account was found. Set XMB_STEAM_ID or sign in to Steam."), false);
         return;

@@ -47,6 +47,9 @@ public:
     // Asynchronously fetch the owned list for a SteamID64. Calls loaded() exactly once.
     void refresh(QString steamId64);
     void cancel();
+    // The account the most recent refresh() asked for (after the empty-id fallback). A loaded() emission always
+    // belongs to this id: older requests are dropped by cancel() before they can emit.
+    QString requestedId() const { return requestedId_; }
 
     // Steam remains the installer and launcher; these only build the handoffs.
     static QString installUrl(const QString& appId);  // steam://install/<id>
@@ -66,6 +69,7 @@ private:
     QNetworkAccessManager* network_ = nullptr;
     QNetworkReply* reply_ = nullptr;
     quint64 generation_ = 0;
+    QString requestedId_;
     bool busy_ = false;
 };
 

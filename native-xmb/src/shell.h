@@ -26,6 +26,7 @@
 #include "steam_owned.h"
 #include "steam_accounts.h"
 #include "steam_switch.h"
+#include "steam_refresh.h"
 #include "steam_collections.h"
 #include "steam_family.h"
 #include "steam_store.h"
@@ -1241,6 +1242,8 @@ private:
     QElapsedTimer steamWatchAge_;    // since the handoff (or last update tick), for the start timeout
     SteamTrackState steamTrack_;      // the pure lifecycle reducer's state (seenRunning/consecutiveStopped)
     bool ownedInFlight_=false;
+    QString steamRefreshNotice_;    // persona for the "Library refreshed for ..." notice
+    ActiveUserWatch steamAccountWatch_;   // fed by the sweep: Steam reported a different ActiveUser
     QString ownedSignature_;        // app ids + installed flags + collection ids, to skip unchanged rebuilds
     std::unique_ptr<SteamArtwork> steamArtwork_;
     std::unique_ptr<RawgArtwork> rawgArtwork_;
@@ -1260,6 +1263,7 @@ private:
     void rebuildFriends();
     void refreshDiscordFriends(bool showErrors=false,bool force=false);
     void refreshOwnedGames();
+    void steamLibraryAccountChanged(const QString& name);
     bool stageOwnedForRefresh() const;
     QString collectionLabel(const QString& appId) const;
     bool startTracked(const QString& program,const QStringList& arguments,const QString& workingDirectory,const QString& title,const DisplaySpec& display={},

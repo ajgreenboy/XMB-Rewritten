@@ -4,6 +4,7 @@
 // control. Nothing here touches a real Steam installation, process or registry value.
 
 #include "steam_accounts.h"
+#include "steam_refresh.h"
 #include "steam_switch.h"
 
 #include <QCoreApplication>
@@ -687,6 +688,45 @@ void seamAndPromptTests(const QString& baseKey) {
 
 } // namespace
 
+// Pure decisions behind the library refresh after a switch (src/steam_refresh.h).
+void refreshDecisionTests() {
+    using O = SteamSwitchResult::Outcome;
+    check(steamSwitchRefreshesLibrary(O::SignedIn), "refresh: SignedIn refreshes");
+    check(steamSwitchRefreshesLibrary(O::OtherAccount), "refresh: OtherAccount refreshes");
+    for (O o : {O::LoginWindow, O::NotRunning, O::Started, O::Held, O::Failed})
+        check(!steamSwitchRefreshesLibrary(o), "refresh: no library refresh for the other outcomes");
+    check(steamSwitchWatchesActiveUser(O::LoginWindow), "refresh: LoginWindow waits for ActiveUser");
+    for (O o : {O::SignedIn, O::OtherAccount, O::NotRunning, O::Started, O::Held, O::Failed})
+        check(!steamSwitchWatchesActiveUser(o), "refresh: only LoginWindow watches ActiveUser");
+
+    check(ownedResponseIsStale(IdA, IdB), "stale: a response for A while B is active is stale");
+    check(!ownedResponseIsStale(IdB, IdB), "stale: same account is current");
+    check(!ownedResponseIsStale(QString(), IdB), "stale: unknown requested id is not stale");
+    check(!ownedResponseIsStale(IdA, QString()), "stale: no current account is not stale");
+    check(!ownedResponseIsStale(QString(), QString()), "stale: nothing known is not stale");
+
+    check(steamIdFromActiveUser(39734273) == QLatin1String(IdA), "ActiveUser 39734273 is IdA");
+    check(steamIdFromActiveUser(0).isEmpty(), "ActiveUser 0 is nobody");
+    check(steamIdFromActiveUser(0x100000000ULL).isEmpty(), "ActiveUser above 32 bits is rejected");
+    check(steamIdFromActiveUser(0xffffffffULL) == QString::number(76561197960265728ULL + 0xffffffffULL), "ActiveUser max");
+
+    check(steamRefreshName(" Reported ", "Persona", "Label") == QLatin1String("Reported"), "name: reported wins and is trimmed");
+    check(steamRefreshName({}, "Persona", "Label") == QLatin1String("Persona"), "name: persona next");
+    check(steamRefreshName({}, "  ", "Label") == QLatin1String("Label"), "name: blank persona falls to label");
+    check(steamRefreshName({}, {}, {}) == QLatin1String("Steam"), "name: fallback");
+
+    ActiveUserWatch watch;
+    check(!watch.observe(39734273), "watch: first observation only primes");
+    check(!watch.observe(39734273), "watch: unchanged is quiet");
+    check(!watch.observe(0), "watch: signed out is remembered, not reported");
+    check(watch.observe(39734274), "watch: a different account is reported");
+    check(!watch.observe(39734274), "watch: reported once");
+    check(watch.observe(39734273), "watch: switching back is reported");
+    watch.reset();
+    check(!watch.observe(0), "watch: after reset, primes at 0 (login window)");
+    check(watch.observe(39734274), "watch: login window then sign-in is reported");
+}
+
 int main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
     const QString baseKey = QStringLiteral("HKEY_CURRENT_USER\\Software\\XmbTest\\SteamSwitchTests-%1").arg(QCoreApplication::applicationPid());
@@ -699,6 +739,7 @@ int main(int argc, char** argv) {
     modernSchemaTests();
     switchTests(baseKey);
     seamAndPromptTests(baseKey);
+    refreshDecisionTests();
     clearKey(baseKey);
     std::printf("steam switch tests: %d check(s), %d failure(s)\n", checks, failures);
     return failures ? 1 : 0;

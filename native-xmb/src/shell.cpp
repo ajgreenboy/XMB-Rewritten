@@ -839,6 +839,16 @@ void Shell::sweepSteamWindows() {
     const QString key=steamRegistryKeyPath();
     const auto state=steamhide::readClientState(key);
     if(!state.alive)return;
+    if(steamAccountWatch_.observe(state.activeUser)) {
+        // Steam reports a different signed-in account than the one the column shows (a sign-in that finished later,
+        // or a switch made inside Steam while the sweep was armed).
+        const QString id=steamIdFromActiveUser(state.activeUser);
+        if(!id.isEmpty() && id!=steamId_) {
+            const auto accounts=scanSteamAccounts(steamRoot_);
+            QString persona;for(const auto& a:accounts)if(a.steamId64==id){persona=a.personaName;break;}
+            steamLibraryAccountChanged(steamRefreshName({},persona,id));
+        }
+    }
     const auto result=steamhide::sweepWindows(steamhide::clientProcesses(key),state.activeUser!=0,true);
     if(result.hidden>0) {
         qInfo().noquote()<<QStringLiteral("steam hide: hid %1 Steam window(s): %2").arg(result.hidden).arg(result.hiddenTitles.join(QStringLiteral("; ")));
@@ -965,6 +975,19 @@ void Shell::refreshOwnedGames() {
     if(!SteamOwned::hasApiKey() || ownedInFlight_)return;
     ownedInFlight_=true;
     steamOwned_.refresh(steamId_);
+}
+// Steam is signed in as a different account: everything the column derives from the old one is dropped, then the
+// library is read again (refreshContent re-scans installs, play records, family and artwork for the new account;
+// the owned list and collections come from Valve: the end of that pass calls refreshOwnedGames with the new steamId_).
+void Shell::steamLibraryAccountChanged(const QString& name) {
+    qInfo().noquote()<<QStringLiteral("steam: account changed (%1); refreshing the library").arg(name);
+    steamOwned_.cancel();   // an in-flight request for the previous account can no longer arrive
+    ownedInFlight_=false;
+    ownedGames_.clear();
+    ownedSignature_.clear();
+    collections_.clear();
+    steamRefreshNotice_=name;
+    refreshContent();
 }
 void Shell::retryArtwork() {
     rawgArtwork_->resetBackoff();
@@ -1587,6 +1610,13 @@ void Shell::refreshContent() {
             if(file.open(QIODevice::WriteOnly))file.write(bytes);
         }
         emit changed();
+        // The Steam account changed (steamLibraryAccountChanged): this pass already read the new account's installs,
+        // play records and family and asked Valve for its owned list (stageOwnedForRefresh above). A queued rescan
+        // means this pass may already be out of date, so the notice waits for the last one.
+        if(!steamRefreshNotice_.isEmpty() && !contentRefreshPending_) {
+            notify(QObject::tr("Steam"),QObject::tr("Library refreshed for %1").arg(steamRefreshNotice_));
+            steamRefreshNotice_.clear();
+        }
         if(contentRefreshPending_){contentRefreshPending_=false;QTimer::singleShot(0,this,&Shell::refreshContent);}
     });
     const QString data=dataDirectory_;
@@ -1896,6 +1926,13 @@ Shell::Shell(QString dataDirectory,Assets& assets,QObject* parent):QObject(paren
     });
     connect(&steamOwned_,&SteamOwned::loaded,this,[this](const OwnedGameList& games,const QString& error,bool needsKey){
         ownedInFlight_=false;
+        // The response belongs to the account the request named. If Steam's account changed since (the content
+        // rescan moved steamId_), it must not become the new account's list: drop it and ask for the current one.
+        if(ownedResponseIsStale(steamOwned_.requestedId(),steamId_)) {
+            qInfo().noquote()<<"steam owned: dropped a response for a previous account; asking for the current one";
+            refreshOwnedGames();
+            return;
+        }
         if(!error.isEmpty()){if(needsKey)qInfo()<<"steam owned: no API key configured";else qWarning().noquote()<<"steam owned:"<<error;return;}
         QString signature;
         for(const auto& game:games)signature+=game.appId+(game.installed?QStringLiteral("+") :QStringLiteral("-"));
@@ -6635,6 +6672,15 @@ void Shell::steamSwitchFinished(const SteamSwitchResult& result) {
     }
     steamAccounts_=scanSteamAccounts(steamRoot_);   // the next selection sees Steam's new record
     if(result.outcome!=SteamSwitchResult::Outcome::NotRunning && result.outcome!=SteamSwitchResult::Outcome::Failed)armSteamSweep(15000);
+    steamAccountWatch_.reset();
+    if(steamSwitchRefreshesLibrary(result.outcome)) {
+        QString active;for(const auto& a:steamAccounts_)if(a.active){active=a.personaName;break;}
+        steamLibraryAccountChanged(steamRefreshName(result.signedInAs,active,steamSwitch_.accountLabel));
+    } else if(steamSwitchWatchesActiveUser(result.outcome)) {
+        // The user is still signing in inside Steam: the sweep (it already watches this window) reports the account
+        // once Steam does, and sweepSteamWindows refreshes then. Only runs when the Steam hide feature is active.
+        armSteamSweep(10*60*1000);
+    }
     if(steamSwitcher_){steamSwitcher_->deleteLater();steamSwitcher_=nullptr;}
     emit changed();
 }
