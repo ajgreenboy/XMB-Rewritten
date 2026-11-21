@@ -201,7 +201,12 @@ function Get-DescendantProcessIds {
 function Get-VerifiedWindowHandle {
     param([int]$RootId)
     $ids=Get-DescendantProcessIds -ParentIds @($RootId)
-    foreach($id in $ids) { try { $p=Get-Process -Id $id -ErrorAction Stop; $p.Refresh(); if($p.MainWindowHandle -ne 0){ return $p.MainWindowHandle } } catch {} }
+    # A non-empty window title is required: a freshly started WinForms installer
+    # briefly exposes a title-less bootstrap window (MainWindowHandle non-zero,
+    # MainWindowTitle empty) before its real window appears, so a handle alone is
+    # not proof the installer window is up. Treating that transient handle as the
+    # installer window misclassified a no-window installer as "exited".
+    foreach($id in $ids) { try { $p=Get-Process -Id $id -ErrorAction Stop; $p.Refresh(); if($p.MainWindowHandle -ne 0 -and $p.MainWindowTitle){ return $p.MainWindowHandle } } catch {} }
     return [IntPtr]::Zero
 }
 function Get-RemainingMs {
