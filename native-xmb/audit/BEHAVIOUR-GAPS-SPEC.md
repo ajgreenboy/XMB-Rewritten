@@ -49,13 +49,23 @@ in `FIDELITY-BEHAVIOUR.md` 12.7, contradicting the older A48 row).
 2. **P6 (open, disclosed):** `Turn Off the Controller` does not power the pad off — Windows owns the
    HID device; the build says so instead of pretending. Recorded as a by-design limit, not a silent
    mismatch.
-3. **P8 (open):** the PS-tap plate and the charge panel draw hard-coded `1` / `-` where a live pad
+3. **P8 (closed, see status below):** the PS-tap plate and the charge panel draw hard-coded `1` / `-` where a live pad
    report exists. `SESSION-POWER.md` 4.3 shipped the exact `pad::info()` hunk; it is still not applied in
    the view.
-4. **Stale confirm text:** the second line "the PC stays on" is now wrong in kiosk mode, where the PC
+4. **Stale confirm text (closed, see status below):** the second line "the PC stays on" is now wrong in kiosk mode, where the PC
    shuts down. Native-only surface, but the text contradicts the behaviour it sits on top of.
 5. **Non-kiosk semantics (deliberate):** outside kiosk, `Turn Off the System` quits the app rather than
    powering off. This is a disclosed host safety choice, not a console parity claim; keep it, but state it.
+
+### Status of items 3 and 4
+Applied in `ps_pad_status.h` (pure decisions, `tests/ps_pad_status_tests.cpp`) and `view.cpp`. The charge panel and the
+PS-tap plate print what `pad::info()` reports: no pad = no lit slot and a dash for both fields; a pad = slot 1 lit, "1" and
+the battery percent (or a dash when the report carries none, as a DualShock 3). The slot is always 1 because `pad::Info`
+has no player index. A scripted run (`pad::scriptOnly()`) keeps the console frame's placeholders so captures stay
+deterministic. The confirm line is `X turns the PC off   O cancels` in kiosk mode (`Shell::kioskMode()`, read from the
+kiosk screen main.cpp already hands the shell) and the unchanged "XMB off; the PC stays on" wording elsewhere. Verified by
+unit tests and the capture gate with no pad; not observed on a real pad or on the HTPC. Item 1 (P7) was already
+landed (`Shell::psMenuBack`).
 
 ### Implementation note
 - **file + owner:** `shell.cpp` (`psMenuClose` / `psMenuActivate`, shell owner) — split the confirm-step

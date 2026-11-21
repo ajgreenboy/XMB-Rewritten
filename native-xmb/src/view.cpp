@@ -6,6 +6,7 @@
 #include "artwork_settings.h"
 #include "host.h"
 #include "pad.h"
+#include "ps_pad_status.h"
 #include "settings_menu.h"
 #include "musicvis.h"
 #include "raf_render.h"
@@ -59,6 +60,13 @@
 
 namespace xmb {
 namespace {
+// The PS-menu panel and the PS-tap plate: a scripted run (--script, XMB_INPUT_SCRIPT_ONLY) keeps the console frame's
+// placeholders so captures stay deterministic; a normal run prints the attached pad's report (ps_pad_status.h).
+PsPadPanel currentPsPad() {
+    if(pad::scriptOnly())return psPadPanel(PsPadSource::Reference,false,{});
+    pad::Info info;const bool attached=pad::info(info);
+    return psPadPanel(PsPadSource::Live,attached,info);
+}
 using ProfScope=idleprofile::Scope;
 const bool& g_profOn=idleprofile::enabled;
 #ifdef Q_OS_WIN
@@ -1505,6 +1513,10 @@ void View::paintGL() {
     // in the signature or the cached UI layer would freeze on the frame the menu opened: the hold menu's
     // black/text/bloom staging and the tap indicator's fade. Quantised by 1/256, and absent at rest (so the
     // canonical frame's signature string is unchanged).
+    if(shell_.psMenuOpen() || (psHudAt_>0 && now-psHudAt_<2288)) { // the live pad's battery text changes without a shell change
+        const PsPadPanel padPanel=currentPsPad();
+        signature+=QString(" pspad %1 %2 %3").arg(padPanel.litSlot).arg(padPanel.controller,padPanel.charge);
+    }
     if(shell_.psMenuOpen())
         signature+=QString::asprintf(" pshold %d %d %d",int(psHoldTextAlpha(now)*256.),int(psHoldBloomAmount(now)*256.),
             (psPressAt_>0 && now-psPressAt_>=qint64(psHoldBlackMs))?1:0);
@@ -3799,8 +3811,9 @@ void View::drawScene(QPainter& p) {
             p.setPen(Qt::NoPen);p.setBrush(QColor(53,49,41));
             p.drawRoundedRect(QRectF(1191,81,134,46),4.5,4.5);
             drawImage(p,"system_plugin","tex_controller",{1199,88,31,34});
-            text({1237,81,26,46},"1",23,Qt::white,Qt::AlignLeft|Qt::AlignVCenter);
-            text({1278,81,40,46},"-",23,QColor(235,235,235),Qt::AlignHCenter|Qt::AlignVCenter);
+            const PsPadPanel padPanel=currentPsPad();
+            text({1237,81,26,46},padPanel.controller,23,Qt::white,Qt::AlignLeft|Qt::AlignVCenter);
+            text({1266,81,64,46},padPanel.charge,23,QColor(235,235,235),Qt::AlignHCenter|Qt::AlignVCenter);
             p.restore();
         }
     }
@@ -3863,22 +3876,23 @@ void View::drawPsMenuBody(QPainter& p,double content,double bloom,int warm,int p
         }
     }
     if((warm==1 && part==1) || (!warm && shell_.psMenuConfirmingOff()))
-        text({830,psTop+80,1000,34},QObject::tr("X turns the XMB off; the PC stays on   O cancels"),20,QColor(170,170,170),Qt::AlignLeft|Qt::AlignVCenter);
+        text({830,psTop+80,1000,34},psConfirmHint(shell_.kioskMode()),20,QColor(170,170,170),Qt::AlignLeft|Qt::AlignVCenter);
     if(!panel){p.restore();return;}
     // Controller/charge panel: numbers above 17 px slots (x 132 + 44.33*i 1..4), labels at x 311, the
     // pad glyph between "Controller" and "1", the charge dash centred on x 488.
     p.setPen(Qt::NoPen);
+    const PsPadPanel padPanel=currentPsPad();
     for(int i=0;i<4;++i) {
         const double x=132.+i*44.333;
-        p.setBrush(i==0?QColor(160,13,13):QColor(30,30,30));
+        p.setBrush(i==padPanel.litSlot?QColor(160,13,13):QColor(30,30,30));
         p.drawRect(QRectF(x,828,17,17));
         text({x-2,801,21,22},QString::number(i+1),19,QColor(215,215,215),Qt::AlignCenter);
     }
     text({311,795,220,34},QObject::tr("Controller"),24,Qt::white,Qt::AlignLeft|Qt::AlignVCenter);
     drawImage(p,"system_plugin","tex_controller",{448,799,31,31});
-    text({494,795,60,34},"1",23,Qt::white,Qt::AlignLeft|Qt::AlignVCenter);
+    text({494,795,60,34},padPanel.controller,23,Qt::white,Qt::AlignLeft|Qt::AlignVCenter);
     text({311,835,220,34},QObject::tr("Charge Level"),24,QColor(215,215,215),Qt::AlignLeft|Qt::AlignVCenter);
-    text({468,835,40,34},"-",24,QColor(215,215,215),Qt::AlignHCenter|Qt::AlignVCenter);
+    text({448,835,80,34},padPanel.charge,24,QColor(215,215,215),Qt::AlignHCenter|Qt::AlignVCenter);
     // Footer legend (console ink x 726/762 and 1155/1192, y 897-916) with the console's 1 px rule at y 880.
     p.fillRect(QRectF(0,880,1920,1),QColor(255,255,255,175));
     drawImage(p,"system_plugin","tex_cross",{726,898,18,18});

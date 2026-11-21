@@ -642,6 +642,9 @@ public:
     void psMenuClose();
     void psMenuBack();               // Circle: back out of the confirm step first, then close (FIDELITY-BEHAVIOUR P7)
     bool psMenuConfirmingOff() const { return psConfirmOff_; }
+    // True in appliance (--kiosk) mode, where a confirmed Turn Off the System shuts the PC down (main.cpp); false elsewhere,
+    // where the XMB only quits. Read from the kiosk screen setSetupContext() was given (-1 outside kiosk): no second flag.
+    bool kioskMode() const { return setup_.kioskDisplay>=0; }
     // Desktop Mode: while the XMB is hidden the idle Auto-Off must not blank a display the user is using. Leaving
     // it counts as activity. keepMusicInDesktop() is the desktop/keepMusic preference (default on).
     void setDesktopMode(bool on);

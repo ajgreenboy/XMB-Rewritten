@@ -556,8 +556,8 @@ and the watcher's own line in the application log: `pad: DualSense over USB, bat
 The last row is the bound: the 40-byte report parses its buttons, but the battery byte at payload 52 is never
 read, so the level stays -1 instead of reading past the report.
 
-The PS-menu panel hunk above has not been applied (view.cpp is owned elsewhere), so the screenshot still
-shows the console's placeholder "1" and "-" in that panel. The data behind the hunk is what the runs above
+The PS-menu panel hunk was applied afterwards (`ps_pad_status.h` + `view.cpp`; BEHAVIOUR-GAPS-SPEC 1): a live
+run prints the pad's battery, a scripted capture keeps the placeholder "1" and "-" below. The data behind the hunk is what the runs above
 prove.
 
 ### 4.4 Safe area / UI scale
