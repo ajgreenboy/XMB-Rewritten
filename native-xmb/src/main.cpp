@@ -1428,6 +1428,7 @@ int main(int argc,char** argv) {
     QSettings windowSettings(QDir(data).filePath("settings.ini"),QSettings::IniFormat);
     xmb::boot::joinOpenGlWarmup();   // never two WGL contexts being created at once (boot_prefetch.h)
     QMainWindow window;window.setWindowTitle("re-ps3 — Native XMB");auto* view=new xmb::View(shell,assets,&window);view->setGalleryRoots(parser.values("gallery-root"));window.setCentralWidget(view);window.resize(960,540);
+    shell.setLaunchCoverAnchor([&window]()->QWidget*{return &window;});   // the launch cover spans this window's monitor
     xmb::bootprof::mark("View ctor");
     auto* phoneRemote=new xmb::PhoneRemote(&app);
     QObject::connect(phoneRemote,&xmb::PhoneRemote::keyRequested,view,[view](int key){view->replayKeyTap(key);},Qt::QueuedConnection);

@@ -5212,6 +5212,7 @@ bool View::xmbOwnsForeground() const {
     return isActiveWindow();
 }
 void View::psPressed() {
+    shell_.launchCoverPress(QStringLiteral("PS button"));   // not consumed: the press goes on to the in-game XMB as before
     const bool modal=QApplication::activeModalWidget()!=nullptr;
     psPressActionable_=!modal && (xmbOwnsForeground() || titleRunning());
     // The hold menu's envelope is measured from this instant (PARITY-SCORECARD 16.3: black 1052 ms after the
@@ -5654,6 +5655,7 @@ bool View::eventFilter(QObject* watched,QEvent* event) {
 void View::keyPressEvent(QKeyEvent* e) {
     shell_.noteActivity();mediaControls_.activity(clock_.elapsed());
     if(introRunning()){coldboot_.skip();e->accept();return;}
+    if(shell_.launchCoverPress(QStringLiteral("key"))){e->accept();return;}   // the launch cover takes a press and fades out
     // Remote, media and Media Center keys (media_keys.h). On Windows the native filter normally takes the
     // WM_APPCOMMAND/VK form first; this is the path for any that arrive as Qt key events (and for scripts).
     if(const RemoteKey remote=remoteKeyForQtKey(e->key(),e->modifiers());remote!=RemoteKey::None) {
@@ -5924,6 +5926,7 @@ void View::pollController() {
     const auto edge=quint16((buttons&~buttons_)|keyPressed_);keyPressed_=0;const auto now=clock_.elapsed();
     if(buttons || edge){shell_.noteActivity();mediaControls_.activity(now);}
     if(introRunning()){if(edge)coldboot_.skip();buttons_=buttons;return;}
+    if(edge && shell_.launchCoverPress(QStringLiteral("pad"))){buttons_=buttons;return;}
     // Held-direction repeat as the real XMB does it (RPCS3 capture, 2026-10-25): the first move on the press, the
     // second 300 ms (18 frames) later, then one every 4 frames (66.7 ms), with no acceleration however long it is held.
     constexpr qint64 repeatDelay=300,repeatInterval=67;

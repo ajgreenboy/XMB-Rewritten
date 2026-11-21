@@ -120,6 +120,9 @@ public:
     // Ends the sequence now and runs the pending launch. Ignored for the first 0.4 s: that is the press which
     // started the title (a held Enter repeats), not a request to skip.
     static void skip();
+    // True only while the pending launch runs at the sequence's end (Finished or a skip): the screen is black at that
+    // instant, so the launch cover (launch_cover.h) can come up opaque without a fade.
+    static bool launching();
     // The Auto-Off state the view's frames read: idle time, the setting, whether the shell would act at all.
     static void setAutoOff(qint64 idleMs,int minutes,bool allowed,const QString& fontFamily);
     // Draws the sequence (a black plane and the PS3 logo) or the guide into targetFbo.

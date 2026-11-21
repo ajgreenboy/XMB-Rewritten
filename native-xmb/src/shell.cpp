@@ -17,6 +17,7 @@
 #include "catalog.h"
 #include "xmbml_view.h"
 #include "game_capture.h"
+#include "launch_cover.h"
 #include "host.h"
 #include "p3t.h"
 #include "steam_library.h"
@@ -601,6 +602,7 @@ bool Shell::startTracked(const QString& program,const QStringList& arguments,con
             [this,process,title,restoreDisplay,successor](int code,QProcess::ExitStatus status){
         // A launcher that hands over to a successor browser process and exits (P6/ZF6): keep the title running on the successor.
         if(successor && status==QProcess::NormalExit && successor(restoreDisplay)){process->deleteLater();game_.clear();return;}
+        if(launchCover_)launchCover_->titleEnded(status==QProcess::CrashExit?QStringLiteral("crashed, exit %1").arg(code):QStringLiteral("exit %1").arg(code));
         process->deleteLater();game_.clear();gameTitle_.clear();gameIsRpcs3_=false;touch();
         restoreDisplay(status==QProcess::CrashExit?QStringLiteral("title crashed"):QStringLiteral("title ended"));
         qInfo().noquote()<<"returned from"<<title<<"exit"<<code<<(status==QProcess::NormalExit?"normal":"crashed");
@@ -754,6 +756,11 @@ bool Shell::startSteamTracked(const QString& appId,const QString& title) {
     return true;
 }
 bool Shell::startSteamNow(const QString& appId,const QString& title) {
+    // Behind the launch cover: Steam may start a launcher, apply an update or switch modes before the game shows.
+    coverLaunch(title,true,[this,appId,title]{return launchSteamApp(appId,title);});
+    return true;
+}
+bool Shell::launchSteamApp(const QString& appId,const QString& title) {
     QString exe=QDir(steamRoot_).filePath("steam.exe");
     QStringList launchArguments{"-applaunch",appId};
     QString launchDirectory=steamRoot_;
@@ -855,6 +862,7 @@ void Shell::sweepSteamWindows() {
         steamReturnFocus();
     }
     if(result.keepWindow && now-steamRaisedAt_>15000) {
+        if(launchCover_)launchCover_->withdraw(QStringLiteral("Steam is showing a window the user must see"));
         steamRaisedAt_=now;
         steamhide::raiseWindow(result.keepWindow);
         qInfo().noquote()<<QStringLiteral("steam hide: left \"%1\" on screen and brought it forward (%2)").arg(result.keepTitle,result.keepIsSignIn?QStringLiteral("sign-in"):QStringLiteral("message"));
@@ -915,6 +923,7 @@ void Shell::pollSteamGame() {
         // Steam's status could not be read, or Steam was readable but never reported the title running.
         steamWatch_.stop();const QString title=gameTitle_;steamGameId_.clear();gameTitle_.clear();
         clearInGame();
+        if(launchCover_)launchCover_->titleEnded(QStringLiteral("Steam launch wait expired"));
         if(t.status==SteamAppStatus::Unavailable) {
             showMessage(title,"Steam's status could not be confirmed before the launch wait expired.",MessageKind::Page);
             qWarning().noquote()<<"steam:"<<title<<"launch observation timed out while Steam status was unavailable";
@@ -930,6 +939,7 @@ void Shell::pollSteamGame() {
         const QString title=gameTitle_;
         steamGameId_.clear();gameTitle_.clear();steamTrack_={};
         qInfo().noquote()<<"returned from"<<title<<"(Steam reported it stopped)";
+        if(launchCover_)launchCover_->titleEnded(QStringLiteral("Steam reported it stopped"));
         clearInGame();
         if(quitStage_>0) {
             static const char* const stages[]={"none","cooperative (WM_CLOSE)","terminate","kill"};
@@ -949,6 +959,45 @@ void Shell::pollSteamGame() {
 void Shell::restoreFocus() {
     // Returning from a title starts a fresh idle interval, as the media and dialog paths do.
     activity_.start();
+}
+// The launch cover (launch_cover.h, audit/GAME-LAUNCH-FADE.md). Only the three game-boot launch paths come here (an
+// RPCS3 title, an imported game, a Steam title); a web app, a service or media never does.
+void Shell::coverLaunch(const QString& title,bool steam,std::function<bool()> start) {
+    if(!LaunchCover::enabled() || gameRunning() || (launchCover_ && launchCover_->active())){if(start)start();return;}
+    if(!launchCover_) {
+        launchCover_=new LaunchCover();
+        launchCover_->setAnchor(coverAnchor_);
+        connect(qApp,&QCoreApplication::aboutToQuit,launchCover_,&QObject::deleteLater);
+    }
+    std::function<LaunchCover::Watch()> watch;
+    if(steam) {
+        // Steam's game is not our process: the processes running from the title's install folder (and their children)
+        // stand for it, as Quit Game uses them. The snapshot opens every process, so it is refreshed once a second.
+        auto cache=std::make_shared<std::pair<qint64,QList<quint32>>>(-10000,QList<quint32>{});
+        auto clock=std::make_shared<QElapsedTimer>();clock->start();
+        watch=[this,cache,clock]{
+            if(steamGameId_.isEmpty())return LaunchCover::Watch{false,{}};
+            if(clock->elapsed()-cache->first>=1000) {
+                cache->first=clock->elapsed();cache->second.clear();
+                QString dir;for(const auto& g:steamInstalled_.games)if(g.appId==steamGameId_){dir=g.installDirectory;break;}
+                if(!dir.isEmpty())
+                    for(const auto& p:steamquit::selectGameProcesses(steamquit::snapshotProcesses(),dir,{quint32(QCoreApplication::applicationPid())}))
+                        cache->second.push_back(p.pid);
+            }
+            return LaunchCover::Watch{true,cache->second};
+        };
+    } else {
+        watch=[this]{
+            const quint32 root=runningTitlePid();
+            return root?LaunchCover::Watch{true,LaunchCover::processTree(root)}:LaunchCover::Watch{false,{}};
+        };
+    }
+    launchCover_->begin(title,steam,GameBoot::launching(),std::move(start),std::move(watch));
+}
+bool Shell::launchCoverPress(const QString& why) {
+    if(!launchCover_ || !launchCover_->active())return false;
+    launchCover_->press(why);
+    return true;
 }
 void Shell::launch(const Entry& entry) {
     const QString emulator=emulatorPath();
@@ -2875,7 +2924,8 @@ void Shell::activate() {
     // A title starts after the console's game boot (coldboot.h GameBoot); web, service and media entries do not. While
     // a title already runs there is nothing to boot: startTracked answers with its own message at once.
     case Action::Launch:
-        if(gameRunning())launch(entry);else GameBoot::begin([this,entry]{launch(entry);});
+        if(gameRunning())launch(entry);
+        else GameBoot::begin([this,entry]{coverLaunch(entry.title,false,[this,entry]{launch(entry);return runningTitlePid()!=0;});});
         break;
     case Action::LaunchSteam:
         if(gameRunning())startSteamTracked(entry.value,entry.title);
@@ -2945,7 +2995,9 @@ void Shell::activate() {
             showMessage(entry.title,"This application could not be started.",MessageKind::Page);
         else if(app->kind==QLatin1String("game") && !gameRunning()) {
             const auto copy=*app;
-            GameBoot::begin([this,copy,title=entry.title]{startTracked(copy.executable,copy.arguments,copy.workingDirectory,title,copy.display);});
+            GameBoot::begin([this,copy,title=entry.title]{
+                coverLaunch(title,false,[this,copy,title]{return startTracked(copy.executable,copy.arguments,copy.workingDirectory,title,copy.display);});
+            });
         } else startTracked(app->executable,app->arguments,app->workingDirectory,entry.title,app->display);
         break;
     }

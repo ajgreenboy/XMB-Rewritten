@@ -447,7 +447,7 @@ void Coldboot::renderNotice(QOpenGLFunctions_3_3_Core& gl,int pixelWidth,int pix
 namespace {
 struct GameBootState {
     Assets* assets=nullptr;
-    bool active=false;
+    bool active=false,launching=false;
     QElapsedTimer clock;
     quint64 generation=0;
     std::function<void()> launch;
@@ -539,15 +539,19 @@ void GameBoot::begin(std::function<void()> launch) {
         auto& state=gameBoot();
         if(!state.active || state.generation!=generation)return;
         qInfo().noquote()<<"gameboot: Finished event at 2.8 s; launching";
-        state.active=false;auto go=std::move(state.launch);state.launch=nullptr;if(go)go();
+        state.active=false;auto go=std::move(state.launch);state.launch=nullptr;
+        if(go){state.launching=true;go();state.launching=false;}
     });
 }
+
+bool GameBoot::launching() { return gameBoot().launching; }
 
 void GameBoot::skip() {
     auto& s=gameBoot();
     if(!s.active || gameBootPinned()>=0 || s.clock.nsecsElapsed()<400000000)return;
     qInfo().noquote()<<QString("gameboot: skipped at %1 s; launching").arg(s.clock.nsecsElapsed()/1e9,0,'f',3);
-    s.active=false;auto go=std::move(s.launch);s.launch=nullptr;if(go)go();
+    s.active=false;auto go=std::move(s.launch);s.launch=nullptr;
+    if(go){s.launching=true;go();s.launching=false;}
 }
 
 void GameBoot::setAutoOff(qint64 idleMs,int minutes,bool allowed,const QString& fontFamily) {

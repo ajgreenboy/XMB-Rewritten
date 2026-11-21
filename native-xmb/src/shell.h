@@ -49,10 +49,12 @@
 #include <QPointer>
 #include <QProcess>
 class QMediaPlayer;
+class QWidget;
 class QAudioOutput;
 class QVideoSink;
 
 namespace xmb {
+class LaunchCover;   // launch_cover.h
 class MusicTap;
 class Assets;
 class SteamArtwork;
@@ -696,6 +698,10 @@ public:
     bool launcherOwnsPsTap() const;
     void setInGame(bool on);
     // Quit Game (the PS menu row and the in-game rows): impose_plugin:msg_game_quit_ask, Yes -> quitRunningTitle().
+    // The launch cover (launch_cover.h, audit/GAME-LAUNCH-FADE.md): black over the XMB's monitor while a title starts.
+    // The anchor is the XMB's top-level window (main.cpp). A press while it holds black fades it out and is consumed.
+    void setLaunchCoverAnchor(std::function<QWidget*()> anchor) { coverAnchor_=std::move(anchor); }
+    bool launchCoverPress(const QString& why);
     void requestQuitGame();
     void quitSteamTitle();
     static bool steamFake();
@@ -1285,6 +1291,11 @@ private:
     void clearInGame();
     bool startSteamTracked(const QString& appId,const QString& title);
     bool startSteamNow(const QString& appId,const QString& title);
+    bool launchSteamApp(const QString& appId,const QString& title);   // startSteamNow without the cover
+    // Runs start() behind the launch cover (or at once when the cover is off or a title already runs).
+    void coverLaunch(const QString& title,bool steam,std::function<bool()> start);
+    LaunchCover* launchCover_=nullptr;
+    std::function<QWidget*()> coverAnchor_;
     // ---- Steam background mode (steam_hidden.h, audit/STEAM-HIDDEN.md) ----
     bool steamHideActive(QString* why=nullptr) const;
     void ensureSteamClient(const QString& title,std::function<void()> then);
