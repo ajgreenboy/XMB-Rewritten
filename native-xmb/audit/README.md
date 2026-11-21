@@ -103,6 +103,7 @@ native diff.
 | [VIDEO-REFERENCES.md](VIDEO-REFERENCES.md) | Measured values from public video references |
 | [PLAYER-PANELS-SPEC.md](PLAYER-PANELS-SPEC.md) | Implementation-ready spec for the four player surfaces |
 | [SETTINGS-SUBFLOWS-SPEC.md](SETTINGS-SUBFLOWS-SPEC.md) | Settings sub-flows, save data and copy/move/progress |
+| [PLAYER-POLISH-2026-11-21.md](PLAYER-POLISH-2026-11-21.md) | Video player polish: one video load card, first-frame handoff, chrome legibility (shadow, scrim), subtitle clear of the matrix, time bar contrast, one buffering presentation; open end-of-clip item |
 | [FIRMWARE-EXTRACT.md](FIRMWARE-EXTRACT.md) | Local PUP extraction |
 | [FIRMWARE-FETCH.md](FIRMWARE-FETCH.md) | Firmware fetch research |
 
