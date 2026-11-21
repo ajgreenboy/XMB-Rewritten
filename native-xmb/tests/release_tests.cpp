@@ -539,7 +539,7 @@ int main(int argc,char** argv) {
                 const bool hot=request.contains("/hot") || request.contains("-hot");
                 const bool sources=request.contains("/sources");
                 const bool search=request.contains("/search");
-                const bool sourceFeed=request.contains("/source-feed") || request.contains("/source-oversized") || request.contains("/source-malformed");
+                const bool sourceFeed=request.contains("/source-feed") || request.contains("/source-just-over-16m") || request.contains("/source-malformed");
                 const bool duplicate=request.contains("hot%20%20%20");
                 QByteArray body;
                 int delay=hot?0:(title==39?900:(title%5)*15);
@@ -552,11 +552,24 @@ int main(int argc,char** argv) {
                     const QByteArray response=QByteArrayLiteral("HTTP/1.1 302 Found\r\nLocation: file:///not-a-source\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
                     socket->write(response);socket->disconnectFromHost();return;
                 }
-                if(request.contains("/source-oversized-chunked")) {
-                    const QByteArray first(8*1024*1024,'x'),second(8*1024*1024+1,'x');
+                if(request.contains("/source-over-64m")) {
+                    // A declared length well past the 64 MiB source cap must be rejected from the
+                    // header alone, before any large body is transferred (keeps the fixture tiny).
+                    socket->write("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 67108865\r\nConnection: close\r\n\r\n");
+                    socket->write(QByteArray(8192,'x'));
+                    socket->flush();return;
+                }
+                if(request.contains("/source-over-64m-chunked")) {
+                    const QByteArray first(32*1024*1024,'x'),second(32*1024*1024+1,'x');
                     const QByteArray header=QByteArrayLiteral("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n");
                     socket->write(header+QByteArray::number(first.size(),16)+"\r\n"+first+"\r\n");
                     QTimer::singleShot(25,socket,[socket,second]{socket->write(QByteArray::number(second.size(),16)+"\r\n"+second+"\r\n0\r\n\r\n");socket->disconnectFromHost();});return;
+                }
+                if(request.contains("/sources-oversized")) {
+                    // The directory listing keeps its 16 MiB cap even though source feeds allow 64 MiB.
+                    socket->write("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 16777217\r\nConnection: close\r\n\r\n");
+                    socket->write(QByteArray(8192,'x'));
+                    socket->flush();return;
                 }
                 if(request.contains("/source-500-then-success")) {
                     ++source500ThenSuccessRequests;
@@ -696,7 +709,13 @@ int main(int argc,char** argv) {
                         body=QByteArrayLiteral("{\"total\":2,\"limit\":100,\"sources\":[{\"title\":\"Fixture Source A\",\"url\":\"https://fixture.invalid/a.json\",\"stats\":{\"installs\":3}},{\"title\":\"Fixture Source B\",\"url\":\"https://fixture.invalid/b.json\",\"stats\":{\"installs\":2}}]}");
                 } else if(sourceFeed) {
                     body=QByteArrayLiteral("[{\"title\":\"Same Game Deluxe\",\"size\":\"1 GB\",\"uri\":\"https://fixture/same.zip\"},{\"title\":\"Same  Game  Deluxe\",\"size\":\"2 GB\",\"uri\":\"magnet:?xt=urn:btih:same\"},{\"title\":\"Same Game Deluxe\",\"size\":\"3 GB\",\"uri\":\"https://fixture/same.torrent\"}]");
-                    if(request.contains("/source-oversized"))body=QByteArray(16*1024*1024+1,'x');
+                    if(request.contains("/source-just-over-16m")) {
+                        // A valid release-index body JUST over the old 16 MiB cap, now accepted by the
+                        // 64 MiB source cap. The padding sits in a top-level field the fitgirl adapter
+                        // ignores, so the body parses to a single direct-download entry.
+                        const QByteArray pad(16*1024*1024+8,'a');
+                        body=QByteArrayLiteral("{\"downloads\":[{\"title\":\"Just Over 16 MiB Game\",\"uris\":[\"https://fixture/justover.zip\"],\"fileSize\":\"1 GB\"}],\"padding\":\"")+pad+QByteArrayLiteral("\"}");
+                    }
                     if(request.contains("/source-malformed"))body=QByteArrayLiteral("{malformed");
                 } else if(search) {
                     if(request.contains("/search-malformed"))
@@ -882,6 +901,11 @@ int main(int argc,char** argv) {
         fixtureSources.append(HydraSource{});fixtureError=QStringLiteral("stale error");
         check(HydraLibrary().listSources(&fixtureSources,&fixtureError) && fixtureSources.isEmpty() && fixtureError.isEmpty(),
               "valid empty sources array clears a previous error");
+        qputenv("XMB_HYDRA_SOURCES_URL",(base+QStringLiteral("/sources-oversized")).toUtf8());
+        fixtureSources.clear();fixtureError.clear();
+        check(!HydraLibrary().listSources(&fixtureSources,&fixtureError) && fixtureSources.isEmpty() &&
+              fixtureError.contains(QStringLiteral("16 MiB")),
+              "directory listing still rejects a body over 16 MiB (source feeds get a separate 64 MiB cap)");
         qputenv("XMB_HYDRA_SOURCES_URL",(base+QStringLiteral("/sources")).toUtf8());
         {
             // Browse Sources opens with the public listSources directory request. A transient 500 there used to
@@ -980,12 +1004,18 @@ int main(int argc,char** argv) {
          feed.url=QUrl(base+QStringLiteral("/source-malformed"));feedGames.append(GameResult{});fixtureError.clear();
          check(!HydraLibrary().browseSource(feed,&feedGames,&fixtureError) && feedGames.isEmpty() && fixtureError.contains(QStringLiteral("invalid JSON")),
                "malformed source feed fails without partial titles");
-         feed.url=QUrl(base+QStringLiteral("/source-oversized"));fixtureError.clear();
-         check(!HydraLibrary().browseSource(feed,&feedGames,&fixtureError) && feedGames.isEmpty() && fixtureError.contains(QStringLiteral("16 MiB")),
-               "single-response source body over 16 MiB is rejected");
-         feed.url=QUrl(base+QStringLiteral("/source-oversized-chunked"));fixtureError.clear();
-         check(!HydraLibrary().browseSource(feed,&feedGames,&fixtureError) && feedGames.isEmpty() && fixtureError.contains(QStringLiteral("16 MiB")),
-               "chunked source body over 16 MiB is rejected while receiving");
+         feed.url=QUrl(base+QStringLiteral("/source-just-over-16m"));feedGames.clear();fixtureError=QStringLiteral("stale error");
+         check(HydraLibrary().browseSource(feed,&feedGames,&fixtureError) && feedGames.size()==1 &&
+               feedGames.first().name==QStringLiteral("Just Over 16 MiB Game") &&
+               feedGames.first().options.size()==1 && feedGames.first().options.first().downloads.size()==1 &&
+               feedGames.first().options.first().downloads.first().kind==QStringLiteral("direct") && fixtureError.isEmpty(),
+               "a valid source feed just over the old 16 MiB cap is accepted by the 64 MiB source cap");
+         feed.url=QUrl(base+QStringLiteral("/source-over-64m"));feedGames.append(GameResult{});fixtureError.clear();
+         check(!HydraLibrary().browseSource(feed,&feedGames,&fixtureError) && feedGames.isEmpty() && fixtureError.contains(QStringLiteral("64 MiB")),
+               "single-response source body over 64 MiB is rejected by its declared length");
+         feed.url=QUrl(base+QStringLiteral("/source-over-64m-chunked"));fixtureError.clear();
+         check(!HydraLibrary().browseSource(feed,&feedGames,&fixtureError) && feedGames.isEmpty() && fixtureError.contains(QStringLiteral("64 MiB")),
+               "chunked source body over 64 MiB is rejected while receiving");
          feed.url=QUrl(base+QStringLiteral("/source-redirect"));fixtureError.clear();
          check(HydraLibrary().browseSource(feed,&feedGames,&fixtureError) && feedGames.size()==1,
                "HTTP source redirect remains bounded and follows only a safe same-scheme target");

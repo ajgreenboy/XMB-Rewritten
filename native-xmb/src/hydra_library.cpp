@@ -23,6 +23,14 @@ namespace {
 constexpr qint64 kRetryAfterAbsent=-1;     // no Retry-After header (or an empty value)
 constexpr qint64 kRetryAfterMalformed=-2;  // present but neither a digit run nor an HTTP-date
 
+// Per-path body caps. The directory, search and ranked/hot catalogue fetches keep the historical
+// 16 MiB ceiling. The selected source feed (Browse Sources) gets its own larger cap that matches
+// the import path (ReleaseSources::fetchSourceJson allows 64 MiB) so a legitimate but large
+// release-index JSON is still browsable. The streaming/decompressed limit — the read cap plus the
+// Content-Length pre-check — stays in force for every path; only the ceiling value differs.
+constexpr qint64 kMaxBody=16*1024*1024;        // directory / search / ranked catalogue
+constexpr qint64 kMaxSourceBody=64*1024*1024;  // selected source feed (matches importSource)
+
 // The result of one blocking GET, kept separate from the error string so the retry loop can
 // classify a failure instead of guessing from prose. `status` is the final HTTP status (0 when
 // none), and `networkError` the reply's own error (which aborts turn into OperationCanceledError,
@@ -38,7 +46,7 @@ struct FetchOutcome {
     bool overflow=false;
     qint64 retryAfterSeconds=kRetryAfterAbsent;   // parsed Retry-After (see sentinels above)
 };
-bool fetchBody(const QUrl& url,const QString& service,QByteArray* out,QString* error);
+bool fetchBody(const QUrl& url,const QString& service,qint64 maxBody,QByteArray* out,QString* error);
 
 // Parses a Retry-After header value into seconds, honouring the strict 1*DIGIT grammar for the
 // delay-seconds form (leading/trailing optional whitespace is field framing, not part of the value).
@@ -89,8 +97,8 @@ bool fetchRetryable(const FetchOutcome& outcome) {
     return false;
 }
 
-QString fetchErrorString(const QString& service,const FetchOutcome& outcome) {
-    if(outcome.overflow)return QStringLiteral("Hydra %1 response exceeds 16 MiB; retry").arg(service);
+QString fetchErrorString(const QString& service,const FetchOutcome& outcome,qint64 maxBody) {
+    if(outcome.overflow)return QStringLiteral("Hydra %1 response exceeds %2 MiB; retry").arg(service).arg(maxBody/(1024*1024));
     if(outcome.invalidRedirect)return QStringLiteral("Hydra %1 redirect is not safe HTTP(S); retry").arg(service);
     if(outcome.invalidUrl)return QStringLiteral("Hydra %1 URL must be HTTP(S); retry").arg(service);
     if(outcome.timedOut)return QStringLiteral("Hydra %1 request timed out; retry").arg(service);
@@ -99,7 +107,7 @@ QString fetchErrorString(const QString& service,const FetchOutcome& outcome) {
 }
 
 bool fetchJson(const QUrl& url, QJsonObject* out, QString* error,const QString& service=QStringLiteral("library")) {
-    QByteArray body; if(!fetchBody(url,service,&body,error))return false;
+    QByteArray body; if(!fetchBody(url,service,kMaxBody,&body,error))return false;
     QJsonParseError parseError;
     const QJsonDocument document=QJsonDocument::fromJson(body,&parseError);
     if(document.isNull() || !document.isObject()) {
@@ -110,7 +118,7 @@ bool fetchJson(const QUrl& url, QJsonObject* out, QString* error,const QString& 
 }
 // The Hydra Cloud catalogue endpoints (catalogue/hot, catalogue/featured) answer a bare JSON array.
 bool fetchJsonArray(const QUrl& url, QJsonArray* out, QString* error) {
-    QByteArray body; if(!fetchBody(url,QStringLiteral("catalogue"),&body,error))return false;
+    QByteArray body; if(!fetchBody(url,QStringLiteral("catalogue"),kMaxBody,&body,error))return false;
     QJsonParseError parseError;
     const QJsonDocument document=QJsonDocument::fromJson(body,&parseError);
     if(document.isNull() || !document.isArray()) { if(error)*error=QStringLiteral("Hydra catalogue returned invalid JSON; retry"); return false; }
@@ -126,17 +134,18 @@ bool safeRedirect(const QUrl& from, const QUrl& to) {
 // `idleMs` is an idle deadline that restarts on every body chunk (0 disables it), so a slowly
 // progressing feed is never cut off while a stalled one is aborted and can be retried; `deadlineMs`
 // is an absolute, non-rearmed deadline that always bounds the attempt, so a drip-fed body cannot
-// outlive the overall retry budget. Catalogue callers pass idleMs=0 and the historical 30s deadline.
-FetchOutcome fetchBodyOnce(const QUrl& url,int idleMs,int deadlineMs) {
+// outlive the overall retry budget. `maxBody` caps both the declared Content-Length and the
+// actually-read (decompressed) byte count, so a feed cannot exceed it via a truthful or a
+// lying/chunked transfer. Catalogue callers pass idleMs=0 and the historical 30s deadline.
+FetchOutcome fetchBodyOnce(const QUrl& url,int idleMs,int deadlineMs,qint64 maxBody) {
     FetchOutcome outcome;
     if((url.scheme()!=QLatin1String("http") && url.scheme()!=QLatin1String("https")) || url.host().isEmpty()) {
         outcome.invalidUrl=true; return outcome;
     }
-    constexpr qint64 kMaxBody=16*1024*1024;
     QNetworkAccessManager manager; QNetworkRequest request(url);
     request.setRawHeader("User-Agent","XMB-Release-Sources/0.2");
     request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,QNetworkRequest::NoLessSafeRedirectPolicy);
-    QNetworkReply* reply=manager.get(request); reply->setReadBufferSize(kMaxBody+1);
+    QNetworkReply* reply=manager.get(request); reply->setReadBufferSize(maxBody+1);
     QEventLoop loop; QTimer idleTimer,deadlineTimer; idleTimer.setSingleShot(true); deadlineTimer.setSingleShot(true);
     QByteArray body; bool timedOut=false,invalidRedirect=false,overflow=false;
     const auto abort=[&]{reply->abort();};
@@ -147,8 +156,8 @@ FetchOutcome fetchBodyOnce(const QUrl& url,int idleMs,int deadlineMs) {
         if(!safeRedirect(reply->url(),target)){invalidRedirect=true;abort();}
     });
     QObject::connect(reply,&QNetworkReply::readyRead,&loop,[&]{
-        if(reply->header(QNetworkRequest::ContentLengthHeader).toLongLong()>kMaxBody){overflow=true;abort();return;}
-        const qint64 remaining=kMaxBody-body.size();
+        if(reply->header(QNetworkRequest::ContentLengthHeader).toLongLong()>maxBody){overflow=true;abort();return;}
+        const qint64 remaining=maxBody-body.size();
         const QByteArray chunk=reply->read(remaining+1);
         if(chunk.size()>remaining){overflow=true;abort();return;}
         body.append(chunk);
@@ -158,7 +167,7 @@ FetchOutcome fetchBodyOnce(const QUrl& url,int idleMs,int deadlineMs) {
     if(idleMs>0)idleTimer.start(idleMs);
     deadlineTimer.start(deadlineMs);   // absolute: never re-armed, bounds even a progressing body
     loop.exec();
-    if(reply->header(QNetworkRequest::ContentLengthHeader).toLongLong()>kMaxBody)overflow=true;
+    if(reply->header(QNetworkRequest::ContentLengthHeader).toLongLong()>maxBody)overflow=true;
     const int status=reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
     const auto networkError=reply->error();
     const bool failed=timedOut || invalidRedirect || overflow || networkError!=QNetworkReply::NoError || status>=400;
@@ -175,9 +184,9 @@ FetchOutcome fetchBodyOnce(const QUrl& url,int idleMs,int deadlineMs) {
     reply->deleteLater(); return outcome;
 }
 
-bool fetchBody(const QUrl& url,const QString& service,QByteArray* out,QString* error) {
-    const FetchOutcome outcome=fetchBodyOnce(url,0,30000);
-    if(!outcome.ok) { if(error)*error=fetchErrorString(service,outcome); return false; }
+bool fetchBody(const QUrl& url,const QString& service,qint64 maxBody,QByteArray* out,QString* error) {
+    const FetchOutcome outcome=fetchBodyOnce(url,0,30000,maxBody);
+    if(!outcome.ok) { if(error)*error=fetchErrorString(service,outcome,maxBody); return false; }
     if(out)*out=outcome.body; return true;
 }
 
@@ -221,7 +230,7 @@ RetryPolicy retryPolicy() {
 // `sharedBudget` lets one user action that makes several requests (the paginated source directory)
 // run under ONE budget: every page and every backoff draws on the same clock, so a long listing cannot
 // stretch the wait past the budget by giving each page a fresh one. Without it the call owns its budget.
-bool fetchBodyWithRetry(const QUrl& url,const QString& service,QByteArray* out,QString* error,QElapsedTimer* sharedBudget=nullptr) {
+bool fetchBodyWithRetry(const QUrl& url,const QString& service,qint64 maxBody,QByteArray* out,QString* error,QElapsedTimer* sharedBudget=nullptr) {
     const RetryPolicy policy=retryPolicy();
     QElapsedTimer ownBudget;
     if(!sharedBudget)ownBudget.start();
@@ -231,7 +240,7 @@ bool fetchBodyWithRetry(const QUrl& url,const QString& service,QByteArray* out,Q
     for(int attempt=1;;++attempt) {
         const int elapsed=int(budget.elapsed());
         if(elapsed>=policy.budgetMs)break;
-        outcome=fetchBodyOnce(url,policy.inactivityMs,policy.budgetMs-elapsed);
+        outcome=fetchBodyOnce(url,policy.inactivityMs,policy.budgetMs-elapsed,maxBody);
         if(outcome.ok) { if(out)*out=outcome.body; return true; }
         if(attempt>=policy.maxAttempts || !fetchRetryable(outcome))break;
         if(outcome.retryAfterSeconds==kRetryAfterMalformed)break;   // unparseable Retry-After: no premature retry
@@ -245,7 +254,7 @@ bool fetchBodyWithRetry(const QUrl& url,const QString& service,QByteArray* out,Q
         if(wait>=remaining)break;   // never wait past the budget (no unbounded wait)
         sleepFor(wait);
     }
-    if(error)*error=fetchErrorString(service,outcome);
+    if(error)*error=fetchErrorString(service,outcome,maxBody);
     return false;
 }
 // One page of the Hydra source directory (Browse Sources), under the directory action's shared budget.
@@ -254,7 +263,7 @@ bool fetchBodyWithRetry(const QUrl& url,const QString& service,QByteArray* out,Q
 // directory (not just "library") so the screen shows which request failed.
 bool fetchDirectoryPage(const QUrl& url,QElapsedTimer* budget,QJsonObject* out,QString* error) {
     const QString service=QStringLiteral("source directory");
-    QByteArray body; if(!fetchBodyWithRetry(url,service,&body,error,budget))return false;
+    QByteArray body; if(!fetchBodyWithRetry(url,service,kMaxBody,&body,error,budget))return false;
     QJsonParseError parseError;
     const QJsonDocument document=QJsonDocument::fromJson(body,&parseError);
     if(document.isNull() || !document.isObject()) {
@@ -264,7 +273,7 @@ bool fetchDirectoryPage(const QUrl& url,QElapsedTimer* budget,QJsonObject* out,Q
     if(out)*out=document.object(); return true;
 }
 bool fetchDocumentWithRetry(const QUrl& url, QJsonDocument* out, QString* error) {
-    QByteArray body; if(!fetchBodyWithRetry(url,QStringLiteral("source"),&body,error))return false;
+    QByteArray body; if(!fetchBodyWithRetry(url,QStringLiteral("source"),kMaxSourceBody,&body,error))return false;
     QJsonParseError parseError; const auto document=QJsonDocument::fromJson(body,&parseError);
     if(document.isNull()) { if(error)*error=QStringLiteral("Hydra source returned invalid JSON; retry"); return false; }
     if(out)*out=document; return true;
