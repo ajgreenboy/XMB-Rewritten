@@ -231,3 +231,6 @@ UI automation rather than a universal silent-install contract. It does not auto-
 startup, retries, kill a timed-out installer, or delete an existing destination. The original
 `KeepRamLimitOn` option is intentionally not exposed because it was only a placeholder and cannot be
 truthfully promised across repack variants.
+
+The install flow is verified against a synthetic installer fixture only; it has not been driven against
+a real FitGirl/DODI repack, so real-repack behaviour is unverified.
