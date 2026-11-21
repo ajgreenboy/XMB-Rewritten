@@ -1799,6 +1799,7 @@ int main(int argc,char** argv) {
                     // otherwise, and signInError is the client's own message. No credential is reported here:
                     // the password is not a field of this object and the user name is not either.
                     {"pageKind",shell.pageKind()},{"focusedRow",shell.focusedRowId()},
+                    {"pageTitle",shell.pageTitle()},
                     {"signInOpen",shell.jellyfinSignInOpen()},
                     {"signInState",shell.jellyfinSignInState()},
                     {"signInError",shell.jellyfinSignInError()},
