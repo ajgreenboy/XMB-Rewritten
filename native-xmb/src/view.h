@@ -14,6 +14,7 @@
 #include "media_controls.h"
 #include "text_renderer.h"
 #include "osk_layout.h"
+#include "osk_pad_input.h"
 #include "rco_objects.h"
 #include "media_keys.h"
 #include "game_capture.h"
@@ -729,6 +730,13 @@ private:
         std::function<void(QString)> done;
     };
     Osk osk_;
+    // The panel's fade (osk_pad_input.h; durations are audit-derived, OSK-FIRMWARE 13.2). oskFadeAt_ is the open instant;
+    // oskClosing_ is a drawable copy of the closed panel (open=true, no callback, a masked field's text blanked) kept for
+    // the close fade and wiped when it ends. L2/R2 are analog, so oskTriggers_ latches their press edges.
+    qint64 oskFadeAt_=0,oskClosingAt_=0;
+    Osk oskClosing_;
+    OskTriggerLatch oskTriggers_;
+    void oskPadAction(OskAction action);   // caret, page and Input Mode actions: the pad extras and the on-screen keys share it
     // The one RCO reader and the one resolved layout: both are startup work, never per-frame work.
     RcoObjects oskObjects_{assets_};
     OskLayout oskLayout_;

@@ -137,6 +137,21 @@ hide ramp (200 ms) is a fit — the console burst separates the trigger point, n
 4. **T16 (open):** the panel appears/disappears in one frame; the console ramps ~66-96 ms in and ~104 ms
    out.
 
+### Status (implemented; see `osk_pad_input.h`, `tests/osk_pad_input_tests.cpp`)
+- **I64 closed:** L1/R1 run `CaretLeft`/`CaretRight` through `View::oskPadAction`, the same code the on-screen arrow keys use.
+- **I65 partly closed:** R2 toggles lower/caps (the `a/A` key's action). L2 is routed to the `Accent` action but stays **inert**:
+  the accent rows (`a/a-grave` page) are not decoded in `osk_layout.cpp` or the module data this audit holds (OSK-FIRMWARE 5, 13;
+  only the palette's `extras` are recorded), so no page exists to open and none was invented. `oskPageForAction` already opens
+  a page named `accent` if a layout ever carries one. L2/R2 are analog triggers, edge-detected at 0.5 with a 0.25 re-arm (a fit).
+- **I66 closed as routed:** SELECT runs `Mode`, which logs the existing "Input Mode is unavailable (no IME modules)" line.
+  Input Mode itself stays unavailable. While the symbol palette is up the palette owns the pad and the extras do nothing (INFERRED).
+- **T16 closed with a deviation:** a linear alpha fade, 80 ms open and 104 ms close, driven from the view clock. The
+  durations are audit-derived (OSK-FIRMWARE 13.2: ramp ~66-96 ms, close ~104 ms from 45-47 fps luma bursts), not firmware-verified;
+  the easing curve was never separated, so it is linear. A `PafEase` was not used: its mode-5 curve has a long tail that
+  never lands at the duration and would outlast the measured ramp. The close fade draws a copy of the closed panel; a masked
+  field's text is blanked in that copy.
+- Not observed on a real pad or on the HTPC; covered by unit tests and the capture gate.
+
 ### Implementation note
 - **file + owner:** `view.cpp` `pollController` OSK branch (~line 4783, view owner) — bind
   `XINPUT_GAMEPAD_LEFT_SHOULDER`/`RIGHT_SHOULDER` → `OskAction::CaretLeft`/`CaretRight`,

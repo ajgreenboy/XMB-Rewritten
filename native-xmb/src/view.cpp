@@ -1534,6 +1534,13 @@ void View::paintGL() {
         osk_.paletteScroll,int(osk_.caretLit),int(osk_.onPaste))+
         (osk_.masked?QString(osk_.text.size(),oskL.mask.glyph):osk_.text)+
         QString::asprintf(" paste %d ",int(osk_.pasteReady))+osk_.toast;
+    // The fade runs on the clock, not on a shell change: its alpha (quantised by 1/256) and the closing copy's state are
+    // part of the signature, or the cached layer would freeze on the first frame of the ramp.
+    if(osk_.open && !oskFadeDone(now-oskFadeAt_,true))
+        signature+=QString::asprintf(" oskfade %d",int(oskFadeAlpha(now-oskFadeAt_,true)*256.));
+    else if(oskClosing_.open)
+        signature+=QString::asprintf(" oskclose %d %d %d %d",int(oskFadeAlpha(now-oskClosingAt_,false)*256.),oskClosing_.row,
+            oskClosing_.column,oskClosing_.page);
     // The notification composite animates outside a shell change (slide/fade), so its amount and content are
     // part of the signature: quantised by 1/256, which is finer than the 2x layer can show.
     // The operation guide fades on the focus clock alone, so its amount is part of the drawn state.
@@ -3737,7 +3744,17 @@ void View::drawScene(QPainter& p) {
     else if(messageShown_.kind==MessageKind::Box && (dialogEase_.value>.002 || dialogPlateEase_.value>.002))drawMessageBox(p);
     if(userCreate_.open)drawUserCreatePage(p);
     if(plEdit_.open)drawPlaylistEditor(p);
-    if(osk_.open)drawOsk(p);
+    if(osk_.open) {
+        p.save();p.setOpacity(p.opacity()*oskFadeAlpha(clock_.elapsed()-oskFadeAt_,true));drawOsk(p);p.restore();
+    } else if(oskClosing_.open) {
+        const qint64 closed=clock_.elapsed()-oskClosingAt_;
+        if(oskFadeDone(closed,false))oskClosing_=Osk{};
+        else {
+            Osk live=std::move(osk_);osk_=oskClosing_;   // drawOsk reads osk_; the live one is empty here
+            p.save();p.setOpacity(p.opacity()*oskFadeAlpha(closed,false));drawOsk(p);p.restore();
+            osk_=std::move(live);
+        }
+    }
     // The transient volume HUD. It is a timed composite, not a panel: it appears on every change and fades on
     // the MediaControls model, takes no input (nothing here reads a key or a button), and draws only in the
     // frames that have room for it - the PS menu blacks the frame, an information/dialog page replaces it, and
@@ -5914,6 +5931,11 @@ void View::pollController() {
         if(edge&XINPUT_GAMEPAD_B){if(osk_.paletteOpen){osk_.paletteOpen=false;update();}else oskClose(false);}
         if(edge&XINPUT_GAMEPAD_X)oskBackspace();if(edge&XINPUT_GAMEPAD_Y)oskInsert(" ");
         if(edge&XINPUT_GAMEPAD_START)oskClose(true);
+        // L1/R1 move the caret, L2 is the accent page, R2 the caps page and SELECT Input Mode (OSK-FIRMWARE 6). The latch is
+        // advanced every poll so a trigger held through the symbol palette does not fire the moment it closes; the palette
+        // owns the pad while it is up, so no extra runs under it. A START or Circle above can have closed the panel.
+        const auto extras=oskPadActions(edge,triggerDown,triggerUp,oskTriggers_);
+        if(osk_.open && !osk_.paletteOpen)for(const OskAction action:extras)oskPadAction(action);
         if(edge&0x000f)repeatAt_=now+repeatDelay;else if(movement&0x000f)repeatAt_=nextRepeat;
         buttons_=buttons;return;
     }
@@ -6047,6 +6069,8 @@ QString View::oskCharacter(int row,int column) const {
     return key?key->label:QString();
 }
 void View::openOsk(const QString& title,const QString& initial,std::function<void(QString)> done,bool masked) {
+    oskClosing_=Osk{};oskFadeAt_=clock_.elapsed();
+    oskTriggers_={true,true};   // a trigger already held when the panel opens must be released before it counts
     osk_=Osk{};osk_.open=true;osk_.title=title;osk_.text=initial;osk_.cursor=int(initial.size());osk_.done=std::move(done);
     osk_.masked=masked;
     // Test hook: XMB_OSK_TENKEY=1 forces the phone-style tenkey panel for this open. There are no numeric fields
@@ -6062,6 +6086,8 @@ void View::openOsk(const QString& title,const QString& initial,std::function<voi
 }
 void View::oskClose(bool accept) {
     auto done=std::move(osk_.done);
+    oskClosing_=osk_;oskClosingAt_=clock_.elapsed();   // drawn for the close fade only; the callback went to `done` above
+    if(oskClosing_.masked)oskClosing_.text.fill(QChar(0));   // the bullets are counted, the plaintext is never kept
     QString value=osk_.preserveWhitespace?osk_.text:osk_.text.trimmed();
     const bool allowEmpty=osk_.allowEmpty,masked=osk_.masked;
     QString typed=std::move(osk_.text);
@@ -6192,18 +6218,35 @@ void View::oskPress() {
     case OskAction::Character:oskInsert(key->label);break;
     case OskAction::Backspace:oskBackspace();break;
     case OskAction::Space:oskInsert(QStringLiteral(" "));break;
-    case OskAction::Shift:osk_.page=oskPageStep(int(L.pages.size()),osk_.page,1);break;
-    case OskAction::Accent:qInfo().noquote()<<"osk: accent page is not captured; the accent key is inert";break;
+    case OskAction::Shift:case OskAction::Accent:case OskAction::CaretLeft:case OskAction::CaretRight:case OskAction::Mode:
+        oskPadAction(key->action);return;
     case OskAction::Palette:osk_.paletteOpen=true;osk_.paletteRow=0;osk_.paletteColumn=0;osk_.paletteScroll=0;break;
     case OskAction::Enter:oskClose(true);return;
     case OskAction::MoveUp:oskMove(0,-1);break;
     case OskAction::MoveDown:oskMove(0,1);break;
-    case OskAction::CaretLeft:osk_.cursor=oskAdjacent(osk_.text,osk_.cursor,false);break;
-    case OskAction::CaretRight:osk_.cursor=oskAdjacent(osk_.text,osk_.cursor,true);break;
-    case OskAction::Mode:qInfo().noquote()<<"osk: Input Mode is unavailable (no IME modules; audit 8.3)";break;
     case OskAction::Copy:qInfo().noquote()<<"osk: copy is not wired (the OSK has no selection)";break;
     case OskAction::Paste:oskPaste();break;
     case OskAction::None:break;
+    }
+    update();
+}
+// The keys that need no focused key's label: the caret, the two page keys and Input Mode. The on-screen keys (oskPress)
+// and the pad's L1/R1/L2/R2/SELECT (pollController) both land here, so a badge and its button always do the same thing.
+void View::oskPadAction(OskAction action) {
+    const OskLayout& L=osk_.tenkey?oskPanelLayout_:oskLayout_;
+    switch(action) {
+    case OskAction::CaretLeft:osk_.cursor=oskAdjacent(osk_.text,osk_.cursor,false);break;
+    case OskAction::CaretRight:osk_.cursor=oskAdjacent(osk_.text,osk_.cursor,true);break;
+    case OskAction::Shift:case OskAction::Accent: {
+        const int target=oskPageForAction(L.pages,osk_.page,action);
+        if(target>=0)osk_.page=target;
+        // The accent rows (the a/a-grave page) are not decoded in the module data, so no page exists to open; the key
+        // says so in the log instead of showing an invented glyph table.
+        else if(action==OskAction::Accent)qInfo().noquote()<<"osk: accent page is not captured; the accent key is inert";
+        break;
+    }
+    case OskAction::Mode:qInfo().noquote()<<"osk: Input Mode is unavailable (no IME modules; audit 8.3)";break;
+    default:break;
     }
     update();
 }

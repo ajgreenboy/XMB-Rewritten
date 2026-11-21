@@ -1117,7 +1117,7 @@ column 4 = `g`), so the default focus is the firmware's and is not a constant in
 | `oskMove` | palette first when `paletteOpen`; otherwise the page's own row count with wrap, and the horizontal step uses the focused key's `span` (`column+span` right, `column-1` left), so a wide key is jumped whole and a vertical move snaps to a key's left column |
 | `oskPaletteMove` | 7 columns with wrap, 5 visible rows, `maxScroll` computed from `symbols.size()` |
 | `oskPalettePress` | inserts `symbolAtCell(row,column,scroll)` at the caret and closes the popup (F: the capture never shows an accept; Back is the traced exit) |
-| `oskPress` | dispatches every `OskAction`: Character, Backspace, Space, Shift (page 0 <-> 1), Palette, Enter (accept), MoveUp/MoveDown, CaretLeft/CaretRight, and the three the native build cannot honour log once each - `Accent` ("accent page is not captured"), `Mode` ("Input Mode is unavailable (no IME modules)"), `Copy`/`Paste` ("not wired to a clipboard yet") |
+| `oskPress` | dispatches every `OskAction`: Character, Backspace, Space, Shift (lower <-> caps by page name), Palette, Enter (accept), MoveUp/MoveDown, CaretLeft/CaretRight (all via `oskPadAction`, which the pad's L1/R1/L2/R2/SELECT also call), and the ones the native build cannot honour log once each - `Accent` ("accent page is not captured"), `Mode` ("Input Mode is unavailable (no IME modules)"), `Copy`/`Paste` ("not wired to a clipboard yet") |
 
 Escape and Circle are one layer at a time: the palette closes first, the keyboard second (`keyPressEvent`,
 `pollController`). Section 13.1's measured blink (period ~936 ms, lit ~470/dark ~440) post-dates the committed
@@ -1311,8 +1311,8 @@ only exists on an authenticated library page, and no Jellyfin server was contact
   band colours already are the composited result, so mixing the two would double-darken.
 - **The blink is 500 ms** from `OskCaret::blinkMilliseconds`, where the 2026-10-27/28 burst measured a
   ~936 ms period (13.1). The draw reads the layout field, so that is a one-value update in `osk_layout.cpp`.
-- **No open/close fade.** The captured fade is ~66-96 ms open and ~104 ms close (13.2); the native panel
-  appears and disappears in one frame, as it did before this change.
+- **No open/close fade.** (Superseded: a linear 80 ms open / 104 ms close fade now runs, `osk_pad_input.h`; the
+  durations are audit-derived from 13.2, not firmware-verified, and the curve is a fit.) The captured fade is ~66-96 ms open and ~104 ms close (13.2).
 
 ### 15.9 Gates (R)
 
