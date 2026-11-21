@@ -41,13 +41,24 @@ struct GameResult {
 struct PopularTitle {
     QString title;
     QString coverUrl;
+    QStringList genres;   // Steam genre tags from the hot catalogue, trimmed and de-duplicated
 };
 struct PopularTitleGroup {
     QString name;
     QString coverUrl;
+    QStringList genres;   // union of the group's entry genres, first-seen order preserved
     QVector<PopularTitle> entries;
 };
+// One distinct genre over a hot snapshot, with how many distinct games (groups) carry it.
+struct GenreGroup { QString name; int count=0; };
+// The optional "genres" string array on a hot-catalogue entry, normalized: non-string members,
+// empty tags and case-insensitive duplicates are dropped, so a malformed tag never invalidates
+// the game itself. Returns empty when the field is absent or not an array.
+QStringList parseGenreTags(const QJsonValue& value);
 QVector<PopularTitleGroup> groupPopularTitles(const QVector<PopularTitle>& titles);
+// Distinct genres over grouped hot titles, ordered by descending game count then case-insensitive
+// name, so the native genre list is stable regardless of catalogue order.
+QVector<GenreGroup> groupGenres(const QVector<PopularTitleGroup>& groups);
 GameResult mergePopularGameResults(const QString& name,const QString& coverUrl,
                                    const QVector<GameResult>& results);
 // One raw record from the Hydra /games API, before merge/dedup. buildGameCatalog turns a batch of
@@ -155,6 +166,14 @@ public:
     // carries its download sources and Steam box art. Titles with no downloadable
     // source are dropped. The order is the catalogue's own ranking, not newest-first.
     bool popularGames(QVector<GameResult>* out, QString* error=nullptr) const;
+    // Genre-scoped popular games over an already-fetched hot snapshot. `groups` must be
+    // groupPopularTitles(popularTitles(...)) in hot order; only groups whose genres contain `genre`
+    // (case-insensitive) are resolved, so the genre list page's snapshot is reused with no
+    // re-fetch and no fan-out over non-matching titles. Each resolved group keeps popularGames()'s
+    // bounded one-/games-lookup-per-entry fan-out and all-options/edition union, and the result
+    // preserves the snapshot's hot order. An empty `genre` resolves every group.
+    bool popularGames(const QVector<PopularTitleGroup>& groups,const QString& genre,
+                      QVector<GameResult>* out, QString* error=nullptr) const;
 private:
     QString flareSolverrEndpoint_;
 };

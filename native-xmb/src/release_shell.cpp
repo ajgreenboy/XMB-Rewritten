@@ -732,9 +732,11 @@ QString optionCount(const GameResult& game) {
 }
 
 QVector<Entry> downloadHubRows(const QVector<ReleaseSource>& sources) {
+    Q_UNUSED(sources);
     QVector<Entry> rows;
     rows.append(releaseRow(QStringLiteral("game:search"),QObject::tr("Search Games"),Action::SearchGames));
     rows.append(releaseRow(QStringLiteral("game:browse"),QObject::tr("Popular Games"),Action::BrowseGames));
+    rows.append(releaseRow(QStringLiteral("game:genres"),QObject::tr("Browse by Genre"),Action::BrowseGenres));
     rows.append(releaseRow(QStringLiteral("game:sources"),QObject::tr("Browse Sources"),Action::ReleaseFolder));
     return rows;
 }
@@ -768,6 +770,9 @@ QString hydraFailureText(const HydraFailure& failure,const QString& libraryError
 }
 // Lazy cross-source resolution worker result for one selected source-browsed game.
 struct ResolveOutcome { GameResult game; QString error; };
+// Browse-by-Genre list worker result: the grouped hot snapshot (reused by genre selection) and the
+// ordered distinct-genre list with counts. No download source is resolved here.
+struct GenresOutcome { QVector<PopularTitleGroup> groups; QVector<GenreGroup> genres; QString error; };
 }
 
 void Shell::refreshReleaseSources(const QUrl& importUrl) {
@@ -1098,6 +1103,58 @@ void Shell::openBrowseGames() {
     emit changed();
 }
 
+void Shell::openBrowseGenres() {
+    if(busy() || pages_.size()>=32)return;
+    const quint64 generation=++hydraPageGeneration_; const int depth=pages_.size();
+    busy_=true;status_=tr("Loading genres...");busyProgress_=-1.;busySpinnerPhase_=0.;busyClock_.start();
+    auto* watcher=new QFutureWatcher<GenresOutcome>(this);
+    connect(watcher,&QFutureWatcher<GenresOutcome>::finished,this,[this,watcher,generation,depth]{
+        const auto result=watcher->result();watcher->deleteLater();
+        if(generation!=hydraPageGeneration_)return;
+        busy_=false;status_.clear();busyProgress_=-1.;busySpinnerPhase_=-1.;
+        if(pages_.size()!=depth)return;
+        genreGroups_=result.groups;
+        Page page;page.title=tr("Browse by Genre");page.identity=++pageIdentityCounter_;page.hydraRetryKind=5;
+        if(!result.error.isEmpty()) { Entry row=releaseRow(QStringLiteral("game:genres:error"),tr("Could not load genres"),Action::GameRetry);row.detail=result.error;page.entries.append(std::move(row)); }
+        else if(result.genres.isEmpty())page.entries.append(releaseRow(QStringLiteral("game:genres:empty"),tr("No genres are available right now."),Action::Unavailable));
+        for(const auto& genre:result.genres) {
+            Entry row=releaseRow(QStringLiteral("game:genre:")+genre.name,genre.name,Action::GameGenrePick,genre.name);
+            row.detail=tr("%n game(s)",nullptr,genre.count);
+            page.entries.append(std::move(row));
+        }
+        pages_.push_back(std::move(page));emit changed();
+    });
+    const QString solver=preferences_.value(QStringLiteral("debrid/flareSolverrUrl")).toString().trimmed();
+    watcher->setFuture(QtConcurrent::run([solver]{ GenresOutcome result; QVector<PopularTitle> titles; if(HydraLibrary(solver).popularTitles(&titles,&result.error)){ result.groups=groupPopularTitles(titles); result.genres=groupGenres(result.groups); } return result; }));
+    emit changed();
+}
+
+void Shell::openGenre(const QString& genre) {
+    if(busy() || pages_.size()>=32 || genreGroups_.isEmpty())return;
+    const quint64 generation=++hydraPageGeneration_; const int depth=pages_.size();
+    busy_=true;status_=tr("Loading %1 games...").arg(genre);busyProgress_=-1.;busySpinnerPhase_=0.;busyClock_.start();
+    auto* watcher=new QFutureWatcher<BrowseOutcome>(this);
+    connect(watcher,&QFutureWatcher<BrowseOutcome>::finished,this,[this,watcher,generation,depth,genre]{
+        const auto result=watcher->result();watcher->deleteLater();
+        if(generation!=hydraPageGeneration_)return;
+        busy_=false;status_.clear();busyProgress_=-1.;busySpinnerPhase_=-1.;
+        if(pages_.size()!=depth)return;
+        // The results page is the popular catalogue filtered to one genre: the title makes that
+        // subset explicit instead of claiming a whole-library genre browse.
+        Page page;page.title=tr("Popular Games: %1").arg(genre);page.identity=++pageIdentityCounter_;page.hydraRetryKind=6;page.hydraRetryName=genre;page.downloadResults=result.games;
+        for(int i=0;i<page.downloadResults.size() && i<100;++i) {
+            const auto& game=page.downloadResults[i]; Entry row=releaseRow(QStringLiteral("game:result:")+QString::number(i),game.name,Action::GameSearchResult,QString::number(i));
+            row.detail=optionCount(game);row.fieldValue=game.options.isEmpty()?QString{}:game.options.first().fileSize;row.gameTile=true;row.artwork=result.covers.value(i);row.artworkUrl=game.coverUrl;page.entries.append(std::move(row));
+        }
+        if(page.entries.isEmpty()) { Entry row=releaseRow(QStringLiteral("game:error"),result.error.isEmpty()?tr("No %1 games are downloadable right now.").arg(genre):tr("Could not load %1 games").arg(genre),result.error.isEmpty()?Action::Unavailable:Action::GameRetry);row.detail=result.error;page.entries.append(std::move(row)); }
+        pages_.push_back(std::move(page));emit changed();
+    });
+    const QVector<PopularTitleGroup> groups=genreGroups_;
+    const QString solver=preferences_.value(QStringLiteral("debrid/flareSolverrUrl")).toString().trimmed();
+    watcher->setFuture(QtConcurrent::run([groups,genre,solver]{ BrowseOutcome result; HydraLibrary(solver).popularGames(groups,genre,&result.games,&result.error); return result; }));
+    emit changed();
+}
+
 void Shell::retryHydraPage() {
     if(pages_.isEmpty() || busy())return;
     const Page page=pages_.last();
@@ -1107,6 +1164,8 @@ void Shell::retryHydraPage() {
     else if(page.hydraRetryKind==2)openHydraSource(page.hydraRetryUrl,page.hydraRetryName);
     else if(page.hydraRetryKind==3)openBrowseGames();
     else if(page.hydraRetryKind==4)runGameSearch(page.hydraRetryQuery,QStringLiteral("online"));
+    else if(page.hydraRetryKind==5)openBrowseGenres();
+    else if(page.hydraRetryKind==6)openGenre(page.hydraRetryName);
 }
 
 void Shell::runGameSearch(const QString& query,const QString& scope) {

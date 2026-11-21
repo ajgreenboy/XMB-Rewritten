@@ -441,6 +441,38 @@ struct PopularLookup {
     GameResult game;
     QString error;
 };
+// Genre tags are matched case-insensitively after Unicode-normalising and collapsing whitespace;
+// the display string keeps the catalogue's own casing.
+QString genreKey(const QString& genre) {
+    return genre.normalized(QString::NormalizationForm_KC).simplified().toCaseFolded();
+}
+// Append `src`'s tags to `dest`, keeping first-seen order and dropping case-insensitive repeats.
+void appendGenres(QStringList* dest,const QStringList& src) {
+    QSet<QString> seen;
+    for(const auto& genre:*dest)seen.insert(genreKey(genre));
+    for(const auto& genre:src) {
+        const QString key=genreKey(genre);
+        if(key.isEmpty() || seen.contains(key))continue;
+        seen.insert(key);
+        dest->append(genre);
+    }
+}
+}
+
+QStringList parseGenreTags(const QJsonValue& value) {
+    QStringList tags;
+    if(!value.isArray())return tags;
+    QSet<QString> seen;
+    for(const auto& item:value.toArray()) {
+        if(!item.isString())continue;
+        const QString tag=item.toString().normalized(QString::NormalizationForm_KC).simplified();
+        if(tag.isEmpty())continue;
+        const QString key=tag.toCaseFolded();
+        if(seen.contains(key))continue;
+        seen.insert(key);
+        tags.append(tag);
+    }
+    return tags;
 }
 
 HydraLibrary::HydraLibrary(QString flareSolverrEndpoint):flareSolverrEndpoint_(std::move(flareSolverrEndpoint)) {}
@@ -687,22 +719,16 @@ bool HydraLibrary::resolveGameChoices(const GameResult& sourceGame, GameResult* 
     if(resolved)*resolved=std::move(merged);
     return true;
 }
-bool HydraLibrary::popularGames(QVector<GameResult>* out, QString* error) const {
-    if(error)error->clear();
-    if(out)out->clear();
-
-    QVector<PopularTitle> titles;
-    if(!popularTitles(&titles,error))return false;
-
-    // Each /games lookup is independent. Keep the pool deliberately small: this is a
-    // catalogue refresh, not an invitation to open 40 sockets at once. Futures are
-    // consumed in hot-catalogue order below, so completion timing can never reorder
-    // the Store tiles.
+// The shared fan-out: one bounded /games lookup per hot title over a small worker pool, then the
+// same group-and-merge popularGames() uses. Futures are consumed in catalogue order, so completion
+// timing never reorders tiles; a group is all-or-nothing and the first failure aborts the result.
+// Every lookup carries the caller's FlareSolverr endpoint (empty = never contacted).
+static bool resolvePopularTitles(const QVector<PopularTitle>& titles,const QString& solver,
+                                 QVector<GameResult>* out, QString* error) {
     QThreadPool pool;
     pool.setMaxThreadCount(6);
     QVector<QFuture<PopularLookup>> lookups;
     lookups.reserve(titles.size());
-    const QString solver=flareSolverrEndpoint_;
     for(const auto& title:titles) {
         lookups.append(QtConcurrent::run(&pool,[title,solver] {
             PopularLookup lookup;
@@ -741,6 +767,31 @@ bool HydraLibrary::popularGames(QVector<GameResult>* out, QString* error) const 
     return true;
 }
 
+bool HydraLibrary::popularGames(QVector<GameResult>* out, QString* error) const {
+    if(error)error->clear();
+    if(out)out->clear();
+    QVector<PopularTitle> titles;
+    if(!popularTitles(&titles,error))return false;
+    return resolvePopularTitles(titles,flareSolverrEndpoint_,out,error);
+}
+
+bool HydraLibrary::popularGames(const QVector<PopularTitleGroup>& groups,const QString& genre,
+                                QVector<GameResult>* out, QString* error) const {
+    if(error)error->clear();
+    if(out)out->clear();
+    // Reuse the already-fetched snapshot: resolve only the groups whose genres carry `genre`, in
+    // the snapshot's own order, so the genre page never re-fetches the catalogue and never fans out
+    // over titles the user has not asked for.
+    const QString key=genreKey(genre);
+    QVector<PopularTitle> titles;
+    for(const auto& group:groups) {
+        bool match=key.isEmpty();
+        for(const auto& tag:group.genres)if(genreKey(tag)==key){match=true;break;}
+        if(match)for(const auto& entry:group.entries)titles.append(entry);
+    }
+    return resolvePopularTitles(titles,flareSolverrEndpoint_,out,error);
+}
+
 bool HydraLibrary::popularTitles(QVector<PopularTitle>* out,QString* error) const {
     if(error)error->clear();
     if(out)out->clear();
@@ -757,6 +808,7 @@ bool HydraLibrary::popularTitles(QVector<PopularTitle>* out,QString* error) cons
         PopularTitle title;
         title.title=object.value(QStringLiteral("title")).toString().trimmed();
         title.coverUrl=object.value(QStringLiteral("libraryImageUrl")).toString();
+        title.genres=parseGenreTags(object.value(QStringLiteral("genres")));
         if(!title.title.isEmpty() && out)out->append(title);
     }
     return true;
@@ -771,11 +823,37 @@ QVector<PopularTitleGroup> groupPopularTitles(const QVector<PopularTitle>& title
         const auto found=indexes.constFind(key);
         if(found==indexes.cend()) {
             indexes.insert(key,groups.size());
-            PopularTitleGroup group;group.name=title.title;group.coverUrl=title.coverUrl;group.entries.append(title);
+            PopularTitleGroup group;group.name=title.title;group.coverUrl=title.coverUrl;group.genres=title.genres;group.entries.append(title);
             groups.append(std::move(group));
-        } else groups[found.value()].entries.append(title);
+        } else {
+            groups[found.value()].entries.append(title);
+            appendGenres(&groups[found.value()].genres,title.genres);
+        }
     }
     return groups;
+}
+
+QVector<GenreGroup> groupGenres(const QVector<PopularTitleGroup>& groups) {
+    QVector<GenreGroup> genres;
+    QHash<QString,int> byKey;
+    for(const auto& group:groups) {
+        QSet<QString> contributed;   // a game contributes each distinct genre once
+        for(const auto& genre:group.genres) {
+            const QString key=genreKey(genre);
+            if(key.isEmpty() || contributed.contains(key))continue;
+            contributed.insert(key);
+            const auto found=byKey.constFind(key);
+            if(found==byKey.cend()) {
+                byKey.insert(key,genres.size());
+                GenreGroup entry;entry.name=genre;entry.count=1;genres.append(entry);
+            } else genres[found.value()].count++;
+        }
+    }
+    std::stable_sort(genres.begin(),genres.end(),[](const GenreGroup& left,const GenreGroup& right){
+        if(left.count!=right.count)return left.count>right.count;
+        return genreKey(left.name)<genreKey(right.name);
+    });
+    return genres;
 }
 
 GameResult mergePopularGameResults(const QString& name,const QString& coverUrl,

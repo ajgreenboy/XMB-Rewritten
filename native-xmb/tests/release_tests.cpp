@@ -517,6 +517,25 @@ int main(int argc,char** argv) {
         check(!hasMoreSources(100,100,capped),"pagination is capped at 100 pages");
     }
     {
+        // Genre tag parsing and grouping (pure, no network). Missing, non-array and mixed members
+        // are dropped without invalidating the game; genuine tags are trimmed and case-insensitively
+        // de-duplicated. groupGenres counts distinct games and ranks by descending count then name.
+        check(parseGenreTags(QJsonValue()).isEmpty(),"absent genres are empty");
+        check(parseGenreTags(QJsonValue(QStringLiteral("Action"))).isEmpty(),"a non-array genres field is empty");
+        check(parseGenreTags(QJsonArray{1,false,QJsonObject{}}).isEmpty(),"mixed non-string genre members are dropped");
+        const auto cleaned=parseGenreTags(QJsonArray{QStringLiteral("  Action "),QStringLiteral("action"),QStringLiteral(""),QStringLiteral("RPG"),7});
+        check(cleaned==(QStringList{QStringLiteral("Action"),QStringLiteral("RPG")}),"genre tags are trimmed and de-duplicated case-insensitively");
+        PopularTitleGroup ga; ga.name=QStringLiteral("Game A"); ga.genres={QStringLiteral("Action"),QStringLiteral("Action"),QStringLiteral("RPG")};
+        PopularTitleGroup gb; gb.name=QStringLiteral("Game B"); gb.genres={QStringLiteral("RPG")};
+        PopularTitleGroup gc; gc.name=QStringLiteral("Game C"); gc.genres={QStringLiteral("Adventure")};
+        const auto genres=groupGenres({ga,gb,gc});
+        check(genres.size()==3,"distinct genres are counted once across games");
+        check(genres[0].name==QStringLiteral("RPG") && genres[0].count==2,"most common genre ranks first with its game count");
+        check(genres[1].name==QStringLiteral("Action") && genres[1].count==1,"single-game genre keeps its count");
+        check(genres[2].name==QStringLiteral("Adventure") && genres[2].count==1,"least common genre ranks last");
+        check(groupGenres({PopularTitleGroup{}}).isEmpty(),"a genre-less game never fabricates a genre");
+    }
+    {
         // Deterministic local HTTP fixture for the progressive popular feed: forty hot entries are
         // returned in ranking order, including one normalized duplicate and a separate edition.
         // Game responses complete out of order, title 39 is deliberately
@@ -835,7 +854,12 @@ int main(int argc,char** argv) {
                         QString title=QStringLiteral("Hot %1").arg(i,2,10,QChar('0'));
                         if(i==11)title=QStringLiteral("  hot   10  ");
                         if(i==12)title=QStringLiteral("Hot 10 — Deluxe Edition");
-                        rows.append(QJsonObject{{QStringLiteral("title"),title}});
+                        QJsonArray genres;
+                        if(i<=9) genres.append(QStringLiteral("Action"));
+                        else if(i==10 || i==11) { genres.append(QStringLiteral("RPG")); genres.append(QStringLiteral("Action")); }
+                        else if(i==12) genres.append(QStringLiteral("RPG"));
+                        else genres.append(QStringLiteral("Adventure"));
+                        rows.append(QJsonObject{{QStringLiteral("title"),title},{QStringLiteral("genres"),genres}});
                     }
                     body=QJsonDocument(rows).toJson(QJsonDocument::Compact);
                 } else if(!fail && title==20) {
@@ -886,6 +910,17 @@ int main(int argc,char** argv) {
         const auto groups=groupPopularTitles(titles);
         check(groups.size()==39 && groups[10].entries.size()==2 && groups[11].entries.size()==1,
               "duplicate hot entries group into one tile while edition stays separate");
+        // Genre metadata rides the same hot snapshot: parsed tags, the group union, and the ordered
+        // distinct-genre list with counts. No download source is resolved to build this list.
+        check(titles[0].genres==(QStringList{QStringLiteral("Action")}),"hot genre tag parsed on the first title");
+        check(titles[10].genres==(QStringList{QStringLiteral("RPG"),QStringLiteral("Action")}),"multi-genre title keeps its tag order");
+        check(titles[12].genres==(QStringList{QStringLiteral("RPG")}),"edition carries its own genre tag");
+        check(groups[10].genres==(QStringList{QStringLiteral("RPG"),QStringLiteral("Action")}),"duplicate hot entries union their genres into one group");
+        const auto genreList=groupGenres(groups);
+        check(genreList.size()==3,"three distinct genres across the forty-title fixture");
+        check(genreList[0].name==QStringLiteral("Adventure") && genreList[0].count==27,"Adventure ranks first with 27 games");
+        check(genreList[1].name==QStringLiteral("Action") && genreList[1].count==11,"Action ranks second with 11 games (10 solo plus one shared)");
+        check(genreList[2].name==QStringLiteral("RPG") && genreList[2].count==2,"RPG ranks last with 2 games (base tile plus edition)");
         QThreadPool pool;pool.setMaxThreadCount(6);
         QVector<QFuture<GameResult>> futures;
         for(const auto& title:titles)futures.append(QtConcurrent::run(&pool,[title]{GameResult game;HydraLibrary().popularGame(title,&game,nullptr);return game;}));
@@ -920,6 +955,37 @@ int main(int argc,char** argv) {
                sameSourceGame.options[0].releaseTitle==QStringLiteral("Same Source Standard") &&
                sameSourceGame.options[1].releaseTitle==QStringLiteral("Same Source Deluxe"),
                "popularGame preserves distinct editions sharing one source URL and collapses only the exact duplicate");
+        // Genre-scoped resolution reuses the already-fetched snapshot: only the matching groups resolve,
+        // preserving hot order and the all-options/edition union. RPG selects the base tile (two duplicate
+        // entries) and its edition, nothing else. The fan-out runs off the main thread and the loop pumps
+        // the fixture's event loop, exactly like the progressive popularGames() check below.
+        {
+            const auto genreFuture=QtConcurrent::run([groups] {
+                QVector<GameResult> games; QString error;
+                HydraLibrary().popularGames(groups,QStringLiteral("RPG"),&games,&error);
+                return qMakePair(games,error);
+            });
+            while(!genreFuture.isFinished())QCoreApplication::processEvents(QEventLoop::AllEvents,10);
+            const auto rpg=genreFuture.result();
+            check(rpg.second.isEmpty() && rpg.first.size()==2,"genre-scoped resolution succeeds over the hot snapshot");
+            if(rpg.first.size()==2) {
+                check(rpg.first[0].name==QStringLiteral("Hot 10") && rpg.first[0].options.size()==4,
+                      "RPG base tile keeps the duplicate source union in hot order");
+                check(rpg.first[1].name==QStringLiteral("Hot 10 — Deluxe Edition") && rpg.first[1].options.size()==2,
+                      "RPG edition keeps its distinct sources, separate from the base");
+            }
+            const auto lowerFuture=QtConcurrent::run([groups] {
+                QVector<GameResult> games; QString error;
+                HydraLibrary().popularGames(groups,QStringLiteral("rpg"),&games,&error);
+                return qMakePair(games,error);
+            });
+            while(!lowerFuture.isFinished())QCoreApplication::processEvents(QEventLoop::AllEvents,10);
+            const auto lower=lowerFuture.result();
+            check(lower.second.isEmpty() && lower.first.size()==2,"genre matching is case-insensitive");
+            QVector<GameResult> noneGames; QString noneError;
+            check(HydraLibrary().popularGames(groups,QStringLiteral("Simulation"),&noneGames,&noneError) && noneGames.isEmpty() && noneError.isEmpty(),
+                  "an absent genre yields an empty, error-free result");
+        }
         GameResult invalid; fixtureError.clear();
         check(!HydraLibrary().popularGame(titles[20],&invalid,&fixtureError) && invalid.options.isEmpty() &&
               fixtureError.contains(QStringLiteral("HTTP 500")) && fixtureError.contains(QStringLiteral("retry")) &&

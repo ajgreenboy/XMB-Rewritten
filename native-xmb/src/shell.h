@@ -164,7 +164,7 @@ enum class Action { Unavailable, SettingsPage, SettingChoices, SetSetting, EditN
     Setup,
     // Game > Saved Data / Memory Card Utility: presentation only, no console save-data backend.
     SaveData, ImportSource, ReleaseFolder, ReleaseDownload, DownloadManager, DebridToken, FlareSolverrUrl,
-    BrowseGames, SearchGames, GameSearchResult, GameDetailsDownload, GameSourcePick, GameRetry, GameDownloadDrive, GameDownloadConfirm,
+    BrowseGames, BrowseGenres, SearchGames, GameSearchResult, GameGenrePick, GameDetailsDownload, GameSourcePick, GameRetry, GameDownloadDrive, GameDownloadConfirm,
     // Game > Steam: the folded hub that lists Steam Store and All Games behind one column folder.
     SteamHub,
     // Game > Download Games: the folded hub that lists Browse, Import Source and the imported source folders.
@@ -862,6 +862,7 @@ private:
     quint64 releaseArtFixtureOpenCount_=0;
     quint64 releaseArtRequestCounter_=0;
     quint64 hydraPageGeneration_=0;
+    QVector<PopularTitleGroup> genreGroups_;   // the grouped hot snapshot behind Browse by Genre (reused on selection)
     bool gameArtHooked_=false;
     void refreshReleaseSources(const QUrl& importUrl={});
     void refreshGameFeeds();
@@ -876,6 +877,8 @@ private:
     void saveFlareSolverrUrl(const QString& url);
     void openGameSearch(const QString& scope={});
     void openBrowseGames();
+    void openBrowseGenres();
+    void openGenre(const QString& genre);
     void openHydraSources();
     void openHydraSource(const QString& sourceIndex,const QString& sourceName);
     void retryHydraPage();

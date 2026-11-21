@@ -5,7 +5,7 @@ import { decodePng } from "./ab-compare.ts";
 
 const dir = process.argv[2] ?? "C:\\dev\\out\\native-hydra-xmb-e2e";
 const expected = [
-  ["run/01-hub.png", "game:search", "Search Games", 3],
+  ["run/01-hub.png", "game:search", "Search Games", 4],
   ["run/02-popular.png", "game:result:0", "Fixture Game", 1],
   ["run/03-sources.png", "hydra:source:http://127.0.0.1:8766/source-feed", "Fixture Source", 1],
   ["run/04-source-list.png", "game:result:0", "Fixture Game Deluxe", 1],
@@ -30,7 +30,7 @@ for (const [relative, id, title, count] of expected) {
     check(`${relative} native page`, state.pageKind === "page" && state.width === 960 && state.height === 540, `${state.pageKind} ${state.width}x${state.height}`);
     const rows = Array.isArray(state.entryRows) ? state.entryRows : [];
     check(`${relative} bounded row observability`, rows.length === Math.min(count, 128), `${rows.length} rows`);
-    if (relative === "run/01-hub.png") check(`${relative} hub ordering`, rows.map((r: any) => r.id).join(",") === "game:search,game:browse,game:sources", rows.map((r: any) => r.id).join(","));
+    if (relative === "run/01-hub.png") check(`${relative} hub ordering`, rows.map((r: any) => r.id).join(",") === "game:search,game:browse,game:genres,game:sources", rows.map((r: any) => r.id).join(","));
     if (relative === "run/06-detail.png") {
       check(`${relative} source names`, rows.map((r: any) => r.title).join(",") === "Fixture Source,Fixture Source,Fixture Source", rows.map((r: any) => r.title).join(","));
       check(`${relative} source sizes`, rows.map((r: any) => r.fieldValue).join(",") === "1 GB,2 GB,3 GB", rows.map((r: any) => r.fieldValue).join(","));

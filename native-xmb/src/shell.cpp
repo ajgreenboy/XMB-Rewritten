@@ -3015,6 +3015,7 @@ void Shell::activate() {
     case Action::DebridToken:editDebridToken();break;
     case Action::FlareSolverrUrl:editFlareSolverrUrl();break;
     case Action::BrowseGames:openBrowseGames();break;
+    case Action::BrowseGenres:openBrowseGenres();break;
     case Action::DownloadHub:openDownloadHub();break;
     case Action::ManageHub:openManageHub();break;
     case Action::PendingInstallers:openPendingInstallers();break;
@@ -3025,6 +3026,7 @@ void Shell::activate() {
     case Action::InstallerClose:installerClosePressed();break;
     case Action::SearchGames:openGameSearch(entry.value);break;
     case Action::GameSearchResult:pickGameResult(entry.value.toInt());break;
+    case Action::GameGenrePick:openGenre(entry.value);break;
     case Action::GameDetailsDownload:
         if(!pages_.isEmpty() && pages_.last().gameDetails && !pages_.last().downloadResults.isEmpty())openGameSourcesResolved(pages_.last().downloadResults.first());
         break;
