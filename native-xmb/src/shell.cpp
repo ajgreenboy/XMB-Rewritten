@@ -1438,11 +1438,12 @@ void Shell::refreshContent() {
             }),category.entries.end());
             QVector<Entry> providers,installed,steam;
             QVector<Entry> trailing;   // rows that go after the column's own (Music > Jellyfin Music, under Spotify)
+            std::optional<Entry> seerrRow;   // TV/Video Services: placed right after the Jellyfin row
             if(category.id=="tv" && qEnvironmentVariable("XMB_NO_SETUP_ROWS")!=QLatin1String("1")) {
                 auto e=item("seerr-home",tr("Seerr"),"tex_video","explore_plugin_full",Action::Seerr,"open");
                 e.artwork=serviceIcons::seerr();e.iconSized=!e.artwork.isNull();
                 e.detail=tr("Find and request movies and TV shows through Seerr");
-                trailing.push_back(std::move(e));
+                seerrRow=std::move(e);
             }
             // TV/Video Services with no Jellyfin registered: a row that says Jellyfin exists and sets it up, so a
             // fresh install does not need a hand-edited apps.json (jellyfin_setup_shell.cpp). It goes where the
@@ -1525,6 +1526,14 @@ void Shell::refreshContent() {
                 }
                 providers.push_back(std::move(e));
                 providers.last().rawgArtworkVisible=result.rawgPaths.contains(QStringLiteral("custom:")+app.id);
+            }
+            if(seerrRow) {
+                // Seerr sits next to Jellyfin, not after the column's own rows: after the last Jellyfin row when
+                // there is one (the setup row or a registered Jellyfin app), otherwise at the end of the providers.
+                int at=providers.size();
+                for(int i=providers.size()-1;i>=0;--i)
+                    if(providers[i].id==QLatin1String("jellyfin-setup") || providers[i].action==Action::JellyfinApp){at=i+1;break;}
+                providers.insert(at,std::move(*seerrRow));
             }
             category.entries=installed+providers+steam+category.entries+trailing;
             if(category.id=="game") {
