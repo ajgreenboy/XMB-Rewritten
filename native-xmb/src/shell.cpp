@@ -2910,7 +2910,7 @@ void Shell::activate() {
     case Action::SearchGames:openGameSearch(entry.value);break;
     case Action::GameSearchResult:pickGameResult(entry.value.toInt());break;
     case Action::GameDetailsDownload:
-        if(!pages_.isEmpty() && pages_.last().gameDetails && !pages_.last().downloadResults.isEmpty())openGameSources(pages_.last().downloadResults.first());
+        if(!pages_.isEmpty() && pages_.last().gameDetails && !pages_.last().downloadResults.isEmpty())openGameSourcesResolved(pages_.last().downloadResults.first());
         break;
     case Action::GameSourcePick:pickGameSource(entry.value);break;
     case Action::GameRetry:retryHydraPage();break;

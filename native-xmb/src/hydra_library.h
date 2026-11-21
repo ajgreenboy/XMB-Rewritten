@@ -88,6 +88,12 @@ public:
     // records are intentionally source-scoped; callers may resolve a selected title through /games.
     bool browseSource(const HydraSource& source, QVector<GameResult>* out, QString* error=nullptr) const;
     bool popularTitles(QVector<PopularTitle>* out, QString* error=nullptr) const;
+    // Resolve the complete cross-source choices for one selected source-scoped game: a single
+    // /games search for its name, then an exact-name union into the source-only game. Returns true
+    // on a successful lookup whether or not an exact match was found (a no-match keeps the source's
+    // own "Only this source is known" state intact); returns false with *error only on a network or
+    // malformed search failure, so a caller never presents an unresolved game as a complete one.
+    bool resolveGameChoices(const GameResult& sourceGame, GameResult* resolved, QString* error=nullptr) const;
     bool popularGame(const PopularTitle& title, GameResult* out, QString* error=nullptr) const;
     // Genuinely-popular games, in popularity order: the Hydra Cloud "hot" catalogue
     // (api.hydralauncher.gg/catalogue/hot) matched against the download library, so each entry

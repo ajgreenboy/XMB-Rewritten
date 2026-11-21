@@ -397,6 +397,8 @@ QVector<Entry> downloadHubRows(const QVector<ReleaseSource>& sources) {
 // first paint; they are fetched after the Store page is visible.
 struct BrowseOutcome { QVector<GameResult> games; QHash<int,QImage> covers; QString error; };
 struct HydraSourcesOutcome { QVector<HydraSource> sources; QString error; };
+// Lazy cross-source resolution worker result for one selected source-browsed game.
+struct ResolveOutcome { GameResult game; QString error; };
 }
 
 void Shell::refreshReleaseSources(const QUrl& importUrl) {
@@ -672,18 +674,9 @@ void Shell::openHydraSource(const QString& sourceIndex,const QString& sourceName
     });
     watcher->setFuture(QtConcurrent::run([url,sourceName]{
         HydraLibrary library;HydraSource source;source.title=sourceName;source.url=url;QVector<GameResult> games;QString error;
-        if(!library.browseSource(source,&games,&error))return qMakePair(games,error);
-        for(auto& game:games) {
-            QVector<GameResult> unionGames;QString unionError;
-            if(library.searchGames(game.name,&unionGames,&unionError)) {
-                for(const auto& candidate:unionGames)if(gameSearchKey(candidate.name)==gameSearchKey(game.name)) {
-                    if(game.coverUrl.isEmpty())game.coverUrl=candidate.coverUrl;
-                    game=mergePopularGameResults(game.name,game.coverUrl,{game,candidate});
-                    if(game.options.size()>1)for(auto& option:game.options)option.sourceStatus.clear();
-                    break;
-                }
-            }
-        }
+        // Opening a source only fetches and parses its index. Cross-source choices are resolved
+        // lazily for the selected game at the Download action, never eagerly for every row.
+        library.browseSource(source,&games,&error);
         return qMakePair(games,error);
     })); emit changed();
 }
@@ -830,6 +823,44 @@ void Shell::openGameSources(const GameResult& game) {
         page.entries.append(releaseRow(QStringLiteral("game:no-links"),tr("No supported single-file download"),Action::Unavailable));
     pages_.push_back(std::move(page));
     requestGamePageArt();
+    emit changed();
+}
+
+// The Download action for a source-browsed game resolves the selected title's complete
+// cross-source choices lazily: a single /games search instead of the eager N-game fan-out the
+// source-open used to run. Popular/Search games already carry complete choices (their options
+// are not source-scoped), so they skip the lookup. A failed search is reported as an error and
+// never presented as a complete source-only list; a successful no-match keeps the source's own
+// "Only this source is known" state. The busy flag and a generation/depth/identity guard prevent
+// duplicate in-flight lookups and drop stale results after Back/reopen.
+void Shell::openGameSourcesResolved(const GameResult& game) {
+    if(busy() || pages_.size()>=32)return;
+    bool sourceOnly=false;
+    for(const auto& option:game.options)
+        if(option.sourceStatus.startsWith(QStringLiteral("Only this source is known"))){sourceOnly=true;break;}
+    if(!sourceOnly){openGameSources(game);return;}
+    const quint64 generation=++hydraPageGeneration_;
+    const int depth=pages_.size();
+    const quint64 pageIdentity=pages_.last().identity;
+    busy_=true;status_=tr("Loading download sources...");busyProgress_=-1.;busySpinnerPhase_=0.;busyClock_.start();
+    auto* watcher=new QFutureWatcher<ResolveOutcome>(this);
+    connect(watcher,&QFutureWatcher<ResolveOutcome>::finished,this,[this,watcher,generation,depth,pageIdentity]{
+        const auto outcome=watcher->result();watcher->deleteLater();
+        if(generation!=hydraPageGeneration_ || pages_.size()!=depth || pages_.isEmpty() || pages_.last().identity!=pageIdentity)return;
+        busy_=false;status_.clear();busyProgress_=-1.;busySpinnerPhase_=-1.;
+        if(!outcome.error.isEmpty()) {
+            showMessage(tr("Download Sources"),outcome.error,MessageKind::Page);
+            emit changed();
+            return;
+        }
+        openGameSources(outcome.game);
+    });
+    watcher->setFuture(QtConcurrent::run([game]{
+        ResolveOutcome outcome;
+        HydraLibrary library;
+        library.resolveGameChoices(game,&outcome.game,&outcome.error);
+        return outcome;
+    }));
     emit changed();
 }
 

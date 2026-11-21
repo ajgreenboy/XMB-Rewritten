@@ -530,6 +530,9 @@ int main(int argc,char** argv) {
         QHash<int,int> dirBudgetRequests;// /sources-budget, by page number
         int dir403Requests=0;
         int dir429Requests=0;
+        int sourceFeedRequests=0;
+        int sourcesListRequests=0;
+        int searchRequests=0;
         QObject::connect(&fixture,&QTcpServer::newConnection,&app,[&] {
             auto* socket=fixture.nextPendingConnection();
             QObject::connect(socket,&QTcpSocket::readyRead,socket,[&,socket] {
@@ -700,6 +703,7 @@ int main(int argc,char** argv) {
                 if(!hot && title==7)fail=++attempts[title]==1;
                 if(!hot && duplicate)fail=++attempts[-1]==1;
                 if(sources) {
+                    ++sourcesListRequests;
                     if(request.contains("/sources-fail"))fail=true;
                     if(request.contains("/sources-malformed"))
                         body=QByteArrayLiteral("{\"total\":1,\"limit\":100,\"sources\":[{\"title\":\"Good\",\"url\":\"https://good.invalid/index.json\"},null]}");
@@ -708,7 +712,16 @@ int main(int argc,char** argv) {
                     else
                         body=QByteArrayLiteral("{\"total\":2,\"limit\":100,\"sources\":[{\"title\":\"Fixture Source A\",\"url\":\"https://fixture.invalid/a.json\",\"stats\":{\"installs\":3}},{\"title\":\"Fixture Source B\",\"url\":\"https://fixture.invalid/b.json\",\"stats\":{\"installs\":2}}]}");
                 } else if(sourceFeed) {
+                    ++sourceFeedRequests;
                     body=QByteArrayLiteral("[{\"title\":\"Same Game Deluxe\",\"size\":\"1 GB\",\"uri\":\"https://fixture/same.zip\"},{\"title\":\"Same  Game  Deluxe\",\"size\":\"2 GB\",\"uri\":\"magnet:?xt=urn:btih:same\"},{\"title\":\"Same Game Deluxe\",\"size\":\"3 GB\",\"uri\":\"https://fixture/same.torrent\"}]");
+                    if(request.contains("/source-feed-large")) {
+                        QJsonArray downloads;
+                        for(int i=0;i<50;++i)
+                            downloads.append(QJsonObject{{QStringLiteral("title"),QStringLiteral("Large Game %1").arg(i)},
+                                {QStringLiteral("uris"),QJsonArray{QStringLiteral("https://fixture/large%1.zip").arg(i)}},
+                                {QStringLiteral("fileSize"),QStringLiteral("1 GB")}});
+                        body=QJsonDocument(QJsonObject{{QStringLiteral("downloads"),downloads}}).toJson(QJsonDocument::Compact);
+                    }
                     if(request.contains("/source-just-over-16m")) {
                         // A valid release-index body JUST over the old 16 MiB cap, now accepted by the
                         // 64 MiB source cap. The padding sits in a top-level field the fitgirl adapter
@@ -718,6 +731,7 @@ int main(int argc,char** argv) {
                     }
                     if(request.contains("/source-malformed"))body=QByteArrayLiteral("{malformed");
                 } else if(search) {
+                    ++searchRequests;
                     if(request.contains("/search-malformed"))
                         body=QByteArrayLiteral("{\"filteredCount\":2,\"games\":[{\"name\":\"Good Game\",\"source\":\"Fixture Source A\",\"sourceUrl\":\"https://fixture.invalid/a.json\"},null]}");
                     else if(request.contains("/search-empty"))
@@ -1112,6 +1126,57 @@ int main(int argc,char** argv) {
         searchResults.append(GameResult{});fixtureError=QStringLiteral("stale error");
         check(HydraLibrary().searchGames(QStringLiteral("fixture"),&searchResults,&fixtureError) && searchResults.isEmpty() && fixtureError.isEmpty(),
               "valid empty search games array clears a previous error");
+        // Lazy resolution: opening a source fetches only its index (no directory/search fan-out),
+        // and resolving one selected game runs exactly one search (one directory fetch), not N.
+        qputenv("XMB_HYDRA_SEARCH_URL",(base+QStringLiteral("/search")).toUtf8());
+        feed.url=QUrl(base+QStringLiteral("/source-feed-large"));feedGames.clear();fixtureError=QStringLiteral("stale error");
+        const int largeFeedBefore=sourceFeedRequests;
+        const int largeSourcesBefore=sourcesListRequests;
+        const int largeSearchBefore=searchRequests;
+        check(HydraLibrary().browseSource(feed,&feedGames,&fixtureError) && feedGames.size()==50 && fixtureError.isEmpty(),
+              "browsing a 50-game source returns every entry");
+        check(sourceFeedRequests==largeFeedBefore+1 && sourcesListRequests==largeSourcesBefore && searchRequests==largeSearchBefore,
+              "opening the large source costs exactly one feed GET and no directory/search requests");
+        GameResult sourceOnly;sourceOnly.name=QStringLiteral("Fixture Search Game");
+        GameSourceOption feedStandard;feedStandard.source=QStringLiteral("Fixture Feed");feedStandard.sourceUrl=QStringLiteral("https://fixture/feed.json");
+        feedStandard.releaseTitle=QStringLiteral("Fixture Search Game Standard");feedStandard.fileSize=QStringLiteral("3 GB");
+        feedStandard.sourceStatus=QStringLiteral("Only this source is known; other sources unavailable");
+        feedStandard.downloads={normalizeDownload(QStringLiteral("https://fixture/std.zip"))};
+        GameSourceOption feedDeluxe;feedDeluxe.source=QStringLiteral("Fixture Feed");feedDeluxe.sourceUrl=QStringLiteral("https://fixture/feed.json");
+        feedDeluxe.releaseTitle=QStringLiteral("Fixture Search Game Deluxe");feedDeluxe.fileSize=QStringLiteral("4 GB");
+        feedDeluxe.sourceStatus=QStringLiteral("Only this source is known; other sources unavailable");
+        feedDeluxe.downloads={normalizeDownload(QStringLiteral("https://fixture/dlx.zip"))};
+        sourceOnly.options={feedStandard,feedDeluxe};
+        const int resolveSourcesBefore=sourcesListRequests;
+        GameResult resolved;QString resolveError;
+        check(HydraLibrary().resolveGameChoices(sourceOnly,&resolved,&resolveError) && resolveError.isEmpty(),
+              "resolving a selected game's choices succeeds");
+        check(resolved.options.size()==4,"the union keeps both feed editions plus both cross-source choices");
+        check(resolved.options[0].source==QStringLiteral("Fixture Feed") && resolved.options[0].releaseTitle==QStringLiteral("Fixture Search Game Standard"),
+              "known feed options stay first in order");
+        check(resolved.options[1].source==QStringLiteral("Fixture Feed") && resolved.options[1].releaseTitle==QStringLiteral("Fixture Search Game Deluxe"),
+              "same-source editions stay separate and ordered");
+        check(resolved.options[2].source==QStringLiteral("Fixture Source A") && resolved.options[3].source==QStringLiteral("Fixture Source B"),
+              "cross-source choices follow in catalogue order");
+        bool allCleared=true;for(const auto& option:resolved.options)if(!option.sourceStatus.isEmpty())allCleared=false;
+        check(allCleared,"multi-source status is cleared after a successful union");
+        check(sourcesListRequests==resolveSourcesBefore+1,
+              "one selected-game resolution costs exactly one directory fetch (one search)");
+        GameResult noMatch;noMatch.name=QStringLiteral("Not In Catalogue");
+        GameSourceOption only;only.source=QStringLiteral("Fixture Feed");only.sourceUrl=QStringLiteral("https://fixture/feed.json");
+        only.releaseTitle=QStringLiteral("Not In Catalogue Edition");only.fileSize=QStringLiteral("5 GB");
+        only.sourceStatus=QStringLiteral("Only this source is known; no supported direct or magnet download is available");
+        noMatch.options={only};
+        GameResult noMatchResolved;QString noMatchError;
+        check(HydraLibrary().resolveGameChoices(noMatch,&noMatchResolved,&noMatchError) && noMatchError.isEmpty(),
+              "a successful no-match resolves to the source-only game without error");
+        check(noMatchResolved.options.size()==1 && noMatchResolved.options[0].sourceStatus.startsWith(QStringLiteral("Only this source is known")),
+              "source-only messaging is preserved on a successful no-match");
+        qputenv("XMB_HYDRA_SEARCH_URL",(base+QStringLiteral("/search-malformed")).toUtf8());
+        GameResult failResolved;QString failError;
+        check(!HydraLibrary().resolveGameChoices(sourceOnly,&failResolved,&failError) && failResolved.options.isEmpty() && !failError.isEmpty(),
+              "a failed search reports an error instead of a source-only success");
+        qputenv("XMB_HYDRA_SEARCH_URL",(base+QStringLiteral("/search")).toUtf8());
         qunsetenv("XMB_HYDRA_TEST_FIXTURE");qunsetenv("XMB_HYDRA_HOT_URL");qunsetenv("XMB_HYDRA_GAMES_URL");
         qunsetenv("XMB_HYDRA_SOURCES_URL");qunsetenv("XMB_HYDRA_SEARCH_URL");fixture.close();
     }

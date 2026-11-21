@@ -552,6 +552,25 @@ bool HydraLibrary::browseSource(const HydraSource& source, QVector<GameResult>* 
     }
     if(out)*out=std::move(games); return true;
 }
+bool HydraLibrary::resolveGameChoices(const GameResult& sourceGame, GameResult* resolved, QString* error) const {
+    if(error)error->clear();
+    if(resolved)*resolved=GameResult{};
+    QVector<GameResult> unionGames;
+    if(!searchGames(sourceGame.name,&unionGames,error))return false;
+    const QString key=catalogNameKey(sourceGame.name);
+    GameResult merged=sourceGame;
+    for(const auto& candidate:unionGames) {
+        if(catalogNameKey(candidate.name)!=key)continue;
+        if(merged.coverUrl.isEmpty())merged.coverUrl=candidate.coverUrl;
+        merged=mergePopularGameResults(merged.name,merged.coverUrl,{merged,candidate});
+        if(merged.options.size()>1)for(auto& option:merged.options)option.sourceStatus.clear();
+        break;
+    }
+    // A successful no-match keeps the source-only game (and its "Only this source is known" status)
+    // intact; only a failed search is an error.
+    if(resolved)*resolved=std::move(merged);
+    return true;
+}
 bool HydraLibrary::popularGames(QVector<GameResult>* out, QString* error) const {
     if(error)error->clear();
     if(out)out->clear();

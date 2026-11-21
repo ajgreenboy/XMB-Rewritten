@@ -867,6 +867,7 @@ private:
     void pickGameResult(int index);
     void openGameDetails(const GameResult& game,const QImage& artwork={});
     void openGameSources(const GameResult& game);
+    void openGameSourcesResolved(const GameResult& game);
     void pickGameSource(const QString& value);
     void beginGameConfirm(const QString& title,const GameSourceOption& option);
     void confirmGameDownload();
