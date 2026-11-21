@@ -98,12 +98,12 @@ QString fetchErrorString(const QString& service,const FetchOutcome& outcome) {
     return QStringLiteral("Hydra %1 request failed; retry").arg(service);
 }
 
-bool fetchJson(const QUrl& url, QJsonObject* out, QString* error) {
-    QByteArray body; if(!fetchBody(url,QStringLiteral("library"),&body,error))return false;
+bool fetchJson(const QUrl& url, QJsonObject* out, QString* error,const QString& service=QStringLiteral("library")) {
+    QByteArray body; if(!fetchBody(url,service,&body,error))return false;
     QJsonParseError parseError;
     const QJsonDocument document=QJsonDocument::fromJson(body,&parseError);
     if(document.isNull() || !document.isObject()) {
-        if(error)*error=QStringLiteral("Hydra library returned invalid JSON; retry");
+        if(error)*error=QStringLiteral("Hydra %1 returned invalid JSON; retry").arg(service);
         return false;
     }
     if(out)*out=document.object(); return true;
@@ -217,10 +217,17 @@ RetryPolicy retryPolicy() {
 // Retry-After — never repeating before the server says it is safe, never waiting past the remaining
 // budget, and never retrying at all when a Retry-After is present but unparseable. The whole sequence
 // is capped by maxAttempts and budgetMs.
-bool fetchBodyWithRetry(const QUrl& url,const QString& service,QByteArray* out,QString* error) {
+//
+// `sharedBudget` lets one user action that makes several requests (the paginated source directory)
+// run under ONE budget: every page and every backoff draws on the same clock, so a long listing cannot
+// stretch the wait past the budget by giving each page a fresh one. Without it the call owns its budget.
+bool fetchBodyWithRetry(const QUrl& url,const QString& service,QByteArray* out,QString* error,QElapsedTimer* sharedBudget=nullptr) {
     const RetryPolicy policy=retryPolicy();
-    QElapsedTimer budget; budget.start();
+    QElapsedTimer ownBudget;
+    if(!sharedBudget)ownBudget.start();
+    QElapsedTimer& budget=sharedBudget?*sharedBudget:ownBudget;
     FetchOutcome outcome;
+    outcome.timedOut=true;   // what a budget already spent before the first attempt reports
     for(int attempt=1;;++attempt) {
         const int elapsed=int(budget.elapsed());
         if(elapsed>=policy.budgetMs)break;
@@ -240,6 +247,21 @@ bool fetchBodyWithRetry(const QUrl& url,const QString& service,QByteArray* out,Q
     }
     if(error)*error=fetchErrorString(service,outcome);
     return false;
+}
+// One page of the Hydra source directory (Browse Sources), under the directory action's shared budget.
+// A transient 500/502/503/504 or timeout is retried inside that budget; 4xx (403, 429 included), unsafe
+// redirects and oversized bodies are terminal and are not replayed. The error text names the source
+// directory (not just "library") so the screen shows which request failed.
+bool fetchDirectoryPage(const QUrl& url,QElapsedTimer* budget,QJsonObject* out,QString* error) {
+    const QString service=QStringLiteral("source directory");
+    QByteArray body; if(!fetchBodyWithRetry(url,service,&body,error,budget))return false;
+    QJsonParseError parseError;
+    const QJsonDocument document=QJsonDocument::fromJson(body,&parseError);
+    if(document.isNull() || !document.isObject()) {
+        if(error)*error=QStringLiteral("Hydra %1 returned invalid JSON; retry").arg(service);
+        return false;
+    }
+    if(out)*out=document.object(); return true;
 }
 bool fetchDocumentWithRetry(const QUrl& url, QJsonDocument* out, QString* error) {
     QByteArray body; if(!fetchBodyWithRetry(url,QStringLiteral("source"),&body,error))return false;
@@ -409,15 +431,19 @@ bool HydraLibrary::listSources(QVector<HydraSource>* out, QString* error) const 
     int pageNumber=1;
     const QString endpoint=loopbackEndpoint("XMB_HYDRA_SOURCES_URL",
         QStringLiteral("https://api.hydralibrary.com/sources"));
+    // One budget for the whole directory action (all pages and every backoff), started when the action
+    // starts. A page that fails for good fails the listing: `all` is local and `out` is only written on
+    // success, so a partial source list can never reach the screen.
+    QElapsedTimer directoryBudget; directoryBudget.start();
     for(;;) {
         QJsonObject root;
-        if(!fetchJson(QUrl(endpoint+QStringLiteral("?page=%1&limit=100").arg(pageNumber)),&root,error))return false;
+        if(!fetchDirectoryPage(QUrl(endpoint+QStringLiteral("?page=%1&limit=100").arg(pageNumber)),&directoryBudget,&root,error))return false;
         if(!root.contains(QStringLiteral("sources")) || !root.value(QStringLiteral("sources")).isArray()) {
-            if(error)*error=QStringLiteral("Hydra library returned an invalid sources response; retry");
+            if(error)*error=QStringLiteral("Hydra source directory returned an invalid sources response; retry");
             return false;
         }
         if(!validSourceArray(root.value(QStringLiteral("sources")).toArray())) {
-            if(error)*error=QStringLiteral("Hydra library returned an invalid source entry; retry");
+            if(error)*error=QStringLiteral("Hydra source directory returned an invalid source entry; retry");
             return false;
         }
         const SourcesPage page=parseSourcesPage(root);
@@ -455,14 +481,14 @@ bool HydraLibrary::searchGames(const QString& query, QVector<GameResult>* out, Q
         QJsonObject root;
         const QUrl url(endpoint+QStringLiteral("?q=%1&limit=100&page=%2")
             .arg(QString::fromUtf8(QUrl::toPercentEncoding(query))).arg(page));
-        if(!fetchJson(url,&root,error))return false;
+        if(!fetchJson(url,&root,error,QStringLiteral("game search")))return false;
         if(!root.contains(QStringLiteral("games")) || !root.value(QStringLiteral("games")).isArray()) {
-            if(error)*error=QStringLiteral("Hydra library returned an invalid games response; retry");
+            if(error)*error=QStringLiteral("Hydra game search returned an invalid games response; retry");
             return false;
         }
         const QJsonArray games=root.value(QStringLiteral("games")).toArray();
         if(!validGameArray(games,true)) {
-            if(error)*error=QStringLiteral("Hydra library returned an invalid game entry; retry");
+            if(error)*error=QStringLiteral("Hydra game search returned an invalid game entry; retry");
             return false;
         }
         if(games.isEmpty())break;

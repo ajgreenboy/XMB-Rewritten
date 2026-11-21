@@ -522,6 +522,14 @@ int main(int argc,char** argv) {
         int source503RetryAfterMalformedRequests=0;
         int sourceDripFeedRequests=0;
         int sourceDripFeedOkRequests=0;
+        // Directory (/sources) fixture counters: requests per route and per page, so the tests can prove
+        // exactly how many attempts the real public listSources made.
+        int dirFlakyRequests=0;          // /sources-500-then-success
+        QHash<int,int> dirPagedRequests; // /sources-paged-flaky, by page number
+        QHash<int,int> dirDownRequests;  // /sources-paged-down, by page number
+        QHash<int,int> dirBudgetRequests;// /sources-budget, by page number
+        int dir403Requests=0;
+        int dir429Requests=0;
         QObject::connect(&fixture,&QTcpServer::newConnection,&app,[&] {
             auto* socket=fixture.nextPendingConnection();
             QObject::connect(socket,&QTcpSocket::readyRead,socket,[&,socket] {
@@ -633,6 +641,48 @@ int main(int argc,char** argv) {
                     }
                     QTimer::singleShot(delay,socket,[socket]{ socket->write("0\r\n\r\n"); socket->disconnectFromHost(); });
                     return;
+                }
+                // Source-directory routes (api /sources, paged). Each answers a real HTTP status so the tests drive the
+                // public listSources path exactly as the Browse Sources screen does.
+                if(request.contains("/sources-500-then-success") || request.contains("/sources-paged") || request.contains("/sources-budget")
+                   || request.contains("/sources-403") || request.contains("/sources-429")) {
+                    const auto reply=[socket](const QByteArray& status,const QByteArray& extra,const QByteArray& payload) {
+                        socket->write("HTTP/1.1 "+status+"\r\n"+extra+"Content-Type: application/json\r\nContent-Length: "+QByteArray::number(payload.size())+"\r\nConnection: close\r\n\r\n"+payload);
+                        socket->disconnectFromHost();
+                    };
+                    int dirPage=1;
+                    const int pageAt=request.indexOf("page=");
+                    if(pageAt>=0) {   // digits only: "page=2&limit=100" must read 2, not fail on the "&"
+                        int end=pageAt+5;
+                        while(end<request.size() && request.at(end)>='0' && request.at(end)<='9')++end;
+                        dirPage=request.mid(pageAt+5,end-pageAt-5).toInt();
+                    }
+                    const QByteArray full=QByteArrayLiteral("{\"total\":2,\"limit\":100,\"sources\":[{\"title\":\"Fixture Source A\",\"url\":\"https://fixture.invalid/a.json\"},{\"title\":\"Fixture Source B\",\"url\":\"https://fixture.invalid/b.json\"}]}");
+                    const QByteArray pageOne=QByteArrayLiteral("{\"total\":3,\"limit\":2,\"sources\":[{\"title\":\"Paged A\",\"url\":\"https://fixture.invalid/pa.json\"},{\"title\":\"Paged B\",\"url\":\"https://fixture.invalid/pb.json\"}]}");
+                    const QByteArray pageTwo=QByteArrayLiteral("{\"total\":3,\"limit\":2,\"sources\":[{\"title\":\"Paged C\",\"url\":\"https://fixture.invalid/pc.json\"}]}");
+                    const QByteArray serverError=QByteArrayLiteral("500 Internal Server Error");
+                    if(request.contains("/sources-500-then-success")) {
+                        if(++dirFlakyRequests==1) { reply(serverError,{},{}); return; }
+                        reply("200 OK",{},full); return;
+                    }
+                    if(request.contains("/sources-paged-flaky")) {
+                        const int count=++dirPagedRequests[dirPage];
+                        if(dirPage==2 && count==1) { reply(serverError,{},{}); return; }
+                        reply("200 OK",{},dirPage==1?pageOne:pageTwo); return;
+                    }
+                    if(request.contains("/sources-paged-down")) {
+                        ++dirDownRequests[dirPage];
+                        if(dirPage>=2) { reply(serverError,{},{}); return; }
+                        reply("200 OK",{},pageOne); return;
+                    }
+                    if(request.contains("/sources-budget")) {
+                        const int count=++dirBudgetRequests[dirPage];
+                        if(dirPage==1 && count==1) { reply(serverError,{},{}); return; }
+                        if(dirPage>=2) { reply(serverError,{},{}); return; }
+                        reply("200 OK",{},pageOne); return;
+                    }
+                    if(request.contains("/sources-403")) { ++dir403Requests; reply("403 Forbidden",{},{}); return; }
+                    if(request.contains("/sources-429")) { ++dir429Requests; reply("429 Too Many Requests","Retry-After: 2\r\n",{}); return; }
                 }
                 if(!hot && title==7)fail=++attempts[title]==1;
                 if(!hot && duplicate)fail=++attempts[-1]==1;
@@ -833,6 +883,73 @@ int main(int argc,char** argv) {
         check(HydraLibrary().listSources(&fixtureSources,&fixtureError) && fixtureSources.isEmpty() && fixtureError.isEmpty(),
               "valid empty sources array clears a previous error");
         qputenv("XMB_HYDRA_SOURCES_URL",(base+QStringLiteral("/sources")).toUtf8());
+        {
+            // Browse Sources opens with the public listSources directory request. A transient 500 there used to
+            // end the screen with an error on the first attempt; it is now retried inside one shared budget.
+            // Backoff is shortened (fixture-only) so these cases stay fast; the budget case sets its own.
+            qputenv("XMB_HYDRA_RETRY_BACKOFF_MS","50");
+            QVector<HydraSource> dirSources;QString dirError;
+            qputenv("XMB_HYDRA_SOURCES_URL",(base+QStringLiteral("/sources-500-then-success")).toUtf8());
+            dirSources.append(HydraSource{});dirError=QStringLiteral("stale error");
+            const bool dirFlakyOk=HydraLibrary().listSources(&dirSources,&dirError);
+            check(dirFlakyOk && dirSources.size()==2 && dirError.isEmpty(),"directory: a transient 500 recovers to the complete source list");
+            check(dirFlakyRequests==2,"directory: a single 500 costs exactly one automatic retry (two requests)");
+            // The search path shares the directory request, so it gets the same recovery.
+            dirFlakyRequests=0;
+            qputenv("XMB_HYDRA_SEARCH_URL",(base+QStringLiteral("/search")).toUtf8());
+            QVector<GameResult> dirSearch;dirError=QStringLiteral("stale error");
+            check(HydraLibrary().searchGames(QStringLiteral("fixture"),&dirSearch,&dirError) && dirSearch.size()==1 && dirError.isEmpty(),
+                  "directory: game search also recovers from a transient directory 500");
+
+            // A 500 on a LATER page retries that page only: pages already read are kept and the list is complete.
+            qputenv("XMB_HYDRA_SOURCES_URL",(base+QStringLiteral("/sources-paged-flaky")).toUtf8());
+            dirSources.clear();dirError.clear();
+            const bool pagedOk=HydraLibrary().listSources(&dirSources,&dirError);
+            check(pagedOk && dirSources.size()==3 && dirError.isEmpty(),"directory: a page-two 500 recovers to the complete paginated list");
+            check(dirSources.size()==3 && dirSources[0].title==QStringLiteral("Paged A") && dirSources[1].title==QStringLiteral("Paged B") && dirSources[2].title==QStringLiteral("Paged C"),
+                  "directory: recovered pages keep their order with no duplicates");
+            check(dirPagedRequests.value(1)==1 && dirPagedRequests.value(2)==2,"directory: only the failed page is retried (page one is not re-fetched)");
+
+            // A page that keeps failing fails the WHOLE listing: no partial source list is ever returned.
+            qputenv("XMB_HYDRA_SOURCES_URL",(base+QStringLiteral("/sources-paged-down")).toUtf8());
+            dirSources.clear();dirSources.append(HydraSource{});dirError.clear();
+            QElapsedTimer downClock;downClock.start();
+            const bool downOk=HydraLibrary().listSources(&dirSources,&dirError);
+            check(!downOk && dirSources.isEmpty(),"directory: repeated failure returns zero entries, never a partial list");
+            check(dirError.contains(QStringLiteral("source directory")) && dirError.contains(QStringLiteral("HTTP 500")) && dirError.contains(QStringLiteral("retry")),
+                  "directory: the error names the source directory, the HTTP status and that retry is possible");
+            check(dirDownRequests.value(1)==1 && dirDownRequests.value(2)==3,"directory: repeated 500 is bounded to the attempt cap on the failing page");
+            check(downClock.elapsed()<10000,"directory: repeated 500 returns promptly inside the budget");
+
+            // Terminal statuses are never retried automatically.
+            qputenv("XMB_HYDRA_SOURCES_URL",(base+QStringLiteral("/sources-403")).toUtf8());
+            dirSources.clear();dirError.clear();
+            check(!HydraLibrary().listSources(&dirSources,&dirError) && dirSources.isEmpty() && dirError.contains(QStringLiteral("HTTP 403")) && dirError.contains(QStringLiteral("source directory")),
+                  "directory: HTTP 403 is surfaced with its status");
+            check(dir403Requests==1,"directory: HTTP 403 is terminal (exactly one request)");
+            qputenv("XMB_HYDRA_SOURCES_URL",(base+QStringLiteral("/sources-429")).toUtf8());
+            dirSources.clear();dirError.clear();
+            QElapsedTimer rateClock;rateClock.start();
+            check(!HydraLibrary().listSources(&dirSources,&dirError) && dirSources.isEmpty() && dirError.contains(QStringLiteral("HTTP 429")),
+                  "directory: HTTP 429 is surfaced with its status");
+            check(dir429Requests==1 && rateClock.elapsed()<1500,"directory: HTTP 429 with Retry-After is terminal and does not wait");
+
+            // ONE budget covers every page and backoff of the directory action: page one burns part of it on its
+            // own retry, so the always-failing page two cannot start a fresh budget (three attempts) of its own.
+            qputenv("XMB_HYDRA_RETRY_BACKOFF_MS","400");
+            qputenv("XMB_HYDRA_RETRY_BUDGET_MS","1000");
+            qputenv("XMB_HYDRA_SOURCES_URL",(base+QStringLiteral("/sources-budget")).toUtf8());
+            dirSources.clear();dirSources.append(HydraSource{});dirError.clear();
+            QElapsedTimer budgetClock;budgetClock.start();
+            const bool budgetOk=HydraLibrary().listSources(&dirSources,&dirError);
+            const qint64 budgetMs=budgetClock.elapsed();
+            check(!budgetOk && dirSources.isEmpty() && dirError.contains(QStringLiteral("HTTP 500")),"directory: budget exhaustion fails the whole listing with the last status");
+            check(dirBudgetRequests.value(1)==2 && dirBudgetRequests.value(2)>=1 && dirBudgetRequests.value(2)<3,
+                  "directory: the budget is shared across pages (the failing page gets fewer than a full attempt cap)");
+            check(budgetMs<1000+1500,"directory: total time stays within the shared budget plus scheduling slack");
+            qunsetenv("XMB_HYDRA_RETRY_BUDGET_MS");qunsetenv("XMB_HYDRA_RETRY_BACKOFF_MS");
+            qputenv("XMB_HYDRA_SOURCES_URL",(base+QStringLiteral("/sources")).toUtf8());
+        }
         QVector<GameResult> searchResults;fixtureError=QStringLiteral("stale error");
          check(HydraLibrary().searchGames(QStringLiteral("fixture"),&searchResults,&fixtureError) && searchResults.size()==1 &&
                searchResults.first().options.size()==2 && fixtureError.isEmpty(),
