@@ -22,6 +22,7 @@
 #include "jellyfin_client.h"
 #include "jellyfin_stream.h"
 #include "jellyfin_player.h"
+#include "video_panel.h"
 #include "jellyfin_setup.h"
 #include "steam_owned.h"
 #include "steam_accounts.h"
@@ -460,6 +461,9 @@ public:
     }
     qint64 mediaPosition() const;
     qint64 mediaDuration() const;
+    // Whether the control matrix offers its Chapters slot: a Jellyfin video with at least two server chapter marks
+    // (videopanel::chapterSelectorVisible). A local file never does.
+    bool chapterSelectorVisible() const;
     int mediaChapterCount() const { return int(mediaChapters_.size()); }   // chapter marks of the open title (Jellyfin only), 0 = none
     bool mediaPaused() const;
     bool videoOpen() const;
@@ -1106,6 +1110,7 @@ private:
     void chooseJellyfinAudio(int streamIndex);
     void applyRememberedJellyfinAudio();
     void openChapterList();
+    void appendChapterRows();
     void chooseChapter(int index);
     QString choiceKey() const;
     jfplayer::Choice recallChoice() const;
@@ -1411,7 +1416,7 @@ private:
     // tracks the player reports, then Repeat and Shuffle (which used to hold the face buttons).
     bool playerPanel_=false;
     bool playFromBeginning_=false;   // one-shot: start the next local file at 0 instead of its stored position
-    enum class PlayerPanelKind { Audio, Subtitle, Extras };
+    enum class PlayerPanelKind { Audio, Subtitle, Extras, Chapters };
     PlayerPanelKind playerPanelKind_=PlayerPanelKind::Extras;
     void notePlayerInfo(const char* icon,const QString& text);
     int playerInfoSerial_=0;QString playerInfoIcon_,playerInfoText_;

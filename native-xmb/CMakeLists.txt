@@ -254,7 +254,7 @@ endif()
 option(XMB_JELLYFIN_PLAYBACK_BUILD_TESTS "Build the Jellyfin playback (PlaybackInfo, transcode URL, loopback HLS relay, diagnostics) tests" OFF)
 if(XMB_JELLYFIN_PLAYBACK_BUILD_TESTS)
     qt_add_executable(xmb-jellyfin-playback-tests tests/jellyfin_playback_tests.cpp
-        src/jellyfin_client.cpp src/jellyfin_client.h src/jellyfin_stream.cpp src/jellyfin_stream.h)
+        src/jellyfin_client.cpp src/jellyfin_client.h src/jellyfin_stream.cpp src/jellyfin_stream.h src/jellyfin_player.cpp src/jellyfin_player.h src/video_panel.h)
     target_include_directories(xmb-jellyfin-playback-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
     target_link_libraries(xmb-jellyfin-playback-tests PRIVATE Qt6::Core Qt6::Gui Qt6::Network)
     if(WIN32)

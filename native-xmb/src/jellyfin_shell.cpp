@@ -800,18 +800,23 @@ void Shell::applyRememberedJellyfinAudio() {
 void Shell::openChapterList() {
     optionsParent_=options_;optionsNested_=true;optionsTitle_=tr("Chapters");
     options_.clear();optionsSelection_=0;
+    appendChapterRows();
+    for(int i=0;i<options_.size();++i)if(options_[i].active){optionsSelection_=i;break;}
+    interactionAudio_.play(InteractionAudio::Cue::Options);
+    emit changed();
+}
+// One row per server chapter mark: the numbered name, the start time as the note, the chapter the position is in
+// marked as the current choice. Confirm seeks to its start (chooseChapter).
+void Shell::appendChapterRows() {
     const int at=jfplayer::chapterIndexAt(mediaChapters_,player_->position());
     for(int i=0;i<mediaChapters_.size() && i<100;++i) {
         MenuOption row{jfplayer::chapterLabel(mediaChapters_[i],i),OptionCommand::PlayerChapterTarget};
         row.index=i;row.active=i==at;row.note=MediaControls::formatTime(mediaChapters_[i].startMs);
-        if(row.active)optionsSelection_=i;
         options_.push_back(row);
     }
-    interactionAudio_.play(InteractionAudio::Cue::Options);
-    emit changed();
 }
 void Shell::chooseChapter(int index) {
-    if(index<0 || index>=mediaChapters_.size() || !mediaOpen_ || !player_->isSeekable())return;
+    if(!videopanel::chapterTargetValid(index,int(mediaChapters_.size())) || !mediaOpen_ || !player_->isSeekable())return;
     const qint64 target=mediaChapters_[index].startMs;
     const QString label=jfplayer::chapterLabel(mediaChapters_[index],index);
     resetOptions();

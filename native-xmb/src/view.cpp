@@ -4486,7 +4486,8 @@ QString firmwareText(Assets& assets,const char* key) {
     return value.trimmed();
 }
 QString videoButtonLabel(Assets& assets,const videopanel::Button& button) {
-    if(!button.label)return QStringLiteral("Native Extras");   // the one slot the console does not have
+    if(button.command==Command::Chapters)return QObject::tr("Chapters");   // native; placement and wording are not firmware-verified
+    if(!button.label)return QStringLiteral("Native Extras");   // the other slot the console does not have
     return firmwareText(assets,button.label);
 }
 constexpr qint64 informationHoldMs=3000,informationFadeMs=250;   // FIT: the control bar's own envelope
@@ -4501,7 +4502,8 @@ void View::toggleVideoPanel() {
     update();
 }
 void View::videoPanelMove(int dx,int dy) {
-    videoPanelFocus_=videopanel::moveFocus(videoPanelFocus_,dx,dy);
+    const bool chapters=shell_.chapterSelectorVisible();
+    videoPanelFocus_=videopanel::moveFocus(videopanel::focusWithout(videoPanelFocus_,chapters),dx,dy,chapters);
     videoPanelNotice_.clear();mediaControls_.activity(clock_.elapsed());update();
 }
 // SELECT / the Display button: videoplayer_display_infobar_group - the tex_i_upper_bar plate along the top, the
@@ -4535,6 +4537,7 @@ void View::showVideoInformation(const char* icon,const QString& text) {
     update();
 }
 void View::videoPanelActivate() {
+    videoPanelFocus_=videopanel::focusWithout(videoPanelFocus_,shell_.chapterSelectorVisible());
     const auto& button=videoButton(videoPanelFocus_);
     const bool seek=button.command==Command::SeekBack || button.command==Command::SeekForward || button.command==Command::Beginning;
     const QString reason=button.reason?QString::fromLatin1(button.reason):
@@ -4556,8 +4559,8 @@ void View::videoPanelActivate() {
     // FIT: the action indication shares the existing 3000 ms native control hold, never a speed badge.
     videoPanelStatusUntil_=clock_.elapsed()+3000;
     switch(button.command) {
-    case Command::Audio:case Command::Subtitle:case Command::Extras: {
-        const QString refusal=shell_.openMediaOption(button.command==Command::Audio?"audio":button.command==Command::Subtitle?"subtitle":"extras");
+    case Command::Audio:case Command::Subtitle:case Command::Extras:case Command::Chapters: {
+        const QString refusal=shell_.openMediaOption(button.command==Command::Audio?"audio":button.command==Command::Subtitle?"subtitle":button.command==Command::Chapters?"chapters":"extras");
         if(!refusal.isEmpty())videoPanelNotice_=refusal;   // the console's own "nothing to choose" sentence
         break;
     }
@@ -4666,7 +4669,9 @@ void View::drawVideoPanel(QPainter& p) {
     const QImage& under=assets_.image("videoplayer_plugin","tex_i_under_bar");
     if(!under.isNull())p.drawImage(QRectF(110,610,1700,320),under);
     const double inherited=p.opacity();
+    const bool chapterSlot=shell_.chapterSelectorVisible();
     for(int i=1;i<int(videopanel::kButtonCount);++i) {
+        if(i==videopanel::kChapters && !chapterSlot)continue;   // only for a title with server chapter marks
         const auto& button=videoButton(i);
         const QRectF box(960.+button.x*100.-(i==videopanel::kRepeat?49.:35.),650.+(1-button.y)*70.,i==videopanel::kRepeat?98.:70.,70.);
         if(button.native) {
@@ -4675,7 +4680,7 @@ void View::drawVideoPanel(QPainter& p) {
             p.setPen(QPen(QColor(255,255,255,150),1.5));p.setBrush(QColor(255,255,255,30));
             p.drawRoundedRect(box.adjusted(2,2,-2,-2),10,10);
             p.restore();
-            mediaPanelText(p,box,QStringLiteral("Native"),17,QColor(235,235,235),Qt::AlignCenter);
+            mediaPanelText(p,box,button.command==Command::Chapters?QObject::tr("Chapters"):QStringLiteral("Native"),button.command==Command::Chapters?14:17,QColor(235,235,235),Qt::AlignCenter);
             if(i==videoPanelFocus_) {
                 p.save();p.setPen(QPen(Qt::white,3.));p.setBrush(Qt::NoBrush);p.drawRoundedRect(box,10,10);p.restore();
             }
@@ -4694,11 +4699,14 @@ void View::drawVideoPanel(QPainter& p) {
             if(!focus.isNull())p.drawImage(box,focus);
         }
     }
+    videoPanelFocus_=videopanel::focusWithout(videoPanelFocus_,chapterSlot);
     const auto& button=videoButton(videoPanelFocus_);
     mediaPanelText(p,QRectF(560,864,800,28),videoButtonLabel(assets_,button),19,Qt::white,Qt::AlignCenter);
     QString note=videoPanelNotice_;
     if(note.isEmpty() && button.reason)note=QString::fromLatin1(button.reason);
-    if(note.isEmpty() && button.native)
+    if(note.isEmpty() && button.command==Command::Chapters)
+        note=QStringLiteral("Not on the console: jump to one of this title's server chapter marks.");
+    else if(note.isEmpty() && button.native)
         note=QStringLiteral("Not on the console: this build's own rows - quality, chapters, speed, next episode, shuffle.");
     if(note.isEmpty() && (button.command==Command::SeekBack || button.command==Command::SeekForward))
         note=QStringLiteral("10-second bounded seek; continuous speed scanning is not implemented.");

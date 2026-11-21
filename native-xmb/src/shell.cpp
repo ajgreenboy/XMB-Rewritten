@@ -4567,7 +4567,9 @@ void Shell::buildPlayerOptions() {
     const bool wantSubtitles=playerPanelKind_==PlayerPanelKind::Subtitle;
     const bool wantAudio=playerPanelKind_==PlayerPanelKind::Audio;
     const bool wantExtras=playerPanelKind_==PlayerPanelKind::Extras;
-    optionsTitle_=wantSubtitles?assets_.text("videoplayer_plugin","msg_subtitle_change","Subtitle Options")
+    const bool wantChapters=playerPanelKind_==PlayerPanelKind::Chapters;
+    optionsTitle_=wantChapters?QObject::tr("Chapters")
+                 :wantSubtitles?assets_.text("videoplayer_plugin","msg_subtitle_change","Subtitle Options")
                  :wantAudio?assets_.text("videoplayer_plugin","msg_audio_change","Audio Options")
                  :QObject::tr("Native Extras");
     // A Jellyfin stream's tracks are the server's own MediaStreams; a local file's are the sidecars
@@ -4703,6 +4705,7 @@ void Shell::buildPlayerOptions() {
             options_.push_back(row);
         }
     }
+    if(wantChapters)appendChapterRows();
     if(wantExtras && mediaProvider()=="Jellyfin" && !jellyfinAudio_.value(jellyfinPlayback_.itemId)) {
         MenuOption quality{QObject::tr("Quality: %1").arg(jellyfinQualityText()),OptionCommand::JellyfinQuality};
         quality.note=QObject::tr("Choosing another re-opens this title at the same point.");
@@ -6012,15 +6015,28 @@ QString Shell::mediaQueueSummary() const {
     if(!status_.isEmpty())result+=QStringLiteral("  ")+QChar(0x00B7)+QStringLiteral("  ")+status_;
     return result;
 }
+bool Shell::chapterSelectorVisible() const {
+    videopanel::ChapterContext context;
+    context.jellyfin=mediaProvider()=="Jellyfin";
+    context.video=videoOpen();
+    context.seekable=mediaSeekable();
+    context.chapterCount=int(mediaChapters_.size());
+    return videopanel::chapterSelectorVisible(context);
+}
 bool Shell::mediaSeekable() const { return mediaOpen_ && !photoOpen() && player_->isSeekable(); }
 QString Shell::openMediaOption(const QString& key) {
     if(!videoOpen() || busy() || !message_.isEmpty() || psMenu_)return {};
-    if(key!="audio" && key!="subtitle" && key!="extras")return {};
+    if(key!="audio" && key!="subtitle" && key!="extras" && key!="chapters")return {};
     touch();
-    playerPanelKind_=key=="audio"?PlayerPanelKind::Audio:key=="subtitle"?PlayerPanelKind::Subtitle:PlayerPanelKind::Extras;
+    if(key=="chapters" && !chapterSelectorVisible()) {
+        // The slot is hidden without chapter marks, so this only happens if the marks vanished under the focus.
+        interactionAudio_.play(InteractionAudio::Cue::Error);
+        return tr("This title has no chapters.");
+    }
+    playerPanelKind_=key=="audio"?PlayerPanelKind::Audio:key=="subtitle"?PlayerPanelKind::Subtitle:key=="chapters"?PlayerPanelKind::Chapters:PlayerPanelKind::Extras;
     buildPlayerOptions();
     // The console refuses an empty selector with its own sentence; this build adds why, from the row it would list.
-    if(playerPanelKind_!=PlayerPanelKind::Extras) {
+    if(playerPanelKind_==PlayerPanelKind::Audio || playerPanelKind_==PlayerPanelKind::Subtitle) {
         bool anyTrack=false;
         QString reason;
         for(const auto& row:options_) {

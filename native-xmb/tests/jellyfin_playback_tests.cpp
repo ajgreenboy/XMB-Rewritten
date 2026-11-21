@@ -5,6 +5,8 @@
 //   xmb-jellyfin-playback-tests
 #include "jellyfin_client.h"
 #include "jellyfin_stream.h"
+#include "jellyfin_player.h"
+#include "video_panel.h"
 
 #include <QCoreApplication>
 #include <QElapsedTimer>
@@ -37,6 +39,7 @@ void check(bool condition, const char* label) {
 }
 
 constexpr const char* kItem = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbb02";
+bool g_fakeNoChapters = false;         // the fake's media source carries no Chapters at all (an item the server has no marks for)
 bool g_fakeOmitsAudioIndex = false;   // the fake's TranscodingUrl leaves AudioStreamIndex out, so the client has to add it
 constexpr const char* kUser = "0123456789abcdef0123456789abcdef";
 constexpr const char* kSeries = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeee01";   // a show's id, for the episode look-up route
@@ -199,7 +202,7 @@ Resp serve(const Req& r, FakeServer& fake, bool& transcodeRequested) {
         QJsonObject source{{"Id", QString::fromLatin1(kItem)}, {"SupportsDirectPlay", false}, {"SupportsDirectStream", false},
                            {"SupportsTranscoding", true}, {"TranscodingUrl", g_fakeOmitsAudioIndex ? transcodeUrl(deviceId, burn, audio >= 0 ? audio : 1).remove(QStringLiteral("&AudioStreamIndex=%1").arg(audio >= 0 ? audio : 1)) : transcodeUrl(deviceId, burn, audio >= 0 ? audio : 1)},
                            {"RunTimeTicks", 72000000000LL},
-                           {"Chapters", QJsonArray{QJsonObject{{"StartPositionTicks", 0}, {"Name", "Opening"}},
+                           {"Chapters", g_fakeNoChapters ? QJsonArray{} : QJsonArray{QJsonObject{{"StartPositionTicks", 0}, {"Name", "Opening"}},
                                                    QJsonObject{{"StartPositionTicks", 6000000000LL}, {"Name", ""}},
                                                    QJsonObject{{"StartPositionTicks", 18000000000LL}, {"Name", "Finale"}}}},
                            {"MediaStreams", QJsonArray{QJsonObject{{"Index", 0}, {"Type", "Video"}, {"Codec", "hevc"}, {"DisplayTitle", "1080p"}},
@@ -669,6 +672,24 @@ int main(int argc, char** argv) {
             for (const auto& s : p.streams) if (s.type == QLatin1String("Audio")) ++audioStreams;
             check(audioStreams == 2, "playback: both audio streams are listed");
         }
+        // The chapter selector's input: three marks from the server show the selector, none (or one) hide it.
+        if (ready.count() == 1) {
+            const auto p = qvariant_cast<JellyfinPlayback>(ready.first().at(1));
+            QVector<jfplayer::Chapter> marks;
+            for (const auto& c : p.chapters) marks.push_back({c.startMs, c.name});
+            const auto list = jfplayer::normalizedChapters(marks);
+            check(videopanel::chapterSelectorVisible({true, true, true, int(list.size())}), "chapters: three server marks make the selector visible");
+            check(jfplayer::chapterLabel(list[1], 1) == QLatin1String("2. Chapter 2"), "chapters: the unnamed middle mark is labelled by its number");
+        }
+        g_fakeNoChapters = true; ready.clear();
+        client.playback(QString::fromLatin1(kItem), false, 20000, -1, {}, 2);
+        check(waitFor([&] { return ready.count() > 0; }), "chapters: PlaybackInfo without Chapters is answered");
+        if (ready.count() > 0) {
+            const auto p = qvariant_cast<JellyfinPlayback>(ready.first().at(1));
+            check(p.chapters.isEmpty() && !videopanel::chapterSelectorVisible({true, true, true, int(p.chapters.size())}),
+                  "chapters: an item without chapter data gets no selector, nothing is invented");
+        }
+        g_fakeNoChapters = false; ready.clear();
         // A server whose TranscodingUrl leaves the key out: the client adds it, once.
         g_fakeOmitsAudioIndex = true; ready.clear();
         client.playback(QString::fromLatin1(kItem), false, 20000, -1, {}, 2);

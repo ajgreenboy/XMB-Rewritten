@@ -12,17 +12,18 @@ static int failures = 0;
 static bool near(double a, double b) { return a - b < 1e-6 && b - a < 1e-6; }
 
 int main() {
-    // The container's own order: object order @0xc1e0..0xd740, then exactly one native slot, last.
-    CHECK(kButtons.size() == 26);
+    // The container's own order: object order @0xc1e0..0xd740, then the two native slots, last.
+    CHECK(kButtons.size() == 27);
     CHECK(kButtons[kDummy].icon == nullptr && kButtons[kDummy].x == -6 && kButtons[kDummy].y == 1);
     CHECK(std::strcmp(kButtons[kPlay].icon, "tex_cp_play") == 0);
     CHECK(std::strcmp(kButtons[kFlashBack].icon, "tex_cp_flash_b") == 0 && std::strcmp(kButtons[kFlashForward].icon, "tex_cp_flash_f") == 0);
     CHECK(std::strcmp(kButtons[kRepeat].icon, "tex_cp_repeat") == 0 && kButtons[kRepeat].x == 0 && kButtons[kRepeat].y == -1);
     int natives = 0;
     for(std::size_t i = 0; i < kButtons.size(); ++i) {
-        if(kButtons[i].native) { ++natives; CHECK(int(i) == kExtras); }
+        if(kButtons[i].native) { ++natives; CHECK(int(i) == kExtras || int(i) == kChapters); }
     }
-    CHECK(natives == 1);
+    CHECK(natives == 2);
+    CHECK(kChapters == kExtras + 1 && kButtons[kChapters].command == Command::Chapters && kButtons[kChapters].x > kButtons[kExtras].x && kButtons[kChapters].y == kButtons[kRepeat].y);
     CHECK(kButtons[kExtras].command == Command::Extras && kButtons[kExtras].x > kButtons[kRepeat].x && kButtons[kExtras].y == kButtons[kRepeat].y);
     // Titles come from the firmware table: every console slot with art carries a text key, the extras slot none.
     std::set<std::string> icons;
@@ -52,7 +53,10 @@ int main() {
     CHECK(moveFocus(17, 0, -1) == kRepeat);                 // stop (0,0) down: repeat (0,-1)
     CHECK(moveFocus(kRepeat, 1, 0) == kExtras);             // the extras slot is reached from repeat, rightwards
     CHECK(moveFocus(kExtras, -1, 0) == kRepeat);
-    CHECK(moveFocus(kExtras, 1, 0) == kExtras);
+    CHECK(moveFocus(kExtras, 1, 0) == kExtras);                   // chapters hidden: nothing right of extras
+    CHECK(moveFocus(kExtras, 1, 0, true) == kChapters && moveFocus(kChapters, -1, 0, true) == kExtras);
+    CHECK(moveFocus(kChapters, 1, 0, true) == kChapters);
+    CHECK(moveFocus(kRepeat, 1, 0, true) == kExtras);
     CHECK(moveFocus(kRepeat, 0, -1) == kRepeat);
     // Every visible console slot is reachable from Play.
     std::set<int> seen{kPlay};
@@ -66,7 +70,27 @@ int main() {
                 if(seen.insert(to).second) grew = true;
             }
     }
-    CHECK(seen.size() == kButtonCount - 1 && !seen.count(kDummy));
+    CHECK(seen.size() == kButtonCount - 2 && !seen.count(kDummy) && !seen.count(kChapters));   // chapters hidden: never a target
+    // With chapter marks the slot joins the walk, and only then.
+    std::set<int> withChapters{kPlay};
+    for(bool grown = true; grown;) {
+        grown = false;
+        const std::set<int> frontier = withChapters;
+        for(int from : frontier)
+            for(int dir = 0; dir < 4; ++dir)
+                if(withChapters.insert(moveFocus(from, dir == 0 ? -1 : dir == 1 ? 1 : 0, dir == 2 ? 1 : dir == 3 ? -1 : 0, true)).second) grown = true;
+    }
+    CHECK(withChapters.size() == kButtonCount - 1 && withChapters.count(kChapters));
+
+    // Chapter selector: Jellyfin video, seekable, two or more server marks. A local file never gets it.
+    ChapterContext chapters{true, true, true, 3};
+    CHECK(chapterSelectorVisible(chapters));
+    CHECK(chapterSelectorVisible({true, true, true, 2}));
+    CHECK(!chapterSelectorVisible({true, true, true, 1}) && !chapterSelectorVisible({true, true, true, 0}) && !chapterSelectorVisible({true, true, true, -4}));
+    CHECK(!chapterSelectorVisible({false, true, true, 12}));   // local file: no chapter data is faked
+    CHECK(!chapterSelectorVisible({true, false, true, 3}) && !chapterSelectorVisible({true, true, false, 3}));
+    CHECK(chapterTargetValid(0, 3) && chapterTargetValid(2, 3) && !chapterTargetValid(3, 3) && !chapterTargetValid(-1, 3) && !chapterTargetValid(0, 0));
+    CHECK(focusWithout(kChapters, false) == kExtras && focusWithout(kChapters, true) == kChapters && focusWithout(kPlay, false) == kPlay);
 
     // Go To: opens on the current position, minutes first; fields wrap inside their own range.
     GotoEntry g = GotoEntry::at(3725000, 7200000);   // 1:02:05 of 2:00:00

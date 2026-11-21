@@ -19,7 +19,8 @@ namespace videopanel {
 enum class Command {
     Unavailable, Audio, Subtitle, Volume, Display, Beginning, Next, SeekBack, SeekForward, Play, Pause, Stop,
     Repeat, GoTo, ScreenMode,
-    Extras   // native only: this build's own rows (quality, chapters, speed, next episode, shuffle)
+    Extras,   // native only: this build's own rows (quality, speed, next episode, shuffle)
+    Chapters  // native only: the title's Jellyfin chapter marks, shown only when the item has some
 };
 
 struct Button {
@@ -31,13 +32,14 @@ struct Button {
     bool native;              // true only for the extras slot
 };
 
-constexpr std::size_t kButtonCount = 26;
+constexpr std::size_t kButtonCount = 27;
 constexpr int kDummy = 0;
 constexpr int kPlay = 15;       // the slot the panel opens on
 constexpr int kFlashBack = 18;
 constexpr int kFlashForward = 19;
 constexpr int kRepeat = 24;
 constexpr int kExtras = 25;
+constexpr int kChapters = 26;   // native, drawn and focusable only while chapterSelectorVisible()
 
 // videoplayer_plugin.rco @0xc1e0..0xd740 in object order. The iconless dummy is kept (TRACED) but never drawn
 // or focused. Rows: y=+1 (11 slots, the dummy first), y=0 (13 slots), y=-1 (repeat).
@@ -77,15 +79,19 @@ inline constexpr std::array<Button, kButtonCount> kButtons{{
     {0, -1, "tex_cp_repeat", "msg_repeat", Command::Repeat, nullptr, false},
     // Not the console's: one cell right of repeat, after every console cell.
     {2, -1, nullptr, nullptr, Command::Extras, nullptr, true},
+    // Not the console's either: next to the extras slot, present only for an item that has chapter marks.
+    {3, -1, nullptr, nullptr, Command::Chapters, nullptr, true},
 }};
 
 // The geometric focus walk the console grid needs: horizontal moves stay on the row and take the nearest
 // cell in that direction; vertical moves take the nearest row (the cell closest in x within it). +dy is up.
-// The dummy slot (index 0) is never a target. Returns `current` when nothing lies that way.
-inline int moveFocus(int current, int dx, int dy) {
+// The dummy slot (index 0) is never a target, and the chapters slot only when `chapters` is true (the item has
+// chapter marks). Returns `current` when nothing lies that way.
+inline int moveFocus(int current, int dx, int dy, bool chapters = false) {
     const Button& from = kButtons[std::size_t(std::clamp(current, 0, int(kButtonCount) - 1))];
     int best = -1, score = 10000;
     for(int i = 1; i < int(kButtonCount); ++i) {
+        if(i == kChapters && !chapters) continue;
         const Button& candidate = kButtons[std::size_t(i)];
         const int x = candidate.x - from.x, y = candidate.y - from.y;
         if(dx && (y != 0 || x * dx <= 0)) continue;
@@ -95,6 +101,25 @@ inline int moveFocus(int current, int dx, int dy) {
     }
     return best >= 0 ? best : current;
 }
+
+// ---- Chapter selector (native: the console's videoplayer_display_chapter_* objects are not drawn) -----------------
+// The selector exists only for a title whose server sent chapter marks (Jellyfin MediaSources[].Chapters, or the
+// item's Chapters field). A local file has no chapter data this build can read, so it never gets the slot: nothing
+// is invented from the file name or from fixed intervals. One mark is not a list to choose from, so two are the
+// minimum (the shell's own skip rule needs two as well). Placement and wording are NOT firmware-verified.
+struct ChapterContext {
+    bool jellyfin = false;     // the open title is a Jellyfin stream
+    bool video = false;        // a video is open (not music or a photo)
+    bool seekable = false;     // the player can jump to a position
+    int chapterCount = 0;      // normalized marks the server sent
+};
+constexpr int kMinChapters = 2;
+inline bool chapterSelectorVisible(const ChapterContext& c) {
+    return c.jellyfin && c.video && c.seekable && c.chapterCount >= kMinChapters;
+}
+inline bool chapterTargetValid(int index, int count) { return index >= 0 && index < count; }
+// The focus to keep when the slot is gone (the chapter marks disappeared while it was focused): the extras slot.
+inline int focusWithout(int focus, bool chapters) { return focus == kChapters && !chapters ? kExtras : focus; }
 
 // ---- Go To: videoplayer_display_time_jump_hour / _minute / _second (three ItemSpin objects) --------------
 // Up and down turn the focused field, left and right move between fields, Cross jumps, Circle cancels. A
