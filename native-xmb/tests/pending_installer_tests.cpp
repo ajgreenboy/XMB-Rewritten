@@ -3,6 +3,7 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
+#include <QProcess>
 #include <QTemporaryDir>
 #include <iostream>
 
@@ -49,6 +50,58 @@ int main(int argc,char** argv) {
     ok &= check(xmb::PendingInstallerRegistry::upsert(registry,launching,verifyError),"launching record with a not-yet-created destination is accepted");
     xmb::PendingInstaller escaping=launching; escaping.id=QStringLiteral("escape-job"); escaping.destination=temp.filePath("outside-escape");
     ok &= check(!xmb::PendingInstallerRegistry::upsert(registry,escaping,verifyError),"launching record with an escaping destination is still refused");
+#ifdef Q_OS_WIN
+    {
+        // A directory junction whose target is outside the library must be
+        // rejected for a not-yet-created leaf: canonicalInstallDestination
+        // resolves the junction parent instead of trusting a lexical prefix.
+        QTemporaryDir outside;
+        const QString junction=QDir(library).filePath(QStringLiteral("escape-link"));
+        QProcess mklink;
+        mklink.start(QStringLiteral("cmd.exe"),{QStringLiteral("/c"),QStringLiteral("mklink"),QStringLiteral("/J"),
+            QDir::toNativeSeparators(junction),QDir::toNativeSeparators(outside.path())});
+        mklink.waitForFinished(10000);
+        if(mklink.exitStatus()==QProcess::NormalExit && mklink.exitCode()==0) {
+            xmb::PendingInstaller reparse=launching; reparse.id=QStringLiteral("reparse-job"); reparse.destination=QDir(junction).filePath(QStringLiteral("Game"));
+            ok &= check(!xmb::PendingInstallerRegistry::upsert(registry,reparse,verifyError),"launching record with a junction parent escaping the library is refused");
+            QDir().rmdir(junction);   // removes the junction, not its target
+        }
+    }
+#endif
+    {
+        // Staging a pending installer folder writes a recovery journal and moves
+        // the folder; injected failures surface an error and leave the staging in
+        // place so the caller can discard it rather than leave unindexed files.
+        const QString pendingParent=temp.filePath("pi-root"); QDir().mkpath(pendingParent);
+        const QByteArray recoveryBytes=QByteArrayLiteral("{\"id\":\"stage-job\"}");
+        {
+            QTemporaryDir stage;
+            QFile f(QDir(stage.path()).filePath("setup.exe")); Q_UNUSED(f.open(QIODevice::WriteOnly)); Q_UNUSED(f.write("fixture")); f.close();
+            const QString pendingRoot=QDir(pendingParent).filePath("stage-job");
+            ok &= check(xmb::stagePendingInstallerFolder(stage.path(),pendingRoot,recoveryBytes).isEmpty(),"staging moves to the pending location on success");
+            ok &= check(QFileInfo(pendingRoot).isDir() && QFileInfo(QDir(pendingRoot).filePath(".xmb-pending-recovery.json")).isFile(),"staging journal lands at the pending location");
+        }
+        {
+            QTemporaryDir stage;
+            QFile f(QDir(stage.path()).filePath("setup.exe")); Q_UNUSED(f.open(QIODevice::WriteOnly)); Q_UNUSED(f.write("fixture")); f.close();
+            const QString pendingRoot=QDir(pendingParent).filePath("stage-fail");
+            qputenv("XMB_PENDING_STAGING_JOURNAL_FAIL","1");
+            const QString err=xmb::stagePendingInstallerFolder(stage.path(),pendingRoot,recoveryBytes);
+            qunsetenv("XMB_PENDING_STAGING_JOURNAL_FAIL");
+            ok &= check(!err.isEmpty(),"journal-write failure is surfaced");
+            ok &= check(QFileInfo(stage.path()).isDir() && !QFileInfo(pendingRoot).exists(),"journal failure leaves staging in place for the caller");
+        }
+        {
+            QTemporaryDir stage;
+            QFile f(QDir(stage.path()).filePath("setup.exe")); Q_UNUSED(f.open(QIODevice::WriteOnly)); Q_UNUSED(f.write("fixture")); f.close();
+            const QString pendingRoot=QDir(pendingParent).filePath("stage-rename-fail");
+            qputenv("XMB_PENDING_STAGING_RENAME_FAIL","1");
+            const QString err=xmb::stagePendingInstallerFolder(stage.path(),pendingRoot,recoveryBytes);
+            qunsetenv("XMB_PENDING_STAGING_RENAME_FAIL");
+            ok &= check(!err.isEmpty(),"rename failure is surfaced");
+            ok &= check(QFileInfo(stage.path()).isDir() && !QFileInfo(pendingRoot).exists(),"rename failure leaves staging in place for the caller");
+        }
+    }
     QFile corrupt(registry); Q_UNUSED(corrupt.open(QIODevice::WriteOnly|QIODevice::Truncate)); Q_UNUSED(corrupt.write("{broken")); corrupt.close(); QVector<xmb::PendingInstaller> rejected; ok &= check(!xmb::PendingInstallerRegistry::load(registry,rejected,error),"corrupt registry is rejected without bypass");
     return ok?0:1;
 }

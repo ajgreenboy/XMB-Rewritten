@@ -76,7 +76,10 @@ public static class SyntheticInstaller {
     $timeout=Invoke-Helper $exe 'timeout fixture with spaces' 5000
     $timeoutJson=Read-Protocol $timeout.Out
     if($timeout.Exit -ne 4 -or $timeoutJson.status -notin @('timeout','process-still-running') -or @($timeoutJson.processIds).Count -lt 1) { throw "GUI child timeout contract failed: exit=$($timeout.Exit) output=$($timeout.Out) error=$($timeout.Err)" }
-    Write-Host 'synthetic GUI child timeout protocol passed'
+    $timeoutIdentity=@($timeoutJson.processIdentities)[0]
+    if($null -eq $timeoutIdentity -or $timeoutIdentity.creationTime -isnot [string]) { throw "processIdentity creationTime must be a lossless decimal string, not a number (FILETIME exceeds double precision)" }
+    if([long]$timeoutIdentity.creationTime -le 9007199254740992) { throw "processIdentity creationTime did not exceed 2^53; FILETIME precision is not exercisable" }
+    Write-Host 'synthetic GUI child timeout protocol passed (lossless FILETIME string)'
 } finally {
     Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
         Where-Object {$_.CommandLine -and $_.CommandLine -like "*$fixture*"} |

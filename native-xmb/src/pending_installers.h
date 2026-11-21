@@ -28,6 +28,19 @@ bool inspectPendingInstaller(const QString& extractedRoot, QString* installerPat
                              QString* error = nullptr);
 bool sha256File(const QString& path, QString* hash, QString* error = nullptr);
 bool validatePendingInstallerRecord(PendingInstaller& entry, QString* error = nullptr);
+// Canonicalizes an installation destination whose leaf may not exist yet. The
+// parent must already exist and canonicalize (resolving junctions/symlinks) to
+// the canonical library root itself (the direct-child layout the launcher
+// enforces), so a reparse escape is rejected instead of being masked by a
+// lexical prefix. Returns the canonical destination or an empty string.
+QString canonicalInstallDestination(const QString& libraryRoot, const QString& destination, QString* error = nullptr);
+// Stages an extracted pending-installer folder into its final
+// Pending Installers/<id>/ location: writes a recovery journal (one retry) and
+// renames the folder. Returns an empty string on success, or a translated error
+// message. Test hooks XMB_PENDING_STAGING_JOURNAL_FAIL and
+// XMB_PENDING_STAGING_RENAME_FAIL force each stage to fail. On failure the
+// staging folder is left in place so the caller decides whether to keep it.
+QString stagePendingInstallerFolder(const QString& stagingPath, const QString& pendingRoot, const QByteArray& recoveryBytes);
 bool pendingInstallerArtifactsAvailable(const QString& registryPath);
 bool verifyAndRegisterPendingInstaller(const QString& registryPath, const QString& appsPath,
                                        const PendingInstaller& entry, QString* error = nullptr,

@@ -1504,6 +1504,20 @@ void Shell::refreshContent() {
                 providers.last().rawgArtworkVisible=result.rawgPaths.contains(QStringLiteral("custom:")+app.id);
             }
             category.entries=installed+providers+steam+category.entries+trailing;
+            if(category.id=="game") {
+                // Reconcile the Pending Installers row with live artifacts so a
+                // same-session job completion or recovery-manifest discovery adds
+                // it (and a fully consumed registry drops it) without a restart.
+                // Remove any stale copy first to avoid a duplicate, then insert it
+                // between Download Games and Manage, matching the direct Game placement.
+                category.entries.erase(std::remove_if(category.entries.begin(),category.entries.end(),
+                    [](const Entry& e){return e.id==QStringLiteral("game:pending-installers");}),category.entries.end());
+                if(pendingInstallerArtifactsAvailable(QDir(dataDirectory_).filePath(QStringLiteral("pending-installers.json")))) {
+                    auto pend=item(QStringLiteral("game:pending-installers"),QObject::tr("Pending Installers"),QStringLiteral("item_tex_plain_folder"),QStringLiteral("explore_plugin_full"),Action::PendingInstallers);
+                    const auto manage=std::find_if(category.entries.cbegin(),category.entries.cend(),[](const Entry& e){return e.id==QStringLiteral("game:manage-hub");});
+                    category.entries.insert(manage==category.entries.cend()?category.entries.end():manage,std::move(pend));
+                }
+            }
             selections_[c]=0;
             for(int i=0;i<category.entries.size();++i)if(category.entries[i].id==selected){selections_[c]=i;break;}
             // The first time the Game column is built it opens on its first row, whatever the placeholder list's first row
@@ -2062,11 +2076,10 @@ Shell::Shell(QString dataDirectory,Assets& assets,QObject* parent):QObject(paren
     rebuildFriends();
     for(auto& category:categories_)if(category.id=="game") {
         category.entries.push_back(item("game:download-hub",QObject::tr("Download Games"),"item_tex_plain_folder",full,Action::DownloadHub));
-        const QString pendingRegistry=QDir(dataDirectory_).filePath(QStringLiteral("pending-installers.json"));
-        // Keep the catalogue unchanged for users with no pending jobs, but
-        // surface same-session registry entries and orphaned recovery manifests.
-        if(pendingInstallerArtifactsAvailable(pendingRegistry))
-            category.entries.push_back(item("game:pending-installers",QObject::tr("Pending Installers"),"item_tex_plain_folder",full,Action::PendingInstallers));
+        // The Pending Installers row is reconciled on every content refresh
+        // (refreshContent) so a same-session job completion or recovery-manifest
+        // discovery surfaces it without a restart; it sits between Download
+        // Games and Manage there.
         category.entries.push_back(item("game:manage-hub",QObject::tr("Manage"),"item_tex_plain_folder",full,Action::ManageHub));
     }
     xmb::bootprof::mark("Shell friends+connects");

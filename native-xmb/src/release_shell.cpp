@@ -46,7 +46,20 @@ bool parseHelperProtocol(const QByteArray& bytes,QString& status,QString& messag
     static const QSet<QString> allowed{QStringLiteral("exited"),QStringLiteral("nonzero"),QStringLiteral("no-window"),QStringLiteral("process-still-running"),QStringLiteral("timeout"),QStringLiteral("helper-failed")};
     if((!allowed.contains(status) && status!=QStringLiteral("manual-review")) || !object.value(QStringLiteral("processIds")).isArray() || !object.value(QStringLiteral("processIdentities")).isArray())return false;
     for(const auto value:object.value(QStringLiteral("processIds")).toArray())if(value.isDouble() && value.toDouble()>0)processIds.append(qint64(value.toDouble()));
-    for(const auto value:object.value(QStringLiteral("processIdentities")).toArray()) { const auto identity=value.toObject(); if(identity.value(QStringLiteral("pid")).isDouble() && identity.value(QStringLiteral("creationTime")).isDouble()){const qint64 pid=qint64(identity.value(QStringLiteral("pid")).toDouble()); const QString time=QString::number(qint64(identity.value(QStringLiteral("creationTime")).toDouble())); const int index=processIds.indexOf(pid); if(index>=0){while(creationTimes.size()<=index)creationTimes.append(QString()); creationTimes[index]=time; if(index==0)creationTime=time;} } }
+    for(const auto value:object.value(QStringLiteral("processIdentities")).toArray()) {
+        const auto identity=value.toObject();
+        const QJsonValue pidValue=identity.value(QStringLiteral("pid"));
+        const QJsonValue timeValue=identity.value(QStringLiteral("creationTime"));
+        if(!pidValue.isDouble()) continue;
+        // creationTime is a FILETIME (100ns ticks), which exceeds double's exact
+        // integer range; read the lossless decimal string the helper emits. A
+        // JSON number would drop the low bits and never match processIdentityAlive.
+        const QString time=timeValue.isString()?timeValue.toString():QString();
+        if(time.isEmpty()) continue;
+        const qint64 pid=qint64(pidValue.toDouble());
+        const int index=processIds.indexOf(pid);
+        if(index>=0){while(creationTimes.size()<=index)creationTimes.append(QString()); creationTimes[index]=time; if(index==0)creationTime=time;}
+    }
     if(processIds.size()!=creationTimes.size() && status!=QStringLiteral("manual-review"))return false;
     return true;
 }
@@ -191,9 +204,9 @@ void Shell::installPendingInstaller(const QString& id,const QString& destination
         const auto current=std::find_if(latest.begin(),latest.end(),[&](const auto& e){return e.id==id;});
         QString currentHash;
         const QString currentCanonical=current==latest.end()?QString{}:QFileInfo(current->installerPath).canonicalFilePath();
-        const QString root=current==latest.end()?QString{}:QDir(current->libraryRoot).canonicalPath();
-        const QString parent=QFileInfo(destination).absolutePath();
-        if(current==latest.end() || currentCanonical!=canonical || root.isEmpty() || QDir(parent).canonicalPath()!=root || QFileInfo(destination).exists() ||
+        const QString libraryRoot=current==latest.end()?QString{}:current->libraryRoot;
+        if(current==latest.end() || currentCanonical!=canonical ||
+           canonicalInstallDestination(libraryRoot,destination,&validationError).isEmpty() || QFileInfo(destination).exists() ||
            !sha256File(currentCanonical,&currentHash,&validationError) || currentHash.compare(current->sha256,Qt::CaseInsensitive)!=0) {
             showMessage(tr("Install"),tr("The installer or destination changed after confirmation. Nothing was launched."),MessageKind::Page); emit changed(); return;
         }

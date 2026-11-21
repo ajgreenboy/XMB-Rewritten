@@ -84,9 +84,12 @@ function Write-Result {
     foreach($processId in @($uniqueIds)) {
         $key=[string]$processId
         if($script:verifiedIdentities -and $script:verifiedIdentities.ContainsKey($key)) {
-            $identities+=@{pid=$processId;creationTime=[long]$script:verifiedIdentities[$key]}
+            # FILETIME (100ns ticks since 1601) exceeds double's exact integer
+            # range, so it must travel as a lossless decimal string, never a JSON
+            # number that would drop the low bits on the native side.
+            $identities+=@{pid=$processId;creationTime=[string]$script:verifiedIdentities[$key]}
         } else {
-            try { $p=Get-Process -Id $processId -ErrorAction Stop; $identities+=@{pid=$processId;creationTime=$p.StartTime.ToUniversalTime().ToFileTimeUtc()} } catch {}
+            try { $p=Get-Process -Id $processId -ErrorAction Stop; $identities+=@{pid=$processId;creationTime=[string]$p.StartTime.ToUniversalTime().ToFileTimeUtc()} } catch {}
         }
     }
     $complete=(@($identities | ForEach-Object {[int]$_.pid} | Sort-Object -Unique).Count -eq $uniqueIds.Count)

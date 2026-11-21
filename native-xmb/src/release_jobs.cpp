@@ -861,33 +861,36 @@ void Shell::pumpReleaseJobs() {
                 const QString pendingRoot=pendingInstallerDirectory(*job);
                 QDir().mkpath(QFileInfo(pendingRoot).absolutePath());
                 const QByteArray recoveryBytes=QJsonDocument(QJsonObject{{"id",job->id},{"title",job->request.title},{"installer",QDir(pendingRoot).filePath(result.pendingInstaller)},{"archive",result.archive},{"libraryRoot",job->request.gamesDirectory}}).toJson(QJsonDocument::Compact);
-                const QString stagedRecovery=QDir(result.folder->path()).filePath(QStringLiteral(".xmb-pending-recovery.json"));
-                if(!saveAtomic(stagedRecovery,recoveryBytes)) {
-                    result.error=tr("Could not write the pending-installer recovery journal; files were left in staging.");
-                    result.folder->setAutoRemove(false);
-                } else if(!destinationReady(job->request,pendingRoot) || !QDir().rename(result.folder->path(),pendingRoot)) {
-                    result.error=tr("Could not preserve the pending installer files in the selected library.");
-                    result.folder->setAutoRemove(false);
+                if(!destinationReady(job->request,pendingRoot)) {
+                    result.error=tr("Reconnect the original game library drive and retry.");
                 } else {
-                    result.folder->setAutoRemove(false);
-                    const QString installer=QDir(pendingRoot).filePath(result.pendingInstaller);
-                    const QString recovery=QDir(pendingRoot).filePath(QStringLiteral(".xmb-pending-recovery.json"));
-                    QString hash;
-                    PendingInstaller pending;
-                    pending.id=job->id; pending.title=job->request.title; pending.archivePath=result.archive;
-                    pending.installerPath=installer; pending.destination.clear(); pending.libraryRoot=job->request.gamesDirectory;
-                    if(!sha256File(installer,&hash,&result.error)) {
-                        result.error=tr("Could not verify the pending installer: %1").arg(result.error);
+                    const QString stageError=stagePendingInstallerFolder(result.folder->path(),pendingRoot,recoveryBytes);
+                    if(!stageError.isEmpty()) {
+                        result.error=stageError+QStringLiteral(" ")+tr("The download archive is kept for retry.");
+                        // result.folder keeps its default auto-remove: the staging
+                        // is discarded, never left as an unindexed orphan.
                     } else {
-                        pending.sha256=hash;
-                        QString registryError;
-                        if(!PendingInstallerRegistry::upsert(pendingRegistryPath(dataDirectory_),pending,registryError))
-                            result.error=registryError;
-                        else {
-                            QFile::remove(recovery);
-                            job->state=State::Finished;
-                            result.error.clear();
-                            notify(tr("Pending Installers"),tr("%1 is ready to install manually.").arg(job->request.title));
+                        result.folder->setAutoRemove(false);
+                        const QString installer=QDir(pendingRoot).filePath(result.pendingInstaller);
+                        const QString recovery=QDir(pendingRoot).filePath(QStringLiteral(".xmb-pending-recovery.json"));
+                        QString hash;
+                        PendingInstaller pending;
+                        pending.id=job->id; pending.title=job->request.title; pending.archivePath=result.archive;
+                        pending.installerPath=installer; pending.destination.clear(); pending.libraryRoot=job->request.gamesDirectory;
+                        if(!sha256File(installer,&hash,&result.error)) {
+                            result.error=tr("Could not verify the pending installer: %1").arg(result.error);
+                        } else {
+                            pending.sha256=hash;
+                            QString registryError;
+                            if(!PendingInstallerRegistry::upsert(pendingRegistryPath(dataDirectory_),pending,registryError))
+                                result.error=registryError;
+                            else {
+                                QFile::remove(recovery);
+                                job->state=State::Finished;
+                                result.error.clear();
+                                notify(tr("Pending Installers"),tr("%1 is ready to install manually.").arg(job->request.title));
+                                refreshContent();   // the Pending Installers row is reconciled on refresh, so it surfaces same-session
+                            }
                         }
                     }
                 }

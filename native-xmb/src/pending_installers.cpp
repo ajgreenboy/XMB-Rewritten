@@ -80,6 +80,45 @@ bool sha256File(const QString& path, QString* hash, QString* error) {
     return true;
 }
 
+QString canonicalInstallDestination(const QString& libraryRoot, const QString& destination, QString* error) {
+    const auto fail=[&](const QString& message){if(error)*error=message;return QString{};};
+    const QString rootCanon=QDir(libraryRoot).canonicalPath();
+    if(rootCanon.isEmpty()) return fail(QStringLiteral("Pending installer roots are unavailable."));
+    if(!QDir::isAbsolutePath(destination)) return fail(QStringLiteral("Installation destination is not absolute."));
+    const QFileInfo info(QDir(destination).absolutePath());
+    const QString leaf=info.fileName();
+    if(leaf.isEmpty() || leaf==QLatin1Char('.') || leaf==QLatin1String("..")) return fail(QStringLiteral("Installation destination is invalid."));
+    // Canonicalize the deepest existing ancestor: the leaf may not exist yet,
+    // and canonicalPath() resolves every junction/symlink in the parent chain,
+    // so an escape through a reparse point is rejected instead of being masked
+    // by a lexical prefix. The launcher requires a direct child of the library.
+    const QString parentCanon=QDir(info.dir().absolutePath()).canonicalPath();
+    if(parentCanon.isEmpty()) return fail(QStringLiteral("Installation destination parent is unavailable."));
+    if(parentCanon.compare(rootCanon,Qt::CaseInsensitive)!=0) return fail(QStringLiteral("Installation destination is outside its library root."));
+    return parentCanon+QLatin1Char('/')+leaf;
+}
+
+QString stagePendingInstallerFolder(const QString& stagingPath, const QString& pendingRoot, const QByteArray& recoveryBytes) {
+    const auto atomic=[&](const QString& path){
+        QSaveFile file(path);
+        file.setDirectWriteFallback(false);
+        return file.open(QIODevice::WriteOnly) && file.write(recoveryBytes)==recoveryBytes.size() && file.commit();
+    };
+    const QString journal=QDir(stagingPath).filePath(QStringLiteral(".xmb-pending-recovery.json"));
+    const bool injectedJournalFail=qEnvironmentVariableIsSet("XMB_PENDING_STAGING_JOURNAL_FAIL");
+    const bool injectedRenameFail=qEnvironmentVariableIsSet("XMB_PENDING_STAGING_RENAME_FAIL");
+    // Write the journal into staging first so a crash between the write and the
+    // rename still leaves a discoverable record. A transient write failure is
+    // retried once; a persisted failure returns an error and leaves the staging
+    // untouched for the caller to discard (never silently unindexed).
+    bool written=!injectedJournalFail && atomic(journal);
+    if(!written && !injectedJournalFail) written=atomic(journal);
+    if(!written) return QStringLiteral("Could not write the pending-installer recovery journal.");
+    if(injectedRenameFail || !QDir().rename(stagingPath,pendingRoot))
+        return QStringLiteral("Could not preserve the pending installer files in the selected library.");
+    return QString{};
+}
+
 bool validatePendingInstallerRecord(PendingInstaller& e, QString* error) {
     static const QRegularExpression hex(QStringLiteral("^[0-9a-fA-F]{64}$"));
     const auto fail=[&](const QString& message){if(error)*error=message;return false;};
@@ -94,14 +133,7 @@ bool validatePendingInstallerRecord(PendingInstaller& e, QString* error) {
     if(!installer.isEmpty() && !installer.startsWith(pendingRoot+QLatin1Char('/'),Qt::CaseInsensitive)) return fail(QStringLiteral("Installer is outside its job-owned pending folder."));
     if(!archiveParent.startsWith(libraryRoot+QLatin1Char('/'),Qt::CaseInsensitive)) return fail(QStringLiteral("Archive is outside its recorded library root."));
     if(!e.destination.isEmpty()) {
-        if(!QDir::isAbsolutePath(e.destination)) return fail(QStringLiteral("Installation destination is not absolute."));
-        // The destination may legitimately not exist yet while the installer
-        // runs ("launching"). Prefer the canonical path when the folder exists;
-        // otherwise fall back to the cleaned absolute path, which still resolves
-        // "." and ".." so an escaping destination is rejected either way.
-        QString destination=QDir(e.destination).canonicalPath();
-        if(destination.isEmpty()) destination=QDir(e.destination).absolutePath();
-        if(destination.isEmpty() || destination.compare(libraryRoot,Qt::CaseInsensitive)==0 || !destination.startsWith(libraryRoot+QLatin1Char('/'),Qt::CaseInsensitive)) return fail(QStringLiteral("Installation destination is outside its library root."));
+        if(canonicalInstallDestination(e.libraryRoot,e.destination,error).isEmpty()) return false;
     }
     if(e.status==QStringLiteral("registered") && e.destination.isEmpty()) return fail(QStringLiteral("Registered installer has no verified destination."));
     if(e.status==QStringLiteral("launching") && e.helperPid<=0) return fail(QStringLiteral("Launching installer has no process identity."));
