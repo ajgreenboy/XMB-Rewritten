@@ -119,4 +119,10 @@ bool HydraCatalogueCache::store(const QString& endpoint, const QVector<PopularTi
     if (!file.commit()) return false;
     return true;
 }
+
+QString hydraCatalogueCacheDirectory(const QString& dataDirectory, const QString& profileId, bool enabled) {
+    if (!enabled || dataDirectory.isEmpty()) return QString();
+    const QString scope = profileId.isEmpty() ? QStringLiteral("local") : profileId;
+    return QDir(dataDirectory).filePath(QStringLiteral("cache/hydra-catalogue/") + scope);
+}
 } // namespace xmb

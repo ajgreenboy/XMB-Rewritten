@@ -2,6 +2,7 @@
 #include "pending_installers.h"
 #include "installer_panel.h"
 #include "archive_extract.h"
+#include "hydra_catalogue_cache.h"
 #include "rawg_artwork.h"
 #include "diagnostics.h"
 #include <QBuffer>
@@ -1080,10 +1081,20 @@ void Shell::openHydraSource(const QString& sourceIndex,const QString& sourceName
     })); emit changed();
 }
 
-void Shell::openBrowseGames() {
+QString Shell::hydraCatalogueCacheDir() const {
+    // Opt-in per-profile ranked-catalogue cache: OFF by default (no settings UI yet), so the value
+    // is only ever true after an external edit or a future control. The active profile scopes the
+    // directory; before any profile is selected it resolves to the reserved "local" scope.
+    return hydraCatalogueCacheDirectory(dataDirectory_, preferences_.activeProfile(),
+                                        preferences_.value(QStringLiteral("hydra/catalogueCache")).toBool());
+}
+
+void Shell::openBrowseGames(bool forceRefresh) {
     if(busy() || pages_.size()>=32)return;
     const quint64 generation=++hydraPageGeneration_; const int depth=pages_.size();
     busy_=true;status_=tr("Loading popular games...");busyProgress_=-1.;busySpinnerPhase_=0.;busyClock_.start();
+    // An explicit Retry forces a live refresh: it never replays a cached catalogue success.
+    const QString cacheDir=forceRefresh?QString():hydraCatalogueCacheDir();
     auto* watcher=new QFutureWatcher<BrowseOutcome>(this);
     connect(watcher,&QFutureWatcher<BrowseOutcome>::finished,this,[this,watcher,generation,depth]{
         const auto result=watcher->result();watcher->deleteLater();
@@ -1099,14 +1110,16 @@ void Shell::openBrowseGames() {
         pages_.push_back(std::move(page));emit changed();
     });
     const QString solver=preferences_.value(QStringLiteral("debrid/flareSolverrUrl")).toString().trimmed();
-    watcher->setFuture(QtConcurrent::run([solver]{BrowseOutcome result;HydraLibrary(solver).popularGames(&result.games,&result.error);return result;}));
+    watcher->setFuture(QtConcurrent::run([solver,cacheDir]{BrowseOutcome result;HydraLibrary(solver,cacheDir).popularGames(&result.games,&result.error);return result;}));
     emit changed();
 }
 
-void Shell::openBrowseGenres() {
+void Shell::openBrowseGenres(bool forceRefresh) {
     if(busy() || pages_.size()>=32)return;
     const quint64 generation=++hydraPageGeneration_; const int depth=pages_.size();
     busy_=true;status_=tr("Loading genres...");busyProgress_=-1.;busySpinnerPhase_=0.;busyClock_.start();
+    // The genre list shares the same ranked snapshot as Popular Games; Retry forces a live refresh.
+    const QString cacheDir=forceRefresh?QString():hydraCatalogueCacheDir();
     auto* watcher=new QFutureWatcher<GenresOutcome>(this);
     connect(watcher,&QFutureWatcher<GenresOutcome>::finished,this,[this,watcher,generation,depth]{
         const auto result=watcher->result();watcher->deleteLater();
@@ -1125,7 +1138,7 @@ void Shell::openBrowseGenres() {
         pages_.push_back(std::move(page));emit changed();
     });
     const QString solver=preferences_.value(QStringLiteral("debrid/flareSolverrUrl")).toString().trimmed();
-    watcher->setFuture(QtConcurrent::run([solver]{ GenresOutcome result; QVector<PopularTitle> titles; if(HydraLibrary(solver).popularTitles(&titles,&result.error)){ result.groups=groupPopularTitles(titles); result.genres=groupGenres(result.groups); } return result; }));
+    watcher->setFuture(QtConcurrent::run([solver,cacheDir]{ GenresOutcome result; QVector<PopularTitle> titles; if(HydraLibrary(solver,cacheDir).popularTitles(&titles,&result.error)){ result.groups=groupPopularTitles(titles); result.genres=groupGenres(result.groups); } return result; }));
     emit changed();
 }
 
@@ -1162,9 +1175,9 @@ void Shell::retryHydraPage() {
     pages_.removeLast(); ++hydraPageGeneration_;
     if(page.hydraRetryKind==1)openHydraSources();
     else if(page.hydraRetryKind==2)openHydraSource(page.hydraRetryUrl,page.hydraRetryName);
-    else if(page.hydraRetryKind==3)openBrowseGames();
+    else if(page.hydraRetryKind==3)openBrowseGames(/*forceRefresh=*/true);
     else if(page.hydraRetryKind==4)runGameSearch(page.hydraRetryQuery,QStringLiteral("online"));
-    else if(page.hydraRetryKind==5)openBrowseGenres();
+    else if(page.hydraRetryKind==5)openBrowseGenres(/*forceRefresh=*/true);
     else if(page.hydraRetryKind==6)openGenre(page.hydraRetryName);
 }
 

@@ -876,12 +876,14 @@ private:
     void editFlareSolverrUrl();
     void saveFlareSolverrUrl(const QString& url);
     void openGameSearch(const QString& scope={});
-    void openBrowseGames();
-    void openBrowseGenres();
+    void openBrowseGames(bool forceRefresh=false);
+    void openBrowseGenres(bool forceRefresh=false);
     void openGenre(const QString& genre);
     void openHydraSources();
     void openHydraSource(const QString& sourceIndex,const QString& sourceName);
     void retryHydraPage();
+    // The per-profile ranked-catalogue cache directory, empty when the opt-in pref is off (default).
+    QString hydraCatalogueCacheDir() const;
     void openDownloadHub();
     void openManageHub();
     void openPendingInstallers();

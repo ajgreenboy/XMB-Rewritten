@@ -582,6 +582,43 @@ int main(int argc,char** argv) {
         check(!cache.store(endpointA,QVector<PopularTitle>{},now),"an empty result is never persisted");
     }
     {
+        // Ranked-catalogue cache opt-in wiring (pure): the per-profile directory resolver only ever
+        // returns a path when the opt-in is on, and it scopes the path by profile so no profile can
+        // read another's cached catalogue.
+        check(hydraCatalogueCacheDirectory(QStringLiteral("C:/data"),QStringLiteral("alice"),false).isEmpty(),
+              "cache dir is empty when the opt-in is off (default)");
+        check(hydraCatalogueCacheDirectory(QString(),QStringLiteral("alice"),true).isEmpty(),
+              "cache dir is empty without a data directory");
+        check(hydraCatalogueCacheDirectory(QStringLiteral("C:/data"),QStringLiteral("alice"),true)==
+              QStringLiteral("C:/data/cache/hydra-catalogue/alice"),
+              "cache dir is scoped to the active profile");
+        check(hydraCatalogueCacheDirectory(QStringLiteral("C:/data"),QStringLiteral("bob"),true)==
+              QStringLiteral("C:/data/cache/hydra-catalogue/bob"),
+              "cache dir differs per profile (profile separation)");
+        check(hydraCatalogueCacheDirectory(QStringLiteral("C:/data"),QString(),true)==
+              QStringLiteral("C:/data/cache/hydra-catalogue/local"),
+              "cache dir falls back to the reserved local scope with no profile selected");
+    }
+    {
+        // The durable per-profile opt-in (Preferences "hydra/catalogueCache"): default OFF, persists
+        // under the active profile, and is enforced per profile so one user never leaks to another.
+        QTemporaryDir prefsDir;
+        check(prefsDir.isValid(),"hydra cache preferences tempdir");
+        const QString key=QStringLiteral("hydra/catalogueCache");
+        Preferences prefs(prefsDir.path());
+        check(!prefs.value(key).toBool(),"cache opt-in defaults to off");
+        check(prefs.setProfile(QStringLiteral("alice")),"select profile alice");
+        check(prefs.setValue(key,true),"alice opts the cache in");
+        check(prefs.value(key).toBool(),"alice reads the opt-in on");
+        check(prefs.setProfile(QStringLiteral("bob")),"select profile bob");
+        check(!prefs.value(key).toBool(),"bob is off: the opt-in is per profile, never shared");
+        check(prefs.setValue(key,true),"bob opts the cache in");
+        check(prefs.setProfile(QStringLiteral("alice")) && prefs.value(key).toBool(),"alice remains on after switching back");
+        Preferences reloaded(prefsDir.path());
+        check(reloaded.activeProfile()==QStringLiteral("alice") && reloaded.value(key).toBool(),
+              "the opt-in is durable and resolves against the active profile");
+    }
+    {
         // Deterministic local HTTP fixture for the progressive popular feed: forty hot entries are
         // returned in ranking order, including one normalized duplicate and a separate edition.
         // Game responses complete out of order, title 39 is deliberately

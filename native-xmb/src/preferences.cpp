@@ -109,7 +109,7 @@ QVariant Preferences::defaultValue(const QString& key) {
     if(key=="desktop/pointerSpeed")return 3;
     if(key=="desktop/hotkey")return QString("Ctrl+Alt+Home");
     if(key=="audio/muted" || key=="media/repeat" || key=="media/shuffle" || key=="display/fullscreen" ||
-       key=="cec/tvOnAtStart" || key=="cec/standbyOnTurnOff")return false;
+       key=="cec/tvOnAtStart" || key=="cec/standbyOnTurnOff" || key=="hydra/catalogueCache")return false;
     if(key=="system/name")return QSysInfo::machineHostName().left(64);
     if(key=="clock/timeZone")return QString("System");
     if(key.startsWith("steamcmd/"))return QString{};
@@ -137,7 +137,7 @@ bool Preferences::validBare(const QString& key,const QVariant& value) {
     if(key=="display/screensaverMinutes")return integer(0,30) && (value.toInt()==0 || value.toInt()==5 || value.toInt()==10 || value.toInt()==20 || value.toInt()==30);
     if(key=="audio/keyTone" || key=="system/notificationMessages" || key=="system/notificationTrophy" ||
        key=="jellyfin/autoplayNext" || key=="audio/muted" || key=="media/repeat" || key=="media/shuffle" || key=="display/fullscreen" || key=="desktop/keepMusic" || key=="desktop/controllerMouse" ||
-       key=="cec/tvOnAtStart" || key=="cec/standbyOnTurnOff" || key=="steam/background")return value.metaType().id()==QMetaType::Bool;
+       key=="cec/tvOnAtStart" || key=="cec/standbyOnTurnOff" || key=="steam/background" || key=="hydra/catalogueCache")return value.metaType().id()==QMetaType::Bool;
     if(value.metaType().id()!=QMetaType::QString)return false;
     const auto text=value.toString();
     if(text.contains(QChar(0)))return false;

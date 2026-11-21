@@ -41,4 +41,11 @@ public:
 private:
     QString directory_;
 };
+
+// Resolve the per-profile on-disk cache directory for the ranked catalogue. `dataDirectory` is the
+// console-wide data directory, `profileId` the active profile id (empty before the first switch,
+// otherwise "local" or a lower-case UUID), and `enabled` the opt-in flag (default OFF). Returns an
+// empty string when disabled, so a disabled cache never touches the disk; the profile id scopes the
+// directory so no profile can ever read another profile's cached catalogue.
+QString hydraCatalogueCacheDirectory(const QString& dataDirectory, const QString& profileId, bool enabled);
 } // namespace xmb
