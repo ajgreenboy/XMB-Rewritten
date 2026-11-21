@@ -156,7 +156,11 @@ public:
     // and its outcome recorded in `health`. The caller saves the note. `nowSeconds` is the wall clock.
     bool browseSourceNoted(const HydraSource& source, QVector<GameResult>* out, QString* error, HydraFailure* failure,
                            SourceHealth* health, qint64 nowSeconds, bool* fromNote=nullptr) const;
-    bool popularTitles(QVector<PopularTitle>* out, QString* error=nullptr) const;
+    // The ordered hot-catalogue snapshot (title, cover URL, structured genres). `forceRefresh`
+    // skips a cached read (an explicit Retry must never replay a previous success) but still
+    // atomically stores a successfully validated result, so a later ordinary open reads the fresh
+    // snapshot. A failed forced refresh returns its live error without touching the cache.
+    bool popularTitles(QVector<PopularTitle>* out, QString* error=nullptr, bool forceRefresh=false) const;
     // Resolve the complete cross-source choices for one selected source-scoped game: a single
     // /games search for its name, then an exact-name union into the source-only game. Returns true
     // on a successful lookup whether or not an exact match was found (a no-match keeps the source's
@@ -168,7 +172,8 @@ public:
     // (api.hydralauncher.gg/catalogue/hot) matched against the download library, so each entry
     // carries its download sources and Steam box art. Titles with no downloadable
     // source are dropped. The order is the catalogue's own ranking, not newest-first.
-    bool popularGames(QVector<GameResult>* out, QString* error=nullptr) const;
+    // `forceRefresh` is passed through to the snapshot fetch (see popularTitles).
+    bool popularGames(QVector<GameResult>* out, QString* error=nullptr, bool forceRefresh=false) const;
     // Genre-scoped popular games over an already-fetched hot snapshot. `groups` must be
     // groupPopularTitles(popularTitles(...)) in hot order; only groups whose genres contain `genre`
     // (case-insensitive) are resolved, so the genre list page's snapshot is reused with no

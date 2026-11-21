@@ -657,6 +657,9 @@ int main(int argc,char** argv) {
         int searchRequests=0;
         int hotRequests=0;
         int hotCache500ThenSuccessRequests=0;
+        int hotForceRequests=0;
+        int hotForceRetryRequests=0;
+        int hotForceFailRequests=0;
         QObject::connect(&fixture,&QTcpServer::newConnection,&app,[&] {
             auto* socket=fixture.nextPendingConnection();
             QObject::connect(socket,&QTcpSocket::readyRead,socket,[&,socket] {
@@ -702,6 +705,30 @@ int main(int argc,char** argv) {
                     for(int i=0;i<40;++i)rows.append(QJsonObject{{QStringLiteral("title"),QStringLiteral("Hot %1").arg(i,2,10,QChar('0'))},{QStringLiteral("genres"),QJsonArray{QStringLiteral("Action")}}});
                     const QByteArray hotBody=QJsonDocument(rows).toJson(QJsonDocument::Compact);
                     socket->write("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: "+QByteArray::number(hotBody.size())+"\r\nConnection: close\r\n\r\n"+hotBody);
+                    socket->disconnectFromHost();return;
+                }
+                // Force-live (Retry) fixtures: a distinct single-title snapshot B that lets the test
+                // seed snapshot A first and prove force-live skips A, writes B, retries a transient
+                // 500, and leaves the cache untouched when the live refresh itself fails.
+                if(request.contains("/hot-force-retry")) {
+                    ++hotForceRetryRequests;
+                    if(hotForceRetryRequests==1) {
+                        socket->write("HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                        socket->disconnectFromHost();return;
+                    }
+                    const QByteArray body=QByteArrayLiteral("[{\"title\":\"Snapshot B\",\"genres\":[\"RPG\",\"Strategy\"]}]");
+                    socket->write("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: "+QByteArray::number(body.size())+"\r\nConnection: close\r\n\r\n"+body);
+                    socket->disconnectFromHost();return;
+                }
+                if(request.contains("/hot-force-fail")) {
+                    ++hotForceFailRequests;
+                    socket->write("HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                    socket->disconnectFromHost();return;
+                }
+                if(request.contains("/hot-force")) {
+                    ++hotForceRequests;
+                    const QByteArray body=QByteArrayLiteral("[{\"title\":\"Snapshot B\",\"genres\":[\"RPG\",\"Strategy\"]}]");
+                    socket->write("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: "+QByteArray::number(body.size())+"\r\nConnection: close\r\n\r\n"+body);
                     socket->disconnectFromHost();return;
                 }
                 if(request.contains("/hot-403")) {
@@ -1243,6 +1270,55 @@ int main(int argc,char** argv) {
             check(!HydraLibrary(QString{},cacheDir.path()).popularTitles(&c4,&cerr) && c4.isEmpty() && cerr.contains(QStringLiteral("403")),
                   "cache: 403 is never persisted, so a retry still fails");
             check(hot403Requests==c403Before+2,"cache: a second 403 fetch issues another request");
+        }
+        // Force-live (explicit Retry) semantics: skips the cached read but atomically writes a
+        // successfully validated fresh snapshot; a failed live refresh surfaces its live error and
+        // neither serves nor overwrites the cached success.
+        {
+            QTemporaryDir forceDir;
+            check(forceDir.isValid(),"hydra force-live tempdir");
+            const QString forceUrl=base+QStringLiteral("/hot-force");
+            QVector<PopularTitle> a; PopularTitle at; at.title=QStringLiteral("Snapshot A"); at.genres={QStringLiteral("Action")}; a.append(at);
+            check(HydraCatalogueCache(forceDir.path()).store(forceUrl,a,QDateTime::currentMSecsSinceEpoch()),
+                  "force-live: seed a fresh snapshot A");
+            qputenv("XMB_HYDRA_HOT_URL",forceUrl.toUtf8());
+            const int before=hotForceRequests;
+            QVector<PopularTitle> b; QString err;
+            check(HydraLibrary(QString{},forceDir.path()).popularTitles(&b,&err,/*forceRefresh=*/true) && b.size()==1 &&
+                  b[0].title==QStringLiteral("Snapshot B") && b[0].genres==(QStringList{QStringLiteral("RPG"),QStringLiteral("Strategy")}) && err.isEmpty(),
+                  "force-live returns the fresh snapshot B, not the cached A");
+            check(hotForceRequests==before+1,"force-live issues exactly one live GET");
+            QVector<PopularTitle> reopened; err.clear();
+            check(HydraLibrary(QString{},forceDir.path()).popularTitles(&reopened,&err) && reopened.size()==1 &&
+                  reopened[0].title==QStringLiteral("Snapshot B") && reopened[0].genres==(QStringList{QStringLiteral("RPG"),QStringLiteral("Strategy")}),
+                  "a normal reopen reads the refreshed snapshot B (genres intact)");
+            check(hotForceRequests==before+1,"the reopen reuses the cache with no new GET");
+
+            const QString retryUrl=base+QStringLiteral("/hot-force-retry");
+            QVector<PopularTitle> ra; PopularTitle rat; rat.title=QStringLiteral("Snapshot A"); ra.append(rat);
+            check(HydraCatalogueCache(forceDir.path()).store(retryUrl,ra,QDateTime::currentMSecsSinceEpoch()),
+                  "force-live: seed A for the retry endpoint");
+            qputenv("XMB_HYDRA_HOT_URL",retryUrl.toUtf8());
+            const int retryBefore=hotForceRetryRequests;
+            QVector<PopularTitle> rb; err.clear();
+            check(HydraLibrary(QString{},forceDir.path()).popularTitles(&rb,&err,true) && rb.size()==1 && rb[0].title==QStringLiteral("Snapshot B"),
+                  "a force-live fetch retries a transient 500 and stores the success");
+            check(hotForceRetryRequests==retryBefore+2,"the force-live retry costs two requests then stores");
+
+            const QString failUrl=base+QStringLiteral("/hot-force-fail");
+            QVector<PopularTitle> fa; PopularTitle fat; fat.title=QStringLiteral("Snapshot A"); fat.genres={QStringLiteral("Action")}; fa.append(fat);
+            check(HydraCatalogueCache(forceDir.path()).store(failUrl,fa,QDateTime::currentMSecsSinceEpoch()),
+                  "force-live: seed A for the failure endpoint");
+            qputenv("XMB_HYDRA_HOT_URL",failUrl.toUtf8());
+            const int failBefore=hotForceFailRequests;
+            QVector<PopularTitle> fr; err.clear();
+            check(!HydraLibrary(QString{},forceDir.path()).popularTitles(&fr,&err,true) && fr.isEmpty() && !err.isEmpty() &&
+                  err.contains(QStringLiteral("500")),
+                  "a failed force-live refresh returns the live error, never the cached A");
+            check(hotForceFailRequests==failBefore+3,"the failed force-live refresh is bounded to the retry cap");
+            QVector<PopularTitle> stillA;
+            check(HydraCatalogueCache(forceDir.path()).load(failUrl,&stillA) && stillA.size()==1 && stillA[0].title==QStringLiteral("Snapshot A"),
+                  "a failed force-live refresh does not overwrite the cached success with an error");
         }
         qputenv("XMB_HYDRA_SOURCES_URL",(base+QStringLiteral("/sources")).toUtf8());
         qputenv("XMB_HYDRA_SEARCH_URL",(base+QStringLiteral("/search")).toUtf8());

@@ -768,11 +768,11 @@ static bool resolvePopularTitles(const QVector<PopularTitle>& titles,const QStri
     return true;
 }
 
-bool HydraLibrary::popularGames(QVector<GameResult>* out, QString* error) const {
+bool HydraLibrary::popularGames(QVector<GameResult>* out, QString* error, bool forceRefresh) const {
     if(error)error->clear();
     if(out)out->clear();
     QVector<PopularTitle> titles;
-    if(!popularTitles(&titles,error))return false;
+    if(!popularTitles(&titles,error,forceRefresh))return false;
     return resolvePopularTitles(titles,flareSolverrEndpoint_,out,error);
 }
 
@@ -793,16 +793,17 @@ bool HydraLibrary::popularGames(const QVector<PopularTitleGroup>& groups,const Q
     return resolvePopularTitles(titles,flareSolverrEndpoint_,out,error);
 }
 
-bool HydraLibrary::popularTitles(QVector<PopularTitle>* out,QString* error) const {
+bool HydraLibrary::popularTitles(QVector<PopularTitle>* out,QString* error,bool forceRefresh) const {
     if(error)error->clear();
     if(out)out->clear();
     const QString url=loopbackEndpoint("XMB_HYDRA_HOT_URL",
         QStringLiteral("https://api.hydralauncher.gg/catalogue/hot?take=40&skip=0"));
-    // Serve a fresh, identity- and schema-matched cache entry without a network round-trip. A stale,
-    // expired, corrupt, mismatched or old-schema entry is a miss; a fetch failure (including HTTP
-    // 403) surfaces the error and never serves a stale copy, because only a validated successful
-    // result is ever stored.
-    if(!cacheDirectory_.isEmpty()) {
+    // Serve a fresh, identity- and schema-matched cache entry without a network round-trip, unless
+    // the caller forced a live refresh (an explicit Retry must never replay a previous success). A
+    // stale, expired, corrupt, mismatched or old-schema entry is a miss; a fetch failure (including
+    // HTTP 403) surfaces the error and never serves a stale copy, because only a validated
+    // successful result is ever stored.
+    if(!cacheDirectory_.isEmpty() && !forceRefresh) {
         HydraCatalogueCache cache(cacheDirectory_);
         QVector<PopularTitle> cached;
         if(cache.load(url,&cached)) { if(out)*out=std::move(cached); return true; }
@@ -823,6 +824,8 @@ bool HydraLibrary::popularTitles(QVector<PopularTitle>* out,QString* error) cons
         if(!title.title.isEmpty())titles.append(title);
     }
     // Only a validated, non-empty, successful catalogue is persisted (after the retry path above).
+    // A forced refresh writes the fresh snapshot here; it never writes on a failure, so a failed
+    // live refresh leaves any prior cached success intact instead of replacing it with an error.
     if(!cacheDirectory_.isEmpty() && !titles.isEmpty())
         HydraCatalogueCache(cacheDirectory_).store(url,titles);
     if(out)*out=std::move(titles);

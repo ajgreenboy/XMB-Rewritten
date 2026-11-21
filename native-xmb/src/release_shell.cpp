@@ -1093,8 +1093,9 @@ void Shell::openBrowseGames(bool forceRefresh) {
     if(busy() || pages_.size()>=32)return;
     const quint64 generation=++hydraPageGeneration_; const int depth=pages_.size();
     busy_=true;status_=tr("Loading popular games...");busyProgress_=-1.;busySpinnerPhase_=0.;busyClock_.start();
-    // An explicit Retry forces a live refresh: it never replays a cached catalogue success.
-    const QString cacheDir=forceRefresh?QString():hydraCatalogueCacheDir();
+    // An explicit Retry forces a live refresh (skips the cached read); the fresh snapshot is still
+    // written back, so the next ordinary open reads it instead of replaying the prior success.
+    const QString cacheDir=hydraCatalogueCacheDir();
     auto* watcher=new QFutureWatcher<BrowseOutcome>(this);
     connect(watcher,&QFutureWatcher<BrowseOutcome>::finished,this,[this,watcher,generation,depth]{
         const auto result=watcher->result();watcher->deleteLater();
@@ -1110,7 +1111,7 @@ void Shell::openBrowseGames(bool forceRefresh) {
         pages_.push_back(std::move(page));emit changed();
     });
     const QString solver=preferences_.value(QStringLiteral("debrid/flareSolverrUrl")).toString().trimmed();
-    watcher->setFuture(QtConcurrent::run([solver,cacheDir]{BrowseOutcome result;HydraLibrary(solver,cacheDir).popularGames(&result.games,&result.error);return result;}));
+    watcher->setFuture(QtConcurrent::run([solver,cacheDir,forceRefresh]{BrowseOutcome result;HydraLibrary(solver,cacheDir).popularGames(&result.games,&result.error,forceRefresh);return result;}));
     emit changed();
 }
 
@@ -1118,8 +1119,9 @@ void Shell::openBrowseGenres(bool forceRefresh) {
     if(busy() || pages_.size()>=32)return;
     const quint64 generation=++hydraPageGeneration_; const int depth=pages_.size();
     busy_=true;status_=tr("Loading genres...");busyProgress_=-1.;busySpinnerPhase_=0.;busyClock_.start();
-    // The genre list shares the same ranked snapshot as Popular Games; Retry forces a live refresh.
-    const QString cacheDir=forceRefresh?QString():hydraCatalogueCacheDir();
+    // The genre list shares the same ranked snapshot as Popular Games; Retry skips the cached read
+    // but still writes the fresh snapshot back.
+    const QString cacheDir=hydraCatalogueCacheDir();
     auto* watcher=new QFutureWatcher<GenresOutcome>(this);
     connect(watcher,&QFutureWatcher<GenresOutcome>::finished,this,[this,watcher,generation,depth]{
         const auto result=watcher->result();watcher->deleteLater();
@@ -1138,7 +1140,7 @@ void Shell::openBrowseGenres(bool forceRefresh) {
         pages_.push_back(std::move(page));emit changed();
     });
     const QString solver=preferences_.value(QStringLiteral("debrid/flareSolverrUrl")).toString().trimmed();
-    watcher->setFuture(QtConcurrent::run([solver,cacheDir]{ GenresOutcome result; QVector<PopularTitle> titles; if(HydraLibrary(solver,cacheDir).popularTitles(&titles,&result.error)){ result.groups=groupPopularTitles(titles); result.genres=groupGenres(result.groups); } return result; }));
+    watcher->setFuture(QtConcurrent::run([solver,cacheDir,forceRefresh]{ GenresOutcome result; QVector<PopularTitle> titles; if(HydraLibrary(solver,cacheDir).popularTitles(&titles,&result.error,forceRefresh)){ result.groups=groupPopularTitles(titles); result.genres=groupGenres(result.groups); } return result; }));
     emit changed();
 }
 
