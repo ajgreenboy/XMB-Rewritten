@@ -42,7 +42,7 @@ QVector<Candidate> parseStoreSearch(const QByteArray& json);
 Match selectMatch(const QString& title, const QVector<Candidate>& candidates);
 
 // ---- endpoints (allowed hosts only: the store for the search, steamstatic.com for images) -------------
-enum class Asset { Header, Hero, Portrait };
+enum class Asset { Header, Hero, Portrait, Logo };   // Logo: the transparent title logo (logo_tiles.h)
 QUrl searchUrl(const QString& title);
 QUrl assetUrl(const QString& appId, Asset asset);
 bool allowedSearchUrl(const QUrl& url);
@@ -60,6 +60,7 @@ struct Meta {
     qint64 retryAfter = 0;   // noMatch only: epoch seconds before which the title is not looked up again
     bool noMatch = false;
     bool heroMissing = false;   // the CDN has no library_hero.jpg for this app
+    bool logoMissing = false;   // the CDN has no logo.png for this app (a 404, not asked again)
 };
 
 QString cacheKey(const QString& title);
@@ -71,6 +72,7 @@ Meta loadMeta(const QString& cacheRoot, const QString& title);   // empty key wh
 // The cached header / hero of the title's recorded match, or an empty string when there is none.
 QString cachedHeader(const QString& cacheRoot, const QString& title);
 QString cachedHero(const QString& cacheRoot, const QString& title);
+QString cachedLogo(const QString& cacheRoot, const QString& title);
 
 // xmb-manager writes this generated 512x288 card (dark gradient, blue bar, title text) when an import found no art.
 bool isGeneratedPlaceholder(const QImage& image);

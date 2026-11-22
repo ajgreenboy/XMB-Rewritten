@@ -39,6 +39,7 @@ signals:
     // preview is the header scaled to at most 512x288; headerPath/heroPath are the cached files (hero may be empty).
     void ready(QString id, QString title, QString headerPath, QString heroPath, QImage preview);
     void heroReady(QString id, QString heroPath);
+    void logoReady(QString id, QString logoPath);   // the transparent title logo (logo_tiles.h) is cached
     void status(QString message);
 
 private:
@@ -52,6 +53,7 @@ private:
     void headerFromDetails(const Target& target, const QString& appId);
     void headerUnavailable(const Target& target, const QString& appId);
     void downloadHero(const Target& target, const QString& appId);
+    void downloadLogo(const Target& target, const QString& appId);
     void finishTarget(bool failed);
     void get(const QUrl& url, bool image, std::function<void(QByteArray, int, int)> done, int redirects = 0);
     void deliver(const Target& target, const QString& headerPath, const QString& heroPath);
@@ -64,6 +66,7 @@ private:
     QVector<Target> needsNetwork_;
     QSet<Target> delivered_;
     QSet<QString> heroTried_;
+    QSet<QString> logoTried_;
     QHash<Target, qint64> retryAfter_;
     Target active_;
     QNetworkReply* reply_ = nullptr;

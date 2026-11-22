@@ -27,6 +27,9 @@ public:
     static QString cachePath(QString cacheDirectory, QString appId);
     static QString heroCachePath(QString cacheDirectory, QString appId);
     void requestHero(const QString& appId);
+    // PS3-style tile art (logo_tiles.h): the transparent logo from Steam's CDN, one title at a time, at most 64 per call.
+    // A cached file, a recent 404 memo or an earlier attempt this session skips the title: no retry loops.
+    void requestLogos(QStringList appIds);
 
     // Supersedes previous work. At most 32 unique numeric app IDs are fetched.
     void refresh(QStringList appIds);
@@ -34,10 +37,14 @@ public:
 signals:
     void loaded(QString appId, QImage image);
     void heroReady(QString appId, QString path);
+    void logoReady(QString appId, QString path);
 
 private:
     using ResponseHandler = std::function<void(const QByteArray&, int, int)>;
 
+    void pumpLogos();
+    void fetchLogo(const QString& appId, const QUrl& url, int redirects);
+    void finishLogo();
     bool isCurrent(quint64 generation) const;
     void cancelRequests();
     void pump(quint64 generation);
@@ -57,6 +64,9 @@ private:
     quint64 generation_ = 0;
     int activeJobs_ = 0;
     QSet<QString> heroRequests_;
+    QStringList logoQueue_;
+    QSet<QString> logoTried_;
+    bool logoActive_ = false;
 };
 
 } // namespace xmb

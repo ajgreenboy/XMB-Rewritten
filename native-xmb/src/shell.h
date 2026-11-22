@@ -188,6 +188,8 @@ struct Entry {
     // Empty on hand-written rows, so the entry dump stays quiet about the rest of the XMB.
     QString source;
     bool gameTile=false,friendRow=false;
+    // The artwork is a title's transparent logo (logo_tiles.h): drawn unframed and letterboxed, never boxed or cropped.
+    bool logoArt=false;
     bool rawgArtworkVisible=false; // this row displays RAWG artwork and needs provider credit
     int presenceState=0;
     // A row this build cannot act on but still lists, so the reason stays reachable and the state stays

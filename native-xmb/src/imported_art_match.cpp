@@ -166,6 +166,7 @@ QString assetName(Asset asset) {
     case Asset::Header: return QStringLiteral("header");
     case Asset::Hero: return QStringLiteral("hero");
     case Asset::Portrait: return QStringLiteral("portrait");
+    case Asset::Logo: return QStringLiteral("logo");
     }
     return QStringLiteral("header");
 }
@@ -307,6 +308,7 @@ QUrl searchUrl(const QString& title) {
 
 QUrl assetUrl(const QString& appId, Asset asset) {
     if (!validAppId(appId)) return {};
+    if (asset == Asset::Logo) return QUrl(QStringLiteral("https://cdn.cloudflare.steamstatic.com/steam/apps/%1/logo.png").arg(appId));
     const QString file = asset == Asset::Header ? QStringLiteral("header.jpg")
         : asset == Asset::Hero ? QStringLiteral("library_hero.jpg") : QStringLiteral("library_600x900.jpg");
     return QUrl(QStringLiteral("https://shared.steamstatic.com/store_item_assets/steam/apps/%1/%2").arg(appId, file));
@@ -363,6 +365,7 @@ bool saveMeta(const QString& cacheRoot, const Meta& meta) {
         object.insert(QStringLiteral("reason"), meta.reason);
         object.insert(QStringLiteral("matchedAt"), meta.matchedAt);
         object.insert(QStringLiteral("heroMissing"), meta.heroMissing);
+        object.insert(QStringLiteral("logoMissing"), meta.logoMissing);
     }
     QSaveFile file(path);
     file.setDirectWriteFallback(false);
@@ -392,6 +395,7 @@ Meta loadMeta(const QString& cacheRoot, const QString& title) {
     meta.name = object.value(QStringLiteral("name")).toString();
     meta.matchedAt = object.value(QStringLiteral("matchedAt")).toInteger();
     meta.heroMissing = object.value(QStringLiteral("heroMissing")).toBool();
+    meta.logoMissing = object.value(QStringLiteral("logoMissing")).toBool();
     return meta;
 }
 
@@ -405,6 +409,12 @@ QString cachedHero(const QString& cacheRoot, const QString& title) {
     const Meta meta = loadMeta(cacheRoot, title);
     if (meta.key.isEmpty() || meta.noMatch) return {};
     return validImage(assetPath(cacheRoot, meta.appId, Asset::Hero));
+}
+
+QString cachedLogo(const QString& cacheRoot, const QString& title) {
+    const Meta meta = loadMeta(cacheRoot, title);
+    if (meta.key.isEmpty() || meta.noMatch) return {};
+    return validImage(assetPath(cacheRoot, meta.appId, Asset::Logo));
 }
 
 bool isGeneratedPlaceholder(const QImage& image) {

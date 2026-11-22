@@ -25,6 +25,7 @@
 #include "steam_artwork.h"
 #include "rawg_artwork.h"
 #include "imported_art.h"
+#include "logo_tiles.h"
 #include "imported_art_match.h"
 #include "steam_collections.h"
 #include "steam_overrides.h"
@@ -1053,6 +1054,17 @@ int Shell::steamTitleCount() const {
     for(const auto& game:familyGames_)ids.insert(game.appId);
     return ids.size();
 }
+// A Steam title's transparent logo for PS3-style tiles (logo_tiles.h): the Steam client's own cached logo first, then
+// this build's CDN copy. Null when the look is off or no logo is on disk; never touches the network.
+static QImage steamLogoFor(const QString& steamRoot,const QString& cacheDir,const QString& appId) {
+    if(!logoTiles::enabled())return {};
+    QString path=logoTiles::clientLogoPath(steamRoot,appId);
+    if(path.isEmpty()) {
+        const QString own=logoTiles::cachedLogoPath(cacheDir,appId);
+        if(!own.isEmpty() && QFileInfo(own).size()>0)path=own;
+    }
+    return logoTiles::loadLogo(path);
+}
 // Rows inside a Steam library folder. Built on demand so a 280-title library does not
 // cost anything until the folder is opened; only a bounded number of cached thumbnails
 // are decoded here.
@@ -1076,6 +1088,12 @@ QVector<Entry> Shell::steamFolderEntries(const QString& mode) const {
         // tiles: a gameTile row here is laid out at the wide-tile size and lands out of
         // alignment. Artwork is centre-cropped to a square for the same reason.
         e.gameTile=false;e.detail=fullDetail;
+        // PS3 look: the title's own transparent logo, letterboxed on a square so the row keeps the item-icon layout
+        // (a wide image would turn it into a tile). Titles without one fall through to the centre-cropped header.
+        if(decoded<64) {
+            const QImage logo=steamLogoFor(steamRoot_,cache,appId);
+            if(!logo.isNull()){e.artwork=logoTiles::onSquare(logo);e.logoArt=true;++decoded;rows.push_back(std::move(e));return;}
+        }
         if(decoded<64) {
             QImageReader reader(headerPath(appId));
             if(reader.canRead()) {
@@ -1243,6 +1261,9 @@ void Shell::openSteamFolder(const QString& mode) {
         for(const auto& e:page.entries)
             if(e.action!=Action::SteamFolder && e.artwork.isNull())missing.push_back(e.value);
         if(!missing.isEmpty() && qEnvironmentVariable("XMB_STEAM_ARTWORK")!="0" && !diagnostics::safeMode())steamArtwork_->refresh(missing);
+        QStringList logoWanted;
+        for(const auto& e:page.entries)if(e.action!=Action::SteamFolder && !e.logoArt)logoWanted.push_back(e.value);
+        if(!logoWanted.isEmpty() && qEnvironmentVariable("XMB_STEAM_ARTWORK")!="0" && !diagnostics::safeMode())steamArtwork_->requestLogos(logoWanted);
     }
     // Verification hook: a folder open writes its own row list next to the catalogue dump.
     if(qEnvironmentVariableIsSet("XMB_DUMP_ENTRIES")) {
@@ -1464,7 +1485,7 @@ void Shell::reloadSteamDownloads() {
 void Shell::refreshContent() {
     if(contentScanning_){contentRefreshPending_=true;return;}
     contentScanning_=true;
-    struct Result { SteamInstallation steam; QVector<ContentApp> apps; QHash<QString,QImage> art; QHash<QString,QString> rawgPaths; QHash<QString,QString> importedPaths; QHash<QString,QString> importedHeroPaths; QSet<QString> fetchable; QString error; };
+    struct Result { SteamInstallation steam; QVector<ContentApp> apps; QHash<QString,QImage> art; QHash<QString,QString> rawgPaths; QHash<QString,QString> importedPaths; QHash<QString,QString> importedHeroPaths; QSet<QString> fetchable; QSet<QString> logoIds; QStringList logoWanted; QString error; };
     auto* watcher=new QFutureWatcher<Result>(this);
     connect(watcher,&QFutureWatcher<Result>::finished,this,[this,watcher]{
         auto result=watcher->result();watcher->deleteLater();contentScanning_=false;
@@ -1513,7 +1534,8 @@ void Shell::refreshContent() {
                     auto e=item("steam:"+game.appId,game.title,"game_tex_default_ps3","explore_plugin_full",
                         Action::LaunchSteam,game.appId);
                     e.artwork=result.art.value("steam:"+game.appId);e.gameTile=true;
-                    e.rawgArtworkVisible=result.rawgPaths.contains(e.id);
+                    e.logoArt=result.logoIds.contains(e.id);
+                    e.rawgArtworkVisible=!e.logoArt && result.rawgPaths.contains(e.id);
                     // The detail line says what Steam itself recorded: time played and the last session.
                     QStringList detail;
                     const QString label=collectionLabel(game.appId);if(!label.isEmpty())detail<<label;
@@ -1549,7 +1571,7 @@ void Shell::refreshContent() {
                 // The separator is the console's U+00B7. It was double-encoded here (U+00C2 U+00B7, rendered
                 // as two glyphs) until this fix; the source stays ASCII, the code point is built explicitly.
                 e.detail=app.kind=="game"?QString{}:app.kind=="jellyfin"?QStringLiteral("Jellyfin"):QStringLiteral("Service app ")+QChar(0x00B7)+QStringLiteral(" Opens in your browser");
-                e.artwork=result.art.value("custom:"+app.id);e.gameTile=app.kind=="game";
+                e.artwork=result.art.value("custom:"+app.id);e.gameTile=app.kind=="game";e.logoArt=e.gameTile && result.logoIds.contains(e.id);
                 // Jellyfin's row wears Jellyfin's mark unless the user gave the app its own picture.
                 // A web app wears its site's own icon once fetched (cached per site under the data folder).
                 if(app.kind=="web" && e.artwork.isNull()) {
@@ -1575,7 +1597,7 @@ void Shell::refreshContent() {
                     });
                 }
                 providers.push_back(std::move(e));
-                providers.last().rawgArtworkVisible=result.rawgPaths.contains(QStringLiteral("custom:")+app.id);
+                providers.last().rawgArtworkVisible=!providers.last().logoArt && result.rawgPaths.contains(QStringLiteral("custom:")+app.id);
             }
             if(seerrRow) {
                 // Seerr sits next to Jellyfin, not after the column's own rows: after the last Jellyfin row when
@@ -1641,6 +1663,8 @@ void Shell::refreshContent() {
         for(const auto& category:categories_)for(const auto& e:category.entries)
             if(e.id.startsWith("steam:") && e.artwork.isNull())missingArt.push_back(e.value);
         if(qEnvironmentVariable("XMB_STEAM_ARTWORK")!="0" && !diagnostics::safeMode())steamArtwork_->refresh(missingArt);
+        // PS3 look: titles with no logo on disk ask the CDN for one (cached, memoised on a 404, never retried in a loop).
+        if(!result.logoWanted.isEmpty() && qEnvironmentVariable("XMB_STEAM_ARTWORK")!="0" && !diagnostics::safeMode())steamArtwork_->requestLogos(result.logoWanted);
         qInfo()<<"content: Steam installed"<<result.steam.games.size()<<"imported apps"<<contentApps_.size()<<"warnings"<<result.steam.warnings.size();
         // Verification hook: dump the rebuilt catalogue so scripted runs can be checked without
         // reading pixels (XMB_DUMP_ENTRIES=<json file>).
@@ -1656,6 +1680,7 @@ void Shell::refreshContent() {
                         {"action",int(e.action)},{"value",e.value},{"hasArtwork",!e.artwork.isNull()},
                         {"container",e.container},{"texture",e.texture}};
                     if(e.iconSized)row.insert("iconSized",true);
+                    if(e.logoArt)row.insert("logoArt",true);
                     // Only generated rows carry an origin, so the dump stays quiet about the rest.
                     if(!e.source.isEmpty())row.insert("source",e.source);
                     entries.push_back(row);
@@ -1702,6 +1727,14 @@ void Shell::refreshContent() {
             const QString rowId=QStringLiteral("steam:")+game.appId;
             const QString rawg=RawgArtwork::cachedArtwork(rawgCache,rowId,game.title);
             if(override.isEmpty() && !rawg.isEmpty())result.rawgPaths.insert(rowId,rawg);
+            // PS3 look: the title's transparent logo wins over the boxed header and RAWG cover, but never over a user override.
+            if(override.isEmpty() && logoTiles::enabled()) {
+                const QImage logo=steamLogoFor(result.steam.root,cache,game.appId);
+                if(!logo.isNull() && (result.art.size()<128 || result.art.contains(rowId))) {
+                    result.art.insert(rowId,logo);result.logoIds.insert(rowId);continue;
+                }
+                result.logoWanted.push_back(game.appId);
+            }
             read(rowId,!override.isEmpty()?override:!rawg.isEmpty()?rawg:(game.artwork.isEmpty()?SteamArtwork::cachePath(cache,game.appId):game.artwork));
         }
         for(const auto& appId:ownedIds) {
@@ -1737,6 +1770,10 @@ void Shell::refreshContent() {
                 const QString hero=importedArt::cachedHero(rawgCache,app.title);
                 if(!hero.isEmpty())result.importedHeroPaths.insert(rowId,hero);
                 read(rowId,steamHeader);
+            }
+            if(logoTiles::enabled()) {
+                const QImage logo=logoTiles::loadLogo(importedArt::cachedLogo(rawgCache,app.title));
+                if(!logo.isNull() && (result.art.size()<128 || result.art.contains(rowId))){result.art.insert(rowId,logo);result.logoIds.insert(rowId);continue;}
             }
             if(!result.art.contains(rowId) && !manifest.isNull() && result.art.size()<128)result.art.insert(rowId,manifest);
         }
@@ -2007,7 +2044,7 @@ Shell::Shell(QString dataDirectory,Assets& assets,QObject* parent):QObject(paren
     });
     connect(steamArtwork_.get(),&SteamArtwork::loaded,this,[this](const QString& id,const QImage& image){
         bool touched=false;
-        const auto apply=[&](Entry& e){if(e.id=="steam:"+id && !rawgArtworkPaths_.contains(e.id)){
+        const auto apply=[&](Entry& e){if(e.id=="steam:"+id && !e.logoArt && !rawgArtworkPaths_.contains(e.id)){
             const auto override=steamArtworkOverride(dataDirectory_,id);
             if(!override.row.isEmpty())return;
             // Inside a page the row is an ordinary item: the same centre square as steamFolderEntries() decodes, so
@@ -2025,11 +2062,44 @@ Shell::Shell(QString dataDirectory,Assets& assets,QObject* parent):QObject(paren
         if(!touched)return;
         emit changed();
     });
+    // PS3 look: a logo that just arrived from the CDN replaces the row's header art (an override still wins).
+    connect(steamArtwork_.get(),&SteamArtwork::logoReady,this,[this](const QString& id,const QString& path){
+        if(!steamArtworkOverride(dataDirectory_,id).row.isEmpty())return;
+        const QImage logo=logoTiles::loadLogo(path);
+        if(logo.isNull())return;
+        bool touched=false;
+        const auto apply=[&](Entry& e){
+            if(e.id!="steam:"+id || e.action==Action::SteamFolder)return;
+            if(e.gameTile){e.artwork=logo;e.rawgArtworkVisible=false;}else e.artwork=logoTiles::onSquare(logo);
+            e.logoArt=true;touched=true;
+        };
+        for(auto& category:categories_)for(auto& e:category.entries)apply(e);
+        for(auto& page:pages_)for(auto& e:page.entries)apply(e);
+        if(touched)emit changed();
+    });
+    connect(importedArt_.get(),&ImportedArt::logoReady,this,[this](const QString& id,const QString& path){
+        if(!id.startsWith(QStringLiteral("custom:")))return;
+        const QString appId=id.mid(7);
+        bool eligible=false;
+        for(const auto& app:contentApps_)if(app.id==appId)eligible=app.kind==QStringLiteral("game") && fetchableApps_.contains(appId);
+        if(!eligible)return;
+        const QImage logo=logoTiles::loadLogo(path);
+        if(logo.isNull())return;
+        bool touched=false;
+        const auto apply=[&](Entry& e){
+            if(e.id!=id)return;
+            if(e.gameTile){e.artwork=logo;e.rawgArtworkVisible=false;}else e.artwork=logoTiles::onSquare(logo);
+            e.logoArt=true;touched=true;
+        };
+        for(auto& category:categories_)for(auto& e:category.entries)apply(e);
+        for(auto& page:pages_)for(auto& e:page.entries)apply(e);
+        if(touched)emit changed();
+    });
     connect(steamArtwork_.get(),&SteamArtwork::heroReady,this,[this](const QString&,const QString&){emit changed();});
     connect(rawgArtwork_.get(),&RawgArtwork::ready,this,[this](const QString& id,const QString& title,const QString& path,const QImage& preview){
         bool touched=false;
         const auto eligible=[&](const Entry& entry) {
-            if(entry.id!=id || entry.title!=title || !entry.gameTile)return false;
+            if(entry.id!=id || entry.title!=title || !entry.gameTile || entry.logoArt)return false;
             if(id.startsWith(QStringLiteral("steam:"))) {
                 const auto override=steamArtworkOverride(dataDirectory_,id.mid(6));
                 return override.row.isEmpty();
@@ -2065,7 +2135,7 @@ Shell::Shell(QString dataDirectory,Assets& assets,QObject* parent):QObject(paren
         if(!hero.isEmpty())importedHeroPaths_.insert(id,hero);
         bool touched=false;
         const auto apply=[&](Entry& entry){
-            if(entry.id!=id || entry.title!=title || !entry.gameTile)return;
+            if(entry.id!=id || entry.title!=title || !entry.gameTile || entry.logoArt)return;
             entry.artwork=preview;touched=true;
         };
         for(auto& category:categories_)for(auto& entry:category.entries)apply(entry);

@@ -1,6 +1,9 @@
 #include "steam_artwork.h"
 
+#include "logo_tiles.h"
+
 #include <QBuffer>
+#include <QDateTime>
 #include <QDir>
 #include <QFileInfo>
 #include <QFutureWatcher>
@@ -27,6 +30,8 @@ constexpr qsizetype MaximumMetadataBytes = 1024 * 1024;
 constexpr qsizetype MaximumImageBytes = 5 * 1024 * 1024;
 constexpr int MaximumRedirects = 3;
 constexpr int MaximumAppIds = 32;
+constexpr int MaximumLogoQueue = 64;
+constexpr int LogoIntervalMs = 250;
 constexpr int MaximumImageDimension = 8192;
 constexpr quint64 MaximumImagePixels = 64ULL * 1024ULL * 1024ULL;
 constexpr QSize ArtworkSize(512, 288);
@@ -186,6 +191,110 @@ void SteamArtwork::requestHero(const QString& rawAppId) {
             const QFileInfo info(path);if(!QDir().mkpath(info.absolutePath()))return false;
             QSaveFile file(path);file.setDirectWriteFallback(false);
             return file.open(QIODevice::WriteOnly) && file.write(*bytes)==bytes->size() && file.commit();
+        }));
+    });
+}
+
+void SteamArtwork::requestLogos(QStringList appIds) {
+    logoQueue_.clear();
+    if (!logoTiles::enabled()) return;
+    const qint64 now = QDateTime::currentSecsSinceEpoch();
+    for (const auto& raw : appIds) {
+        const QString appId = raw.trimmed();
+        if (logoQueue_.size() >= MaximumLogoQueue) break;
+        if (!logoTiles::validAppId(appId) || logoTried_.contains(appId) || logoQueue_.contains(appId)) continue;
+        const QFileInfo cached(logoTiles::cachedLogoPath(cacheDirectory_, appId));
+        if (cached.isFile() && cached.size() > 0) continue;
+        const QFileInfo memo(logoTiles::missMemoPath(cacheDirectory_, appId));
+        if (memo.isFile() && logoTiles::missMemoActive(memo.lastModified().toSecsSinceEpoch(), now)) continue;
+        logoQueue_.push_back(appId);
+    }
+    pumpLogos();
+}
+
+void SteamArtwork::pumpLogos() {
+    if (logoActive_ || logoQueue_.isEmpty()) return;
+    const QString appId = logoQueue_.takeFirst();
+    logoActive_ = true;
+    logoTried_.insert(appId);   // one attempt per title per session
+    fetchLogo(appId, logoTiles::cdnLogoUrl(appId), 0);
+}
+
+void SteamArtwork::finishLogo() {
+    logoActive_ = false;
+    if (!logoQueue_.isEmpty()) QTimer::singleShot(LogoIntervalMs, this, &SteamArtwork::pumpLogos);
+}
+
+void SteamArtwork::fetchLogo(const QString& appId, const QUrl& url, int redirects) {
+    if (!validImageUrl(url)) { finishLogo(); return; }
+    QNetworkRequest request(url);
+    request.setTransferTimeout(RequestDeadlineMs);
+    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::ManualRedirectPolicy);
+    request.setAttribute(QNetworkRequest::AuthenticationReuseAttribute, QNetworkRequest::Manual);
+    request.setAttribute(QNetworkRequest::CookieLoadControlAttribute, QNetworkRequest::Manual);
+    request.setAttribute(QNetworkRequest::CookieSaveControlAttribute, QNetworkRequest::Manual);
+    auto* reply = heroNetwork_->get(request);
+    reply->setReadBufferSize(MaximumImageBytes + 1);
+    auto bytes = std::make_shared<QByteArray>();
+    auto* deadline = new QTimer(reply);
+    deadline->setSingleShot(true);
+    connect(deadline, &QTimer::timeout, reply, &QNetworkReply::abort);
+    deadline->start(RequestDeadlineMs);
+    connect(reply, &QNetworkReply::readyRead, this, [reply, bytes] {
+        const qint64 remaining = MaximumImageBytes + 1 - bytes->size();
+        if (remaining <= 0) { reply->abort(); return; }
+        bytes->append(reply->read(remaining));
+        if (bytes->size() > MaximumImageBytes) reply->abort();
+    });
+    connect(reply, &QNetworkReply::finished, this, [this, reply, bytes, appId, url, redirects] {
+        const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        const QUrl redirect = reply->attribute(QNetworkRequest::RedirectionTargetAttribute).toUrl();
+        const bool failed = reply->error() != QNetworkReply::NoError;
+        bytes->append(reply->readAll());
+        reply->deleteLater();
+        if (redirect.isValid() && !redirect.isEmpty()) {
+            if (redirects < MaximumRedirects) { fetchLogo(appId, url.resolved(redirect), redirects + 1); return; }
+            finishLogo();
+            return;
+        }
+        const QString path = logoTiles::cachedLogoPath(cacheDirectory_, appId);
+        if (status == 404 || status == 403) {
+            // The title simply has no logo on the CDN: remember it so it is not asked again for a month.
+            const QString memo = logoTiles::missMemoPath(cacheDirectory_, appId);
+            if (!memo.isEmpty() && QDir().mkpath(cacheDirectory_)) {
+                QSaveFile file(memo);
+                file.setDirectWriteFallback(false);
+                if (file.open(QIODevice::WriteOnly)) { file.write("404\n"); file.commit(); }
+            }
+            finishLogo();
+            return;
+        }
+        if (failed || status < 200 || status >= 300 || bytes->isEmpty() || bytes->size() > MaximumImageBytes) {
+            finishLogo();
+            return;
+        }
+        auto* watcher = new QFutureWatcher<bool>(this);
+        connect(watcher, &QFutureWatcher<bool>::finished, this, [this, watcher, appId, path] {
+            const bool saved = watcher->result();
+            watcher->deleteLater();
+            if (saved) emit logoReady(appId, path);
+            finishLogo();
+        });
+        watcher->setFuture(QtConcurrent::run([bytes, path] {
+            if (path.isEmpty()) return false;
+            QBuffer buffer;
+            buffer.setData(*bytes);
+            if (!buffer.open(QIODevice::ReadOnly)) return false;
+            QImageReader reader(&buffer);
+            reader.setDecideFormatFromContent(true);
+            const QSize size = reader.size();
+            if (!size.isValid() || size.width() > MaximumImageDimension || size.height() > MaximumImageDimension ||
+                quint64(size.width()) * quint64(size.height()) > MaximumImagePixels) return false;
+            if (reader.read().isNull()) return false;   // never persist a truncated response as a cache entry
+            if (!QDir().mkpath(QFileInfo(path).absolutePath())) return false;
+            QSaveFile file(path);
+            file.setDirectWriteFallback(false);
+            return file.open(QIODevice::WriteOnly) && file.write(*bytes) == bytes->size() && file.commit();
         }));
     });
 }

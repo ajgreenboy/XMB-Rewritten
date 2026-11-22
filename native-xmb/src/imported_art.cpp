@@ -1,5 +1,6 @@
 #include "imported_art.h"
 #include "imported_art_match.h"
+#include "logo_tiles.h"
 
 #include <QBuffer>
 #include <QDateTime>
@@ -133,6 +134,7 @@ void ImportedArt::resetBackoff() {
     networkRetryAfter_ = 0;
     retryAfter_.clear();
     heroTried_.clear();
+    logoTried_.clear();
     lastStatus_.clear();
     force_ = true;
     if (active_.first.isEmpty()) timer_->start(0);
@@ -158,7 +160,9 @@ void ImportedArt::pump() {
                 continue;
             }
             const QString hero = importedArt::cachedHero(cacheRoot_, target.second);
-            if (hero.isEmpty() && !meta.heroMissing && !heroTried_.contains(meta.appId)) needsNetwork_.append(target);
+            const bool wantLogo = logoTiles::enabled() && !meta.logoMissing && !logoTried_.contains(meta.appId) &&
+                                  importedArt::cachedLogo(cacheRoot_, target.second).isEmpty();
+            if ((hero.isEmpty() && !meta.heroMissing && !heroTried_.contains(meta.appId)) || wantLogo) needsNetwork_.append(target);
             if (!delivered_.contains(target)) {
                 deliver(target, header, hero);
                 return;
@@ -336,7 +340,7 @@ void ImportedArt::downloadHero(const Target& target, const QString& appId) {
     auto meta = importedArt::loadMeta(cacheRoot_, target.second);
     if (meta.key.isEmpty() || meta.noMatch || meta.heroMissing || heroTried_.contains(appId) ||
         !importedArt::cachedHero(cacheRoot_, target.second).isEmpty()) {
-        finishTarget(false);
+        downloadLogo(target, appId);
         return;
     }
     heroTried_.insert(appId);   // once per session: a flaky CDN never turns into a retry loop
@@ -347,6 +351,43 @@ void ImportedArt::downloadHero(const Target& target, const QString& appId) {
         if (status == 404) {
             meta.heroMissing = true;
             importedArt::saveMeta(cacheRoot_, meta);
+            downloadLogo(target, appId);
+            return;
+        }
+        if (error != int(QNetworkReply::NoError) || status < 200 || status >= 300 || bytes.isEmpty()) {
+            downloadLogo(target, appId);
+            return;
+        }
+        const QString path = importedArt::assetPath(cacheRoot_, appId, importedArt::Asset::Hero);
+        auto* watcher = new QFutureWatcher<Stored>(this);
+        connect(watcher, &QFutureWatcher<Stored>::finished, this, [this, watcher, generation, target, appId, path] {
+            const Stored stored = watcher->result();
+            watcher->deleteLater();
+            if (generation != generation_) return;
+            if (stored.ok) emit heroReady(target.first, path);
+            downloadLogo(target, appId);
+        });
+        watcher->setFuture(QtConcurrent::run([bytes, path] { return storeImage(bytes, path, false); }));
+    });
+}
+
+// The transparent title logo (logo_tiles.h). Same rules as the hero: once per session, a 404 is remembered in the
+// metadata (logoMissing), any other failure just ends this title's turn.
+void ImportedArt::downloadLogo(const Target& target, const QString& appId) {
+    auto meta = importedArt::loadMeta(cacheRoot_, target.second);
+    if (!logoTiles::enabled() || meta.key.isEmpty() || meta.noMatch || meta.logoMissing || logoTried_.contains(appId) ||
+        !importedArt::cachedLogo(cacheRoot_, target.second).isEmpty()) {
+        finishTarget(false);
+        return;
+    }
+    logoTried_.insert(appId);
+    const quint64 generation = generation_;
+    get(importedArt::assetUrl(appId, importedArt::Asset::Logo), true,
+        [this, generation, target, appId, meta](QByteArray bytes, int status, int error) mutable {
+        if (generation != generation_) return;
+        if (status == 404) {
+            meta.logoMissing = true;
+            importedArt::saveMeta(cacheRoot_, meta);
             finishTarget(false);
             return;
         }
@@ -354,19 +395,18 @@ void ImportedArt::downloadHero(const Target& target, const QString& appId) {
             finishTarget(false);
             return;
         }
-        const QString path = importedArt::assetPath(cacheRoot_, appId, importedArt::Asset::Hero);
+        const QString path = importedArt::assetPath(cacheRoot_, appId, importedArt::Asset::Logo);
         auto* watcher = new QFutureWatcher<Stored>(this);
         connect(watcher, &QFutureWatcher<Stored>::finished, this, [this, watcher, generation, target, path] {
             const Stored stored = watcher->result();
             watcher->deleteLater();
             if (generation != generation_) return;
-            if (stored.ok) emit heroReady(target.first, path);
+            if (stored.ok) emit logoReady(target.first, path);
             finishTarget(false);
         });
         watcher->setFuture(QtConcurrent::run([bytes, path] { return storeImage(bytes, path, false); }));
     });
 }
-
 void ImportedArt::get(const QUrl& url, bool image, std::function<void(QByteArray, int, int)> done, int redirects) {
     if (image ? !importedArt::allowedImageUrl(url) : !importedArt::allowedSearchUrl(url)) {
         done({}, 0, int(QNetworkReply::ProtocolFailure));

@@ -1,4 +1,5 @@
 #include "view.h"
+#include "logo_tiles.h"
 #include "video_panel.h"
 #include "player_chrome.h"
 #include "live_overlay.h"
@@ -3399,7 +3400,8 @@ void View::drawScene(QPainter& p) {
                     if(entry.artwork.isNull())drawItemGlyph(p,entry.container,itemTexture,card,iconAlpha);
                     else {
                         // Keep every edge of the supplied cover inside the ICON0 envelope.
-                        const QSizeF fitted=QSizeF(entry.artwork.size()).scaled(card.size()*.95,Qt::KeepAspectRatio);
+                        // A logo (PS3 game icon) takes a narrower share of the card than a boxed header does.
+                        const QSizeF fitted=entry.logoArt?logoTiles::fitLogo(entry.artwork.size(),logoTiles::tileBox(card.size())):QSizeF(entry.artwork.size()).scaled(card.size()*.95,Qt::KeepAspectRatio);
                         const QRectF artwork(card.center()-QPointF(fitted.width()/2.,fitted.height()/2.),fitted);
                         p.save();p.setOpacity(iconAlpha);p.drawImage(artwork,entry.artwork);p.restore();
                     }
