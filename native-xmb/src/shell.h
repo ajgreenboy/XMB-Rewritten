@@ -188,6 +188,8 @@ struct Entry {
     // Empty on hand-written rows, so the entry dump stays quiet about the rest of the XMB.
     QString source;
     bool gameTile=false,friendRow=false;
+    // Unix seconds Steam recorded for this title's last session; 0 when never recorded. Only a real date is ever set.
+    qint64 lastPlayed=0;
     // The artwork is a title's transparent logo (logo_tiles.h): drawn unframed and letterboxed, never boxed or cropped.
     bool logoArt=false;
     bool rawgArtworkVisible=false; // this row displays RAWG artwork and needs provider credit
@@ -394,6 +396,7 @@ public:
     // instead of the console's default. The frame puts Yes at x 1183 and No at x 1341 (audit 10.2).
     int boxChoiceSlot() const;
     void setRenderer(const QString& renderer) { renderer_=renderer; }
+    int dateFormat() const { return preferences_.value("clock/dateFormat").toInt(); }
     int theme() const { return preferences_.value("appearance/colour").toInt(); }
     QString fontFamily() const;
     QString valueText(const Entry& entry) const;

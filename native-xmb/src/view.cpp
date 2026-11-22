@@ -1,5 +1,6 @@
 #include "view.h"
 #include "logo_tiles.h"
+#include "game_badge.h"
 #include "video_panel.h"
 #include "player_chrome.h"
 #include "live_overlay.h"
@@ -1780,7 +1781,7 @@ const QImage& View::itemGlyph(const QString& container,const QString& texture) {
     // 151..227 median folder set) take the same path: their own alpha already says how much background shows.
     return itemGlyphs_.insert(key,source.convertToFormat(QImage::Format_ARGB32)).value();
 }
-void View::drawItemGlyph(QPainter& p,const QString& container,const QString& texture,const QRectF& rect,qreal opacity) {
+void View::drawItemGlyph(QPainter& p,const QString& container,const QString& texture,const QRectF& rect,qreal opacity,bool stretch) {
     const auto& image=itemGlyph(container,texture);
     if(image.isNull())return;
     // The mask footprint is the art's own alpha bounds, taken from the source and cached by container/texture;
@@ -1794,7 +1795,7 @@ void View::drawItemGlyph(QPainter& p,const QString& container,const QString& tex
         if(bounds.isNull())bounds=assets_.bestImage(container,texture).rect();
         imageBounds_.insert(key,bounds);
     }
-    const QSizeF size=QSizeF(bounds.size()).scaled(rect.size(),Qt::KeepAspectRatio);
+    const QSizeF size=stretch?rect.size():QSizeF(bounds.size()).scaled(rect.size(),Qt::KeepAspectRatio);
     p.save();p.setOpacity(opacity);p.drawImage(QRectF(rect.center()-QPointF(size.width()/2,size.height()/2),size),image,bounds);p.restore();
 }
 void View::drawNineSlice(QPainter& p,const QString& container,const QString& texture,const QRectF& rect,qreal inset,qreal opacity,qreal sourceInset) {
@@ -3532,6 +3533,18 @@ void View::drawScene(QPainter& p) {
                     // The wait page puts its status where the focused row's second line and help line sit (y 529), so a
                     // note under the focus would print under the status text; it is not drawn while the page is up.
                     const bool waitCoversNote=i==column.selection && busyPageUp();
+                    // The focused game row's date line and "PS3" badge (game_badge.h; XMB_GAME_BADGE=0 turns them off): the
+                    // date, only where Steam recorded one, leads the line under the title; the badge sits at the frame's fixed
+                    // offset from the label gutter. A game row that is not focused shows neither.
+                    static const bool gameBadgeOn=gameBadge::enabled();
+                    const bool gameBadgeRow=gameBadge::shouldDraw(gameBadgeOn,entry.gameTile,active && level==shell_.depth() && i==column.selection) && !waitCoversNote && !inlineStandIn;
+                    QString helpText=entry.detail;
+                    if(gameBadgeRow)helpText=gameBadge::composeLine(gameBadge::dateLine(entry.lastPlayed,shell_.dateFormat()),entry.detail);
+                    if(gameBadgeRow) {
+                        // The firmware's own badge art (explore_plugin_full item_tex_ps3format, 110x28 grey pill with the
+                        // "PS3" lettering), stretched to the measured ink box (the frame's pill is wider than the art's own aspect).
+                        drawItemGlyph(p,QStringLiteral("explore_plugin_full"),QStringLiteral("item_tex_ps3format"),gameBadge::badgeRect(labelX,y),p.opacity(),true);
+                    }
                     const auto subtitle=waitCoversNote?QString{}:shell_.subtitleText(entry);
                     if(!subtitle.isEmpty()) {
                         // The second line sits 35 px under the title's centre, so a long one (a missing file's
@@ -3553,7 +3566,7 @@ void View::drawScene(QPainter& p) {
                     // traced constant. The console's line pitch is 22 px (cap
                     // tops 528 / 550), tighter than the font's own 24 px line height, so the lines are broken here and
                     // drawn one by one on that pitch.
-                    else if(i==column.selection && !entry.detail.isEmpty() && !waitCoversNote) {
+                    else if(i==column.selection && !helpText.isEmpty() && !waitCoversNote) {
                         constexpr int helpSize=19,helpPitch=22;
                         // With a choice list open the help line keeps to the left of the list's plane (its edge is 1260): the
                         // plane is translucent, so a line running on under it collided with the choice labels (Theme's
@@ -3572,13 +3585,13 @@ void View::drawScene(QPainter& p) {
                         const qreal helpWidth=settingsColumn?965.:networkColumn?1005.:panelAmount>.001?std::min<qreal>(1182.,1240.-labelX):1182.;
                         QFont helpFont(shell_.fontFamily());helpFont.setPixelSize(helpSize);
                         helpFont.setHintingPreference(QFont::PreferNoHinting);
-                        QTextLayout wrap(entry.detail,helpFont);QTextOption option;
+                        QTextLayout wrap(helpText,helpFont);QTextOption option;
                         option.setWrapMode(QTextOption::WrapAtWordBoundaryOrAnywhere);wrap.setTextOption(option);
                         wrap.beginLayout();
                         for(int k=0;;++k) {
                             auto line=wrap.createLine();if(!line.isValid())break;
                             line.setLineWidth(helpWidth);
-                            text({labelX,y+19+k*helpPitch,helpWidth,30},entry.detail.mid(line.textStart(),line.textLength()).trimmed(),
+                            text({labelX,y+(gameBadgeRow?gameBadge::dateLineOffset:19)+k*helpPitch,helpWidth,30},helpText.mid(line.textStart(),line.textLength()).trimmed(),
                                  helpSize,QColor(225,225,225),Qt::AlignLeft|Qt::AlignTop);
                         }
                         wrap.endLayout();

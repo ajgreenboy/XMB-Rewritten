@@ -785,7 +785,7 @@ private:
     // RCO artwork (the store bag, ICON0 stills) comes back unchanged.
     QHash<QString,QImage> itemGlyphs_;
     const QImage& itemGlyph(const QString& container,const QString& texture);
-    void drawItemGlyph(QPainter& painter,const QString& container,const QString& texture,const QRectF& rect,qreal opacity);
+    void drawItemGlyph(QPainter& painter,const QString& container,const QString& texture,const QRectF& rect,qreal opacity,bool stretch=false);
     void drawCategory(QPainter& painter,const Category& category,const QRectF& rect);
 };
 }

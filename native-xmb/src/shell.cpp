@@ -1,4 +1,5 @@
 #include "shell.h"
+#include "game_badge.h"
 #include "pending_installers.h"
 #include "diagnostics.h"
 #include "player_chrome.h"
@@ -1539,7 +1540,11 @@ void Shell::refreshContent() {
                     // The detail line says what Steam itself recorded: time played and the last session.
                     QStringList detail;
                     const QString label=collectionLabel(game.appId);if(!label.isEmpty())detail<<label;
-                    const QString activity=steamActivityText(steamActivity_.value(game.appId),preferences_.value("clock/dateFormat").toInt());
+                    // With the game badge on, the date moves to the focused row's date line (view.cpp) and the
+                    // detail keeps only what else Steam recorded; with it off the detail carries both, as before.
+                    auto recorded=steamActivity_.value(game.appId);
+                    if(gameBadge::enabled() && recorded.lastPlayed>86400){e.lastPlayed=recorded.lastPlayed;recorded.lastPlayed=0;}
+                    const QString activity=steamActivityText(recorded,preferences_.value("clock/dateFormat").toInt());
                     if(!activity.isEmpty())detail<<activity;
                     e.detail=detail.join(QStringLiteral(" - "));installed.push_back(std::move(e));
                 }
