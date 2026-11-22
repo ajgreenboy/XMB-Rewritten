@@ -1,4 +1,5 @@
 #include "hydra_library.h"
+#include "flare_solverr.h"
 #include <QDateTime>
 #include <QCryptographicHash>
 #include <QDir>
@@ -52,7 +53,19 @@ struct FetchOutcome {
     bool overflow=false;
     qint64 retryAfterSeconds=kRetryAfterAbsent;   // parsed Retry-After (see sentinels above)
 };
-bool fetchBody(const QUrl& url,const QString& service,qint64 maxBody,QByteArray* out,QString* error);
+bool fetchBody(const QUrl& url,const QString& service,qint64 maxBody,QByteArray* out,QString* error,const QString& solver=QString{});
+
+// The FlareSolverr last resort, shared by the single-attempt and retry fetch paths. It is only
+// called after the direct fetch failed or returned an HTML challenge, and never inside the retry
+// loop, so it never changes the bounded-retry/backoff/403-429 behaviour. Returns false (and records
+// the solver's error) when no endpoint is configured or the solver cannot produce a body.
+bool solveWithFlareSolverr(const QUrl& url,const QString& endpoint,QByteArray* out,QString* solverError) {
+    if(endpoint.isEmpty())return false;
+    QByteArray solved; QString error;
+    if(!FlareSolverr(endpoint).request(url,&solved,&error)) { if(solverError)*solverError=error; return false; }
+    if(out)*out=std::move(solved);
+    return true;
+}
 
 // Parses a Retry-After header value into seconds, honouring the strict 1*DIGIT grammar for the
 // delay-seconds form (leading/trailing optional whitespace is field framing, not part of the value).
@@ -129,8 +142,8 @@ QString fetchErrorString(const QString& service,const FetchOutcome& outcome,qint
     return QStringLiteral("Hydra %1 request failed; retry").arg(service);
 }
 
-bool fetchJson(const QUrl& url, QJsonObject* out, QString* error,const QString& service=QStringLiteral("library")) {
-    QByteArray body; if(!fetchBody(url,service,kMaxBody,&body,error))return false;
+bool fetchJson(const QUrl& url, QJsonObject* out, QString* error,const QString& service=QStringLiteral("library"),const QString& solver=QString{}) {
+    QByteArray body; if(!fetchBody(url,service,kMaxBody,&body,error,solver))return false;
     QJsonParseError parseError;
     const QJsonDocument document=QJsonDocument::fromJson(body,&parseError);
     if(document.isNull() || !document.isObject()) {
@@ -140,8 +153,8 @@ bool fetchJson(const QUrl& url, QJsonObject* out, QString* error,const QString& 
     if(out)*out=document.object(); return true;
 }
 // The Hydra Cloud catalogue endpoints (catalogue/hot, catalogue/featured) answer a bare JSON array.
-bool fetchJsonArray(const QUrl& url, QJsonArray* out, QString* error) {
-    QByteArray body; if(!fetchBody(url,QStringLiteral("catalogue"),kMaxBody,&body,error))return false;
+bool fetchJsonArray(const QUrl& url, QJsonArray* out, QString* error,const QString& solver=QString{}) {
+    QByteArray body; if(!fetchBody(url,QStringLiteral("catalogue"),kMaxBody,&body,error,solver))return false;
     QJsonParseError parseError;
     const QJsonDocument document=QJsonDocument::fromJson(body,&parseError);
     if(document.isNull() || !document.isArray()) { if(error)*error=QStringLiteral("Hydra catalogue returned invalid JSON; retry"); return false; }
@@ -207,10 +220,26 @@ FetchOutcome fetchBodyOnce(const QUrl& url,int idleMs,int deadlineMs,qint64 maxB
     reply->deleteLater(); return outcome;
 }
 
-bool fetchBody(const QUrl& url,const QString& service,qint64 maxBody,QByteArray* out,QString* error) {
+bool fetchBody(const QUrl& url,const QString& service,qint64 maxBody,QByteArray* out,QString* error,const QString& solver) {
     const FetchOutcome outcome=fetchBodyOnce(url,0,30000,maxBody);
-    if(!outcome.ok) { if(error)*error=fetchErrorString(service,outcome,maxBody); return false; }
-    if(out)*out=outcome.body; return true;
+    if(outcome.ok) {
+        // With no solver the body is returned as-is, exactly as before (an HTML challenge then
+        // surfaces as "invalid JSON" downstream). With a solver, an HTML body is the one case the
+        // direct fetch "succeeds" but the caller cannot use, so it gets the single fallback below.
+        if(solver.isEmpty() || !looksLikeHtml(outcome.body)) { if(out)*out=outcome.body; return true; }
+        QByteArray solved; QString solverError;
+        if(solveWithFlareSolverr(url,solver,&solved,&solverError)) { if(out)*out=std::move(solved); return true; }
+        if(error)*error=QStringLiteral("Hydra %1 returned an HTML challenge (FlareSolverr: %2); retry").arg(service,solverError);
+        return false;
+    }
+    if(!solver.isEmpty()) {
+        QByteArray solved; QString solverError;
+        if(solveWithFlareSolverr(url,solver,&solved,&solverError)) { if(out)*out=std::move(solved); return true; }
+        if(error)*error=fetchErrorString(service,outcome,maxBody)+QStringLiteral(" (FlareSolverr: %1)").arg(solverError);
+        return false;
+    }
+    if(error)*error=fetchErrorString(service,outcome,maxBody);
+    return false;
 }
 
 void sleepFor(int msecs) {
@@ -253,18 +282,26 @@ RetryPolicy retryPolicy() {
 // `sharedBudget` lets one user action that makes several requests (the paginated source directory)
 // run under ONE budget: every page and every backoff draws on the same clock, so a long listing cannot
 // stretch the wait past the budget by giving each page a fresh one. Without it the call owns its budget.
-bool fetchBodyWithRetry(const QUrl& url,const QString& service,qint64 maxBody,QByteArray* out,QString* error,QElapsedTimer* sharedBudget=nullptr,HydraFailure* failure=nullptr) {
+bool fetchBodyWithRetry(const QUrl& url,const QString& service,qint64 maxBody,QByteArray* out,QString* error,QElapsedTimer* sharedBudget=nullptr,HydraFailure* failure=nullptr,const QString& solver=QString{}) {
     const RetryPolicy policy=retryPolicy();
     QElapsedTimer ownBudget;
     if(!sharedBudget)ownBudget.start();
     QElapsedTimer& budget=sharedBudget?*sharedBudget:ownBudget;
     FetchOutcome outcome;
     outcome.timedOut=true;   // what a budget already spent before the first attempt reports
+    bool htmlChallenge=false;
     for(int attempt=1;;++attempt) {
         const int elapsed=int(budget.elapsed());
         if(elapsed>=policy.budgetMs)break;
         outcome=fetchBodyOnce(url,policy.inactivityMs,policy.budgetMs-elapsed,maxBody);
-        if(outcome.ok) { if(out)*out=outcome.body; return true; }
+        if(outcome.ok) {
+            // No solver: return the body exactly as before. With a solver, an HTML challenge is the
+            // one "success" the caller cannot use, so it exits the retry loop and takes the single
+            // fallback below rather than being replayed.
+            if(solver.isEmpty() || !looksLikeHtml(outcome.body)) { if(out)*out=outcome.body; return true; }
+            htmlChallenge=true;
+            break;
+        }
         if(attempt>=policy.maxAttempts || !fetchRetryable(outcome))break;
         if(outcome.retryAfterSeconds==kRetryAfterMalformed)break;   // unparseable Retry-After: no premature retry
         int wait=policy.backoffBaseMs<<(attempt-1);
@@ -277,6 +314,15 @@ bool fetchBodyWithRetry(const QUrl& url,const QString& service,qint64 maxBody,QB
         if(wait>=remaining)break;   // never wait past the budget (no unbounded wait)
         sleepFor(wait);
     }
+    // FlareSolverr is a separate last resort, never a change to the retry/backoff behaviour above.
+    if(!solver.isEmpty()) {
+        QByteArray solved; QString solverError;
+        if(solveWithFlareSolverr(url,solver,&solved,&solverError)) { if(out)*out=std::move(solved); return true; }
+        if(error)*error=htmlChallenge
+            ? QStringLiteral("Hydra %1 returned an HTML challenge (FlareSolverr: %2); retry").arg(service,solverError)
+            : fetchErrorString(service,outcome,maxBody)+QStringLiteral(" (FlareSolverr: %1)").arg(solverError);
+        return false;
+    }
     if(error)*error=fetchErrorString(service,outcome,maxBody);
     if(failure)*failure=classifyFailure(outcome);
     return false;
@@ -285,9 +331,9 @@ bool fetchBodyWithRetry(const QUrl& url,const QString& service,qint64 maxBody,QB
 // A transient 500/502/503/504 or timeout is retried inside that budget; 4xx (403, 429 included), unsafe
 // redirects and oversized bodies are terminal and are not replayed. The error text names the source
 // directory (not just "library") so the screen shows which request failed.
-bool fetchDirectoryPage(const QUrl& url,QElapsedTimer* budget,QJsonObject* out,QString* error,HydraFailure* failure) {
+bool fetchDirectoryPage(const QUrl& url,QElapsedTimer* budget,QJsonObject* out,QString* error,HydraFailure* failure,const QString& solver=QString{}) {
     const QString service=QStringLiteral("source directory");
-    QByteArray body; if(!fetchBodyWithRetry(url,service,kMaxBody,&body,error,budget,failure))return false;
+    QByteArray body; if(!fetchBodyWithRetry(url,service,kMaxBody,&body,error,budget,failure,solver))return false;
     QJsonParseError parseError;
     const QJsonDocument document=QJsonDocument::fromJson(body,&parseError);
     if(document.isNull() || !document.isObject()) {
@@ -297,8 +343,8 @@ bool fetchDirectoryPage(const QUrl& url,QElapsedTimer* budget,QJsonObject* out,Q
     }
     if(out)*out=document.object(); return true;
 }
-bool fetchDocumentWithRetry(const QUrl& url, QJsonDocument* out, QString* error, HydraFailure* failure) {
-    QByteArray body; if(!fetchBodyWithRetry(url,QStringLiteral("source"),kMaxSourceBody,&body,error,nullptr,failure))return false;
+bool fetchDocumentWithRetry(const QUrl& url, QJsonDocument* out, QString* error, HydraFailure* failure,const QString& solver=QString{}) {
+    QByteArray body; if(!fetchBodyWithRetry(url,QStringLiteral("source"),kMaxSourceBody,&body,error,nullptr,failure,solver))return false;
     QJsonParseError parseError; const auto document=QJsonDocument::fromJson(body,&parseError);
     if(document.isNull()) { if(error)*error=QStringLiteral("Hydra source returned invalid JSON; retry"); if(failure)*failure=HydraFailure{HydraFailureKind::Other,0}; return false; }
     if(out)*out=document; return true;
@@ -375,6 +421,9 @@ struct PopularLookup {
     QString error;
 };
 }
+
+HydraLibrary::HydraLibrary(QString flareSolverrEndpoint):flareSolverrEndpoint_(std::move(flareSolverrEndpoint)) {}
+void HydraLibrary::setFlareSolverrEndpoint(const QString& endpoint) { flareSolverrEndpoint_=endpoint; }
 
 SourcesPage parseSourcesPage(const QJsonObject& root) {
     SourcesPage page;
@@ -472,7 +521,7 @@ bool HydraLibrary::listSources(QVector<HydraSource>* out, QString* error, HydraF
     QElapsedTimer directoryBudget; directoryBudget.start();
     for(;;) {
         QJsonObject root;
-        if(!fetchDirectoryPage(QUrl(endpoint+QStringLiteral("?page=%1&limit=100").arg(pageNumber)),&directoryBudget,&root,error,failure))return false;
+        if(!fetchDirectoryPage(QUrl(endpoint+QStringLiteral("?page=%1&limit=100").arg(pageNumber)),&directoryBudget,&root,error,failure,flareSolverrEndpoint_))return false;
         if(!root.contains(QStringLiteral("sources")) || !root.value(QStringLiteral("sources")).isArray()) {
             if(error)*error=QStringLiteral("Hydra source directory returned an invalid sources response; retry");
             return false;
@@ -516,7 +565,7 @@ bool HydraLibrary::searchGames(const QString& query, QVector<GameResult>* out, Q
         QJsonObject root;
         const QUrl url(endpoint+QStringLiteral("?q=%1&limit=100&page=%2")
             .arg(QString::fromUtf8(QUrl::toPercentEncoding(query))).arg(page));
-        if(!fetchJson(url,&root,error,QStringLiteral("game search")))return false;
+        if(!fetchJson(url,&root,error,QStringLiteral("game search"),flareSolverrEndpoint_))return false;
         if(!root.contains(QStringLiteral("games")) || !root.value(QStringLiteral("games")).isArray()) {
             if(error)*error=QStringLiteral("Hydra game search returned an invalid games response; retry");
             return false;
@@ -554,7 +603,7 @@ bool HydraLibrary::browseSource(const HydraSource& source, QVector<GameResult>* 
     if(failure)*failure=HydraFailure{};
     if(!source.url.isValid()) { if(error)*error=QStringLiteral("Hydra source has an invalid URL; retry"); return false; }
     QJsonDocument document;
-    if(!fetchDocumentWithRetry(source.url,&document,error,failure))return false;
+    if(!fetchDocumentWithRetry(source.url,&document,error,failure,flareSolverrEndpoint_))return false;
     QString parseError; const auto releases=parseReleaseIndex(document,&parseError);
     if(!parseError.isEmpty()) { if(error)*error=QStringLiteral("Hydra source returned invalid release JSON; retry"); if(failure)*failure=HydraFailure{HydraFailureKind::Other,0}; return false; }
     QVector<GameResult> games; QHash<QString,int> gameIndexes;
@@ -632,10 +681,11 @@ bool HydraLibrary::popularGames(QVector<GameResult>* out, QString* error) const 
     pool.setMaxThreadCount(6);
     QVector<QFuture<PopularLookup>> lookups;
     lookups.reserve(titles.size());
+    const QString solver=flareSolverrEndpoint_;
     for(const auto& title:titles) {
-        lookups.append(QtConcurrent::run(&pool,[title] {
+        lookups.append(QtConcurrent::run(&pool,[title,solver] {
             PopularLookup lookup;
-            lookup.ok=HydraLibrary().popularGame(title,&lookup.game,&lookup.error);
+            lookup.ok=HydraLibrary(solver).popularGame(title,&lookup.game,&lookup.error);
             return lookup;
         }));
     }
@@ -676,7 +726,7 @@ bool HydraLibrary::popularTitles(QVector<PopularTitle>* out,QString* error) cons
     QJsonArray hot;
     const QString url=loopbackEndpoint("XMB_HYDRA_HOT_URL",
         QStringLiteral("https://api.hydralauncher.gg/catalogue/hot?take=40&skip=0"));
-    if(!fetchJsonArray(QUrl(url),&hot,error))return false;
+    if(!fetchJsonArray(QUrl(url),&hot,error,flareSolverrEndpoint_))return false;
     if(!validPopularTitleArray(hot)) {
         if(error)*error=QStringLiteral("Hydra catalogue returned an invalid popular title entry; retry");
         return false;
@@ -730,7 +780,7 @@ bool HydraLibrary::popularGame(const PopularTitle& title,GameResult* out,QString
     const QString searchUrl=endpoint+QStringLiteral("?q=%1&limit=100&page=1")
         .arg(QString::fromUtf8(QUrl::toPercentEncoding(title.title)));
     QJsonObject root;
-    if(!fetchJson(QUrl(searchUrl),&root,error))return false;
+    if(!fetchJson(QUrl(searchUrl),&root,error,QStringLiteral("library"),flareSolverrEndpoint_))return false;
     if(!root.contains(QStringLiteral("games")) || !root.value(QStringLiteral("games")).isArray()) {
         if(error)*error=QStringLiteral("Hydra library returned an invalid games response; retry");
         return false;

@@ -691,7 +691,8 @@ void Shell::openHydraSources() {
         page.hydraRetryUrl.clear(); page.hydraRetryName.clear();
         pages_.push_back(std::move(page)); emit changed();
     });
-    watcher->setFuture(QtConcurrent::run([]{ HydraSourcesOutcome result; HydraLibrary().listSources(&result.sources,&result.error,&result.failure); return result; }));
+    const QString solver=preferences_.value(QStringLiteral("debrid/flareSolverrUrl")).toString().trimmed();
+    watcher->setFuture(QtConcurrent::run([solver]{ HydraSourcesOutcome result; HydraLibrary(solver).listSources(&result.sources,&result.error,&result.failure); return result; }));
     emit changed();
 }
 
@@ -715,8 +716,9 @@ void Shell::openHydraSource(const QString& sourceIndex,const QString& sourceName
         }
         pages_.push_back(std::move(page));emit changed();
     });
-    watcher->setFuture(QtConcurrent::run([url,sourceName]{
-        HydraLibrary library;HydraSource source;source.title=sourceName;source.url=url;HydraSourceOutcome outcome;
+    const QString solver=preferences_.value(QStringLiteral("debrid/flareSolverrUrl")).toString().trimmed();
+    watcher->setFuture(QtConcurrent::run([url,sourceName,solver]{
+        HydraLibrary library(solver);HydraSource source;source.title=sourceName;source.url=url;HydraSourceOutcome outcome;
         // Opening a source only fetches and parses its index. Cross-source choices are resolved
         // lazily for the selected game at the Download action, never eagerly for every row. The health
         // note keeps a recent refusal from being asked again within a day and records this outcome.
@@ -746,7 +748,8 @@ void Shell::openBrowseGames() {
         if(page.entries.isEmpty()) { Entry row=releaseRow(QStringLiteral("game:error"),result.error.isEmpty()?tr("No popular games are downloadable right now."):tr("Could not load popular games"),result.error.isEmpty()?Action::Unavailable:Action::GameRetry);row.detail=result.error;page.entries.append(std::move(row)); }
         pages_.push_back(std::move(page));emit changed();
     });
-    watcher->setFuture(QtConcurrent::run([]{BrowseOutcome result;HydraLibrary().popularGames(&result.games,&result.error);return result;}));
+    const QString solver=preferences_.value(QStringLiteral("debrid/flareSolverrUrl")).toString().trimmed();
+    watcher->setFuture(QtConcurrent::run([solver]{BrowseOutcome result;HydraLibrary(solver).popularGames(&result.games,&result.error);return result;}));
     emit changed();
 }
 
@@ -801,7 +804,8 @@ void Shell::runGameSearch(const QString& query,const QString& scope) {
     });
     const QVector<ReleaseSource> sources;
     const QString cache=QDir(dataDirectory_).filePath(QStringLiteral("cache/release-art"));
-    watcher->setFuture(QtConcurrent::run([term,online,sources,cache]{
+    const QString solver=preferences_.value(QStringLiteral("debrid/flareSolverrUrl")).toString().trimmed();
+    watcher->setFuture(QtConcurrent::run([term,online,sources,cache,solver]{
         BrowseOutcome result;
         QHash<QString,int> indexes;
         const auto add=[&](GameResult game) {
@@ -828,7 +832,7 @@ void Shell::runGameSearch(const QString& query,const QString& scope) {
         const QString normalizedTerm=gameSearchKey(term);
         if(online) {
             QVector<GameResult> results;
-            if(HydraLibrary().searchGames(term,&results,&result.error))
+            if(HydraLibrary(solver).searchGames(term,&results,&result.error))
                 for(auto& game:results)add(std::move(game));
         }
         result.covers=fetchCovers(result.games,cache);
@@ -902,9 +906,10 @@ void Shell::openGameSourcesResolved(const GameResult& game) {
         }
         openGameSources(outcome.game);
     });
-    watcher->setFuture(QtConcurrent::run([game]{
+    const QString solver=preferences_.value(QStringLiteral("debrid/flareSolverrUrl")).toString().trimmed();
+    watcher->setFuture(QtConcurrent::run([game,solver]{
         ResolveOutcome outcome;
-        HydraLibrary library;
+        HydraLibrary library(solver);
         library.resolveGameChoices(game,&outcome.game,&outcome.error);
         return outcome;
     }));

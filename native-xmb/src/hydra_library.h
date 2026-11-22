@@ -117,6 +117,14 @@ private:
 // Blocking client, like the other network clients; call from a worker.
 class HydraLibrary {
 public:
+    // Default construction keeps every existing call site working (no FlareSolverr fallback).
+    HydraLibrary() = default;
+    // An optional FlareSolverr base URL (e.g. "http://localhost:8191") enables the opt-in fallback:
+    // when a feed's direct fetch fails or returns an HTML challenge, the library asks the solver once
+    // as a separate last resort. Empty (the default) leaves the fetch path byte-identical to before.
+    explicit HydraLibrary(QString flareSolverrEndpoint);
+    void setFlareSolverrEndpoint(const QString& endpoint);
+
     bool listSources(QVector<HydraSource>* out, QString* error=nullptr, HydraFailure* failure=nullptr) const;
     // The source names that ship extract-and-play (no-setup) games: description/title says
     // "pre-installed"/"portable", or its downloads are direct-host rather than torrent.
@@ -145,5 +153,7 @@ public:
     // carries its download sources and Steam box art. Titles with no downloadable
     // source are dropped. The order is the catalogue's own ranking, not newest-first.
     bool popularGames(QVector<GameResult>* out, QString* error=nullptr) const;
+private:
+    QString flareSolverrEndpoint_;
 };
 } // namespace xmb
