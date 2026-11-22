@@ -33,6 +33,48 @@ if(NOT WIN32)
     find_package(PkgConfig REQUIRED)
     pkg_check_modules(PULSE REQUIRED IMPORTED_TARGET libpulse)
 endif()
+
+# Rust firmware-crypto (byte-parity reimplementation of src/firmware_crypto.cpp).
+# Off by default: the C++ crypto in src/firmware_crypto.cpp stays the shipped
+# implementation everywhere. When ON, the crate (native-xmb/rust-edge/firmware-crypto)
+# is built with a rustup-installed cargo (toolchain >= 1.89, see the crate README),
+# its staticlib is linked into the app next to a thin shim, and a parity test target
+# asserts byte-identical output against the C++ reference. This option does NOT switch
+# the app onto the Rust path.
+option(XMB_RUST_FIRMWARE_CRYPTO "Build and link the Rust firmware-crypto staticlib (byte-parity with src/firmware_crypto.cpp)" OFF)
+set(XMB_RUST_CRYPTO_SOURCES "")
+if(XMB_RUST_FIRMWARE_CRYPTO)
+    find_program(CARGO_EXECUTABLE cargo HINTS "$ENV{HOME}/.cargo/bin")
+    if(NOT CARGO_EXECUTABLE)
+        message(FATAL_ERROR "XMB_RUST_FIRMWARE_CRYPTO requires a rustup-installed cargo (toolchain >= 1.89); see native-xmb/rust-edge/firmware-crypto/README.md")
+    endif()
+    set(XMB_RUST_CRYPTO_CRATE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/rust-edge/firmware-crypto")
+    # cargo output is kept in the CMake binary dir so the source tree stays clean.
+    set(XMB_RUST_CRYPTO_TARGET_DIR "${CMAKE_BINARY_DIR}/rust-firmware-crypto")
+    set(XMB_RUST_CRYPTO_STATICLIB "${XMB_RUST_CRYPTO_TARGET_DIR}/release/libfirmware_crypto.a")
+    add_custom_command(
+        OUTPUT "${XMB_RUST_CRYPTO_STATICLIB}"
+        COMMAND "${CARGO_EXECUTABLE}" build --release
+                --manifest-path "${XMB_RUST_CRYPTO_CRATE_DIR}/Cargo.toml"
+                --target-dir "${XMB_RUST_CRYPTO_TARGET_DIR}"
+        WORKING_DIRECTORY "${XMB_RUST_CRYPTO_CRATE_DIR}"
+        DEPENDS
+            "${XMB_RUST_CRYPTO_CRATE_DIR}/Cargo.toml"
+            "${XMB_RUST_CRYPTO_CRATE_DIR}/Cargo.lock"
+            "${XMB_RUST_CRYPTO_CRATE_DIR}/src/lib.rs"
+            "${XMB_RUST_CRYPTO_CRATE_DIR}/src/crypto.rs"
+            "${XMB_RUST_CRYPTO_CRATE_DIR}/src/ffi.rs"
+        COMMENT "Building the Rust firmware-crypto staticlib (cargo build --release)"
+        VERBATIM)
+    add_custom_target(xmb-rust-firmware-crypto DEPENDS "${XMB_RUST_CRYPTO_STATICLIB}")
+    # Imported static library: consumers link the .a and pick up the C ABI header.
+    add_library(xmb_firmware_crypto_rust STATIC IMPORTED GLOBAL)
+    set_target_properties(xmb_firmware_crypto_rust PROPERTIES
+        IMPORTED_LOCATION "${XMB_RUST_CRYPTO_STATICLIB}"
+        INTERFACE_INCLUDE_DIRECTORIES "${XMB_RUST_CRYPTO_CRATE_DIR}/include"
+        INTERFACE_LINK_LIBRARIES "pthread;dl;m")
+    set(XMB_RUST_CRYPTO_SOURCES src/firmware_crypto_rust.cpp src/firmware_crypto_rust.h)
+endif()
 qt_add_executable(re-ps3-native
     src/main.cpp src/assets.cpp src/assets.h src/p3t.cpp src/p3t.h src/qrc.cpp src/qrc.h src/catalog.cpp src/catalog.h
     src/gtf_decode.cpp src/gtf_decode.h
@@ -68,7 +110,7 @@ qt_add_executable(re-ps3-native
     src/self_check.cpp src/self_check.h src/system_check_shell.cpp
     src/updater.cpp src/updater.h src/updater_shell.cpp
     src/firmware_fetcher.cpp src/firmware_fetcher.h src/firmware_install.cpp src/firmware_install.h
-    src/firmware_extract.cpp src/firmware_extract.h src/firmware_crypto.cpp src/firmware_crypto.h
+    src/firmware_extract.cpp src/firmware_extract.h src/firmware_crypto.cpp src/firmware_crypto.h ${XMB_RUST_CRYPTO_SOURCES}
     src/wifi_client.cpp src/wifi_client.h src/wifi_shell.cpp
     src/bluetooth_client.cpp src/bluetooth_client.h src/bluetooth_shell.cpp
     src/wol_client.cpp src/wol_client.h src/homeassistant_client.cpp src/homeassistant_client.h src/home_shell.cpp
@@ -106,6 +148,10 @@ qt_add_executable(re-ps3-native
     src/autostart.cpp src/autostart.h src/autologon.cpp src/autologon.h src/cec.cpp src/cec.h src/display_mode.cpp src/display_mode.h src/display_spec.h src/diagnostics.cpp src/diagnostics.h src/game_capture.cpp src/game_capture.h src/game_tap.cpp src/game_tap.h src/ingame_backdrop.h src/elevation.cpp src/elevation.h src/text_entry.cpp src/text_entry.h src/shell.cpp src/shell.h src/host.cpp src/host.h src/pad.cpp src/pad.h src/bd_remote.h src/ps_watcher.cpp src/ps_watcher.h src/web_adopt.cpp src/web_adopt.h src/desktop_mode.cpp src/desktop_mode.h src/desktop_pad.cpp ${XMB_WIN32_ONLY_SOURCES} ${XMB_NON_WIN32_ONLY_SOURCES} src/desktop_pad.h src/view.cpp src/view.h src/dialogs.cpp)
 target_link_libraries(re-ps3-native PRIVATE Qt6::Widgets Qt6::OpenGLWidgets Qt6::Multimedia Qt6::Concurrent Qt6::Network)
 target_link_libraries(re-ps3-native PRIVATE ${XMB_ZLIB})
+if(XMB_RUST_FIRMWARE_CRYPTO)
+    target_link_libraries(re-ps3-native PRIVATE xmb_firmware_crypto_rust)
+    add_dependencies(re-ps3-native xmb-rust-firmware-crypto)
+endif()
 qt_add_resources(re-ps3-native seerr_icon PREFIX "/service-icons" BASE "src" FILES "src/seerr.png" "src/seerr-icon-LICENSE.txt")
 # The app reports this version to the updater; set it only in project(VERSION ...) above.
 target_compile_definitions(re-ps3-native PRIVATE XMB_APP_VERSION="${PROJECT_VERSION}")
@@ -133,6 +179,15 @@ if(XMB_FIRMWARE_BUILD_TESTS)
     target_include_directories(xmb-firmware-tests PRIVATE src)
     target_compile_definitions(xmb-firmware-tests PRIVATE XMB_FIRMWARE_NO_EMBEDDED_KEYS)
     target_link_libraries(xmb-firmware-tests PRIVATE Qt6::Core ${XMB_ZLIB})
+endif()
+
+# Rust firmware-crypto byte-parity gate (needs a Rust toolchain; see XMB_RUST_FIRMWARE_CRYPTO).
+if(XMB_RUST_FIRMWARE_CRYPTO)
+    qt_add_executable(xmb-firmware-rust-parity-tests tests/firmware_crypto_rust_parity_tests.cpp
+        src/firmware_crypto.cpp src/firmware_crypto_rust.cpp)
+    target_include_directories(xmb-firmware-rust-parity-tests PRIVATE src)
+    target_link_libraries(xmb-firmware-rust-parity-tests PRIVATE Qt6::Core xmb_firmware_crypto_rust)
+    add_dependencies(xmb-firmware-rust-parity-tests xmb-rust-firmware-crypto)
 endif()
 qt_add_executable(xmb-updater updater/updater_main.cpp src/updater.cpp src/updater.h)
 target_include_directories(xmb-updater PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)

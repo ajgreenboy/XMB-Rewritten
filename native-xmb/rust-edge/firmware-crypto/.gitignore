@@ -1,0 +1,6 @@
+# Rust build output
+/target/
+
+# Compiled parity harness and C smoke-test binaries (sources are committed)
+/parity/harness
+/parity/c_smoke

@@ -1,0 +1,23 @@
+[package]
+name = "firmware-crypto"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.89"
+description = "Byte-for-byte parity Rust reimplementation of the native XMB firmware crypto primitives (HMAC-SHA1, AES-128-CTR, AES-128/256-CBC), exposed over a C ABI as a staticlib."
+license = "MIT OR Apache-2.0"
+
+[lib]
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+aes = "0.9"
+hmac = "0.13"
+sha1 = "0.11"
+
+[dev-dependencies]
+hex = "0.4"
+
+[profile.release]
+# Keep the parity target deterministic and easy to inspect; the block cipher
+# itself is constant-time regardless of opt-level.
+opt-level = 3
