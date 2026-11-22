@@ -1,6 +1,6 @@
 # XMB-Rewritten: a native PS3 XMB for Windows
 
-![The native XMB, Game column](native-xmb/screenshots/v0.3.1/01-game-column.jpg)
+![The native XMB, Game column with installed Steam titles](native-xmb/screenshots/v0.3.21/01-game-column.jpg)
 
 A native C++20 / Qt 6 recreation of the PlayStation 3 **4.93 XMB**, built as a living-room PC (HTPC) front end. It draws the console's own interface from the firmware's assets, which it reads from your own copy of the PS3 system software, and reproduces its look, motion, sounds and navigation. It is **not affiliated with Sony**, and **no Sony firmware or assets are in this repository**.
 
@@ -13,18 +13,24 @@ One CMake project builds two programs:
 
 ## Screenshots
 
-<!-- Gallery: native renders at 1920x1080 from fixture data (fictional game titles, no personal accounts). -->
+<!-- Captures: real, unmodified native renders at 1920x1080, taken with the app's own
+     `--script ... grab=...` framebuffer capture against the local 4.93 dev_flash and this
+     machine's real Steam library (installed titles and their Steam artwork). No AI generation
+     and no mockups. The repository copies are JPEG; provenance is in
+     [native-xmb/SCREENSHOTS.md](native-xmb/SCREENSHOTS.md). -->
 
 | | |
 |---|---|
-| ![Game column](native-xmb/screenshots/v0.3.1/01-game-column.jpg) | ![Settings](native-xmb/screenshots/v0.3.1/02-settings.jpg) |
-| Game column with Steam-style title tiles | Settings column |
-| ![TV/Video Services](native-xmb/screenshots/v0.3.1/03-tv-video-services.jpg) | ![Users](native-xmb/screenshots/v0.3.1/04-users.jpg) |
-| TV/Video Services, with the Jellyfin setup row | Users column with Steam Account |
-| ![Options menu](native-xmb/screenshots/v0.3.1/05-options-menu.jpg) | ![First-run setup](native-xmb/screenshots/v0.3.1/06-first-run-firmware.jpg) |
-| The Options (Triangle) menu on a game | First-run setup, Firmware step |
+| ![Options menu](native-xmb/screenshots/v0.3.21/02-options-menu.jpg) | ![Settings](native-xmb/screenshots/v0.3.21/03-settings.jpg) |
+| The Options (Triangle) menu on a Steam title | Settings column |
+| ![TV/Video Services](native-xmb/screenshots/v0.3.21/04-tv-video-services.jpg) | ![Video](native-xmb/screenshots/v0.3.21/05-video-column.jpg) |
+| TV/Video Services, with the Jellyfin setup row | Video column |
+| ![Music](native-xmb/screenshots/v0.3.21/06-music-column.jpg) | ![Users](native-xmb/screenshots/v0.3.21/07-users.jpg) |
+| Music column | Users column |
 
-The screenshots show the firmware's icons, fonts and artwork, because that is what the XMB draws. More notes on captures are in [SCREENSHOTS.md](native-xmb/SCREENSHOTS.md).
+The screenshots show the firmware's icons, fonts and artwork, because that is what the XMB draws. The Game column at
+the top is this machine's actually installed Steam titles — with their Steam artwork and Steam's collection labels —
+rather than fictional fixtures. More notes on captures are in [SCREENSHOTS.md](native-xmb/SCREENSHOTS.md).
 
 ## What it does
 
