@@ -18,6 +18,7 @@
 #include "rco_objects.h"
 #include "media_keys.h"
 #include "game_capture.h"
+#include "ingame_backdrop.h"
 #include "text_entry.h"
 #include "frame_trace.h"
 #include "frame_pacer.h"
@@ -223,6 +224,11 @@ private:
     void deliverTitleText(const QString& text);
     textentry::TextDelivery titleText_{this};
     void syncInGameWindow();
+    // Title-window latch (audit/INGAME-BG-CAPTURE.md): the title's window is recorded the first time it holds the foreground
+    // and kept while the title runs, so the in-game XMB never has to guess it at the PS press.
+    void pollTitleLatch();
+    QTimer latchTimer_;
+    ingamebg::WindowLatch latch_;
     bool inGameBack();
     void drawInGameBackdrop(int width,int height);
     void stopLiveOverlay();

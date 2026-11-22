@@ -55,6 +55,7 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
+#include <dwmapi.h>
 #include <Xinput.h>
 #include "boot_profile.h"
 #endif
@@ -147,6 +148,21 @@ private:
 // Live overlay (audit/INGAME-OVERLAY-DESIGN.md M1): the default for a windowed/borderless title. XMB_INGAME_LIVE=0 forces the
 // frozen captured-frame path; any other value (including unset) lets enterInGame try the overlay first.
 bool inGameLiveEnabled() { return qEnvironmentVariable("XMB_INGAME_LIVE")!=QStringLiteral("0"); }
+// Tracking the title's window (latch, frame tap) is on in a real run and off in a scripted one, so every gated capture
+// behaves as it always did; XMB_INGAME_TAP=1 pins it on for a scripted run, XMB_INGAME_TAP=0 turns it off everywhere.
+bool inGameTrackingEnabled() {
+    const QString v=qEnvironmentVariable("XMB_INGAME_TAP");
+    if(v==QLatin1String("0"))return false;
+    if(v==QLatin1String("1"))return true;
+    return !pad::scriptOnly();
+}
+#ifdef Q_OS_WIN
+bool isLauncherProcess(HWND window) {
+    // The Steam client and its web helper are never the title, even when Big Picture covers the monitor.
+    const QString name=windowProcessName(window).toLower();
+    return name==QLatin1String("steam.exe") || name==QLatin1String("steamwebhelper.exe") || name==QLatin1String("gameoverlayui.exe");
+}
+#endif
 bool volumeTrace() { static const bool on=qEnvironmentVariableIsSet("XMB_VOLUME_LOG");return on; }
 }
 View::View(Shell& shell,Assets& assets,QWidget* parent):QOpenGLWidget(parent),shell_(shell),assets_(assets) {
@@ -303,6 +319,11 @@ View::View(Shell& shell,Assets& assets,QWidget* parent):QOpenGLWidget(parent),sh
     connect(&psWatcher_,&PsWatcher::cancelled,this,[this]{psPressActionable_=false;});
     psWatcher_.start();
     xmb::bootprof::mark("View psWatcher");
+    if(inGameTrackingEnabled()) {
+        latchTimer_.setInterval(300);
+        connect(&latchTimer_,&QTimer::timeout,this,&View::pollTitleLatch);
+        latchTimer_.start();
+    }
     // Phone Remote (D11): the paired LAN remote drives the same key path a scripted or keyboard press takes, so
     // its input behaves identically. The PS button goes through the tap handler.
     connect(&shell_,&Shell::mediaSeeked,this,&View::requestTrickplayPreview);
@@ -5476,6 +5497,37 @@ double inGameDim() {
     return ok?std::clamp(v,0.,1.):.8;
 }
 }
+void View::pollTitleLatch() {
+#ifdef Q_OS_WIN
+    const bool running=titleRunning();
+    if(!running && !latch_.latched())return;
+    QWidget* top=window();
+    const HWND self=top?reinterpret_cast<HWND>(top->winId()):nullptr;
+    const HWND latched=reinterpret_cast<HWND>(latch_.hwnd());
+    const HWND foreground=GetForegroundWindow();
+    ingamebg::WindowFacts facts;
+    // Only a window that is not already the latch needs the (process-snapshot) membership test.
+    if(running && foreground && foreground!=latched) {
+        facts.hwnd=quintptr(foreground);facts.foreground=true;facts.isSelf=foreground==self;
+        if(!facts.isSelf) {
+            DWORD pid=0;GetWindowThreadProcessId(foreground,&pid);
+            facts.pid=pid;facts.exists=IsWindow(foreground)!=0;facts.visible=IsWindowVisible(foreground)!=0;facts.iconic=IsIconic(foreground)!=0;
+            DWORD cloak=0;facts.cloaked=SUCCEEDED(DwmGetWindowAttribute(foreground,DWMWA_CLOAKED,&cloak,sizeof(cloak))) && cloak;
+            RECT r{};GetWindowRect(foreground,&r);facts.area=qint64(r.right-r.left)*(r.bottom-r.top);
+            const quint32 root=shell_.runningTitlePid();
+            if(root)facts.belongsToTitle=pidInTree(pid,root);
+            else if(shell_.runningTitleIsSteam() && !isLauncherProcess(foreground))
+                facts.belongsToTitle=(latch_.pid() && pid==latch_.pid()) ||
+                    [&]{const auto c=classifyGameWindow(quintptr(foreground));return c.mode==GameWindowMode::Borderless || c.mode==GameWindowMode::Exclusive;}();
+        }
+    }
+    const auto action=latch_.observe(running,facts,latched && IsWindow(latched));
+    if(action==ingamebg::WindowLatch::Action::Latched)
+        psLog(QStringLiteral("ingame: latched title window hwnd=0x%1 pid=%2 (first foreground)").arg(latch_.hwnd(),0,16).arg(latch_.pid()));
+    else if(action==ingamebg::WindowLatch::Action::Released)
+        psLog(QStringLiteral("ingame: title window latch released"));
+#endif
+}
 void View::enterInGame(const QString& reason) {
     if(!titleRunning()){
         psLog(QStringLiteral("ingame: entry ignored (no running title)"));
@@ -5491,11 +5543,16 @@ void View::enterInGame(const QString& reason) {
     // 1. The foreground window, when it is the title's: a window of the tracked process tree, or - for a Steam title,
     //    which is not our process - a monitor-covering window (the only kind a game is; a window the user alt-tabbed
     //    to is never captured). 2. Otherwise the tracked tree's largest visible window.
+    // 0. The window latched the first time the title held the foreground (pollTitleLatch), while it still exists.
+    if(latch_.latched() && IsWindow(reinterpret_cast<HWND>(latch_.hwnd()))) {
+        hwnd=quintptr(latch_.hwnd());
+        psLog(QStringLiteral("ingame: using the latched title window hwnd=0x%1 pid=%2").arg(hwnd,0,16).arg(latch_.pid()));
+    }
     const HWND foreground=GetForegroundWindow();
-    if(foreground && foreground!=self) {
+    if(!hwnd && foreground && foreground!=self) {
         DWORD pid=0;GetWindowThreadProcessId(foreground,&pid);
         if(root && pidInTree(pid,root))hwnd=quintptr(foreground);
-        else if(shell_.runningTitleIsSteam()) {
+        else if(shell_.runningTitleIsSteam() && !isLauncherProcess(foreground)) {
             const auto candidate=classifyGameWindow(quintptr(foreground));
             if(candidate.mode==GameWindowMode::Borderless || candidate.mode==GameWindowMode::Exclusive)hwnd=quintptr(foreground);
         }
