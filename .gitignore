@@ -13,6 +13,9 @@ dist/
 *.PUP
 *.img
 
+# AppImage tooling (downloaded by native-xmb/packaging/linux/build-appimage.sh)
+native-xmb/packaging/linux/tools/
+
 # build products
 build/
 build-linux/
