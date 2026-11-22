@@ -15,6 +15,7 @@ dist/
 
 # build products
 build/
+build-linux/
 *.obj
 *.exe
 *.pdb

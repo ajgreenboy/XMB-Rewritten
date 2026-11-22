@@ -442,7 +442,7 @@ void JellyfinClient::signIn(QUrl server, QString user, QString password) {
     accessToken_.fill('\0');
     accessToken_.clear();
     userId_.clear();
-    server_ = {};
+    server_ = QUrl();
     server = server.adjusted(QUrl::NormalizePathSegments);
     const bool hasQueryOrFragment = server.hasQuery() || server.hasFragment();
     while (server.path().endsWith(QLatin1Char('/')) && server.path().size() > 1)
@@ -517,7 +517,7 @@ void JellyfinClient::signOut() {
     accessToken_.fill('\0');
     accessToken_.clear();
     userId_.clear();
-    server_ = {};
+    server_ = QUrl();
     flushLogouts();
 }
 

@@ -1,4 +1,5 @@
 // See game_capture.h. WinRT headers must precede Qt's (macro hygiene).
+#ifdef Q_OS_WIN
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
@@ -19,6 +20,7 @@
 #include <winrt/Windows.Graphics.DirectX.Direct3D11.h>
 #include <windows.graphics.capture.interop.h>
 #include <windows.graphics.directx.direct3d11.interop.h>
+#endif
 
 #include "game_capture.h"
 
@@ -29,6 +31,7 @@
 #include <thread>
 
 namespace xmb {
+#ifdef Q_OS_WIN
 namespace {
 
 namespace wgc = winrt::Windows::Graphics::Capture;
@@ -219,6 +222,7 @@ GameCaptureResult captureImpl(HWND hwnd, int timeoutMs) {
 }
 
 }  // namespace
+#endif  // Q_OS_WIN
 
 const char* gameWindowModeName(GameWindowMode m) {
     switch (m) {
@@ -237,6 +241,8 @@ const char* gameCaptureStatusName(GameCaptureStatus s) {
     default: return "failed";
     }
 }
+
+#ifdef Q_OS_WIN
 
 GameWindowInfo classifyGameWindow(quintptr handle) {
     GameWindowInfo info;
@@ -364,6 +370,30 @@ int postCloseToProcessTree(quint32 rootPid) {
     }, reinterpret_cast<LPARAM>(&c));
     return c.posted;
 }
+
+#else  // !Q_OS_WIN: no WGC / DWM / EnumWindows / Toolhelp on this platform (Phase 1 stub).
+
+GameWindowInfo classifyGameWindow(quintptr handle) {
+    GameWindowInfo info;
+    info.hwnd = handle;
+    info.reason = QStringLiteral("game capture unsupported on this platform");
+    return info;
+}
+
+quintptr findMainWindow(quint32) { return 0; }
+
+GameCaptureResult captureGameWindow(quintptr, int) {
+    GameCaptureResult out;
+    out.status = GameCaptureStatus::Failed;
+    out.detail = QStringLiteral("game capture unsupported on this platform");
+    return out;
+}
+
+bool pidInTree(quint32, quint32) { return false; }
+
+int postCloseToProcessTree(quint32) { return 0; }
+
+#endif  // Q_OS_WIN
 
 QString gameCaptureLogLine(const GameWindowInfo& i, const GameCaptureResult& r) {
     return QStringLiteral("ingame: window pid=%1 hwnd=0x%2 mode=%3 capture=%4 (%5 ms) title=\"%6\" class=%7 "

@@ -774,12 +774,14 @@ Snapshot readSnapshot(bool gui=true) {
     state.volumes=readVolumes();
     state.opticalDrive=opticalDrive();
     state.adapters=readAdapters();
+#ifdef Q_OS_WIN
     state.printers=readPrinters();
     state.pads=readPads();
     state.keyboard=readKeyboard();
     state.mouse=readMouse();
     rawInputCounts(state.keyboards,state.mice);
     state.battery=readBattery();
+#endif
 #ifdef Q_OS_WIN
     state.monitorTimer.acMinutes=powerTimerValue(GUID_VIDEO_SUBGROUP,GUID_VIDEO_POWERDOWN_TIMEOUT,true);
     state.monitorTimer.dcMinutes=powerTimerValue(GUID_VIDEO_SUBGROUP,GUID_VIDEO_POWERDOWN_TIMEOUT,false);
@@ -789,10 +791,12 @@ Snapshot readSnapshot(bool gui=true) {
 #endif
     state.volume=masterVolume();
     state.muted=masterMuted();
+#ifdef Q_OS_WIN
     state.defaultBrowser=defaultBrowserName();
     state.dlnaService=serviceState(L"WMPNetworkSvc");
     state.audioOutputs=readAudio(eRender);
     state.audioInputs=readAudio(eCapture);
+#endif
     if(gui)readGuiParts(state);
     state.windowsAdmin=elevated();
 #ifdef Q_OS_WIN

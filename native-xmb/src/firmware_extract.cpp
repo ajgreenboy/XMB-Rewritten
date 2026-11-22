@@ -9,7 +9,11 @@
 #include <QSaveFile>
 #include <QSet>
 #include <QtEndian>
+#ifdef Q_OS_WIN
 #include <QtZlib/zlib.h>
+#else
+#include <zlib.h>
+#endif
 #include <cstdio>
 #include <functional>
 #ifdef Q_OS_WIN

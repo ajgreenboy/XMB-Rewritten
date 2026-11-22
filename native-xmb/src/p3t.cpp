@@ -10,7 +10,11 @@
 #include <QJsonObject>
 #include <QSet>
 #include <QtEndian>
+#ifdef Q_OS_WIN
 #include <QtZlib/zlib.h>
+#else
+#include <zlib.h>
+#endif
 #include <bit>
 #include <algorithm>
 #include <cmath>
