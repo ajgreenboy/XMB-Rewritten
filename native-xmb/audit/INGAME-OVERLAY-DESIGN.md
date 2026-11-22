@@ -271,3 +271,12 @@ Only the HTPC can verify: 4K game-plus-XMB frame time and GPU cost of the bridge
 and how the heuristic classifies real titles; Steam Input and Guide-button behaviour with a DualSense or Xbox pad; whether a real game keeps reading
 the pad while the XMB is active; anti-cheat tolerance of a screen-sized topmost NOREDIRECTIONBITMAP window; HDR, VRR and independent-flip loss; capture
 border or indicator on the fallback path; Steam title window discovery (M3) for a windowed game that does not hold the foreground.
+
+## 11. Update: the live overlay is no longer the default entry (INGAME-BG-CAPTURE.md)
+
+Section 10's overlay showed whatever DWM composed behind it once the game lost focus, so a title that minimises, cloaks or blanks on focus loss left the wrong picture
+(measured with the stand-in: `--blur minimize` and `--blur black` showed the desktop and black behind the dim, 0 of 46 sampled frames matched the game). The in-game XMB now opens
+on the title's last good frame (opaque, dimmed 0.8) from a persistent capture session, and this overlay is promoted only when good frames keep arriving for about 300 ms after
+the XMB is raised and the window is neither iconic nor cloaked (`shouldGoLive`); it is dropped back to the frozen frame when the window goes iconic, cloaked or blank
+(`shouldDropLive`). With no good frame ever seen, exclusive fullscreen, or `XMB_INGAME_LIVE=0` the earlier behaviour is unchanged. Scripted (`--script`) runs keep the
+earlier behaviour unless `XMB_INGAME_TAP=1`. The M1 section 10 gate numbers and the HTPC-only list above still apply.

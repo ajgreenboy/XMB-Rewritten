@@ -313,3 +313,9 @@ Not done, and why:
 - RPCS3's own Home Menu and Steam's Guide handling are untouched; with them enabled a PS tap still reaches them too (section 1.3, step 8).
 - Quit Game for an RPCS3 title when `confirmationBoxExitGame` is on: the cooperative stage will wait out the grace period on RPCS3's own "Exit Game?" box
   before `terminate()`; owner decision, see step 3.
+
+- **Backdrop update (see `INGAME-BG-CAPTURE.md`).** Step 5's "captures one frame at the press" is superseded for a title whose window was latched: the
+  title's hwnd/pid is recorded the first time it holds the foreground, a persistent Windows Graphics Capture session keeps the newest non-blank frame on the GPU, and
+  the in-game XMB opens on that frame (opaque, dimmed 0.8) on every entry, whatever the title did on focus loss. TRACED: `page_xmb_bg` is empty (F15) and the game is
+  the backdrop and keeps running. INFERRED: the dim, about 80 percent. NOT VERIFIED: real games, true exclusive fullscreen outside DWM, HDR, DRM or
+  capture-excluded windows, Steam overlay windows. Proven only with the stand-in (`work/ingame-bg-test.ts`).
