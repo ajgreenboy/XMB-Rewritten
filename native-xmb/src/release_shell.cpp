@@ -4,6 +4,7 @@
 #include "rawg_artwork.h"
 #include "diagnostics.h"
 #include <QBuffer>
+#include <QDateTime>
 #include <QCryptographicHash>
 #include <QDesktopServices>
 #include <QDir>
@@ -671,9 +672,20 @@ void Shell::openHydraSources() {
             row.detail=hydraFailureText(result.failure,result.error,true); row.disabled=!retry; page.entries.append(std::move(row));
         }
         else if(result.sources.isEmpty())page.entries.append(releaseRow(QStringLiteral("hydra:sources:empty"),tr("No Hydra sources available."),Action::Unavailable));
-        for(const auto& source:result.sources) {
+        // The health note remembers how each feed behaved last time: working feeds sort first and a feed
+        // known to refuse the app (or too large for it) is dimmed with the reason. It stays openable, and
+        // a refusal is asked again at most once a day, so a source that recovers comes back.
+        SourceHealth health(SourceHealth::defaultPath());health.load();
+        const qint64 now=QDateTime::currentSecsSinceEpoch();
+        for(const auto& source:health.ordered(result.sources,now)) {
             Entry row=releaseRow(QStringLiteral("hydra:source:")+source.url.toString(),source.title,Action::ReleaseFolder,source.url.toString());
             row.detail=source.gamesCount>0?tr("%n game(s)",nullptr,source.gamesCount):tr("Open source feed");
+            switch(health.standing(source.url,now)) {
+            case SourceHealth::Standing::Blocked: row.detail=tr("Blocks the app");row.disabled=true;break;
+            case SourceHealth::Standing::LikelyBlocked: row.detail=tr("May block the app");row.disabled=true;break;
+            case SourceHealth::Standing::TooLarge: row.detail=tr("Too large for this device");row.disabled=true;break;
+            default: break;
+            }
             page.entries.append(std::move(row));
         }
         page.hydraRetryUrl.clear(); page.hydraRetryName.clear();
@@ -706,8 +718,12 @@ void Shell::openHydraSource(const QString& sourceIndex,const QString& sourceName
     watcher->setFuture(QtConcurrent::run([url,sourceName]{
         HydraLibrary library;HydraSource source;source.title=sourceName;source.url=url;HydraSourceOutcome outcome;
         // Opening a source only fetches and parses its index. Cross-source choices are resolved
-        // lazily for the selected game at the Download action, never eagerly for every row.
-        library.browseSource(source,&outcome.games,&outcome.error,&outcome.failure);
+        // lazily for the selected game at the Download action, never eagerly for every row. The health
+        // note keeps a recent refusal from being asked again within a day and records this outcome.
+        SourceHealth health(SourceHealth::defaultPath());health.load();
+        bool fromNote=false;
+        library.browseSourceNoted(source,&outcome.games,&outcome.error,&outcome.failure,&health,QDateTime::currentSecsSinceEpoch(),&fromNote);
+        if(!fromNote)health.save();
         return outcome;
     })); emit changed();
 }

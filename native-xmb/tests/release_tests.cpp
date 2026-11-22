@@ -1165,6 +1165,87 @@ int main(int argc,char** argv) {
              check(HydraLibrary().browseSource(feed,&feedGames,&fixtureError,&failure) && failure.kind==HydraFailureKind::None,
                    "a successful open leaves the failure category at None");
          }
+         // Source-health note: persisted, ordered, and a refusal is asked again at most once a day.
+         {
+             QTemporaryDir healthDir;
+             const QString healthPath=healthDir.filePath(QStringLiteral("source_health.json"));
+             const qint64 t0=1800000000;
+             const auto url=[](const char* text){return QUrl(QString::fromLatin1(text));};
+             HydraFailure refused{HydraFailureKind::Refused,403},none{},large{HydraFailureKind::TooLarge,0},server{HydraFailureKind::Server,503};
+             {
+                 SourceHealth health(healthPath);
+                 check(!health.load() && health.feedCount()==0,"a missing health note loads as empty");
+                 health.record(url("https://blocked.invalid/a.json"),refused,t0);
+                 health.record(url("https://blocked.invalid/b.json"),refused,t0);
+                 health.record(url("https://fine.invalid/ok.json"),none,t0);
+                 health.record(url("https://fine.invalid/big.json"),large,t0);
+                 health.record(url("https://flaky.invalid/f.json"),server,t0);
+                 check(health.save(),"the health note saves");
+             }
+             SourceHealth health(healthPath);
+             check(health.load() && health.feedCount()==5,"the health note reloads every recorded feed");
+             check(health.standing(url("https://blocked.invalid/a.json"),t0+60)==SourceHealth::Standing::Blocked &&
+                   health.standing(url("https://fine.invalid/ok.json"),t0+60)==SourceHealth::Standing::Working &&
+                   health.standing(url("https://fine.invalid/big.json"),t0+60)==SourceHealth::Standing::TooLarge &&
+                   health.standing(url("https://flaky.invalid/f.json"),t0+60)==SourceHealth::Standing::Failing,
+                   "reloaded standings: blocked, working, too large and failing");
+             check(health.standing(url("https://blocked.invalid/never-opened.json"),t0+60)==SourceHealth::Standing::LikelyBlocked,
+                   "a never-opened feed on a host that refused two feeds is marked likely blocked");
+             check(health.standing(url("https://elsewhere.invalid/x.json"),t0+60)==SourceHealth::Standing::Unknown &&
+                   health.standing(url("https://blocked.invalid/never-opened.json"),t0+SourceHealth::kReprobeSeconds+60)==SourceHealth::Standing::Unknown,
+                   "an unknown host stays unknown, and the per-host hint expires after a day");
+             QVector<HydraSource> listed;
+             for(const char* text:{"https://blocked.invalid/a.json","https://blocked.invalid/never-opened.json","https://elsewhere.invalid/x.json",
+                                   "https://fine.invalid/big.json","https://flaky.invalid/f.json","https://fine.invalid/ok.json"}) {
+                 HydraSource source;source.url=url(text);source.title=QString::fromLatin1(text);listed.append(source);
+             }
+             const auto sorted=health.ordered(listed,t0+60);
+             QStringList order;for(const auto& source:sorted)order.append(source.url.path());
+             check(order==QStringList({QStringLiteral("/ok.json"),QStringLiteral("/x.json"),QStringLiteral("/f.json"),
+                                       QStringLiteral("/never-opened.json"),QStringLiteral("/big.json"),QStringLiteral("/a.json")}),
+                   "working feeds sort first, then unknown, failing, likely blocked, too large and blocked");
+             QFile noteFile(healthPath);const bool noteOpened=noteFile.open(QIODevice::ReadOnly);
+             const QByteArray noteBytes=noteFile.readAll();noteFile.close();
+             check(noteOpened && !noteBytes.contains("invalid") && !noteBytes.contains("http") && !noteBytes.contains("a.json"),
+                   "the health note holds no URLs or host names");
+             check(health.skipProbe(url("https://blocked.invalid/a.json"),t0+SourceHealth::kReprobeSeconds-1) &&
+                   !health.skipProbe(url("https://blocked.invalid/a.json"),t0+SourceHealth::kReprobeSeconds) &&
+                   !health.skipProbe(url("https://flaky.invalid/f.json"),t0+60) && !health.skipProbe(url("https://fine.invalid/ok.json"),t0+60),
+                   "a refusal is not re-asked within a day, then is due again; transient and working feeds always probe");
+             health.record(url("https://blocked.invalid/a.json"),none,t0+SourceHealth::kReprobeSeconds+10);
+             check(health.standing(url("https://blocked.invalid/a.json"),t0+SourceHealth::kReprobeSeconds+20)==SourceHealth::Standing::Working &&
+                   health.standing(url("https://blocked.invalid/never-opened.json"),t0+SourceHealth::kReprobeSeconds+20)==SourceHealth::Standing::Unknown,
+                   "a feed that recovers is working again and clears its host's blocked hint");
+             {   // a damaged note is forgotten, not fatal
+                 QFile damaged(healthPath);const bool damagedOpened=damaged.open(QIODevice::WriteOnly|QIODevice::Truncate);check(damagedOpened,"the damaged-note fixture file opens");damaged.write("{not json");damaged.close();
+                 SourceHealth broken(healthPath);
+                 check(!broken.load() && broken.feedCount()==0 && broken.standing(url("https://blocked.invalid/a.json"),t0)==SourceHealth::Standing::Unknown,
+                       "a damaged health note loads as empty");
+                 broken.record(url("https://fine.invalid/ok.json"),none,t0);
+                 check(broken.save() && SourceHealth(healthPath).load(),"a damaged health note is overwritten by the next save");
+             }
+             // Through the real open path: the first 403 asks the host once; reopening within a day does not ask
+             // again and still reports the refusal; after a day it asks again. Nothing retries on its own.
+             SourceHealth noted(healthPath);noted.load();
+             HydraSource refusing;refusing.title=QStringLiteral("Refusing");refusing.url=QUrl(base+QStringLiteral("/source-403"));
+             const int refusedBefore=source403Requests;
+             QVector<GameResult> noteGames;QString noteError;HydraFailure noteFailure;bool fromNote=true;
+             check(!HydraLibrary().browseSourceNoted(refusing,&noteGames,&noteError,&noteFailure,&noted,t0,&fromNote) && !fromNote &&
+                   noteFailure.kind==HydraFailureKind::Refused && source403Requests==refusedBefore+1,
+                   "the first open of a refusing feed asks the host once and records the refusal");
+             check(!HydraLibrary().browseSourceNoted(refusing,&noteGames,&noteError,&noteFailure,&noted,t0+3600,&fromNote) && fromNote &&
+                   noteFailure.kind==HydraFailureKind::Refused && noteFailure.status==403 && source403Requests==refusedBefore+1 &&
+                   !noteError.contains(QStringLiteral("retry")),
+                   "reopening within a day reports the stored refusal without another request");
+             check(!HydraLibrary().browseSourceNoted(refusing,&noteGames,&noteError,&noteFailure,&noted,t0+SourceHealth::kReprobeSeconds+1,&fromNote) &&
+                   !fromNote && source403Requests==refusedBefore+2,
+                   "after a day the refusal is re-checked once");
+             HydraSource recovering;recovering.title=QStringLiteral("Recovering");recovering.url=QUrl(base+QStringLiteral("/source-feed-large"));
+             noted.record(recovering.url,refused,t0);
+             check(HydraLibrary().browseSourceNoted(recovering,&noteGames,&noteError,&noteFailure,&noted,t0+SourceHealth::kReprobeSeconds+1,&fromNote) &&
+                   !fromNote && noteGames.size()==50 && noted.standing(recovering.url,t0+SourceHealth::kReprobeSeconds+2)==SourceHealth::Standing::Working,
+                   "a feed that was refused yesterday and opens now is re-probed and marked working");
+         }
          // A positive Retry-After is honoured: the retry waits the server's stated delay, not just the short backoff.
          feed.url=QUrl(base+QStringLiteral("/source-retryafter-short"));feedGames.clear();fixtureError=QStringLiteral("stale error");
          QElapsedTimer honoredClock;honoredClock.start();

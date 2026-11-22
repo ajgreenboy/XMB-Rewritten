@@ -1,5 +1,6 @@
 #pragma once
 #include "release_index.h"
+#include <QHash>
 #include <QString>
 #include <QStringList>
 #include <QUrl>
@@ -79,6 +80,40 @@ SourcesPage parseSourcesPage(const QJsonObject& root);
 // True when another /sources page may hold more entries. `pageNumber` is the 1-based page just
 // consumed and `accumulated` the source count gathered so far (this page included). Capped at 100 pages.
 bool hasMoreSources(int pageNumber, int accumulated, const SourcesPage& page);
+// A small persisted note of how each source feed behaved last time, so Browse Sources can say which
+// feeds are known to refuse the app, list working feeds first and avoid re-asking a refusal more than
+// once a day. It stores only the last outcome and time per feed and an aggregate per host, keyed by a
+// SHA-1 of the URL and of the host (never the URL or host itself), so the file holds no addresses.
+// A feed that refused or was too large is re-probed after a day, so a source that recovers comes back;
+// nothing here ever retries on its own.
+class SourceHealth {
+public:
+    // How the Browse Sources list should present a feed. The order is the sort rank, best first.
+    enum class Standing { Working, Unknown, Failing, LikelyBlocked, TooLarge, Blocked };
+    static constexpr qint64 kReprobeSeconds=24*60*60;   // a refusal is re-checked at most once per day
+    static constexpr int kLikelyBlockedFeeds=2;         // refusals on one host before its other feeds look blocked
+    explicit SourceHealth(const QString& path);
+    // The note in the app's data folder (empty when no data folder is available).
+    static QString defaultPath();
+    bool load();            // false when the file is absent or unreadable; the note is then empty
+    bool save() const;      // atomic write; false on failure (the list just loses its memory)
+    void record(const QUrl& feed,const HydraFailure& outcome,qint64 nowSeconds);   // kind None = the feed opened
+    Standing standing(const QUrl& feed,qint64 nowSeconds) const;
+    // True when this feed refused (or was too large) less than a day ago, so opening it again should
+    // show the stored reason instead of asking the host once more.
+    bool skipProbe(const QUrl& feed,qint64 nowSeconds,HydraFailure* stored=nullptr) const;
+    // Stable ordering: working feeds first, then unprobed, then the rest by how sure we are they cannot open.
+    QVector<HydraSource> ordered(const QVector<HydraSource>& sources,qint64 nowSeconds) const;
+    int feedCount() const { return int(feeds_.size()); }
+private:
+    struct Feed { HydraFailureKind kind=HydraFailureKind::None; int status=0; qint64 at=0; QString host; };
+    struct Host { int refused=0; qint64 refusedAt=0; qint64 okAt=0; };
+    static QString feedKey(const QUrl& feed);
+    static QString hostKey(const QUrl& feed);
+    QString path_;
+    QHash<QString,Feed> feeds_;
+    QHash<QString,Host> hosts_;
+};
 // Blocking client, like the other network clients; call from a worker.
 class HydraLibrary {
 public:
@@ -92,6 +127,11 @@ public:
     // Read one source's release-index JSON without importing or mutating saved feeds. The returned
     // records are intentionally source-scoped; callers may resolve a selected title through /games.
     bool browseSource(const HydraSource& source, QVector<GameResult>* out, QString* error=nullptr, HydraFailure* failure=nullptr) const;
+    // browseSource through the health note: a feed that refused (or was too large) less than a day ago is
+    // not asked again (the stored reason is returned and *fromNote is set); otherwise the feed is opened
+    // and its outcome recorded in `health`. The caller saves the note. `nowSeconds` is the wall clock.
+    bool browseSourceNoted(const HydraSource& source, QVector<GameResult>* out, QString* error, HydraFailure* failure,
+                           SourceHealth* health, qint64 nowSeconds, bool* fromNote=nullptr) const;
     bool popularTitles(QVector<PopularTitle>* out, QString* error=nullptr) const;
     // Resolve the complete cross-source choices for one selected source-scoped game: a single
     // /games search for its name, then an exact-name union into the source-only game. Returns true

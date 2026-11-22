@@ -72,3 +72,44 @@ requirement.
   and malformed-source handling in `parseReleaseIndex`. Observed: **183 checks, 0 failures**.
 - `bun work/ci-guard.ts` → ok (26 options, 29 targets, 25 runners).
 - Full `re-ps3-native` build exits 0 (header change is additive; `shell.h` re-includes it).
+
+## 6. Browse Sources reliability (2026-11-21)
+
+An audit of the 61-feed Hydra directory found 34 feeds that open, 15 that refuse the app (HTTP 403,
+14 of them on one host), 11 whose body is 16.8-53 MB (over the old 16 MiB cap) and one transient
+timeout. Every feed looked the same in the list and every failure said "retry".
+
+What changed (each its own commit):
+
+- **Cap and lazy lookup.** The selected feed gets its own 64 MiB body cap (the import path already
+  allowed 64 MiB). The directory, search and ranked fetches keep 16 MiB, and the declared-length and
+  streaming/decompressed limits stay in force on every path. Opening a feed fetches and parses the
+  index only; the per-game `/games` search that used to run for every row now runs once, for the
+  game picked at Download (`HydraLibrary::resolveGameChoices`). Shared retry budget of the directory
+  action (v0.3.20) is unchanged.
+- **Honest reasons.** Failures are classified (`HydraFailureKind`): 401/403 "This source blocks the
+  app (HTTP 403)" with no Retry row; 429 "The source is rate limiting requests; try again later"
+  (manual Retry kept, never automatic); over the cap "Source too large for this device" with no
+  Retry row; timeouts, 5xx and anything else keep Retry. The source directory page uses the same
+  rules with its own wording. A refusal is requested exactly once.
+- **Source-health note.** `source_health.json` in the app data folder keeps, per feed, the last
+  outcome and time, and per host a count of refusing feeds. Feeds and hosts are keyed by SHA-1, so
+  the file holds no URLs or host names. The list sorts working feeds first, then unprobed, failing,
+  likely blocked (a never-opened feed on a host that refused two or more feeds within a day), too
+  large and blocked; the last three are dimmed with "May block the app" / "Too large for this
+  device" / "Blocks the app" and stay openable. Opening a feed that refused or was too large less
+  than a day ago shows the stored reason without another request; after a day it is asked once more,
+  so a source that recovers is marked working again.
+
+Verified (loopback fixtures in `xmb-release-tests`, no real host used): a synthetic 100,000-entry
+feed of about 50 MB opens with one feed GET and no directory or search request, in roughly 5-8 s on
+an idle machine (longer when the machine is busy) with a peak working set of about 370 MiB, test
+fixture included; the over-16 MiB feed is accepted and over-64 MiB rejected; 403 once with no
+retry and no "retry" in its text, 401, 429, over-cap and 5xx classification; health persistence,
+ordering, per-host hint, expiry, recovery, damaged-file handling and the once-a-day re-probe through
+the real open path. 347 checks, 0 failures.
+
+Not verified: the real 61 feeds were not fetched (no real host in any test), so the 15/11/34 split
+is the audit's, not re-measured here; the on-screen rows (wording, dimming, absence of the Retry row)
+were built and compiled but not driven in the running app; the per-game cover and Download flows for
+a 100k-game feed were not exercised in the shell.

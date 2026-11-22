@@ -1,5 +1,7 @@
 #include "hydra_library.h"
 #include <QDateTime>
+#include <QCryptographicHash>
+#include <QDir>
 #include <QElapsedTimer>
 #include <QEventLoop>
 #include <QHash>
@@ -9,7 +11,11 @@
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
+#include <QFile>
+#include <QFileInfo>
+#include <QSaveFile>
 #include <QSet>
+#include <QStandardPaths>
 #include <QThreadPool>
 #include <QTimer>
 #include <QtConcurrent/QtConcurrentRun>
@@ -573,6 +579,25 @@ bool HydraLibrary::browseSource(const HydraSource& source, QVector<GameResult>* 
     }
     if(out)*out=std::move(games); return true;
 }
+bool HydraLibrary::browseSourceNoted(const HydraSource& source, QVector<GameResult>* out, QString* error, HydraFailure* failure,
+                                   SourceHealth* health, qint64 nowSeconds, bool* fromNote) const {
+    if(fromNote)*fromNote=false;
+    HydraFailure stored;
+    if(health && health->skipProbe(source.url,nowSeconds,&stored)) {
+        if(out)out->clear();
+        if(failure)*failure=stored;
+        if(error)*error=stored.kind==HydraFailureKind::TooLarge
+            ?QStringLiteral("Hydra source response is over the size limit (checked within the last day)")
+            :QStringLiteral("Hydra source refused access (HTTP %1) (checked within the last day)").arg(stored.status);
+        if(fromNote)*fromNote=true;
+        return false;
+    }
+    HydraFailure local;
+    const bool ok=browseSource(source,out,error,&local);
+    if(failure)*failure=local;
+    if(health)health->record(source.url,ok?HydraFailure{}:local,nowSeconds);
+    return ok;
+}
 bool HydraLibrary::resolveGameChoices(const GameResult& sourceGame, GameResult* resolved, QString* error) const {
     if(error)error->clear();
     if(resolved)*resolved=GameResult{};
@@ -733,5 +758,136 @@ bool HydraLibrary::popularGame(const PopularTitle& title,GameResult* out,QString
     }
     if(out)*out=std::move(result);
     return true;
+}
+
+// ---- SourceHealth ---------------------------------------------------------------------------------
+namespace {
+QString kindToText(HydraFailureKind kind) {
+    switch(kind) {
+    case HydraFailureKind::None: return QStringLiteral("ok");
+    case HydraFailureKind::Refused: return QStringLiteral("refused");
+    case HydraFailureKind::RateLimited: return QStringLiteral("rate");
+    case HydraFailureKind::TooLarge: return QStringLiteral("large");
+    case HydraFailureKind::Timeout: return QStringLiteral("timeout");
+    case HydraFailureKind::Server: return QStringLiteral("server");
+    case HydraFailureKind::Other: return QStringLiteral("other");
+    }
+    return QStringLiteral("other");
+}
+HydraFailureKind kindFromText(const QString& text) {
+    static const HydraFailureKind all[]={HydraFailureKind::None,HydraFailureKind::Refused,HydraFailureKind::RateLimited,
+        HydraFailureKind::TooLarge,HydraFailureKind::Timeout,HydraFailureKind::Server,HydraFailureKind::Other};
+    for(const auto kind:all)if(kindToText(kind)==text)return kind;
+    return HydraFailureKind::Other;
+}
+QString sha1Hex(const QString& text) {
+    return QString::fromLatin1(QCryptographicHash::hash(text.toUtf8(),QCryptographicHash::Sha1).toHex());
+}
+}
+
+SourceHealth::SourceHealth(const QString& path):path_(path) {}
+QString SourceHealth::defaultPath() {
+    const QString dir=QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    return dir.isEmpty()?QString{}:QDir(dir).filePath(QStringLiteral("source_health.json"));
+}
+QString SourceHealth::feedKey(const QUrl& feed) { return sha1Hex(feed.adjusted(QUrl::RemoveFragment).toString()); }
+QString SourceHealth::hostKey(const QUrl& feed) { return sha1Hex(feed.host().toLower()); }
+
+bool SourceHealth::load() {
+    feeds_.clear(); hosts_.clear();
+    if(path_.isEmpty())return false;
+    QFile file(path_);
+    if(!file.open(QIODevice::ReadOnly) || file.size()>4*1024*1024)return false;
+    const QJsonDocument document=QJsonDocument::fromJson(file.readAll());
+    if(!document.isObject())return false;   // a damaged note is simply forgotten
+    const QJsonObject root=document.object();
+    const QJsonObject feeds=root.value(QStringLiteral("feeds")).toObject();
+    for(auto it=feeds.begin();it!=feeds.end();++it) {
+        const QJsonObject value=it.value().toObject();
+        Feed feed; feed.kind=kindFromText(value.value(QStringLiteral("o")).toString());
+        feed.status=value.value(QStringLiteral("s")).toInt();
+        feed.at=qint64(value.value(QStringLiteral("t")).toDouble());
+        feed.host=value.value(QStringLiteral("h")).toString();
+        if(feed.at>0)feeds_.insert(it.key(),feed);
+    }
+    const QJsonObject hosts=root.value(QStringLiteral("hosts")).toObject();
+    for(auto it=hosts.begin();it!=hosts.end();++it) {
+        const QJsonObject value=it.value().toObject();
+        Host host; host.refused=qMax(0,value.value(QStringLiteral("refused")).toInt());
+        host.refusedAt=qint64(value.value(QStringLiteral("t")).toDouble());
+        host.okAt=qint64(value.value(QStringLiteral("ok")).toDouble());
+        hosts_.insert(it.key(),host);
+    }
+    return true;
+}
+
+bool SourceHealth::save() const {
+    if(path_.isEmpty())return false;
+    QJsonObject feeds;
+    for(auto it=feeds_.begin();it!=feeds_.end();++it) {
+        feeds.insert(it.key(),QJsonObject{{QStringLiteral("o"),kindToText(it->kind)},{QStringLiteral("s"),it->status},
+            {QStringLiteral("t"),double(it->at)},{QStringLiteral("h"),it->host}});
+    }
+    QJsonObject hosts;
+    for(auto it=hosts_.begin();it!=hosts_.end();++it) {
+        hosts.insert(it.key(),QJsonObject{{QStringLiteral("refused"),it->refused},{QStringLiteral("t"),double(it->refusedAt)},
+            {QStringLiteral("ok"),double(it->okAt)}});
+    }
+    const QJsonObject root{{QStringLiteral("version"),1},{QStringLiteral("feeds"),feeds},{QStringLiteral("hosts"),hosts}};
+    QDir().mkpath(QFileInfo(path_).absolutePath());
+    QSaveFile file(path_);
+    if(!file.open(QIODevice::WriteOnly))return false;
+    file.write(QJsonDocument(root).toJson(QJsonDocument::Compact));
+    return file.commit();
+}
+
+void SourceHealth::record(const QUrl& feedUrl,const HydraFailure& outcome,qint64 nowSeconds) {
+    // Only a refusal moves the per-host refusal count, and a feed that opens again takes its refusal back.
+    const QString key=feedKey(feedUrl),host=hostKey(feedUrl);
+    Host& aggregate=hosts_[host];
+    const auto previous=feeds_.constFind(key);
+    const bool wasRefused=previous!=feeds_.constEnd() && previous->kind==HydraFailureKind::Refused;
+    const bool isRefused=outcome.kind==HydraFailureKind::Refused;
+    if(isRefused && !wasRefused)++aggregate.refused;
+    else if(!isRefused && wasRefused && aggregate.refused>0)--aggregate.refused;
+    if(isRefused)aggregate.refusedAt=nowSeconds;
+    if(outcome.kind==HydraFailureKind::None)aggregate.okAt=nowSeconds;
+    Feed entry; entry.kind=outcome.kind; entry.status=outcome.status; entry.at=nowSeconds; entry.host=host;
+    feeds_.insert(key,entry);
+}
+
+SourceHealth::Standing SourceHealth::standing(const QUrl& feedUrl,qint64 nowSeconds) const {
+    const auto it=feeds_.constFind(feedKey(feedUrl));
+    if(it!=feeds_.constEnd()) {
+        switch(it->kind) {
+        case HydraFailureKind::None: return Standing::Working;
+        case HydraFailureKind::Refused: return Standing::Blocked;
+        case HydraFailureKind::TooLarge: return Standing::TooLarge;
+        default: return Standing::Failing;
+        }
+    }
+    // Never opened here: a host that recently refused other feeds, with nothing opening since, probably
+    // refuses this one too. It is a hint only; opening the feed still asks.
+    const auto host=hosts_.constFind(hostKey(feedUrl));
+    if(host!=hosts_.constEnd() && host->refused>=kLikelyBlockedFeeds && nowSeconds-host->refusedAt<kReprobeSeconds && host->okAt<host->refusedAt)
+        return Standing::LikelyBlocked;
+    return Standing::Unknown;
+}
+
+bool SourceHealth::skipProbe(const QUrl& feedUrl,qint64 nowSeconds,HydraFailure* stored) const {
+    const auto it=feeds_.constFind(feedKey(feedUrl));
+    if(it==feeds_.constEnd())return false;
+    if(it->kind!=HydraFailureKind::Refused && it->kind!=HydraFailureKind::TooLarge)return false;
+    if(nowSeconds-it->at>=kReprobeSeconds || nowSeconds<it->at)return false;   // due again (or the clock moved)
+    if(stored){stored->kind=it->kind;stored->status=it->status;}
+    return true;
+}
+
+QVector<HydraSource> SourceHealth::ordered(const QVector<HydraSource>& sources,qint64 nowSeconds) const {
+    QVector<HydraSource> result=sources;
+    std::stable_sort(result.begin(),result.end(),[this,nowSeconds](const HydraSource& left,const HydraSource& right){
+        return int(standing(left.url,nowSeconds))<int(standing(right.url,nowSeconds));
+    });
+    return result;
 }
 } // namespace xmb
