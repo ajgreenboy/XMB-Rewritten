@@ -615,6 +615,12 @@ QStringList steamStopArguments(const QString& appId) {
     return {QStringLiteral("+app_stop"), id};
 }
 
+QString steamLaunchUri(const QString& appId) {
+    const QString id = appId.trimmed();
+    if (!validSteamAppId(id)) return {};
+    return QStringLiteral("steam://rungameid/") + id;
+}
+
 SteamConsoleLogSlice steamConsoleLogTail(const QString& steamRoot, qint64 offset,
                                          qsizetype maximumBytes) {
     SteamConsoleLogSlice slice;

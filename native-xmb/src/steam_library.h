@@ -42,6 +42,12 @@ struct SteamAppState {
 };
 SteamAppState steamAppState(const QString& appId);
 
+// The Steam URI hand-off that asks the running client to launch a title (steam://rungameid/<id>).
+// This is the only launch channel where the client's own state is not observable (Linux: no registry),
+// so the caller hands the URI to the OS and makes no claim about whether the title started or exited.
+// Empty for a non-numeric id.
+QString steamLaunchUri(const QString& appId);
+
 // How long a launch handoff keeps watching before it gives up without a confirmed run. The shell
 // and the tracking tests share this literal so the reducer's timeout behavior is exercised at the
 // exact production value.

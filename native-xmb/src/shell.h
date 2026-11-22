@@ -1285,6 +1285,7 @@ private:
     void clearInGame();
     bool startSteamTracked(const QString& appId,const QString& title);
     bool startSteamNow(const QString& appId,const QString& title);
+    bool startSteamUriHandoff(const QString& appId,const QString& title);
     // ---- Steam background mode (steam_hidden.h, audit/STEAM-HIDDEN.md) ----
     bool steamHideActive(QString* why=nullptr) const;
     void ensureSteamClient(const QString& title,std::function<void()> then);
