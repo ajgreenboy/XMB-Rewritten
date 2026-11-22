@@ -93,7 +93,7 @@ bool Preferences::splitKey(const QString& key,QString& profile,QString& base) {
     return validProfileId(profile);
 }
 QVariant Preferences::defaultValue(const QString& key) {
-    if(key=="appearance/colour" || key=="appearance/background" || key=="appearance/font" || key=="photo/fit")return 0;
+    if(key=="appearance/colour" || key=="appearance/background" || key=="appearance/font" || key=="photo/fit" || key=="photo/floorBrightness")return 0;
     // A fresh data directory is a US console: MM/DD/YYYY (the console's own middle option) and the
     // 12-hour clock. Both are stored preferences, so Settings > Date and Time can still change them.
     if(key=="clock/dateFormat" || key=="clock/hourFormat")return 1;
@@ -130,6 +130,7 @@ bool Preferences::validBare(const QString& key,const QVariant& value) {
     if(key=="audio/volume")return integer(0,100);
     if(key=="jellyfin/maxBitrateKbps")return integer(500,200000);
     if(key=="photo/interval")return integer(1000,60000);
+    if(key=="photo/floorBrightness")return integer(0,5);
     if(key=="media/repeatMode")return integer(0,2);
     if(key=="power/idleMinutes")return integer(0,120);
     if(key=="desktop/pointerSpeed")return integer(1,5);

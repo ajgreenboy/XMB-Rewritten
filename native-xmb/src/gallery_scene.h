@@ -37,6 +37,8 @@ public:
     void reset(QOpenGLFunctions_3_3_Core& gl);
     void render(QOpenGLFunctions_3_3_Core& gl, int pixelWidth, int pixelHeight, GLuint targetFbo, const GalleryController& controller,
                 double seconds);
+    // The Floor Brightness level (0 = Normal .. 5 = -5, gallery_floor.h) the floor is drawn with; the caller sets it from the preference.
+    void setFloorBrightnessLevel(int level);
     const Stats& stats() const { return stats_; }
     // Photos whose thumbnail is waiting on the GL side or in flight (the "loading" indicator and the shot flag's settle test).
     int pendingThumbnails() const { return pending_; }
@@ -75,6 +77,7 @@ private:
     QMatrix4x4 viewProj_;
     quint64 tick_ = 0;
     int pending_ = 0, frame_ = 0;
+    int floorLevel_ = 0;
     Stats stats_;
     bool errorReported_ = false;
 };

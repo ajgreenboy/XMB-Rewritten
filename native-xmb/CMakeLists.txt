@@ -50,7 +50,7 @@ qt_add_executable(re-ps3-native
     src/wol_client.cpp src/wol_client.h src/homeassistant_client.cpp src/homeassistant_client.h src/home_shell.cpp
     src/photo_viewport.cpp src/photo_viewport.h
     src/gallery_params.cpp src/gallery_params.h src/gallery_model.cpp src/gallery_model.h src/gallery_thumbs.cpp src/gallery_thumbs.h
-    src/gallery_controller.cpp src/gallery_controller.h src/gallery_scene.cpp src/gallery_scene.h src/gallery_chrome.cpp src/gallery_view.h src/gallery_replay.cpp
+    src/gallery_controller.cpp src/gallery_controller.h src/gallery_floor.h src/gallery_scene.cpp src/gallery_scene.h src/gallery_chrome.cpp src/gallery_view.h src/gallery_replay.cpp
     src/interaction_audio.cpp src/interaction_audio.h
     src/notify_overlay.cpp src/notify_overlay.h
     src/launch_cover.cpp src/launch_cover.h src/launch_fade.h
@@ -137,6 +137,11 @@ option(XMB_GAMEBOOT_BACKGROUND_BUILD_TESTS "Build the game-boot background prese
 if(XMB_GAMEBOOT_BACKGROUND_BUILD_TESTS)
     add_executable(xmb-gameboot-background-tests tests/gameboot_background_tests.cpp src/gameboot_background.h)
     target_include_directories(xmb-gameboot-background-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+endif()
+option(XMB_GALLERY_FLOOR_BUILD_TESTS "Build the Photo Gallery floor brightness level tests" OFF)
+if(XMB_GALLERY_FLOOR_BUILD_TESTS)
+    add_executable(xmb-gallery-floor-tests tests/gallery_floor_tests.cpp src/gallery_floor.h)
+    target_include_directories(xmb-gallery-floor-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 endif()
 option(XMB_LAUNCH_FADE_BUILD_TESTS "Build the launch cover state-machine tests and the stand-in game the end-to-end run launches (work/launch-fade-e2e.ts)" OFF)
 if(XMB_LAUNCH_FADE_BUILD_TESTS)

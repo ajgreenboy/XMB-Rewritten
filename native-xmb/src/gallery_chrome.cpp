@@ -169,6 +169,7 @@ void View::paintGallery(double dt, double seconds) {
             g.scene.attach(g.thumbs.get(), assets_.fontFamily());
             g.sceneOk = g.scene.init(*this, assets_);
         }
+        if (g.sceneOk) g.scene.setFloorBrightnessLevel(shell_.galleryFloorBrightness());
         if (g.sceneOk) g.scene.render(*this, device.width(), device.height(), defaultFramebufferObject(), *g.controller, seconds);
         else { glClearColor(.55f, .55f, .57f, 1.f); glClear(GL_COLOR_BUFFER_BIT); }
     } else {

@@ -8,6 +8,7 @@
 #include "p3t.h"
 #include "xmbml_view.h"
 #include "rco_objects.h"
+#include "gallery_floor.h"
 #include <cmath>
 #include <memory>
 #include <iterator>
@@ -187,6 +188,11 @@ QVector<Choice> choices(const QString& key,Assets& assets) {
     }
     if(key=="photo/interval")return {{"5 seconds",5000},{"10 seconds",10000},{"15 seconds",15000},{"30 seconds",30000}};
     if(key=="photo/fit")return {{"Fit",0},{"Fill",1}};
+    if(key=="photo/floorBrightness") {
+        QVector<Choice> levels;
+        for(int level=0;level<galleryfloor::levelCount;++level)levels.push_back({QString::fromLatin1(galleryfloor::levelLabel(level)),level});
+        return levels;
+    }
     if(key=="media/repeatMode")return {{"Off",0},{"Repeat One",1},{"Repeat All",2}};
     if(key=="display/screensaverMinutes")return {{"After 5 Minutes",5},{"After 10 Minutes",10},{"After 20 Minutes",20},{"After 30 Minutes",30},{"Do Not Use",0}};
     if(key=="desktop/hotkey")return {{"Ctrl+Alt+Home",QString("Ctrl+Alt+Home")},{"Ctrl+Alt+End",QString("Ctrl+Alt+End")},{"Ctrl+Alt+X",QString("Ctrl+Alt+X")},
@@ -1374,12 +1380,16 @@ QVector<ChoiceList> choiceListsForRows(const QString& pageId,const QVector<Entry
     }
     return lists;
 }
+// The Photo Gallery floor-brightness row: the console's own label is hknw_plugin msg_floor_brightness (read when the page is
+// built); this literal is the fallback and the catalogue's name, a design choice where the RCO text is absent.
+constexpr const char* kFloorBrightnessTitle="Floor Brightness";
 // Photo Settings is this build's own page (the sysconf inventory has no photo page): its three choice
 // rows are listed by the catalogue so "no firmware page" is on the record rather than an omission.
 QVector<Entry> photoChoiceRows() {
     QVector<Entry> rows;
     rows.push_back(option("interval","Slideshow Interval","","photo/interval"));
     rows.push_back(option("fit","Display Mode","","photo/fit"));
+    rows.push_back(option("floor",kFloorBrightnessTitle,"","photo/floorBrightness"));
     rows.push_back(option("repeat","Repeat","","media/repeat"));
     return rows;
 }
@@ -2092,7 +2102,7 @@ QJsonObject settingsReport(Assets& assets,Preferences& preferences,const QString
     static const QStringList appKeys{"appearance/theme","appearance/colour","appearance/background","appearance/font",
         "appearance/wallpaper","clock/dateFormat","clock/hourFormat","clock/timeZone","audio/volume","audio/keyTone",
         "audio/muted","media/repeatMode","media/repeat","media/shuffle","power/idleMinutes",
-        "display/screensaverMinutes","display/fullscreen","system/name","photo/interval","photo/fit"};
+        "display/screensaverMinutes","display/fullscreen","system/name","photo/interval","photo/fit","photo/floorBrightness"};
     QJsonObject app;
     for(const auto& key:appKeys) {
         const auto value=preferences.value(key);
@@ -2397,6 +2407,7 @@ void Shell::openSettings(const QString& id) {
         page.title="Photo Settings";
         page.entries={option("interval","Slideshow Interval","Sets how long each photo remains on screen.","photo/interval"),
             option("fit","Display Mode","Fits the whole photo or fills the display area.","photo/fit"),
+            option("floor",assets_.text("hknw_plugin","msg_floor_brightness",kFloorBrightnessTitle),"Sets how bright the Photo Gallery floor is.","photo/floorBrightness"),
             option("repeat","Repeat","Restarts a slideshow after the final photo.","media/repeat")};
         for(auto& entry:page.entries)entry.settingsPage=QStringLiteral("photo");
     } else if(id=="messages") { // Friends > Message Box (category_friend.xml)
@@ -2638,7 +2649,7 @@ void Shell::restoreDefaultSettings() {
         {"system/notificationMessages",true},{"system/notificationTrophy",true},
         {"media/repeatMode",0},{"media/repeat",false},{"media/shuffle",false},
         {"power/idleMinutes",0},{"display/screensaverMinutes",0},{"display/fullscreen",false},
-        {"photo/interval",5000},{"photo/fit",0}};
+        {"photo/interval",5000},{"photo/fit",0},{"photo/floorBrightness",0}};
     QVariantMap values;
     for(const auto& entry:defaults)values.insert(entry.first,entry.second);
     if(!preferences_.setValues(values)) {

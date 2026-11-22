@@ -42,6 +42,29 @@ Scope (b) drew a line; these are absent by design and are named in the UI honest
 - **Menu strip**: only the `tex_menuItems` entries that map to a working feature are enabled; the rest are drawn
   disabled or omitted.
 
+## 2b. Floor Brightness setting (2026-11-21)
+
+The console's Photo Gallery has a Floor Brightness option (`msg_floor_brightness` in `hknw_plugin.prx`, next to
+`msg_floor_type`), and `hknw_plugin/parameters.txt` defines its six factors: `FLOOR_BRIGHTNESS_TYPE0..5` = 1.0, 0.83, 0.66,
+0.5, 0.3, 0.1 (TRACED, read from the file; the file labels TYPE0 as the standard level and TYPE1 as "-1").
+
+- Preference `photo/floorBrightness`, integer 0..5, default 0 (TYPE0, the factor the scene always used, so the
+  `photo-gallery-piles` and `photo-gallery-grid` gate states are unchanged). Stored in the shell preferences next to
+  `photo/fit` and `photo/interval`, validated 0..5, reset with the other photo defaults.
+- Shown in Settings > Photo Settings as "Floor Brightness" with the options Normal, -1 .. -5. The row label asks
+  `hknw_plugin` for `msg_floor_brightness` and falls back to "Floor Brightness"; whether the RCO carries that text was not
+  checked, so the label is a design choice until it is. The option names -3 .. -5 are INFERRED (continuing the file's -1 / -2
+  comments). The gallery's own triangle menu has no settings entry in this build, so the setting is reached from Settings.
+- `src/gallery_floor.h` (pure, `tests/gallery_floor_tests.cpp`, target `xmb-gallery-floor-tests`) holds the level count,
+  clamping, the parameters.txt name per level and the fallback factor table. `GalleryScene::setFloorBrightnessLevel` is set
+  from the preference every frame and the scene reads `FLOOR_BRIGHTNESS_TYPE<level>` from `parameters.txt` for the floor.
+- Evidence: `photo-gallery-piles` captured with the level seeded to 0, 3 and 5 (the gate's recipe with a data seed of
+  its own). Level 0 is pixel-identical to the saved reference (PSNR inf, SSIM 1.0). Mean floor luma over a floor-only patch
+  (x 100..700, y 200..400): 254.98 at level 0, 131.71 at level 3 (ratio 0.517, factor 0.5), 26.08 at level 5 (ratio 0.102,
+  factor 0.1). Level 0 sits at the 8-bit ceiling, so the ratios are against a clamped reference. The frames are local
+  captures (out/gallery-floor-captures), not in the repo.
+- Not done: the floor type setting (`msg_floor_type`, 15 package floors) and a gallery-menu entry.
+
 ## 3. Constant sources (the honest line)
 
 Every numeric constant the controller and scene use is read from `parameters.txt` at run time; the mapping of each

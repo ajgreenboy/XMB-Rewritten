@@ -420,6 +420,8 @@ public:
     int themeColorMonth() const { return theme_.color>=1 && theme_.color<=12?theme_.color:0; }
     bool fullscreen() const { return preferences_.value("display/fullscreen").toBool(); }
     bool photoFill() const { return preferences_.value("photo/fit").toInt()==1; }
+    // Photo Gallery floor brightness level 0..5 (gallery_floor.h; 0 = Normal, the firmware's FLOOR_BRIGHTNESS_TYPE0).
+    int galleryFloorBrightness() const { return preferences_.value("photo/floorBrightness").toInt(); }
     bool photoOpen() const;
     // Photo Gallery hand-off: the Photo library folder preference as the gallery's root (empty when none is set), and the
     // viewer over one pile's files. galleryIndex() is the file the viewer is on (kept after it closes).

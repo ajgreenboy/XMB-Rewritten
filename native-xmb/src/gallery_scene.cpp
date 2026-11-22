@@ -1,5 +1,6 @@
 #include "gallery_scene.h"
 #include "design_space.h"
+#include "gallery_floor.h"
 #include <QDir>
 #include <QFile>
 #include <QFont>
@@ -115,9 +116,11 @@ std::unique_ptr<QOpenGLTexture> GalleryScene::upload(const QImage& image, bool m
     return texture;
 }
 
+void GalleryScene::setFloorBrightnessLevel(int level) { floorLevel_ = galleryfloor::clampLevel(level); }
+
 QStringList GalleryScene::paramNames() {
     QStringList names{"FLOOR_COLOR_R", "FLOOR_COLOR_G", "FLOOR_COLOR_B", "FLOOR_LIGHT_OUT_COLOR_R", "FLOOR_LIGHT_OUT_COLOR_G",
-        "FLOOR_LIGHT_OUT_COLOR_B", "FLOOR_BRIGHTNESS_TYPE0", "FLOOR_WRAP_COUNT_LIBRARY", "LIGHT_PHOTO_POS_X", "LIGHT_PHOTO_POS_Y",
+        "FLOOR_LIGHT_OUT_COLOR_B", "FLOOR_WRAP_COUNT_LIBRARY", "LIGHT_PHOTO_POS_X", "LIGHT_PHOTO_POS_Y",
         "LIGHT_PHOTO_POS_Z", "LIGHT_PHOTO_DIFFUSE", "LIGHT_PHOTO_AMBIENT", "LIGHT_PHOTO_SPECULAR", "PHOTO_FRAME_COLOR_R",
         "PHOTO_FRAME_COLOR_G", "PHOTO_FRAME_COLOR_B", "PHOTO_FRAME_COLOR_A", "DEFAULT_PHOTO_COLOR_BASE_R", "DEFAULT_PHOTO_COLOR_BASE_G",
         "DEFAULT_PHOTO_COLOR_BASE_B", "DEFAULT_PHOTO_COLOR_ALPHA", "SHADOW_PHOTO_DIST_1", "SHADOW_PHOTO_DIST_2", "SHADOW_PHOTO_DENSITY",
@@ -128,6 +131,7 @@ QStringList GalleryScene::paramNames() {
         // Playlist area (audit/PHOTO-GALLERY-PLAYLIST.md)
         "FLOOR_PLAYLIST_COLOR_R", "FLOOR_PLAYLIST_COLOR_G", "FLOOR_PLAYLIST_COLOR_B", "FLOOR_WRAP_COUNT_PLAYLIST", "PLAYLIST_TEXT_SIZE",
         "PLAYLIST_TEXT_POS_Z", "SHADOW_JACKET_DENSITY"};
+    for (int level = 0; level < galleryfloor::levelCount; ++level) names << QLatin1String(galleryfloor::parameterName(level));
     for (int i = 0; i < 6; ++i)
         for (const char* channel : {"R", "G", "B", "A"}) names << QStringLiteral("GROUP_TEXT_COLOR_%1_%2").arg(i).arg(QLatin1String(channel));
     return names;
@@ -392,7 +396,7 @@ void GalleryScene::render(QOpenGLFunctions_3_3_Core& gl, int pixelWidth, int pix
     program_.setUniformValue(u_.floorOut, QVector3D(float(n("FLOOR_LIGHT_OUT_COLOR_R")), float(n("FLOOR_LIGHT_OUT_COLOR_G")), float(n("FLOOR_LIGHT_OUT_COLOR_B"))));
     // The grain tile repeats FLOOR_WRAP_COUNT_LIBRARY times across a 2000-unit floor (INFERRED reading of the name).
     const double floorSize = 2000.0;
-    program_.setUniformValue(u_.floorParams, QVector4D(float(n("FLOOR_BRIGHTNESS_TYPE0")), float(camera.distance * 3.0),
+    program_.setUniformValue(u_.floorParams, QVector4D(float(n(galleryfloor::parameterName(floorLevel_))), float(camera.distance * 3.0),
         float(n(playlistArea ? "FLOOR_WRAP_COUNT_PLAYLIST" : "FLOOR_WRAP_COUNT_LIBRARY") / floorSize), 0.10f));
     program_.setUniformValue(u_.lightCentre, QVector3D(float(camera.targetX), 0.f, float(camera.targetZ)));
     drawQuad(placeMatrix(camera.targetX, 0, camera.targetZ, 0, floorSize, floorSize), Floor, QVector4D(1, 1, 1, 1), grain_->textureId());
