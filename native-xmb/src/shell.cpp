@@ -6075,11 +6075,20 @@ int Shell::mediaTrackCount() const { return int(mediaQueue_.items().size()); }
 bool Shell::mediaShuffle() const { return preferences_.value("media/shuffle").toBool(); }
 QString Shell::mediaQueueSummary() const {
     if(!mediaOpen_ || photoOpen() || mediaQueue_.empty())return {};
-    QString result=QString("Track %1 of %2").arg(mediaQueue_.currentIndex()+1).arg(mediaQueue_.items().size());
-    if(preferences_.value("media/shuffle").toBool())result+=QStringLiteral("  ")+QChar(0x00B7)+QStringLiteral("  Shuffle");
-    if(mediaRepeatMode()==1)result+=QStringLiteral("  ")+QChar(0x00B7)+QStringLiteral("  Repeat One");else if(mediaRepeatMode()==2)result+=QStringLiteral("  ")+QChar(0x00B7)+QStringLiteral("  Repeat All");
-    if(player_->playbackState()==QMediaPlayer::PausedState)result+=QStringLiteral("  ")+QChar(0x00B7)+QStringLiteral("  Paused");
-    if(!status_.isEmpty())result+=QStringLiteral("  ")+QChar(0x00B7)+QStringLiteral("  ")+status_;
+    // A music queue counts tracks; a video queue is a list of titles, so it shows only its numeric position (and
+    // nothing for a single title), without the music word "Track".
+    const bool videoQueue=videoOpen() || videoPending();
+    QString result=videoQueue
+        ?QString::fromStdString(playerchrome::videoQueuePosition(mediaQueue_.currentIndex(),int(mediaQueue_.items().size())))
+        :QString("Track %1 of %2").arg(mediaQueue_.currentIndex()+1).arg(mediaQueue_.items().size());
+    const auto dotted=[&](const QString& part) {
+        if(!result.isEmpty())result+=QStringLiteral("  ")+QChar(0x00B7)+QStringLiteral("  ");
+        result+=part;
+    };
+    if(preferences_.value("media/shuffle").toBool())dotted(QStringLiteral("Shuffle"));
+    if(mediaRepeatMode()==1)dotted(QStringLiteral("Repeat One"));else if(mediaRepeatMode()==2)dotted(QStringLiteral("Repeat All"));
+    if(player_->playbackState()==QMediaPlayer::PausedState)dotted(QStringLiteral("Paused"));
+    if(!status_.isEmpty())dotted(status_);
     return result;
 }
 bool Shell::chapterSelectorVisible() const {

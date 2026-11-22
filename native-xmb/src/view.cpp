@@ -2691,9 +2691,21 @@ void View::drawScene(QPainter& p) {
         // console's control panel dims the picture behind it for the same reason). The firmware band is
         // never over video and the frame shows no plate, so the plate stays with the in-player panel.
         if(rows && !firmwareBand) {
-            QLinearGradient shade(x0,0,1920,0);
-            shade.setColorAt(0,QColor(0,0,0,158));shade.setColorAt(1,QColor(0,0,0,120));
-            p.fillRect(QRectF(x0,0,1920-x0,1080),shade);
+            // The plate ramps in from the left instead of a hard edge and ends above the time bar and the key
+            // hints (playerchrome::panelPlateAlpha), so neither is cut or dimmed by it. Design choice.
+            const double plateLeft=x0-playerchrome::kPanelPlateRamp;
+            const double span=1920.-plateLeft;
+            QLinearGradient shade(plateLeft,0,1920,0);
+            shade.setColorAt(0,QColor(0,0,0,0));
+            shade.setColorAt(playerchrome::kPanelPlateRamp/span,QColor(0,0,0,158));
+            shade.setColorAt(1,QColor(0,0,0,120));
+            const double solidBottom=playerchrome::kPanelPlateSolidY;
+            p.fillRect(QRectF(plateLeft,0,span,solidBottom),shade);
+            const double step=6.;
+            for(double y=solidBottom;y<playerchrome::kPanelPlateEndY;y+=step) {
+                p.save();p.setOpacity(p.opacity()*playerchrome::panelPlateAlpha(y+step/2.));
+                p.fillRect(QRectF(plateLeft,y,span,step+.5),shade);p.restore();
+            }
         }
         if(firmwareBand) {
             if(band->plateName && band->plateW>0. && band->plateH>0.) {
@@ -2726,7 +2738,7 @@ void View::drawScene(QPainter& p) {
                     p.fillRect(QRectF(x0+1,0,2,1080),edge);
                 }
             }
-        } else {
+        } else if(!rows) {
             QLinearGradient fill(x0,0,1920,0);fill.setColorAt(0,QColor(255,255,255,46));fill.setColorAt(.08,QColor(255,255,255,30));fill.setColorAt(1,QColor(255,255,255,22));
             p.fillRect(QRectF(x0,0,1920-x0,1080),fill);
             QLinearGradient edge(x0-10,0,x0+4,0);edge.setColorAt(0,QColor(255,255,255,0));edge.setColorAt(.75,QColor(255,255,255,70));edge.setColorAt(1,QColor(255,255,255,0));
@@ -2737,8 +2749,13 @@ void View::drawScene(QPainter& p) {
         // item menu's band does not move at all (no scroll object in the firmware), so its row 0 is fixed.
         const double focusRow=firmwareBand?band->rowCentre:505.;
         const double rowZero=firmwareBand&&band->fixedRows?band->rowCentre:focusRow-position*pitch;
+        bool noteUp=false;   // the focused row's note moves under the heading when its usual spot is inside the matrix plate
+        if(rows && !firmwareBand && !rows->isEmpty()) {
+            const int focused=std::clamp(int(std::floor(position+.5)),0,int(rows->size())-1);
+            noteUp=!(*rows)[focused].note.isEmpty() && playerchrome::panelNoteUnderHeading(std::min(1010.,rowZero+rowCount*pitch+8),22.);
+        }
         if(!heading.isEmpty()) { // a submenu (Sort By) or the player panel names itself above its list
-            const double headingY=rows?std::max(56.,rowZero-68.):(firmwareBand?rowZero-48.:first-64);
+            const double headingY=rows?std::max(56.,rowZero-68.)-(noteUp?18.:0.):(firmwareBand?rowZero-48.:first-64);
             text({firmwareBand?x0+band->labelInset:x0+(rows?34:16),headingY,
                   firmwareBand?fadeEnd-x0-band->labelInset-24:1920-x0-40,40},heading,19,QColor(255,255,255,190));
         }
@@ -2831,8 +2848,16 @@ void View::drawScene(QPainter& p) {
                 // One line under the list while a row has focus: the file behind a subtitle row, or the
                 // reason a row cannot be chosen. Never a claim the shell has not measured.
                 const QString note=(*rows)[i].note;
-                if(!note.isEmpty())
-                    text({labelX,std::min(1010.,rowZero+rowCount*pitch+8),labelWidth,90},note,16,QColor(225,225,225,235),
+                const double belowTop=std::min(1010.,rowZero+rowCount*pitch+8);
+                if(!note.isEmpty() && noteUp) {
+                    // Below the list is inside the control matrix's plate, where a one-line footer reads as a
+                    // matrix caption: the note goes on the line under the panel heading, on one line.
+                    const double headingTop=std::max(56.,rowZero-68.);
+                    QFont noteFont(shell_.fontFamily());noteFont.setPixelSize(16);
+                    const QString oneLine=QFontMetrics(noteFont).elidedText(note,Qt::ElideRight,int(labelWidth));
+                    text({labelX,headingTop+26.,labelWidth,22},oneLine,16,QColor(225,225,225,235),Qt::AlignLeft|Qt::AlignVCenter);
+                } else if(!note.isEmpty())
+                    text({labelX,belowTop,labelWidth,90},note,16,QColor(225,225,225,235),
                         Qt::AlignLeft|Qt::AlignTop|Qt::TextWordWrap);
             }
         }
@@ -4445,7 +4470,20 @@ void View::drawVideoBuffering(QPainter& p,bool card) {
     if(card) {
         const QRectF iconRect(960.-45.,500.,90.,90.);
         if(!loading.isNull())p.drawImage(iconRect,loading);
-        if(!wait.isNull())p.drawImage(QRectF(960.-45.,iconRect.bottom()+4.,90.,38.),wait);
+        if(!wait.isNull()) {
+            // The wait bar's art sits right of centre in its frame, so the frame is placed to put the visible
+            // pixels on the spinner's axis (x 960) rather than the frame itself.
+            const QImage alphaMap=wait.convertToFormat(QImage::Format_ARGB32);
+            std::vector<unsigned char> columns(std::size_t(alphaMap.width()),0);
+            for(int y=0;y<alphaMap.height();++y){
+                const QRgb* row=reinterpret_cast<const QRgb*>(alphaMap.constScanLine(y));
+                for(int x=0;x<alphaMap.width();++x)columns[std::size_t(x)]=std::max(columns[std::size_t(x)],static_cast<unsigned char>(qAlpha(row[x])));
+            }
+            const auto span=playerchrome::visibleSpan(columns);
+            const double scale=90./double(std::max(1,alphaMap.width()));
+            const double centre=span.first>=0?(double(span.first)+double(span.last)+1.)/2.*scale:45.;
+            p.drawImage(QRectF(960.-centre,iconRect.bottom()+4.,90.,38.),wait);
+        }
         mediaPanelText(p,QRectF(460,iconRect.bottom()+50.,1000,40),label,26,Qt::white,Qt::AlignHCenter|Qt::AlignVCenter);
         return;
     }
@@ -4758,14 +4796,20 @@ void View::drawVideoPanel(QPainter& p) {
     for(int i=1;i<int(videopanel::kButtonCount);++i) {
         if(i==videopanel::kChapters && !chapterSlot)continue;   // only for a title with server chapter marks
         const auto& button=videoButton(i);
-        const QRectF box(960.+button.x*100.-(i==videopanel::kRepeat?49.:35.),650.+(1-button.y)*70.,i==videopanel::kRepeat?98.:70.,70.);
+        // The Chapters label is longer than the Native one, so its plate is wider (design choice) and both labels
+        // are fitted with the same clear padding; sizes are scene px and scale with the window like all text.
+        const double boxWidth=i==videopanel::kRepeat?98.:i==videopanel::kChapters?92.:70.;
+        const QRectF box(960.+button.x*100.-boxWidth/2.,650.+(1-button.y)*70.,boxWidth,70.);
         if(button.native) {
             // The one slot the console does not have: a plain labelled plate, no firmware art borrowed for it.
             p.save();p.setOpacity(inherited*.85);
             p.setPen(QPen(QColor(255,255,255,150),1.5));p.setBrush(QColor(255,255,255,30));
             p.drawRoundedRect(box.adjusted(2,2,-2,-2),10,10);
             p.restore();
-            mediaPanelText(p,box,button.command==Command::Chapters?QObject::tr("Chapters"):QStringLiteral("Native"),button.command==Command::Chapters?14:17,QColor(235,235,235),Qt::AlignCenter);
+            const QString slotLabel=button.command==Command::Chapters?QObject::tr("Chapters"):QStringLiteral("Native");
+            QFont probe(shell_.fontFamily());probe.setPixelSize(17);
+            const int labelPx=playerchrome::fitLabelPx(QFontMetricsF(probe).horizontalAdvance(slotLabel),17,boxWidth,9.,17,11);
+            mediaPanelText(p,box,slotLabel,labelPx,QColor(235,235,235),Qt::AlignCenter);
             if(i==videoPanelFocus_) {
                 p.save();p.setPen(QPen(Qt::white,3.));p.setBrush(Qt::NoBrush);p.drawRoundedRect(box,10,10);p.restore();
             }
@@ -4786,7 +4830,12 @@ void View::drawVideoPanel(QPainter& p) {
     }
     videoPanelFocus_=videopanel::focusWithout(videoPanelFocus_,chapterSlot);
     const auto& button=videoButton(videoPanelFocus_);
-    mediaPanelText(p,QRectF(560,864,800,28),videoButtonLabel(assets_,button),19,Qt::white,Qt::AlignCenter);
+    // The caption names the focused slot, so it sits under that slot (not under the repeat icon at the centre).
+    {
+        const double captionWidth=400.;
+        const double centre=playerchrome::captionCentre(960.+button.x*100.,captionWidth);
+        mediaPanelText(p,QRectF(centre-captionWidth/2.,864,captionWidth,28),videoButtonLabel(assets_,button),19,Qt::white,Qt::AlignCenter);
+    }
     QString note=videoPanelNotice_;
     if(note.isEmpty() && button.reason)note=QString::fromLatin1(button.reason);
     if(note.isEmpty() && button.command==Command::Chapters)
@@ -4794,7 +4843,7 @@ void View::drawVideoPanel(QPainter& p) {
     else if(note.isEmpty() && button.native)
         note=QStringLiteral("Not on the console: this build's own rows - quality, chapters, speed, next episode, shuffle.");
     if(note.isEmpty() && (button.command==Command::SeekBack || button.command==Command::SeekForward))
-        note=QStringLiteral("10-second bounded seek; continuous speed scanning is not implemented.");
+        note=QObject::tr("Skips 10 seconds at a time.");
     if(!note.isEmpty() && !shell_.busy())mediaPanelText(p,QRectF(210,897,1500,30),note,17,QColor(225,225,225),Qt::AlignCenter);
     // The 14 tex_i_* transport variants share status_icon; only actual states are published.
     // No slow/search/step badge is manufactured for an instantaneous seek.

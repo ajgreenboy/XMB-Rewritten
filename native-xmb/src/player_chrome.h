@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace playerchrome {
 
@@ -79,6 +80,67 @@ inline std::string clockLabel(long long ms) {
     const auto hours = std::min<long long>(h, 99);
     std::snprintf(buffer, sizeof buffer, "%02lld:%02lld:%02lld", hours, m, s);
     return buffer;
+}
+
+// ---- Second polish pass (design choices, no console reference) -------------------------------------------
+// The control matrix's backing plate (see drawVideoPanel) and the time bar / hint row below it.
+constexpr double kMatrixBandTop = 610.0;
+constexpr double kMatrixBandBottom = 930.0;
+
+// The in-player options panel (Chapters, Audio, Subtitle, Extras) lays a dark plate over the picture. It used to
+// run to the bottom edge with a hard left edge, which cut through the hint row and dimmed SELECT/START. The plate
+// now ends above the time bar: solid to kPanelPlateSolidY, easing to nothing at kPanelPlateEndY (the matrix
+// plate's bottom), so the time labels and the key hints are never dimmed by it.
+constexpr double kPanelPlateSolidY = 860.0;
+constexpr double kPanelPlateEndY = kMatrixBandBottom;
+inline double panelPlateAlpha(double y) {
+    if (y <= kPanelPlateSolidY) return 1.0;
+    if (y >= kPanelPlateEndY) return 0.0;
+    const double t = (y - kPanelPlateSolidY) / (kPanelPlateEndY - kPanelPlateSolidY);
+    return 1.0 - t * t * (3.0 - 2.0 * t);
+}
+// The plate's left side ramps in over this many scene pixels (ending at the panel's own x0) instead of a hard step.
+constexpr double kPanelPlateRamp = 70.0;
+
+// The focused row's note normally sits under the list. When that spot is inside the matrix plate it reads as part
+// of the matrix, so the note moves to the line under the panel heading instead.
+inline bool panelNoteUnderHeading(double belowTop, double noteHeight) {
+    return belowTop + noteHeight > kMatrixBandTop - 8.0 && belowTop < kMatrixBandBottom;
+}
+
+// A native matrix slot's label: the largest size (<= maxPx) at which the text keeps `pad` scene px of clear space
+// on both sides of a box `boxWidth` wide. `widthAtRef` is the text's width at `refPx`.
+inline int fitLabelPx(double widthAtRef, int refPx, double boxWidth, double pad, int maxPx, int minPx) {
+    if (widthAtRef <= 0.0 || refPx <= 0) return maxPx;
+    const double inner = boxWidth - 2.0 * pad;
+    const int fitted = int(inner / widthAtRef * refPx);
+    return std::max(minPx, std::min(maxPx, fitted));
+}
+
+// The caption under the matrix follows the focused slot: centred on it, kept inside the plate (110..1810).
+inline double captionCentre(double slotCentre, double captionWidth) {
+    const double half = captionWidth / 2.0;
+    return std::max(110.0 + half, std::min(1810.0 - half, slotCentre));
+}
+
+// A video queue is positioned as "n / m" (numerals only, so there is no string to translate); a single item has
+// no position. Music keeps its own "Track n of m" line in the shell.
+inline std::string videoQueuePosition(int index, int count) {
+    if (count < 2 || index < 0 || index >= count) return {};
+    return std::to_string(index + 1) + " / " + std::to_string(count);
+}
+
+// Horizontal extent of a bitmap's visible pixels, from the per-column maximum alpha: the buffering wait bar's art
+// sits right of centre in its frame, so centring the frame leaves the bar off-centre.
+struct Span { int first = -1, last = -1; };
+inline Span visibleSpan(const std::vector<unsigned char>& columnAlpha, unsigned char threshold = 16) {
+    Span s;
+    for (int i = 0; i < int(columnAlpha.size()); ++i) {
+        if (columnAlpha[std::size_t(i)] < threshold) continue;
+        if (s.first < 0) s.first = i;
+        s.last = i;
+    }
+    return s;
 }
 
 }  // namespace playerchrome

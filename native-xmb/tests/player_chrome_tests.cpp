@@ -52,6 +52,39 @@ int main() {
     CHECK(clockLabel(-1) == "--:--:--" && clockLabel(-1).size() == 8);
     CHECK(clockLabel(99LL * 3600000 + 5999999).size() == 8 && clockLabel(500LL * 3600000).size() == 8);
 
+    // Panel plate: solid over the list, gone before the time bar (950) and the hint row (~1040), monotonic.
+    CHECK(id(panelPlateAlpha(0)) == 1.0 && id(panelPlateAlpha(kPanelPlateSolidY)) == 1.0);
+    CHECK(id(panelPlateAlpha(kPanelPlateEndY)) == 0.0 && id(panelPlateAlpha(1040)) == 0.0 && id(panelPlateAlpha(950)) == 0.0);
+    double plate = 1.0;
+    for (double y = kPanelPlateSolidY; y <= kPanelPlateEndY; y += 2) { const double a = panelPlateAlpha(y); CHECK(a <= plate && a >= 0.0); plate = a; }
+    CHECK(id(kPanelPlateEndY) <= 950 && id(kPanelPlateRamp) > 0);
+
+    // Panel note: under the list while that spot is above the matrix plate, under the heading once it would land in it.
+    CHECK(!panelNoteUnderHeading(300, 22));
+    CHECK(panelNoteUnderHeading(633, 22));
+    CHECK(panelNoteUnderHeading(600, 22) && !panelNoteUnderHeading(931, 22));
+
+    // Native slot label: padded on both sides inside a 70..90 px box, never above the max or below the min.
+    CHECK(fitLabelPx(63, 14, 70, 6, 17, 11) == 12);            // "Chapters" at 14 px is 63 wide: 58 inner px -> 12
+    CHECK(fitLabelPx(63, 14, 90, 8, 17, 11) == 16);            // widened box: fits at 16 with 8 px each side
+    CHECK(fitLabelPx(40, 17, 70, 6, 17, 11) == 17);            // short word keeps the full size
+    CHECK(fitLabelPx(0, 17, 70, 6, 17, 11) == 17 && fitLabelPx(63, 0, 70, 6, 17, 11) == 17);
+    for (int w = 20; w < 200; w += 7) { const int px = fitLabelPx(w, 14, 90, 8, 17, 11); CHECK(px >= 11 && px <= 17); }
+
+    // Caption follows the focused slot and stays inside the matrix plate.
+    CHECK(id(captionCentre(960, 400)) == 960 && id(captionCentre(1260, 400)) == 1260);
+    CHECK(id(captionCentre(360, 400)) == 360 && id(captionCentre(150, 400)) == 310 && id(captionCentre(1800, 400)) == 1610);
+
+    // Video queue position: numerals only, none for a single item or a stale index.
+    CHECK(videoQueuePosition(0, 5) == "1 / 5" && videoQueuePosition(4, 5) == "5 / 5");
+    CHECK(videoQueuePosition(0, 1).empty() && videoQueuePosition(0, 0).empty() && videoQueuePosition(5, 5).empty() && videoQueuePosition(-1, 5).empty());
+
+    // Visible span of the wait bar art: the first and last column that carry ink.
+    CHECK(visibleSpan({}).first == -1);
+    CHECK(visibleSpan({0, 0, 0}).first == -1);
+    CHECK(visibleSpan({0, 0, 200, 255, 90, 0}).first == 2 && visibleSpan({0, 0, 200, 255, 90, 0}).last == 4);
+    CHECK(visibleSpan({5, 0, 200}).first == 2);
+
     if (failures) { std::printf("%d failure(s)\n", failures); return 1; }
     std::printf("player-chrome tests ok\n");
     return 0;

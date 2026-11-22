@@ -35,3 +35,21 @@ the existing firmware assets. The decision logic is `src/player_chrome.h`, teste
   `.github/workflows/tests.yml` and `work/ci-config-build.ps1`; `bun work/ci-guard.ts` passes.
 - Frames (private, not in git): before = the 0.3.21 release build, after = this branch, same script, 1920x1080 and 3840x2160,
   under `C:/dev/out/player-polish-captures` (`before1080`, `after1080`, `before2160`, `after2160`: start bursts, bar, matrix, Audio Options).
+
+## Second pass: Jellyfin run rough edges (branch `wt/player-polish-2`)
+
+Found by driving the real in-XMB Jellyfin flow against the local stand-in (`work/jellyfin-standin.ts --clip`). There are still
+no console frames for the player, so every number below is a **design choice** of this build. Decision logic that is pure lives
+in `src/player_chrome.h` and is covered by `xmb-player-chrome-tests`.
+
+| # | Defect | Change | Evidence |
+|---|---|---|---|
+| 1 | Chapters panel: hard left edge cut through the "Fast Forward" hint and dimmed SELECT/START; the row footer ("00:05") sat inside the matrix plate | The in-player panel plate ramps in over 70 px instead of a step, and ends above the time bar (solid to y 860, eased out by 930), so neither the time labels nor the key hints are touched. The old bright edge stroke is dropped for this panel. When the focused row's note would land inside the matrix plate (610..930) it is drawn on one line under the panel heading instead | before/after frame |
+| 2 | "Chapters" slot label touched its box; caption under the matrix sat under the repeat icon | Chapters plate is 92 px wide (Native stays 70); both labels are fitted to keep 9 scene px clear each side (`fitLabelPx`, 11..17 px). The caption is centred on the focused slot (`captionCentre`) | before/after frames |
+| 3 | A movie showed "Track 1 of 5" | `Shell::mediaQueueSummary` shows only the numeric position for a video queue ("1 / 5", nothing for a single title). Numerals only, so no string-table entry is needed. Music keeps its line | before/after frame |
+| 4 | Developer text "continuous speed scanning is not implemented" | Now "Skips 10 seconds at a time." (`tr`) | after frame |
+| 5 | Unnamed chapter reads "2. Chapter 2" | Left as is | n/a |
+| 6 | Load card wait bar 15 px right of the spinner | The wait bar art sits right of centre in its frame; the frame is now placed from the art's visible span (`visibleSpan`), so the bar centres on x 960 | before/after frame (bar 945..1005 -> 930..990) |
+
+Not changed: the "Not on the console: ..." help lines of the native slots, the mid-playback re-buffer overlay placement.
+Frames are private (`C:/dev/out/player-polish-2-captures`).
