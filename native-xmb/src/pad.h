@@ -83,5 +83,14 @@ quint32 oskPadActions(quint16 buttons, float l2, float r2);
 
 QString kindName(Kind kind);          // "DualShock 3", "DualShock 4", "DualSense", "None"
 QString transportName(Transport kind); // "USB", "Bluetooth", "Unknown"
+
+// ---- SDL2 GameController mapping (Linux backend, pad.cpp __linux__) ----
+// One SDL_GameControllerButton constant (SDL_CONTROLLER_BUTTON_*, 0..20) to the wButtons bit that button
+// means on this layout, so an SDL2 controller arrives exactly as the Windows XInput/HID paths deliver it.
+// The numeric values are SDL2's public enum (stable across the 2.x series); the function is pure and works on
+// every platform, which is what makes the mapping unit-testable without a controller. Returns 0 for an
+// unmapped button (touchpad, paddles, misc). The axes need no table: LEFT/RIGHTX/Y scale to lx/ly/rx/ry and
+// the two triggers to l2/r2, each by value/32767 (pad y is +down, exactly SDL's lefty/righty sign).
+quint16 sdlButtonBit(quint8 sdlControllerButton);
 }
 }

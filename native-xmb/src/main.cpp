@@ -456,6 +456,7 @@ int main(int argc,char** argv) {
     parser.addOption({"zf-text-deliver","Deliver text to the zf-text-sink window named in the spec JSON, through the same TextDelivery the in-game row uses; result JSON is the second argument","spec-json"});
     parser.addOption({"zf-elevation-check","Write whether this process, the foreground window and each pid given as a further argument ('all' for a count over every process) run elevated, then exit","json-out"});
     parser.addOption({"pad-check","Run documented synthetic DualSense/DualShock 4 input reports through the pad parser, write JSON, then exit","json-file"});
+    parser.addOption({"pad-sdl-map","Write the SDL2 GameController button -> XInput button-bit mapping the Linux pad backend applies (deterministic, no controller needed), then exit","json-file"});
     parser.addOption({"motion-report","Write easing samples at different host frame rates without opening a window","json-file"});
     parser.addOption({"steam-root","Override the local Steam installation directory","directory"});
     parser.addOption({"steam-report","Write discovered installed Steam games and exit without launching them","json-file"});
@@ -747,6 +748,30 @@ int main(int argc,char** argv) {
         QFile file(parser.value("pad-check"));
         const auto bytes=QJsonDocument(QJsonObject{{"source","synthetic"},{"verifiedHardware",false},{"cases",results}}).toJson();
         if(!file.open(QIODevice::WriteOnly) || file.write(bytes)!=bytes.size()){qCritical()<<file.errorString();return 2;}
+        return 0;
+    }
+    if(parser.isSet("pad-sdl-map")) {
+        // Deterministic (no controller): the exact SDL2 GameController -> XInput wButtons mapping the Linux pad
+        // backend applies (pad.cpp __linux__), so the mapping is unit-verified without hardware. The axes need no
+        // table - each is value/32767 with pad y +down, exactly SDL's lefty/righty sign - and are listed here.
+        struct Named { quint8 sdl; const char* name; };
+        static const Named named[]={
+            {0,"A"},{1,"B"},{2,"X"},{3,"Y"},{4,"Back"},{5,"Guide"},{6,"Start"},{7,"LeftStick"},{8,"RightStick"},
+            {9,"LeftShoulder"},{10,"RightShoulder"},{11,"DpadUp"},{12,"DpadDown"},{13,"DpadLeft"},{14,"DpadRight"},
+            {15,"Misc1"},{16,"Paddle1"},{17,"Paddle2"},{18,"Paddle3"},{19,"Paddle4"},{20,"Touchpad"}};
+        QJsonArray buttons;
+        for(const auto& entry:named) {
+            const quint16 bit=xmb::pad::sdlButtonBit(entry.sdl);
+            buttons.push_back(QJsonObject{{"sdlButton",QString::fromLatin1(entry.name)},{"sdlValue",int(entry.sdl)},
+                {"wButtonsBit",QStringLiteral("0x%1").arg(bit,4,16,QChar('0'))},{"mapped",bit!=0}});
+        }
+        QFile file(parser.value("pad-sdl-map"));
+        const auto bytes=QJsonDocument(QJsonObject{
+            {"source","sdl2-gamecontroller-mapping"},{"verifiedHardware",false},
+            {"axes",QJsonArray{"leftx->lx","lefty->ly(+down)","rightx->rx","righty->ry(+down)","triggerleft->l2","triggerright->r2","scale=value/32767"}},
+            {"buttons",buttons}}).toJson();
+        if(!file.open(QIODevice::WriteOnly) || file.write(bytes)!=bytes.size()){qCritical()<<file.errorString();return 2;}
+        qInfo().noquote()<<QString("pad-sdl-map: wrote %1 SDL button mappings").arg(buttons.size());
         return 0;
     }
     if(parser.isSet("pad-report")) {

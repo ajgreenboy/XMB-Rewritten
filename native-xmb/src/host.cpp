@@ -29,6 +29,7 @@
 #include <QJsonDocument>
 #include <QMediaDevices>
 #include <QAudioDevice>
+#include <QAudioFormat>
 #include <QAudioOutput>
 #include <QPointer>
 #include <QWidget>
@@ -64,6 +65,9 @@
 #include <winspool.h>
 #include <wlanapi.h>
 #pragma comment(lib,"powrprof.lib")
+#elif defined(Q_OS_LINUX)
+#include <pulse/pulseaudio.h>
+#include <pulse/thread-mainloop.h>
 #endif
 
 namespace xmb::host {
@@ -753,11 +757,33 @@ QString dataDirectoryText(const QString& path) {
 }
 // `gui` false leaves out the two readers that belong to the GUI thread (QGuiApplication::screens and Qt
 // Multimedia's device list); readGuiParts() adds them there. Everything else is Win32/COM/QtCore and runs on a worker.
+#ifndef Q_OS_WIN
+// Non-Windows audio devices come from Qt Multimedia (PipeWire/PulseAudio), not WASAPI. The Windows path fills
+// audioOutputs/audioInputs in readSnapshot() through readAudio(); on other platforms they are part of the
+// GUI-thread parts because QMediaDevices' device list belongs to the GUI thread, exactly like videoInputs().
+AudioInfo audioInfoFromQt(const QAudioDevice& device) {
+    AudioInfo info;
+    info.name=device.description();
+    info.id=QString::fromUtf8(device.id());
+    info.isDefault=device.isDefault();
+    const QAudioFormat format=device.preferredFormat();
+    info.channels=format.channelCount();
+    info.sampleRate=format.sampleRate();
+    info.bits=format.bytesPerSample()*8;
+    return info;
+}
+#endif
 void readGuiParts(Snapshot& state) {
     state.displays=readDisplays();
     state.cameras.clear();
     for(const auto& camera:QMediaDevices::videoInputs())
         state.cameras<<(camera.description().isEmpty()?QString::fromUtf8(camera.id()):camera.description());
+#ifndef Q_OS_WIN
+    state.audioOutputs.clear();
+    for(const auto& device:QMediaDevices::audioOutputs())state.audioOutputs<<audioInfoFromQt(device);
+    state.audioInputs.clear();
+    for(const auto& device:QMediaDevices::audioInputs())state.audioInputs<<audioInfoFromQt(device);
+#endif
 }
 Snapshot readSnapshot(bool gui=true) {
     Snapshot state;
@@ -1239,10 +1265,154 @@ void setHostChoiceAsync(const QString& key,int index,std::function<void(bool,QSt
 }
 
 // ==== Core Audio volume, the existing host path ====================================================
+#if defined(Q_OS_LINUX)
+namespace {
+// Linux master volume: the default PulseAudio sink (the WSLg relay's PulseAudio server here, or a
+// PipeWire-pulse / PulseAudio server on a desktop). Each call opens its own connection, so it is thread-safe
+// and independent of Qt Multimedia's own backend; a bounded wait means a missing server (no XDG_RUNTIME_DIR,
+// headless) reads as "unavailable" instead of hanging the status worker.
+struct PulseProbe {
+    pa_threaded_mainloop* loop=nullptr;
+    pa_context* ctx=nullptr;
+    bool ready=false, failed=false;
+    bool done=false, ok=false;
+    int channels=0;
+    float volumeLinear=-1;
+    bool muted=false;
+    QByteArray sinkName;
+};
+// Callbacks run on the mainloop's worker thread, so they must not take the mainloop lock (pa_threaded_mainloop
+// asserts on that); they write the probe fields and signal instead, and the caller reads the fields under the lock.
+void pulseStateCb(pa_context* ctx,void* userdata) {
+    auto* probe=static_cast<PulseProbe*>(userdata);
+    switch(pa_context_get_state(ctx)) {
+    case PA_CONTEXT_READY:probe->ready=true;break;
+    case PA_CONTEXT_FAILED:case PA_CONTEXT_TERMINATED:probe->failed=true;break;
+    default:break;
+    }
+    pa_threaded_mainloop_signal(probe->loop,0);
+}
+void pulseSinkInfoCb(pa_context*,const pa_sink_info* info,int eol,void* userdata) {
+    auto* probe=static_cast<PulseProbe*>(userdata);
+    if(eol) {
+        probe->done=true;
+    } else if(info) {
+        probe->ok=true;
+        probe->channels=int(info->volume.channels);
+        probe->volumeLinear=float(pa_sw_volume_to_linear(pa_cvolume_avg(&info->volume)));
+        probe->muted=info->mute!=0;
+        probe->sinkName=QByteArray(info->name);
+    }
+    pa_threaded_mainloop_signal(probe->loop,0);
+}
+void pulseSuccessCb(pa_context*,int success,void* userdata) {
+    auto* probe=static_cast<PulseProbe*>(userdata);
+    probe->ok=success!=0;
+    probe->done=true;
+    pa_threaded_mainloop_signal(probe->loop,0);
+}
+// Block until cond() or ~1.5 s, whichever is first. Returns whether cond() was met.
+template<class F> bool pulseWait(pa_threaded_mainloop* loop,F&& cond) {
+    const auto deadline=std::chrono::steady_clock::now()+std::chrono::milliseconds(1500);
+    pa_threaded_mainloop_lock(loop);
+    while(!cond()) {
+        pa_threaded_mainloop_unlock(loop);
+        if(std::chrono::steady_clock::now()>=deadline){pa_threaded_mainloop_lock(loop);break;}
+        std::this_thread::sleep_for(std::chrono::milliseconds(4));
+        pa_threaded_mainloop_lock(loop);
+    }
+    const bool met=cond();
+    pa_threaded_mainloop_unlock(loop);
+    return met;
+}
+bool pulseConnect(PulseProbe& probe) {
+    probe.loop=pa_threaded_mainloop_new();
+    if(!probe.loop)return false;
+    pa_mainloop_api* api=pa_threaded_mainloop_get_api(probe.loop);
+    probe.ctx=pa_context_new(api,"xmb");
+    if(!probe.ctx){pa_threaded_mainloop_free(probe.loop);probe.loop=nullptr;return false;}
+    pa_context_set_state_callback(probe.ctx,pulseStateCb,&probe);
+    // The canonical pa_threaded_mainloop order: lock, start, connect, wait (polled here for a timeout).
+    pa_threaded_mainloop_lock(probe.loop);
+    const bool started=pa_threaded_mainloop_start(probe.loop)>=0;
+    const bool connected=started && pa_context_connect(probe.ctx,nullptr,PA_CONTEXT_NOFLAGS,nullptr)>=0;
+    if(!connected) {
+        if(started)pa_threaded_mainloop_stop(probe.loop);
+        pa_threaded_mainloop_unlock(probe.loop);
+        pa_context_unref(probe.ctx);probe.ctx=nullptr;
+        pa_threaded_mainloop_free(probe.loop);probe.loop=nullptr;
+        return false;
+    }
+    const auto deadline=std::chrono::steady_clock::now()+std::chrono::milliseconds(1500);
+    while(!probe.ready && !probe.failed && std::chrono::steady_clock::now()<deadline) {
+        pa_threaded_mainloop_unlock(probe.loop);
+        std::this_thread::sleep_for(std::chrono::milliseconds(4));
+        pa_threaded_mainloop_lock(probe.loop);
+    }
+    const bool ready=probe.ready;
+    pa_threaded_mainloop_unlock(probe.loop);
+    return ready;
+}
+void pulseDisconnect(PulseProbe& probe) {
+    if(!probe.loop)return;
+    if(probe.ctx) {
+        pa_threaded_mainloop_stop(probe.loop);
+        pa_context_disconnect(probe.ctx);
+        pa_context_unref(probe.ctx);
+        probe.ctx=nullptr;
+    }
+    pa_threaded_mainloop_free(probe.loop);
+    probe.loop=nullptr;
+}
+// The default sink's name, channels, linear volume and mute. False when the server is unavailable.
+bool pulseQueryDefaultSink(PulseProbe& probe) {
+    if(!pulseConnect(probe))return false;
+    pa_operation* op=pa_context_get_sink_info_by_name(probe.ctx,"@DEFAULT_SINK@",pulseSinkInfoCb,&probe);
+    if(op)pa_operation_unref(op);
+    pulseWait(probe.loop,[&]{return probe.done;});
+    return probe.ok;
+}
+bool pulseGetVolume(float& linear,bool& muted) {
+    PulseProbe probe;
+    if(!pulseQueryDefaultSink(probe)){pulseDisconnect(probe);return false;}
+    linear=probe.volumeLinear;muted=probe.muted;
+    pulseDisconnect(probe);
+    return true;
+}
+bool pulseSetVolume(float linear) {
+    PulseProbe probe;
+    if(!pulseQueryDefaultSink(probe) || probe.sinkName.isEmpty() || probe.channels<=0){pulseDisconnect(probe);return false;}
+    pa_cvolume volume;
+    const float clamped=linear<0.f?0.f:linear>1.f?1.f:linear;
+    pa_cvolume_set(&volume,unsigned(probe.channels),pa_sw_volume_from_linear(double(clamped)));
+    probe.done=false;probe.ok=false;
+    pa_operation* op=pa_context_set_sink_volume_by_name(probe.ctx,probe.sinkName.constData(),&volume,pulseSuccessCb,&probe);
+    if(op)pa_operation_unref(op);
+    pulseWait(probe.loop,[&]{return probe.done;});
+    const bool ok=probe.ok;
+    pulseDisconnect(probe);
+    return ok;
+}
+bool pulseSetMuted(bool muted) {
+    PulseProbe probe;
+    if(!pulseQueryDefaultSink(probe) || probe.sinkName.isEmpty()){pulseDisconnect(probe);return false;}
+    probe.done=false;probe.ok=false;
+    pa_operation* op=pa_context_set_sink_mute_by_name(probe.ctx,probe.sinkName.constData(),muted?1:0,pulseSuccessCb,&probe);
+    if(op)pa_operation_unref(op);
+    pulseWait(probe.loop,[&]{return probe.done;});
+    const bool ok=probe.ok;
+    pulseDisconnect(probe);
+    return ok;
+}
+}
+#endif
 int masterVolume() {
 #ifdef Q_OS_WIN
     float level=-1;
     if(withEndpoint([&](IAudioEndpointVolume* v){return SUCCEEDED(v->GetMasterVolumeLevelScalar(&level));}))return int(std::lround(level*100));
+#elif defined(Q_OS_LINUX)
+    float linear=-1;bool muted=false;
+    if(pulseGetVolume(linear,muted) && linear>=0)return int(std::lround(linear*100));
 #endif
     return -1;
 }
@@ -1252,6 +1422,11 @@ bool setMasterVolume(int percent) {
     const bool ok=withEndpoint([&](IAudioEndpointVolume* v){return SUCCEEDED(v->SetMasterVolumeLevelScalar(level,nullptr));});
     if(ok)invalidateSnapshot();
     return ok;
+#elif defined(Q_OS_LINUX)
+    const float level=float(std::clamp(percent,0,100))/100.f;
+    const bool ok=pulseSetVolume(level);
+    if(ok)invalidateSnapshot();
+    return ok;
 #else
     Q_UNUSED(percent);return false;
 #endif
@@ -1259,6 +1434,9 @@ bool setMasterVolume(int percent) {
 bool masterMuted() {
 #ifdef Q_OS_WIN
     BOOL muted=FALSE;withEndpoint([&](IAudioEndpointVolume* v){return SUCCEEDED(v->GetMute(&muted));});return muted!=FALSE;
+#elif defined(Q_OS_LINUX)
+    float linear=-1;bool muted=false;
+    return pulseGetVolume(linear,muted) && muted;
 #else
     return false;
 #endif
@@ -1266,6 +1444,10 @@ bool masterMuted() {
 bool setMasterMuted(bool muted) {
 #ifdef Q_OS_WIN
     const bool ok=withEndpoint([&](IAudioEndpointVolume* v){return SUCCEEDED(v->SetMute(muted,nullptr));});
+    if(ok)invalidateSnapshot();
+    return ok;
+#elif defined(Q_OS_LINUX)
+    const bool ok=pulseSetMuted(muted);
     if(ok)invalidateSnapshot();
     return ok;
 #else

@@ -25,6 +25,14 @@ else()
     set(XMB_WIN32_ONLY_SOURCES "")
     set(XMB_NON_WIN32_ONLY_SOURCES src/desktop_pad_stub.cpp)
 endif()
+# SDL2 drives the Linux controller backend (pad.cpp __linux__); Windows reads pads through XInput/HID instead.
+# SDL2 ships a CMake config on Ubuntu (libsdl2-dev), so SDL2::SDL2 is available directly.
+# libpulse (pkg-config, no CMake config) is the Linux master-volume backend in host.cpp __linux__.
+if(NOT WIN32)
+    find_package(SDL2 REQUIRED)
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(PULSE REQUIRED IMPORTED_TARGET libpulse)
+endif()
 qt_add_executable(re-ps3-native
     src/main.cpp src/assets.cpp src/assets.h src/p3t.cpp src/p3t.h src/qrc.cpp src/qrc.h src/catalog.cpp src/catalog.h
     src/gtf_decode.cpp src/gtf_decode.h
@@ -388,6 +396,8 @@ qt_add_executable(xmb-reference-frames src/reference_frames.cpp)
 target_link_libraries(xmb-reference-frames PRIVATE Qt6::Gui Qt6::Multimedia)
 if(WIN32)
     target_link_libraries(re-ps3-native PRIVATE xinput9_1_0 hid setupapi ole32 iphlpapi ws2_32 shell32)
+else()
+    target_link_libraries(re-ps3-native PRIVATE SDL2::SDL2 PkgConfig::PULSE)
 endif()
 if(MSVC)
     target_compile_options(re-ps3-native PRIVATE /W4 /permissive- /utf-8 /Zi)
