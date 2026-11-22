@@ -1,5 +1,6 @@
 #include "shell.h"
 #include "game_badge.h"
+#include "psn_pages.h"
 #include "pending_installers.h"
 #include "diagnostics.h"
 #include "player_chrome.h"
@@ -74,7 +75,7 @@ namespace {
 // What Cross says on a row this build lists but cannot act on. One sentence per row that is really different: the
 // rows that used to share one line are not unavailable for the same reason. Every other row keeps the generic line.
 QString unavailableReason(const QString& id) {
-    if(id==QLatin1String("signin"))return QObject::tr("This application does not connect to PlayStation Network, so there is no account to sign in to.");
+    if(id==QLatin1String("signin"))return xmb::psn::notConnectedText();
     if(id==QLatin1String("trophy"))return QObject::tr("Trophies come from PlayStation Network, which this application does not connect to, so there are none to show.");
     if(id==QLatin1String("store"))return QObject::tr("The PlayStation Store is not part of this application. PC games are under Game, in the Steam folder.");
     if(id==QLatin1String("manual"))return QObject::tr("The online instruction manuals were pages on Sony's servers and are not part of this application.");
@@ -1928,7 +1929,15 @@ Shell::Shell(QString dataDirectory,Assets& assets,QObject* parent):QObject(paren
             item("browser","Internet Browser","tex_browser","explore_category_network"),
             item("search","Internet Search","tex_kensaku","explore_category_network"),
             item("downloads","Download Management","tex_dl_manage","explore_category_network",Action::SteamDownloads)}},
-        {"psn","PlayStation Network","xmb_plugin_normal","tex_psn", /* 128x128; explore_plugin_full holds a 46x46 copy */{item("signin","Sign In","tex_Sign_In"),item("trophy","Trophy Collection","item_tex_trophy"),item("store","PlayStation Store","item_tex_ps_store","explore_plugin_full")}},
+        {"psn","PlayStation Network","xmb_plugin_normal","tex_psn", /* 128x128; explore_plugin_full holds a 46x46 copy */{
+            // Sign In opens the older firmware's sign-in page and always ends in the truthful "not connected" page; Account
+            // Management pushes the older firmware's sub-list, every leaf of which says what connection it would need
+            // (psn_shell.cpp). The old column listed one or the other depending on the sign-in state; this build is never
+            // signed in, so both rows stay.
+            item("signin","Sign In","tex_Sign_In","explore_plugin_full",Action::PsnSignIn),
+            [&]{auto row=item("account",assets.text("explore_category_psn","msg_account_manage","Account Management"),"item_tex_account","explore_category_psn",Action::PsnPage,"root");
+                row.detail=assets.text("explore_category_psn","msg_can_change_psn_account_psstore_setteing","Adjust settings for your account or for purchases made at PlayStation(R)Store.");return row;}(),
+            item("trophy","Trophy Collection","item_tex_trophy"),item("store","PlayStation Store","item_tex_ps_store","explore_plugin_full")}},
         {"friends","Friends","qgl/icontex","8n",{
             // category_friend.xml: items, icons and titles are the firmware's (explore_category_friend); PSN-backed
             // features answer with the firmware's own empty-state messages.
@@ -3103,6 +3112,7 @@ void Shell::activate() {
     case Action::HaApp:case Action::HaGroup:case Action::HaEntity:
         activateHome(entry);break;
     case Action::WeatherApp:case Action::WeatherUnits:activateWeather(entry);break;
+    case Action::PsnSignIn:case Action::PsnPage:case Action::PsnLeaf:activatePsn(entry);break;
     case Action::PhoneRemote:activatePhoneRemote(entry);break;
     case Action::SystemUpdate:activateSystemUpdate(entry);break;
     case Action::WifiApp:activateWifi(entry);break;

@@ -9,6 +9,7 @@
 #include "ribbon.h"
 #include "rsx_program.h"
 #include "shell.h"
+#include "psn_pages.h"
 #include "ps_watcher.h"
 #include "photo_viewport.h"
 #include "media_controls.h"
@@ -310,7 +311,9 @@ private:
     // user_plugin's page_create (audit/FIDELITY-SURFACES-MAP.md S25): the prompt, the name field and OK. Field
     // focus is 0, OK is 1; Cross on the field opens the OSK, Cross on OK creates the user, Circle goes back.
     // renameId set: the page renames that user (Information on a user row) instead of creating one.
-    struct UserCreatePage { bool open=false; QString name; int focus=0; QString renameId; };
+    // The PSN Sign-In page (psn_pages.h, drawPsnSignInPage) shares this struct on purpose: every "a text page owns input"
+    // gate in the view reads userCreate_.open, so the sign-in page is covered by all of them. `psn` selects the page.
+    struct UserCreatePage { bool open=false; QString name; int focus=0; QString renameId; bool psn=false; psn::SignInForm form; quint64 signingSerial=0; };
     UserCreatePage userCreate_;
     // playlist_plugin's two-pane editor (expage_select_list / expage_edit_list; audit/PLAYLIST-EDITOR.md). Pane 0
     // lists every local file of the playlist's kind (edit_src_lst), pane 1 the playlist (edit_dst_lst). Cross
@@ -330,6 +333,13 @@ private:
     // 0 up, 1 down, 2 left, 3 right, 4 cross, 5 circle, 6 triangle, 7 square; true when the editor took it.
     bool playlistEditorInput(int action);
     void drawUserCreatePage(QPainter& painter);
+    // The PlayStation Network Sign-In page (older firmware look, recording m2 51-52 s). Nothing typed here goes anywhere:
+    // Sign In shows "Signing in... Please wait." for psn::kSigningMilliseconds and then Shell::psnSignInFailed().
+    void openPsnSignIn();
+    void closePsnSignIn();
+    void drawPsnSignInPage(QPainter& painter);
+    bool psnSignInInput(int action);
+    void psnEditField(psn::Field field);
     bool userCreateInput(int action); // 0 up, 1 down, 2 cross, 3 circle; true when the page took it
     void drawOptionHint(QPainter& painter,double amount,const QString& textOverride={});
     // The active sidecar subtitle cue (Shell::subtitleCueText): centred in the lower third, above the

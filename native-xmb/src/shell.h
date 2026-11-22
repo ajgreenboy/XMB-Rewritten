@@ -127,6 +127,9 @@ enum class Action { Unavailable, SettingsPage, SettingChoices, SetSetting, EditN
     WolApp, WolWake, WolAddPage, WolAdd, HaApp, HaGroup, HaEntity,
     // Network > Weather (weather_shell.cpp): the column row and the Units toggle.
     WeatherApp, WeatherUnits,
+    // PlayStation Network column (psn_shell.cpp, psn_pages.h): the Sign In page, the Account Management page push (value
+    // "root" or "info") and a leaf row that explains the connection it would need (value = its title). No PSN connection exists.
+    PsnSignIn, PsnPage, PsnLeaf,
     // The in-XMB folder browser (folder_browse_shell.cpp): one folder or drive row (value = its path) and the
     // "Use This Folder" row (value = the folder being shown).
     BrowseOpen, BrowseUse, BrowseFile,
@@ -773,6 +776,9 @@ public:
     static constexpr qint64 notificationHoldMs=3000;
     static constexpr int notificationWaitingLimit=16;
     void notify(const QString& title,const QString& detail={},const QString& icon={});
+    // The Sign-In page's endings: the one truthful failure page and the Forgot-password explanation (psn_shell.cpp).
+    void psnSignInFailed();
+    void psnForgotPassword();
     const Notification* notification() const { return notifications_.isEmpty()?nullptr:&notifications_.first(); }
     int notificationCount() const { return notifications_.size(); }
     qint64 notificationRemainingMs() const; // of the pop-up on screen, 0 when there is none
@@ -805,6 +811,8 @@ signals:
     void setupRestartRequested();
     void psTapIndicator();
     void requestNewUser();
+    // The PSN column's Sign In row: the view opens the older firmware's Sign-In page (psn_pages.h).
+    void requestPsnSignIn();
     // Information on a user row: the name page in rename mode, prefilled with the current name.
     void requestRenameUser(QString id,QString name);
     // Create New Playlist: the view asks for the name with the XMB keyboard, then calls createPlaylist().
@@ -949,6 +957,8 @@ private:
     QString haError_;
     void initHome();
     bool activateHome(const Entry& entry);
+    bool activatePsn(const Entry& entry);
+    void openPsnPage(const QString& which);
     // Folder browser: Choose Media Folder and the empty Video, Music and Photo Library rows (folder_browse_shell.cpp).
     void openFolderBrowser();
     void openFilePicker(const QString& picker,bool replaceChoices=false);   // "wallpaper" or "theme": the folder browser in file mode

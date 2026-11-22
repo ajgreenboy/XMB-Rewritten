@@ -1,4 +1,5 @@
 #include "view.h"
+#include "psn_pages.h"
 #include "logo_tiles.h"
 #include "game_badge.h"
 #include "video_panel.h"
@@ -18,6 +19,7 @@
 #include <QGuiApplication>
 #include <QMimeData>
 #include <QPainter>
+#include <QTimer>
 #include <QKeyEvent>
 #include <QAbstractNativeEventFilter>
 #include <QDateTime>
@@ -257,6 +259,7 @@ View::View(Shell& shell,Assets& assets,QWidget* parent):QOpenGLWidget(parent),sh
         userCreate_.name=QStringLiteral("User %1").arg(std::max(1,shell_.userCount()));
         update();
     });
+    connect(&shell_,&Shell::requestPsnSignIn,this,[this]{openPsnSignIn();});
     // Create New Playlist (playlist_plugin): the keyboard titled with the plugin's own prompt; the name goes to
     // Shell::createPlaylist, which raises the plugin's duplicate-name and limit errors itself.
     connect(&shell_,&Shell::requestPlaylistName,this,[this](QString type){
@@ -2024,8 +2027,153 @@ void View::drawUserCreatePage(QPainter& p) {
     drawImage(p,"system_plugin","tex_circle",{1155,897,20,20});
     label({1190,890,140,34},rco("msg_back","Back"),21,Qt::AlignLeft|Qt::AlignVCenter);
 }
+// ---- The PlayStation Network Sign-In page (older firmware look) --------------------------------------------------
+// Reference: recording m2 (1280x720 frames of the older firmware), 51 s the form and 52 s "Signing in... Please wait.".
+// The numbers below are those frames' measurements at 1.5x (the page class is the same 199/879 rule pair the name page
+// draws, which the frames' 133/586 confirm). Strings are npsignin_plugin's own (msg_id_email, msg_pw,
+// msg_automatic_signin_from_next_time, msg_save_pw2, msg_signin, msg_reset_pw, msg_sigining_in); the glassy buttons are
+// npsignin_plugin's tex_button(_focus) and the boxes are system_plugin's tex_default_check strip (cell 0 empty, cell 5
+// ticked, cell 6 the lit tick). Nothing typed here is sent, kept or logged: Sign In pauses on the "Please wait." page and
+// then raises the truthful "not connected" page (Shell::psnSignInFailed).
+namespace {
+constexpr double kPsnFieldX=556.,kPsnFieldWidth=806.,kPsnFieldHeight=38.;
+constexpr double kPsnLabelX=558.;
+constexpr int kPsnTextSize=23;   // the m2 label "Sign-In ID (E-mail Address):" ink is 324 px wide at 1080p; 23 px here
+constexpr double kPsnEmailLabelCentre=363.,kPsnEmailFieldTop=378.;
+constexpr double kPsnPasswordLabelCentre=472.5,kPsnPasswordFieldTop=489.;
+constexpr double kPsnBoxCentreX=751.5,kPsnBoxLabelX=775.;
+constexpr double kPsnAutoCentreY=562.5,kPsnSaveCentreY=603.;
+// tex_default_check is 44x252 = seven 44x36 cells: 0 empty, 1-3 the tick drawing in, 4 a short tick, 5 the full tick, 6 the lit tick.
+// The box ink is x7..32, y7..31 of cell 0 (26 px), about 19.5/18 into the cell; the m2 box is 24 px at 1080p.
+constexpr double kPsnCheckCell=36.,kPsnCheckWidth=44.,kPsnCheckScale=1.0,kPsnCheckBoxX=19.5,kPsnCheckBoxY=18.;
+constexpr double kPsnSignInX=906.,kPsnSignInTop=642.,kPsnSignInWidth=108.,kPsnSignInHeight=48.;
+constexpr double kPsnForgotX=814.,kPsnForgotTop=723.,kPsnForgotWidth=292.,kPsnForgotHeight=44.;
+constexpr double kPsnSigningTop=511.,kPsnSigningPitch=34.;
+}
+void View::openPsnSignIn() {
+    userCreate_=UserCreatePage{};
+    userCreate_.open=true;userCreate_.psn=true;
+    userCreate_.form.focus=psn::Field::Email;
+    qInfo().noquote()<<"psn: sign-in page opened (older firmware look); nothing typed here is sent, kept or logged";
+    update();
+}
+void View::closePsnSignIn() {
+    userCreate_.form.wipe();
+    userCreate_=UserCreatePage{};
+    update();
+}
+void View::psnEditField(psn::Field field) {
+    const bool password=field==psn::Field::Password;
+    const QString title=assets_.text("npsignin_plugin",password?"msg_pw":"msg_id_email",password?"Password":"Sign-In ID (E-mail Address):");
+    const QString initial=password?userCreate_.form.password:userCreate_.form.email;
+    openOsk(title,initial,[this,password](const QString& value){
+        if(!userCreate_.open || !userCreate_.psn)return;
+        if(password)userCreate_.form.setPassword(value);else userCreate_.form.setEmail(value);
+    },password);
+    osk_.preserveWhitespace=true;osk_.allowEmpty=true;
+    osk_.maxLength=password?psn::kMaxPasswordLength:psn::kMaxEmailLength;
+}
+bool View::psnSignInInput(int action) {
+    auto& form=userCreate_.form;
+    if(form.phase==psn::Phase::Signing) {
+        if(action==3){++userCreate_.signingSerial;form.cancelSigning();qInfo().noquote()<<"psn: sign-in cancelled before it ended";update();}
+        return true;
+    }
+    switch(action) {
+    case 0:form.move(-1);break;
+    case 1:form.move(1);break;
+    case 2:
+        switch(form.focus) {
+        case psn::Field::Email:case psn::Field::Password:psnEditField(form.focus);break;
+        case psn::Field::AutoSignIn:case psn::Field::SavePassword:form.toggle(form.focus);form.normaliseFocus();break;
+        case psn::Field::SignIn:
+            if(form.submit()) {
+                const quint64 serial=++userCreate_.signingSerial;
+                QTimer::singleShot(psn::kSigningMilliseconds,this,[this,serial]{
+                    if(!userCreate_.open || !userCreate_.psn || userCreate_.signingSerial!=serial || userCreate_.form.phase!=psn::Phase::Signing)return;
+                    closePsnSignIn();
+                    shell_.psnSignInFailed();
+                    update();
+                });
+            }
+            break;
+        case psn::Field::Forgot:
+            closePsnSignIn();
+            shell_.psnForgotPassword();
+            break;
+        }
+        break;
+    case 3:closePsnSignIn();return true;
+    default:return false;
+    }
+    update();
+    return true;
+}
+void View::drawPsnSignInPage(QPainter& p) {
+    const auto& form=userCreate_.form;
+    const auto label=[&](const QRectF& r,const QString& value,int size,int flags,double alpha=1.,bool shadow=true) {
+        QFont font(shell_.fontFamily());font.setPixelSize(size);
+        const QColor colour(255,255,255,int(255*alpha));
+        if(textRenderer_.ready()){textRenderer_.draw(*this,p,r,value,font,colour,flags,0,shadow);return;}
+        p.save();p.setFont(font);p.setPen(colour);p.drawText(r,flags,value);p.restore();
+    };
+    const auto text=[&](const char* key,const char* fallback){return assets_.text("npsignin_plugin",key,fallback);};
+    p.save();p.setPen(Qt::NoPen);p.setBrush(QColor(255,255,255,177));
+    p.drawRect(QRectF(0,199,1920,1));p.drawRect(QRectF(0,879,1920,1));
+    p.restore();
+    const auto footer=[&](bool enter,const QString& enterLabel,const QString& backLabel) {
+        if(enter) {
+            drawImage(p,"system_plugin","tex_cross",{726,898,18,18});
+            label({760,890,200,34},enterLabel,21,Qt::AlignLeft|Qt::AlignVCenter);
+        }
+        drawImage(p,"system_plugin","tex_circle",{1155,897,20,20});
+        label({1190,890,200,34},backLabel,21,Qt::AlignLeft|Qt::AlignVCenter);
+    };
+    if(form.phase==psn::Phase::Signing) {
+        // 52 s: two centred lines on the body slot, and only the Circle hint ("Cancel").
+        const QStringList lines=text("msg_sigining_in","Signing in...\nPlease wait.").split(QLatin1Char('\n'));
+        for(int i=0;i<lines.size();++i)
+            label({0,kPsnSigningTop+i*kPsnSigningPitch,1920,30},lines[i],kPsnTextSize,Qt::AlignHCenter|Qt::AlignVCenter);
+        footer(false,{},assets_.text("system_plugin","msg_cancel","Cancel"));
+        return;
+    }
+    const auto field=[&](double top,psn::Field which,const QString& value) {
+        const QRectF rect(kPsnFieldX,top,kPsnFieldWidth,kPsnFieldHeight);
+        drawNineSlice(p,"system_plugin",form.focus==which?"tex_default_text_field_focus":"tex_default_text_field",rect.adjusted(-1,-1,1,1),8.,1.);
+        label(rect.adjusted(3,0,-8,0),value,kPsnTextSize,Qt::AlignLeft|Qt::AlignVCenter,1.,false);
+    };
+    label({kPsnLabelX,kPsnEmailLabelCentre-17,900,34},text("msg_id_email","Sign-In ID (E-mail Address):"),kPsnTextSize,Qt::AlignLeft|Qt::AlignVCenter);
+    field(kPsnEmailFieldTop,psn::Field::Email,form.email);
+    label({kPsnLabelX,kPsnPasswordLabelCentre-17,900,34},text("msg_pw","Password"),kPsnTextSize,Qt::AlignLeft|Qt::AlignVCenter);
+    field(kPsnPasswordFieldTop,psn::Field::Password,form.maskedPassword());
+    // The two check boxes: focus is a brighter tick, and a dimmed box is Save Password under a ticked Auto Sign-In.
+    const auto box=[&](double centreY,psn::Field which,bool checked,const QString& caption) {
+        const bool enabled=form.fieldEnabled(which),focused=form.focus==which;
+        const auto& strip=assets_.image("system_plugin","tex_default_check");
+        const double alpha=enabled?1.:.45;
+        if(!strip.isNull()) {
+            const int cell=checked?(focused?6:5):0;
+            const double w=kPsnCheckWidth*kPsnCheckScale,h=kPsnCheckCell*kPsnCheckScale;
+            p.save();p.setOpacity(p.opacity()*alpha);
+            p.drawImage(QRectF(kPsnBoxCentreX-kPsnCheckBoxX*kPsnCheckScale,centreY-kPsnCheckBoxY*kPsnCheckScale,w,h),strip,QRectF(0,cell*kPsnCheckCell,kPsnCheckWidth,kPsnCheckCell));
+            p.restore();
+        }
+        label({kPsnBoxLabelX,centreY-17,900,34},caption,kPsnTextSize,Qt::AlignLeft|Qt::AlignVCenter,alpha);
+    };
+    box(kPsnAutoCentreY,psn::Field::AutoSignIn,form.autoSignIn,text("msg_automatic_signin_from_next_time","Sign In Automatically (Auto Sign-In)"));
+    box(kPsnSaveCentreY,psn::Field::SavePassword,form.savePasswordChecked(),text("msg_save_pw2","Save Password"));
+    const auto button=[&](const QRectF& rect,psn::Field which,const QString& caption) {
+        drawNineSlice(p,"npsignin_plugin",form.focus==which?"tex_button_focus":"tex_button",rect.adjusted(-7,-7,7,7),16.,1.);
+        label(rect,caption,kPsnTextSize,Qt::AlignHCenter|Qt::AlignVCenter,1.,false);
+    };
+    button({kPsnSignInX,kPsnSignInTop,kPsnSignInWidth,kPsnSignInHeight},psn::Field::SignIn,text("msg_signin","Sign In"));
+    button({kPsnForgotX,kPsnForgotTop,kPsnForgotWidth,kPsnForgotHeight},psn::Field::Forgot,text("msg_reset_pw","Forgot your password?"));
+    const bool typed=form.focus==psn::Field::Email||form.focus==psn::Field::Password;
+    footer(true,typed?text("msg_edit","Edit"):assets_.text("system_plugin","msg_enter","Enter"),assets_.text("system_plugin","msg_back","Back"));
+}
 bool View::userCreateInput(int action) {
     if(!userCreate_.open)return false;
+    if(userCreate_.psn)return psnSignInInput(action);
     switch(action) {
     case 0:case 1:userCreate_.focus=action;break;
     case 2:
@@ -3834,7 +3982,7 @@ void View::drawScene(QPainter& p) {
     // knows its total or its ring phase.
     else if(busyPageUp())drawBusySurface(p,shell_.busyProgress(),shell_.busySpinnerPhase());
     else if(messageShown_.kind==MessageKind::Box && (dialogEase_.value>.002 || dialogPlateEase_.value>.002))drawMessageBox(p);
-    if(userCreate_.open)drawUserCreatePage(p);
+    if(userCreate_.open){if(userCreate_.psn)drawPsnSignInPage(p);else drawUserCreatePage(p);}
     if(plEdit_.open)drawPlaylistEditor(p);
     if(osk_.open) {
         p.save();p.setOpacity(p.opacity()*oskFadeAlpha(clock_.elapsed()-oskFadeAt_,true));drawOsk(p);p.restore();
