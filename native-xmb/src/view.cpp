@@ -5841,7 +5841,7 @@ void View::focusOutEvent(QFocusEvent* e) {
     QOpenGLWidget::focusOutEvent(e);
 }
 void View::pollController() {
-#ifdef Q_OS_WIN
+#if defined(Q_OS_WIN) || defined(Q_OS_LINUX)
     if(!xmbOwnsForeground() || QApplication::activeModalWidget()){buttons_=keyHeld_=keyPressed_=0;triggerHeld_=false;return;}
     // A --script run is the script's own input: every scripted key goes through replayKeyTap, which dispatches the
     // same handlers the pad drives. A physical controller is therefore not read at all, so a capture cannot depend
