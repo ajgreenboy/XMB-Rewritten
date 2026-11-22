@@ -1095,6 +1095,7 @@ private:
     void playNextOffer();
     void cancelNextOffer();
     void advanceMediaQueue(bool failed,const QString& error);
+    void closeMediaPlayback();
     // The watched and favourite toggles (rows keep their old state until the server has agreed) and the flag answers.
     QHash<quint64,QString> userFlagRequests_;
     void toggleJellyfinFlag(const Entry& entry,bool favorite);

@@ -5314,6 +5314,24 @@ void Shell::sortPageByDate(bool ascending,bool created) {
     qInfo().noquote()<<"shell: options sorted page"<<page.title<<(created?"creation date":"update date")
         <<(ascending?"ascending":"descending")<<page.entries.size()<<"rows";
 }
+// Leaves the player surface (Circle, or a video that ran to the end of its queue): remembers or forgets the resume point and
+// puts every piece of playback state back, so nothing of a half-closed player is left behind.
+void Shell::closeMediaPlayback() {
+    // Leaving playback remembers where it was, so reopening resumes there. Ten seconds in and
+    // fifteen from the end are not worth remembering on long media; short clips use a tenth.
+    const qint64 at=player_->position(),total=player_->duration();
+    bool worth=total>0 && at>std::max<qint64>(10000,total/20) && at<total-std::max<qint64>(15000,total/20);
+    if(!worth && total>0 && total<=60000)worth=at>total/10 && at<total*9/10;
+    if(!resumePath_.isEmpty() && worth)storeResumePosition(resumePath_,at,total,mediaTitle_);
+    else clearResumePosition(resumePath_);
+    resumePath_.clear();resumePending_=0;mediaDisplayPinned_=false;
+    ++photoRequest_;++mediaRequest_;jellyfinRequest_=0;finishJellyfinPlayback();jellyfinQueue_=false;mediaOpen_=false;galleryPaths_.clear();mediaQueue_.clear();mediaFailures_=0;slideshow_.stop();photo_={};player_->stop();player_->setSource({});loading_=false;status_.clear();emit mediaFrame({});
+    cancelNextOffer();nextLookup_=0;mediaSpeed_=1.0;player_->setPlaybackRate(1.0);embeddedSubtitleText_.clear();
+    // Nothing is playing, so no subtitle file or audio track is current. The per-file choice stays in
+    // subtitleChoice_, which is what makes reopening the same file come back on the same track.
+    subtitleTracks_.clear();subtitleTrackIndex_=-1;subtitleCueNumber_=0;subtitleMediaPath_.clear();++subtitleGeneration_;
+    audioTracks_.clear();audioRejected_.clear();activeAudioTrack_=-1;mediaChapters_.clear();
+}
 void Shell::back() {
     if(setupCaptureInput(QStringLiteral("Circle / Esc")))return;   // D8 pad test
     touch();
@@ -5341,21 +5359,7 @@ void Shell::back() {
     }
     // Circle on the Play Next Episode countdown cancels it and stays on the finished episode.
     else if(mediaOpen_ && nextOffer_.active){cancelNextOffer();status_=tr("Next episode cancelled");emit changed();}
-    else if(mediaOpen_){
-        // Leaving playback remembers where it was, so reopening resumes there. Ten seconds in and
-        // fifteen from the end are not worth remembering on long media; short clips use a tenth.
-        const qint64 at=player_->position(),total=player_->duration();
-        bool worth=total>0 && at>std::max<qint64>(10000,total/20) && at<total-std::max<qint64>(15000,total/20);
-        if(!worth && total>0 && total<=60000)worth=at>total/10 && at<total*9/10;
-        if(!resumePath_.isEmpty() && worth)storeResumePosition(resumePath_,at,total,mediaTitle_);
-        else clearResumePosition(resumePath_);
-        resumePath_.clear();resumePending_=0;mediaDisplayPinned_=false;
-        ++photoRequest_;++mediaRequest_;jellyfinRequest_=0;finishJellyfinPlayback();jellyfinQueue_=false;mediaOpen_=false;galleryPaths_.clear();mediaQueue_.clear();mediaFailures_=0;slideshow_.stop();photo_={};player_->stop();player_->setSource({});loading_=false;status_.clear();emit mediaFrame({});
-        cancelNextOffer();nextLookup_=0;mediaSpeed_=1.0;player_->setPlaybackRate(1.0);embeddedSubtitleText_.clear();
-        // Nothing is playing, so no subtitle file or audio track is current. The per-file choice stays in
-        // subtitleChoice_, which is what makes reopening the same file come back on the same track.
-        subtitleTracks_.clear();subtitleTrackIndex_=-1;subtitleCueNumber_=0;subtitleMediaPath_.clear();++subtitleGeneration_;
-        audioTracks_.clear();audioRejected_.clear();activeAudioTrack_=-1;mediaChapters_.clear();}
+    else if(mediaOpen_)closeMediaPlayback();
     // Circle on a sign-in page is the page's Cancel row: it leaves the page and aborts a request still in
     // flight, so Back can never strand an authentication the user has walked away from.
     else if(setupHandleBack());   // D8: Circle on the setup Welcome page asks before leaving
@@ -5985,7 +5989,17 @@ void Shell::advanceMediaQueue(bool failed,const QString& error) {
     // Errors skip Repeat One; otherwise a broken file could retry forever.
     const int next=mediaQueue_.next(!failed);
     if(next<0) {
+        // A video that ran to the end of its queue leaves the player and returns to the XMB (owner decision 2026-11-21);
+        // music keeps its page, and a failed title keeps the error page below. XMB_VIDEO_END_STAY=1 restores the old
+        // black "End of queue" screen. The decision is taken before stop(): hasVideo() is about the loaded source.
+        const bool finishedVideo=!failed && videoOpen();
         ++mediaRequest_;loading_=false;player_->stop();status_="End of queue";
+        if(finishedVideo && qEnvironmentVariable("XMB_VIDEO_END_STAY")!=QLatin1String("1")) {
+            touch();
+            if(qEnvironmentVariableIsSet("XMB_MEDIA_TRACE"))qInfo()<<"media queue: video ended, returning to the XMB";
+            // Not back(): a message page that is open would swallow it and leave the finished player on screen.
+            closeMediaPlayback();emit changed();return;
+        }
         if(failed){abandonFailedMedia();showMessage("This file could not be played.",error,MessageKind::Page);}
         if(qEnvironmentVariableIsSet("XMB_MEDIA_TRACE"))qInfo()<<"media queue: stopped at end";
         emit changed();return;

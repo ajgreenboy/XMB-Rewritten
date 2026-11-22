@@ -17,12 +17,10 @@ the existing firmware assets. The decision logic is `src/player_chrome.h`, teste
 | 5 | Weak time bar, labels changing width | A dark rounded channel behind the track and a bright core line on the played part, over the unchanged firmware art. The labels were already 16 px per glyph cells; the left/right clock is now one function (`clockLabel`, always `HH:MM:SS`, tested) so the width cannot change across a minute or hour | bar frame; width by code and test (the old cells were not observed to change width) |
 | 7 | Two different buffering screens on Jellyfin start | One routine (`View::drawVideoBuffering`) draws the loading icon, wait bar and `msg_buffering`: centred on the load card, bottom left as the re-buffer overlay once a picture exists. The hardcoded "Buffering..." string and the hand-drawn arc are gone | card frame; the Jellyfin path and the mid-playback overlay by code only (no server in the capture rig) |
 | 8 | Dimmed icons not clearly unavailable; key row has no labels | Unavailable matrix icons draw at 0.3 (was 0.5). With the matrix open the eight key icons now carry their names: system_plugin `msg_back` / `msg_enter`, the video plugin's own previous/next/fast/display strings, and the first line of `msg_help_control_panel_home_menu` for START. Which word sits on which key is a design choice | matrix frame |
+| 6 | At the end of the queue the player sat on a black screen pinned at "End of queue" (position 0, Play) | **Decided (owner, 2026-11-21):** a video that reaches the end of its queue closes the player and returns to the XMB column it was started from (`Shell::advanceMediaQueue` -> `Shell::closeMediaPlayback`, the same teardown Circle uses, so resume point, subtitle/audio state, display-awake hold and the Jellyfin stop report are handled once). The queue's last item only: a multi-item queue advances as before, Repeat One and Repeat All keep looping, music keeps its page at "End of queue", and a title that failed keeps its error page. `XMB_VIDEO_END_STAY=1` restores the old black end screen. It does not go through `back()` (a message page that is open would swallow it and leave the finished player up), and it plays no Back cue (nobody pressed Circle). A Jellyfin episode with a next-episode offer still counts down first; the exit applies when the server names none | `work/video-end-e2e.ts`; frames under `C:/dev/out/video-end-captures` (private) |
 
 ## Not done / still open
 
-- **Item 6, end-of-clip behaviour (open, owner decision).** At the end of the queue the player stays on a black screen with
-  "End of queue" pinned. This change does not touch it. Options for the owner: return to the library row, show the console's
-  `videoplayer_playend_menu_list` style menu, or stay as is.
 - Item 8, Audio Options note wrapping: the note under the Audio Options panel still wraps to two lines; in the 1080p frame its
   second line ends about 15 px above the matrix plate and does not overlap it. Not changed.
 - The mid-playback re-buffer overlay and the Jellyfin start path were not captured (no Jellyfin server in the rig); they share the
@@ -31,6 +29,7 @@ the existing firmware assets. The decision logic is `src/player_chrome.h`, teste
 
 ## Verification
 
+- `bun work/video-end-e2e.ts` (item 6) drives the real player with short generated local clips (needs ffmpeg for the fixtures; it exits 2 rather than pass without them): single clip returns to the XMB column, a two-item queue advances then exits after the second, Repeat One keeps playing, `XMB_VIDEO_END_STAY=1` keeps the old end screen, a music file ends on its page. Oracles are the `media queue:` trace lines (`XMB_MEDIA_TRACE=1`) and the grab sidecar (`mediaOpen`, `category`, `depth`). A real Jellyfin server and a real pad were not used.
 - `xmb-player-chrome-tests` (new): video suffix rule, load-card decision including the 8 s release, shadow bounds, scrim shape,
   subtitle bands against the queue line and the matrix status row, fixed-width clock. Registered in `CMakeLists.txt`,
   `.github/workflows/tests.yml` and `work/ci-config-build.ps1`; `bun work/ci-guard.ts` passes.
