@@ -20,11 +20,24 @@
 #include <QtConcurrent/QtConcurrentRun>
 #include <cmath>
 #include <cstdio>
+#ifdef _WIN32
+#include <windows.h>
+#include <psapi.h>
+#pragma comment(lib,"psapi.lib")
+#endif
 
 namespace {
 int checks=0,failures=0;
 void check(bool condition,const char* label) {
     ++checks;if(!condition){++failures;std::fprintf(stderr,"FAIL: %s\n",label);}
+}
+// Peak working set of this process in bytes (0 where unsupported), to bound a large-feed parse.
+qint64 peakWorkingSetBytes() {
+#ifdef _WIN32
+    PROCESS_MEMORY_COUNTERS counters{};
+    if(GetProcessMemoryInfo(GetCurrentProcess(),&counters,sizeof(counters)))return qint64(counters.PeakWorkingSetSize);
+#endif
+    return 0;
 }
 }
 int main(int argc,char** argv) {
@@ -722,6 +735,22 @@ int main(int argc,char** argv) {
                                 {QStringLiteral("fileSize"),QStringLiteral("1 GB")}});
                         body=QJsonDocument(QJsonObject{{QStringLiteral("downloads"),downloads}}).toJson(QJsonDocument::Compact);
                     }
+                    if(request.contains("/source-feed-100k")) {
+                        // A synthetic 100k-entry release index (~50 MB), built once: the real large feeds are
+                        // 68k-110k games and 16.8-53 MB. Every entry carries a distinct name and one direct link.
+                        static QByteArray big;
+                        if(big.isEmpty()) {
+                            const QString pad(380,QLatin1Char('x'));
+                            big.reserve(55*1024*1024);
+                            big.append("{\"downloads\":[");
+                            for(int i=0;i<100000;++i) {
+                                if(i)big.append(',');
+                                big.append(QStringLiteral("{\"title\":\"Bulk Game %1\",\"uris\":[\"https://fixture/bulk%1.zip\"],\"fileSize\":\"1 GB\",\"uploadDate\":\"2024-01-01\",\"note\":\"%2\"}").arg(i,6,10,QLatin1Char('0')).arg(pad).toUtf8());
+                            }
+                            big.append("]}");
+                        }
+                        body=big;
+                    }
                     if(request.contains("/source-just-over-16m")) {
                         // A valid release-index body JUST over the old 16 MiB cap, now accepted by the
                         // 64 MiB source cap. The padding sits in a top-level field the fitgirl adapter
@@ -1137,6 +1166,24 @@ int main(int argc,char** argv) {
               "browsing a 50-game source returns every entry");
         check(sourceFeedRequests==largeFeedBefore+1 && sourcesListRequests==largeSourcesBefore && searchRequests==largeSearchBefore,
               "opening the large source costs exactly one feed GET and no directory/search requests");
+        // A 100k-entry (~50 MB) feed must open: above the 16 MiB directory cap, under the 64 MiB feed cap,
+        // with one feed GET and no per-game directory/search fan-out, in bounded time and memory.
+        {
+            feed.url=QUrl(base+QStringLiteral("/source-feed-100k"));feedGames.clear();fixtureError=QStringLiteral("stale error");
+            const int bigFeedBefore=sourceFeedRequests,bigSourcesBefore=sourcesListRequests,bigSearchBefore=searchRequests;
+            QElapsedTimer bigClock;bigClock.start();
+            const bool bigOk=HydraLibrary().browseSource(feed,&feedGames,&fixtureError);
+            const qint64 bigMs=bigClock.elapsed();
+            const qint64 peakMb=peakWorkingSetBytes()/(1024*1024);
+            std::fprintf(stderr,"note: 100k-entry feed: %d games in %lld ms, peak working set %lld MiB (fixture body included)\n",
+                         int(feedGames.size()),qint64(bigMs),qint64(peakMb));
+            check(bigOk && feedGames.size()==100000 && fixtureError.isEmpty(),"a 100k-entry (~50 MB) source feed opens with every entry");
+            check(sourceFeedRequests==bigFeedBefore+1 && sourcesListRequests==bigSourcesBefore && searchRequests==bigSearchBefore,
+                  "opening a 100k-entry feed costs one feed GET and no per-game directory/search fan-out");
+            check(bigMs<60000,"a 100k-entry feed parses in bounded time");
+            check(peakMb==0 || peakMb<3072,"a 100k-entry feed stays within a bounded memory footprint");
+            feedGames.clear();
+        }
         GameResult sourceOnly;sourceOnly.name=QStringLiteral("Fixture Search Game");
         GameSourceOption feedStandard;feedStandard.source=QStringLiteral("Fixture Feed");feedStandard.sourceUrl=QStringLiteral("https://fixture/feed.json");
         feedStandard.releaseTitle=QStringLiteral("Fixture Search Game Standard");feedStandard.fileSize=QStringLiteral("3 GB");
