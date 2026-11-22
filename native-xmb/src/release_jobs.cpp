@@ -5,6 +5,7 @@
 #include "content_registry.h"
 #include "pending_installers.h"
 #include "diagnostics.h"
+#include "credential_store.h"
 #include <QDesktopServices>
 #include <QDir>
 #include <QElapsedTimer>
@@ -34,8 +35,6 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
-#include <dpapi.h>
-#pragma comment(lib, "crypt32.lib")
 #endif
 
 namespace xmb {
@@ -151,27 +150,8 @@ bool destinationReady(const Request& request,const QString& path) {
     return !request.volume.isEmpty() && libraryVolume(path)==request.volume;
 }
 
-QByteArray protectQueue(const QByteArray& input,bool encrypt) {
-#ifdef Q_OS_WIN
-    if(input.isEmpty() || input.size()>MaxQueueBytes)return {};
-    QByteArray entropy=QByteArrayLiteral("xmb-release-download-queue-v1");
-    DATA_BLOB source{DWORD(input.size()),reinterpret_cast<BYTE*>(const_cast<char*>(input.constData()))};
-    DATA_BLOB additional{DWORD(entropy.size()),reinterpret_cast<BYTE*>(entropy.data())};
-    DATA_BLOB output{};
-    const BOOL ok=encrypt
-        ? CryptProtectData(&source,L"XMB download queue",&additional,nullptr,nullptr,CRYPTPROTECT_UI_FORBIDDEN,&output)
-        : CryptUnprotectData(&source,nullptr,&additional,nullptr,nullptr,CRYPTPROTECT_UI_FORBIDDEN,&output);
-    if(!ok)return {};
-    const QByteArray result(reinterpret_cast<const char*>(output.pbData),output.cbData);
-    SecureZeroMemory(output.pbData,output.cbData);
-    LocalFree(output.pbData);
-    return result;
-#else
-    Q_UNUSED(input)
-    Q_UNUSED(encrypt)
-    return {};
-#endif
-}
+const QString CredentialRecord = QStringLiteral("xmb-release-download-queue-v1");
+const QString CredentialDescription = QStringLiteral("XMB download queue");
 
 bool saveAtomic(const QString& path,const QByteArray& bytes) {
     QSaveFile file(path);
@@ -578,7 +558,7 @@ bool Shell::saveReleaseJobs() const {
     QJsonArray records;
     for(const auto& job:releaseJobs_->jobs)records.append(storedJob(job));
     auto clear=QJsonDocument(QJsonObject{{"version",1},{"jobs",records}}).toJson(QJsonDocument::Compact);
-    const QByteArray protectedBytes=protectQueue(clear,true);
+    const QByteArray protectedBytes=xmb::sealCredential(CredentialRecord, clear, CredentialDescription);
     clear.fill('\0');
     if(protectedBytes.isEmpty() || protectedBytes.size()>MaxQueueBytes || !QDir().mkpath(dataDirectory_) ||
        !saveAtomic(queuePath(dataDirectory_),protectedBytes)) {
@@ -598,7 +578,7 @@ void Shell::restoreReleaseJobs() {
         qWarning("Could not read the XMB download queue");
         return;
     }
-    auto clear=protectQueue(file.read(MaxQueueBytes+1),false);
+    auto clear=xmb::unsealCredential(CredentialRecord, file.read(MaxQueueBytes+1));
     file.close();
     const auto saved=QJsonDocument::fromJson(clear).object();
     clear.fill('\0');
