@@ -7,6 +7,31 @@
 #include <vector>
 #include "bd_remote.h"
 
+// ---- XInput wButtons layout, portable (audit/INPUT.md) ----
+// The shell's navigation body (View::pollController) names these bits by their Xinput.h macro names. Windows
+// includes <Xinput.h>; everywhere else this identical-value shim stands in, so the one navigation path serves
+// every backend and platform with no duplicated logic. The values are the same wButtons layout pad.cpp applies
+// HID reports into (its up/down/left/right/start/select/l3/r3/l1/r1/ps/cross/circle/square/triangle bits) and
+// sdlButtonBit() maps SDL2 buttons onto, so PlayStation-HID, XInput and SDL2 controllers all arrive as the same
+// bits. Mirrors Xinput.h's XINPUT_GAMEPAD_* set exactly (0x1..0x8000).
+#if !defined(Q_OS_WIN)
+#define XINPUT_GAMEPAD_DPAD_UP          0x0001
+#define XINPUT_GAMEPAD_DPAD_DOWN        0x0002
+#define XINPUT_GAMEPAD_DPAD_LEFT        0x0004
+#define XINPUT_GAMEPAD_DPAD_RIGHT       0x0008
+#define XINPUT_GAMEPAD_START            0x0010
+#define XINPUT_GAMEPAD_BACK             0x0020
+#define XINPUT_GAMEPAD_LEFT_THUMB       0x0040
+#define XINPUT_GAMEPAD_RIGHT_THUMB      0x0080
+#define XINPUT_GAMEPAD_LEFT_SHOULDER    0x0100
+#define XINPUT_GAMEPAD_RIGHT_SHOULDER   0x0200
+#define XINPUT_GAMEPAD_GUIDE            0x0400
+#define XINPUT_GAMEPAD_A                0x1000
+#define XINPUT_GAMEPAD_B                0x2000
+#define XINPUT_GAMEPAD_X                0x4000
+#define XINPUT_GAMEPAD_Y                0x8000
+#endif
+
 namespace xmb {
 // PlayStation controllers read straight over HID: DualShock 3 (USB), DualShock 4 and DualSense (USB or Bluetooth),
 // so no driver or Steam layer is needed. Ported from MaXMB (MIT, src-tauri/src/hidpad.rs): the same report layouts

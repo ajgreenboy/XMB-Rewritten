@@ -6524,7 +6524,7 @@ void View::focusOutEvent(QFocusEvent* e) {
     QOpenGLWidget::focusOutEvent(e);
 }
 void View::pollController() {
-#ifdef Q_OS_WIN
+#if defined(Q_OS_WIN) || defined(Q_OS_LINUX)
     // The BD remote's media-key presses are taken every tick so a press made while the XMB was not in front is dropped
     // here rather than fired later; the scripted gate empties them in the pad reader.
     const auto bdActions=pad::takeRemoteActions();
