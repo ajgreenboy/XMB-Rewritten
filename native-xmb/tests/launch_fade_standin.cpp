@@ -14,12 +14,13 @@
 // Log lines (at = milliseconds since the Unix epoch, comparable with the XMB's "launch-cover:" lines):
 //   started pid=<pid> at=<ms>
 //   probe at=<ms> top="<title>" toppid=<pid> pixel=<r>,<g>,<b> foreground=<0|1>   every 50 ms, the topmost visible window
-//                                                                                 over the monitor centre and its pixel
+//                                                                                 over the XMB monitor's centre and its pixel
 //   shown at=<ms> | fullscreen at=<ms> | exit at=<ms> code=<n>
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <dwmapi.h>
 #include <shellapi.h>
+#include <tlhelp32.h>
 
 #include <cstdio>
 #include <string>
@@ -48,11 +49,38 @@ void logLine(const std::string& line) {
     std::fclose(f);
 }
 
-RECT primaryMonitor() {
+// The monitor the launching XMB is on: the one its largest visible window (the parent process's) mostly covers. The
+// launch cover spans that monitor, so that is where the stand-in looks and opens. Primary when there is no parent window.
+RECT targetMonitor() {
+    static RECT cached{};
+    static bool done = false;
+    if (done) return cached;
+    done = true;
+    DWORD parent = 0;
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snap != INVALID_HANDLE_VALUE) {
+        PROCESSENTRY32W e{};
+        e.dwSize = sizeof(e);
+        for (BOOL ok = Process32FirstW(snap, &e); ok; ok = Process32NextW(snap, &e))
+            if (e.th32ProcessID == GetCurrentProcessId()) { parent = e.th32ParentProcessID; break; }
+        CloseHandle(snap);
+    }
+    struct Best { DWORD pid; HWND hwnd; long long area; } best{parent, nullptr, 0};
+    if (parent) EnumWindows([](HWND h, LPARAM lp) -> BOOL {
+        auto* b = reinterpret_cast<Best*>(lp);
+        DWORD pid = 0;
+        GetWindowThreadProcessId(h, &pid);
+        RECT r{};
+        if (pid != b->pid || !IsWindowVisible(h) || !GetWindowRect(h, &r)) return TRUE;
+        const long long area = (long long)(r.right - r.left) * (r.bottom - r.top);
+        if (area > b->area) { b->area = area; b->hwnd = h; }
+        return TRUE;
+    }, reinterpret_cast<LPARAM>(&best));
     MONITORINFO mi{};
     mi.cbSize = sizeof(mi);
-    GetMonitorInfoW(MonitorFromPoint(POINT{0, 0}, MONITOR_DEFAULTTOPRIMARY), &mi);
-    return mi.rcMonitor;
+    GetMonitorInfoW(best.hwnd ? MonitorFromWindow(best.hwnd, MONITOR_DEFAULTTOPRIMARY) : MonitorFromPoint(POINT{0, 0}, MONITOR_DEFAULTTOPRIMARY), &mi);
+    cached = mi.rcMonitor;
+    return cached;
 }
 
 struct TopSearch { POINT at; HWND found; };
@@ -66,7 +94,7 @@ std::string narrow(const wchar_t* text) {
 // EnumWindows walks top-level windows in z-order, topmost first: the first visible, uncloaked one containing the point
 // is what the user sees there (layered, click-through windows included, which WindowFromPoint would skip).
 void probe() {
-    const RECT m = primaryMonitor();
+    const RECT m = targetMonitor();
     TopSearch search{POINT{(m.left + m.right) / 2, (m.top + m.bottom) / 2}, nullptr};
     EnumWindows([](HWND h, LPARAM lp) -> BOOL {
         auto* s = reinterpret_cast<TopSearch*>(lp);
@@ -132,7 +160,7 @@ long long number(const std::vector<std::wstring>& args, const wchar_t* flag, lon
 }
 
 void goFullscreen(HWND window) {
-    const RECT m = primaryMonitor();
+    const RECT m = targetMonitor();
     SetWindowLongPtrW(window, GWL_STYLE, WS_POPUP | WS_VISIBLE);
     SetWindowPos(window, HWND_TOP, m.left, m.top, m.right - m.left, m.bottom - m.top, SWP_FRAMECHANGED | SWP_SHOWWINDOW);
 }
@@ -180,7 +208,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
         if (now >= maxMs) break;
         if (exitAfter >= 0 && now >= exitAfter) { code = 3; break; }
         if (!never && !g_window && now >= showAfter) {
-            const RECT m = primaryMonitor();
+            const RECT m = targetMonitor();
             if (borderless) {
                 g_window = CreateWindowExW(0, wc.lpszClassName, L"Launch Fade Standin", WS_POPUP, m.left, m.top, m.right - m.left,
                                            m.bottom - m.top, nullptr, nullptr, instance, nullptr);
