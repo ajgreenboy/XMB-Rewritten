@@ -37,6 +37,9 @@
 // enableShutdownPrivilege() are always real (read-only / process-token-only, nothing shuts down).
 // Windows only; on other platforms every request fails with "not supported on this platform".
 #include <QString>
+#include <QStringList>
+
+#include <functional>
 
 namespace xmb {
 
@@ -80,5 +83,25 @@ bool requestShutdown(QString* error=nullptr);
 bool turnDisplayOff(QString* error=nullptr,quintptr window=0);
 // LockWorkStation(): asynchronous; true means the lock was requested.
 bool lockWorkstation(QString* error=nullptr);
+
+#ifdef Q_OS_LINUX
+// ---- Linux test seam ------------------------------------------------------------------------------
+// The systemctl/loginctl invocation each power request maps to, exposed so a unit test can assert the
+// mapping without powering the machine off. Linux has no GetPwrCapabilities-style probe: the real
+// sleep/hibernate capabilities come from /sys/power/state, and the requests go through logind.
+enum class LinuxPowerAction { Sleep, Hibernate, Restart, Shutdown, Lock };
+struct LinuxPowerCommand {
+    QString program;
+    QStringList arguments;
+    bool valid = false;
+};
+LinuxPowerCommand linuxPowerCommand(LinuxPowerAction action);
+
+// Installs a stand-in for the process that performs a Linux power action. The default runner spawns
+// systemctl/loginctl; a test installs a recorder (return true = "accepted") so the request routing is
+// asserted without actually suspending/shutting down the host. Pass an empty std::function to restore
+// the default.
+void setLinuxPowerRunnerForTest(std::function<bool(LinuxPowerAction action, QString* error)> runner);
+#endif
 
 } // namespace xmb
