@@ -139,7 +139,7 @@ hide ramp (200 ms) is a fit — the console burst separates the trigger point, n
 
 ### Status (implemented; see `osk_pad_input.h`, `tests/osk_pad_input_tests.cpp`)
 - **I64 closed:** L1/R1 run `CaretLeft`/`CaretRight` through `View::oskPadAction`, the same code the on-screen arrow keys use.
-- **I65 partly closed:** R2 toggles lower/caps (the `a/A` key's action). L2 is routed to the `Accent` action but stays **inert**:
+- **I65 closed (2026-11-21):** the accent rows were decoded (OSK-FIRMWARE 3.4: label-table ids 0x5cc and 0x5e0), the layout carries `accent` and `accentCaps` pages, and L2 / the `a/a-grave` key flips the accent state while R2 / the `a/A` key flips the capital state (lower -> accent, caps -> accentCaps, and back). The page rows are traced; the L2/R2 state model, the mode-cell glyph and PageUp/PageDown on a keyboard are inferred. Superseded text of the earlier partial closure: L2 was routed to the `Accent` action but stayed **inert**:
   the accent rows (`a/a-grave` page) are not decoded in `osk_layout.cpp` or the module data this audit holds (OSK-FIRMWARE 5, 13;
   only the palette's `extras` are recorded), so no page exists to open and none was invented. `oskPageForAction` already opens
   a page named `accent` if a layout ever carries one. L2/R2 are analog triggers, edge-detected at 0.5 with a 0.25 re-arm (a fit).

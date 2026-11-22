@@ -92,7 +92,7 @@ the stick. L2/R2 are read as analog axes and never merged into the navigation bi
 | A36 OSK | Cross/Circle/Square/Triangle | Press key / back / backspace / space, read from the key badges (OSK-FIRMWARE 6 table) | **matches** - view.cpp:2994-2997 | P1 |
 | A37 OSK | START | Accept and close (badge START on the Enter key) | **matches** - view.cpp:2998 | P2 |
 | A38 OSK | L1/R1 | Move the text caret left/right without deleting (badges on the arrow keys) | **absent** - L1/R1 are read only for photo zoom and media skip; the on-screen caret keys work (osk_layout.cpp:370-371, view.cpp:3173) | P2 |
-| A39 OSK | L2/R2 | Accent page / caps page (badges on a/a-grave and a/A) | **absent** - the triggers are consumed by the volume ramp (view.cpp:2945); the a/A key switches page (view.cpp:3167) but no trigger binding exists | P2 |
+| A39 OSK | L2/R2 (accent page implemented 2026-11-21: BEHAVIOUR-GAPS-SPEC 3, OSK-FIRMWARE 3.4) | Accent page / caps page (badges on a/a-grave and a/A) | **absent** - the triggers are consumed by the volume ramp (view.cpp:2945); the a/A key switches page (view.cpp:3167) but no trigger binding exists | P2 |
 | A40 OSK | SELECT | Input Mode (badge SELECT on that key) | **absent** - SELECT is never read; pressing the on-screen key only logs "Input Mode is unavailable" (view.cpp:3175) | P2 |
 | A41 OSK | Shift+Backspace, Alt+Enter | Delete all and line break, documented by the panel's own strings `msg_del_all_shift_backspace_osk` / `msg_line_break_alt_enter_osk` (OSK 6) | **absent** - no delete-all or line-break path in the keyboard handler (view.cpp:2853-2870) | P3 |
 | A42 OSK | held D-pad | The OSK's own repeat was never timed (OSK 537) | **unprovable** - native repeats with the XMB's 300/67 rule (view.cpp:2999) | P3 |

@@ -338,6 +338,45 @@ Object names it looks up: `fullkey_panel`, `fullkey_osk_init_point`, `fullkey_os
 `fullkey_disable_menuelist_text`, `symbol_palette*`, `notify_window*`, `copy_window*`,
 `osk_pointer`, `move_pointer`.
 
+### 3.4 The accent page rows (decoded 2026-11-21) -- M for the rows, F for the behaviour
+
+The accent rows were missing from sections 3.1-3.2 because the string scan stopped at the first non-ASCII
+character (an ASCII-only run of "a-grave a-acute ..." is empty) and the label-table scan accepted ids only up to
+0x400. Scanning for UTF-16BE runs that contain U+00C0..U+017F, and raising the id limit to 0x800, finds two more
+five-record layout groups in the same label table, directly before the Polish variant:
+
+| Label-table ids | Module string offsets | Rows (4 x 10 glyphs, then the blank terminator) |
+|---|---|---|
+| 0x5cc-0x5dc | 0x409c0, 0x409d8, 0x409f0, 0x40a08 | lower accent page |
+| 0x5e0-0x5f0 | 0x40a20, 0x40a38, 0x40a50, 0x40a68 | capital accent page |
+
+The glyph codepoints (transcribed as the constants in `src/osk_accent_rows.h`; no firmware bytes are stored):
+
+```
+lower    U+00E0-U+00E7 [ ]      U+00E8-U+00EF ; :      U+00F1-U+00F6 U+00F8 U+0153 ` U+00A1     U+00DF U+00F9-U+00FD U+00FF , . U+00BF
+capital  U+00C0-U+00C7 < >      U+00C8-U+00CF = +      U+00D1-U+00D6 U+00D8 U+0152 ~ "          U+00DF U+00D9-U+00DD U+0178 - _ /
+```
+
+(a-grave..c-cedilla; e-grave..i-diaeresis; n-tilde..o-diaeresis, o-slash, oe; sharp s, u-grave..y-acute, y-diaeresis.)
+The page replaces **all four** character rows of the lower/caps page, including the digit row; the function rows
+(`@#:`, `a/a-grave`, `a/A`, Backspace, Space, the arrows, Input Mode, Enter) are the same keys. Each string is also
+referenced from a pointer table at file 0x44388-0x443a8 (the layout builder's copy of the same eight pointers), which
+is the second place the rows appear. The same module carries further Latin variants right after (Polish at ids
+0x5f4/0x608, Turkish later); those are other keyboard types, not this page, and are not used here.
+
+Evidence classes for the native page:
+
+- **Traced:** the eight row strings, their order (lower group before capital group), their ids, and that both pages
+  exist as modes (`MODE_GUIDE_ALPHABET_ACCENT` and `MODE_GUIDE_ALPHABET_ACCENT_CAP`, section 3.3).
+- **Inferred, not traced:** the mode-cell glyph (drawn as a-grave / A-grave text; the module's guide pictures were not
+  opened); that L2 flips only the accent state and R2 only the capital state (lower -> accent -> lower,
+  caps -> accentCaps -> caps, R2 on accent -> accentCaps), which is how the two key faces read but was not captured on
+  the console; the function-row key faces on the accent pages (copied from lower/caps); and the PageUp/PageDown
+  keyboard binding (a convenience of this build).
+- **Not decoded:** the sharp s on the capital page is the lower-case U+00DF in the module (kept as is), and no
+  dead-key or compose behaviour exists: a key inserts its own codepoint. The accent page has not been captured from a
+  console; the native frame is a recreation from the rows above, so a pixel comparison against the firmware is open.
+
 ## 4. The measured layout at 1920x1080 -- M
 
 All numbers are pixels measured from the reference frames named in section 9, with
@@ -517,7 +556,7 @@ RPCS3 (Cross PgDown / Circle PgUp mapped through a temporary keyboard handler, s
 | Square ([square]) | backspace, same as the Backspace key (badge [square] on that key) |
 | Triangle ([triangle]) | space, same as the Space key (badge [triangle] on that key) |
 | L1 / R1 | move the text caret left / right (badges on [left] [right]) |
-| L2 / R2 | accent page / caps page (badges on a/a-grave and a/A) |
+| L2 / R2 | accent page / caps page (badges on a/a-grave and a/A); the four-page model is in section 3.4 |
 | SELECT | Input Mode (badge SELECT on that key) |
 | START | Enter / accept (badge START on that key) |
 | D-pad | move the key focus |
@@ -1117,7 +1156,7 @@ column 4 = `g`), so the default focus is the firmware's and is not a constant in
 | `oskMove` | palette first when `paletteOpen`; otherwise the page's own row count with wrap, and the horizontal step uses the focused key's `span` (`column+span` right, `column-1` left), so a wide key is jumped whole and a vertical move snaps to a key's left column |
 | `oskPaletteMove` | 7 columns with wrap, 5 visible rows, `maxScroll` computed from `symbols.size()` |
 | `oskPalettePress` | inserts `symbolAtCell(row,column,scroll)` at the caret and closes the popup (F: the capture never shows an accept; Back is the traced exit) |
-| `oskPress` | dispatches every `OskAction`: Character, Backspace, Space, Shift (lower <-> caps by page name), Palette, Enter (accept), MoveUp/MoveDown, CaretLeft/CaretRight (all via `oskPadAction`, which the pad's L1/R1/L2/R2/SELECT also call), and the ones the native build cannot honour log once each - `Accent` ("accent page is not captured"), `Mode` ("Input Mode is unavailable (no IME modules)"), `Copy`/`Paste` ("not wired to a clipboard yet") |
+| `oskPress` | dispatches every `OskAction`: Character, Backspace, Space, Shift (lower <-> caps by page name), Palette, Enter (accept), MoveUp/MoveDown, CaretLeft/CaretRight (all via `oskPadAction`, which the pad's L1/R1/L2/R2/SELECT also call), and the ones the native build cannot honour log once each - `Accent` (opens the accent page; logs only on a layout with none, the tenkey panel), `Mode` ("Input Mode is unavailable (no IME modules)"), `Copy`/`Paste` ("not wired to a clipboard yet") |
 
 Escape and Circle are one layer at a time: the palette closes first, the keyboard second (`keyPressEvent`,
 `pollController`). Section 13.1's measured blink (period ~936 ms, lit ~470/dark ~440) post-dates the committed
