@@ -53,3 +53,7 @@ in `src/player_chrome.h` and is covered by `xmb-player-chrome-tests`.
 
 Not changed: the "Not on the console: ..." help lines of the native slots, the mid-playback re-buffer overlay placement.
 Frames are private (`C:/dev/out/player-polish-2-captures`).
+
+Gate (`work/ab-layers.ts --all`): 27 of 28 states pass. `subtitle-cue` fails its full-frame score (PSNR 36.09, SSIM 0.9979) while its
+cue band passes: the queue line under the video at y 895 now reads "1 / 2" instead of "Track 1 of 2" (item 3, intended). Reported,
+not rebaselined.
