@@ -28,6 +28,7 @@ const flash = 'C:/dev/rpcs3/bin/dev_flash';
 const dataSeed = arg('--data-seed', 'C:/dev/out/ingame-bg-run/data');
 const here = import.meta.dir.replace(/\\/g, '/');
 const sampler = `${here}/ingame-bg-sampler.ps1`;
+const foreground = `${here}/ingame-bg-foreground.ps1`;
 const win = (s: string) => s.split('/').join(String.fromCharCode(92));
 const rep = (t: string, n: number) => Array(n).fill(t);
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -95,6 +96,8 @@ async function runVariant(variant: string): Promise<string | void> {
   const sam = Bun.spawn(['powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', win(sampler), '-Dir', win(`${dir}/shots`), '-Ms', '36000', ...(device ? ['-Device', device] : [])], { stdout: 'ignore', stderr: 'ignore' });
   const xmb = Bun.spawn([exe, '--dev-flash', flash, '--data-dir', `${dir}/data`, '--no-intro', '--steam-root', `${dir}/steamroot`, ...(display ? ['--kiosk', '--display', display] : []), '--script', script.join(',')],
     { stdout: 'ignore', stderr: 'ignore', env });
+  // The XMB launches the stand-in, and a title started by a background process cannot take the foreground: make sure the XMB we started is in front first.
+  for (const ms of [1200, 2200, 3000]) setTimeout(() => { Bun.spawn(['powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', win(foreground), '-ProcessId', String(xmb.pid)], { stdout: 'ignore', stderr: 'ignore' }); }, ms);
   const killer = setTimeout(() => xmb.kill(), 60000);
   let enterAt = 0;
   const poll = setInterval(() => { if (!enterAt && existsSync(`${dir}/xmb.log`) && /ingame: enter reason/.test(readFileSync(`${dir}/xmb.log`, 'utf8'))) enterAt = Date.now(); }, 25);
@@ -142,14 +145,14 @@ async function runVariant(variant: string): Promise<string | void> {
   writeFileSync(`${dir}/match.txt`, rows.join('\n'));
   const barMin = Math.min(...bars), barMax = Math.max(...bars);
   console.log(`   samples ${xmbFront.length}, explained by a game frame ${explained}; bar x ${barMin}..${barMax}; ${variant === 'none' ? `first backdrop movement at t0+${firstMove} ms` : ''}`);
-  check(`${variant}: every sampled pixel behind the XMB is a dimmed game frame (colour and bar phase), not black/desktop/another window`, xmbFront.length > 30 && explained >= xmbFront.length * 0.98, `${explained}/${xmbFront.length}`);
+  check(`${variant}: every sampled pixel behind the XMB is a dimmed game frame (colour and bar phase), not black/desktop/another window`, xmbFront.length > 30 && explained >= xmbFront.length - (variant === 'none' ? 1 : 0), `${explained}/${xmbFront.length}${variant === 'none' ? ' (one sample may straddle the frozen-to-live switch: the strip and the points are read a few ms apart)' : ''}`);
   if (variant === 'none') {
     // A title that keeps running: frozen on the entry frame first, then live once frames are proven to keep arriving (~300 ms).
     const stale = liveAges.length ? liveAges.reduce((a, b) => a + b, 0) / liveAges.length : -1;
     check(`${variant}: the backdrop goes live while the title keeps drawing`, firstMove >= 150 && firstMove <= 1200 && barMax - barMin > 100, `first movement t0+${firstMove} ms, mean frame age ${stale.toFixed(0)} ms, bar swept ${barMax - barMin} px`);
   } else if (lastGood) {
     // The title blanked, paused or minimised: the backdrop is the frame that was on screen at focus loss, and it stays.
-    const still = bars.every((b) => circ(b, bars[0]) <= 3);
+    const still = bars[0] >= 0 && bars.every((b) => circ(b, bars[0]) <= 3);
     const expectNow = (s: Sample) => (lastGood.bar + 0.25 * (s.t - lastGood.t)) % 1920;
     const late = xmbFront.filter((s) => s.t >= t0 + 700);
     const notNow = late.every((s) => circ(s.bar, expectNow(s)) > 60);   // had the game gone on, the bar would be 175+ px further along
@@ -160,6 +163,10 @@ async function runVariant(variant: string): Promise<string | void> {
 
 mkdirSync(outRoot, { recursive: true });
 const variants = variantArg === 'all' ? ['none', 'minimize', 'pause', 'black'] : variantArg.split(',');
-for (const v of variants) { for (let attempt = 1; attempt <= 5; attempt++) { if ((await runVariant(v)) !== 'void') break; console.log(`   retrying ${v} (attempt ${attempt + 1})`); } }
+for (const v of variants) {
+  let result: string | void = 'void';
+  for (let attempt = 1; attempt <= 6 && result === 'void'; attempt++) { if (attempt > 1) console.log(`   retrying ${v} (attempt ${attempt})`); result = await runVariant(v); }
+  check(`${v}: a clean run was obtained (no other window took the foreground)`, result !== 'void');
+}
 console.log(failures ? `\n${failures} check(s) FAILED` : '\nall checks passed');
 process.exit(failures ? 1 : 0);
