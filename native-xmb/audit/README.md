@@ -174,6 +174,7 @@ native diff.
 | [TEXT-ENTRY.md](TEXT-ENTRY.md), [ZF-TEXT-ENTRY.md](ZF-TEXT-ENTRY.md) | Shell text entry; text entry into a running title |
 | [OSK-PASTE.md](OSK-PASTE.md) | Pasting the Windows clipboard into the on-screen keyboard (Ctrl+V, Shift+Insert, the Paste key) |
 | [PS-INGAME-HOOK.md](PS-INGAME-HOOK.md), [INGAME-XMB-DESIGN.md](INGAME-XMB-DESIGN.md) | The PS button and the XMB over a running game |
+| [GAME-LAUNCH-FADE.md](GAME-LAUNCH-FADE.md) | Launching a title behind a black cover and fading into its window (design choice, not firmware) |
 | [DESKTOP-MODE.md](DESKTOP-MODE.md) | Desktop Mode, single instance, controller-driven desktop |
 | [AUTOLOGON.md](AUTOLOGON.md) | Windows automatic sign-in status |
 | [BOOT-TIME.md](BOOT-TIME.md) | Boot time |
