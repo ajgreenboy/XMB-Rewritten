@@ -2064,7 +2064,9 @@ void View::closePsnSignIn() {
 }
 void View::psnEditField(psn::Field field) {
     const bool password=field==psn::Field::Password;
-    const QString title=assets_.text("npsignin_plugin",password?"msg_pw":"msg_id_email",password?"Password":"Sign-In ID (E-mail Address):");
+    const char* const labelKey=password?"msg_pw":"msg_id_email";
+    const QString labelFallback=password?QStringLiteral("Password"):QStringLiteral("Sign-In ID (E-mail Address):");
+    const QString title=assets_.text("npsignin_plugin",labelKey,labelFallback);
     const QString initial=password?userCreate_.form.password:userCreate_.form.email;
     openOsk(title,initial,[this,password](const QString& value){
         if(!userCreate_.open || !userCreate_.psn)return;
