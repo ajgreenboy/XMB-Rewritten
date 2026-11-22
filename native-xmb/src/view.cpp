@@ -4316,8 +4316,9 @@ void View::drawVideoTimeBar(QPainter& p,qint64 position,qint64 duration,double o
     // Contrast (design choice): the firmware art is a thin pale track that vanishes over light video. A dark rounded
     // channel behind it gives the track an edge on any frame, and the played part gets a bright core line on top of
     // the firmware fill, so the position reads at a glance. Both scale with the scene and follow the chrome opacity.
+    const bool video=shell_.videoOpen();   // the music page shares this bar and keeps the firmware look
     p.save();p.setPen(Qt::NoPen);
-    p.setBrush(QColor(0,0,0,150));p.drawRoundedRect(QRectF(bar.left()-3.,bar.top()+2.,bar.width()+6.,bar.height()-4.),7.,7.);
+    if(video){p.setBrush(QColor(0,0,0,150));p.drawRoundedRect(QRectF(bar.left()-3.,bar.top()+2.,bar.width()+6.,bar.height()-4.),7.,7.);}
     p.restore();
     // The track: the 30x20 progression tile nine-sliced (8 px caps keep the end caps at their own width).
     drawNineSlice(p,"videoplayer_plugin","tex_progress_bar",bar,8.,opacity);
@@ -4325,9 +4326,11 @@ void View::drawVideoTimeBar(QPainter& p,qint64 position,qint64 duration,double o
         const QRectF played(bar.left(),bar.top(),bar.width()*ratio,bar.height());
         if(played.width()>=16.)drawNineSlice(p,"videoplayer_plugin","tex_progress_bar_in",played,8.,opacity);
         else{p.save();p.setOpacity(opacity);p.drawImage(played,fill);p.restore();}
-        p.save();p.setPen(Qt::NoPen);p.setBrush(QColor(255,255,255,235));
-        p.drawRoundedRect(QRectF(played.left()+1.,bar.top()+bar.height()/2.-2.5,std::max(0.,played.width()-2.),5.),2.5,2.5);
-        p.restore();
+        if(video) {
+            p.save();p.setPen(Qt::NoPen);p.setBrush(QColor(255,255,255,235));
+            p.drawRoundedRect(QRectF(played.left()+1.,bar.top()+bar.height()/2.-2.5,std::max(0.,played.width()-2.),5.),2.5,2.5);
+            p.restore();
+        }
     }
     // The jump indicator marks a position on the bar (its own 20x12 art). This build seeks
     // instantaneously and has no scrub state, so there is no pending jump target to mark: it marks the
