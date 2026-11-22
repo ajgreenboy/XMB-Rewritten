@@ -14,9 +14,11 @@ const yml = readFileSync(join(root, ".github", "workflows", "tests.yml"), "utf8"
 const problems: string[] = [];
 
 // Deliberately NOT in CI: needs a real interactive desktop (it opens fullscreen windows). Run by hand, see
-// native-xmb/audit/INGAME-OVERLAY-DESIGN.md. Add a name here only with a reason.
-const manualOptions = new Set(["XMB_OVERLAY_BUILD_TESTS"]);
-const manualTargets = new Set(["xmb-overlay-standin"]);
+// native-xmb/audit/INGAME-OVERLAY-DESIGN.md. The Steam Linux discovery tests are likewise out: they
+// exercise the $HOME-based ~/.steam/steam and ~/.local/share/Steam paths that only the Linux port hosts,
+// which the windows-latest CI runner never builds. Add a name here only with a reason.
+const manualOptions = new Set(["XMB_OVERLAY_BUILD_TESTS", "XMB_STEAM_LINUX_BUILD_TESTS"]);
+const manualTargets = new Set(["xmb-overlay-standin", "xmb-steam-linux-tests"]);
 
 const options = [...new Set([...cmake.matchAll(/^\s*option\((XMB_[A-Z0-9_]+_BUILD_TESTS)\b/gm)].map((m) => m[1]))];
 const enabled = new Set([...yml.matchAll(/-D(XMB_[A-Z0-9_]+_BUILD_TESTS)=ON/g)].map((m) => m[1]));
