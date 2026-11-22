@@ -7,6 +7,7 @@
 #include <atomic>
 #include <chrono>
 #include <deque>
+#include <map>
 #include <optional>
 #include <mutex>
 #include <set>
@@ -22,6 +23,8 @@ extern "C" {
 #include <hidpi.h>
 }
 #include <Xinput.h>
+#elif defined(Q_OS_LINUX)
+#include <SDL2/SDL.h>
 #endif
 
 namespace xmb::pad {
@@ -553,6 +556,164 @@ void read(Device device,std::mutex* openMutex,std::set<std::wstring>* open) {
     }
     const std::lock_guard lock(*openMutex);open->erase(path);
 }
+#elif defined(Q_OS_LINUX)
+// ---- SDL2 GameController backend (Linux) ----
+// SDL2 unifies DualShock 3/4, DualSense, Xbox and generic pads behind SDL_GameController, so no per-device
+// driver or HID report parsing is needed here. One detached thread owns SDL (init, the event pump for hotplug
+// and the per-controller read). Sony controllers (vendor 0x054c) are reported through the PlayStation path
+// (State/Info -> the PS panel and accessory settings); every other controller goes through the XInput path
+// (XInputState/xinputPads), the same split the Windows build makes. The newest PlayStation reading wins, as
+// Windows' reader threads do; non-Sony controllers merge exactly like xinputRead() (strongest stick wins).
+
+bool sdlSonyKind(Uint16 product,Kind& kind) {   // the same table kindOf() uses on Windows
+    switch(product) {
+    case 0x0268:kind=Kind::Ds3;return true;
+    case 0x05c4:case 0x09cc:case 0x0ba0:kind=Kind::Ds4;return true;
+    case 0x0ce6:case 0x0df2:kind=Kind::DualSense;return true;
+    default:return false;
+    }
+}
+QString sdlBatteryText(SDL_JoystickPowerLevel level) {   // the same coarse wording xinputBatteryText() gives
+    switch(level) {
+    case SDL_JOYSTICK_POWER_WIRED:return QStringLiteral("wired");
+    case SDL_JOYSTICK_POWER_FULL:return QStringLiteral("full");
+    case SDL_JOYSTICK_POWER_MEDIUM:return QStringLiteral("medium");
+    case SDL_JOYSTICK_POWER_LOW:return QStringLiteral("low");
+    case SDL_JOYSTICK_POWER_EMPTY:return QStringLiteral("empty");
+    default:return QStringLiteral("unknown");
+    }
+}
+// SDL reports battery as a coarse power level, not the percentage a DualShock 4/DualSense report carries, so the
+// PS panel shows a conservative mid-band percentage and "-" when SDL knows nothing.
+void sdlPsBattery(SDL_JoystickPowerLevel level,Info& info) {
+    switch(level) {
+    case SDL_JOYSTICK_POWER_WIRED:info.batteryPercent=100;info.charging=QStringLiteral("full");break;
+    case SDL_JOYSTICK_POWER_FULL:info.batteryPercent=100;info.charging=QStringLiteral("full");break;
+    case SDL_JOYSTICK_POWER_MEDIUM:info.batteryPercent=60;info.charging=QStringLiteral("discharging");break;
+    case SDL_JOYSTICK_POWER_LOW:info.batteryPercent=25;info.charging=QStringLiteral("discharging");break;
+    case SDL_JOYSTICK_POWER_EMPTY:info.batteryPercent=0;info.charging=QStringLiteral("discharging");break;
+    default:info.batteryPercent=-1;break;   // unknown: "-" on the PS panel
+    }
+}
+
+std::mutex xinputMutex;                        // guards xinputCache below (readers: xinputLatest/xinputPads/latest)
+struct XInputCache { XInputState merged; QVector<XInputPad> pads; } xinputCache;
+
+struct SdlDevice {                             // SDL thread only; the caches above are the cross-thread state
+    SDL_GameController* controller=nullptr;
+    Uint16 vendor=0, product=0;
+    Kind kind=Kind::None;
+    int slot=-1;                               // ordinal among non-Sony controllers (XInput "slot")
+};
+std::map<SDL_JoystickID,SdlDevice> sdlDevices; // instance id -> device (sorted, so slots are stable per id)
+
+void sdlOpenDevice(int which) {                // `which` is a joystick device index
+    if(!SDL_IsGameController(which))return;
+    SDL_GameController* controller=SDL_GameControllerOpen(which);
+    if(!controller)return;
+    SDL_Joystick* joy=SDL_GameControllerGetJoystick(controller);
+    if(!joy){SDL_GameControllerClose(controller);return;}
+    const SDL_JoystickID id=SDL_JoystickInstanceID(joy);
+    SdlDevice device;
+    device.controller=controller;
+    device.vendor=SDL_JoystickGetDeviceVendor(which);
+    device.product=SDL_JoystickGetDeviceProduct(which);
+    Kind kind;
+    if(device.vendor==0x054c && sdlSonyKind(device.product,kind))device.kind=kind;
+    if(device.kind==Kind::None) {              // non-Sony -> next free XInput slot
+        int slot=0;
+        for(const auto& [i,d]:sdlDevices)if(d.kind==Kind::None)++slot;
+        device.slot=slot;
+    }
+    const char* raw=SDL_GameControllerName(controller);
+    const QString name=raw?QString::fromUtf8(raw):QStringLiteral("controller");
+    qInfo().noquote()<<QString("pad: SDL controller \"%1\" kind=%2 vid=0x%3 pid=0x%4")
+        .arg(name,kindName(device.kind)).arg(device.vendor,4,16,QChar('0')).arg(device.product,4,16,QChar('0'));
+    sdlDevices[id]=device;
+}
+void sdlCloseDevice(SDL_JoystickID id) {
+    const auto it=sdlDevices.find(id);
+    if(it==sdlDevices.end())return;
+    const char* raw=it->second.controller?SDL_GameControllerName(it->second.controller):nullptr;
+    const QString name=raw?QString::fromUtf8(raw):QStringLiteral("controller");
+    qInfo().noquote()<<QString("pad: SDL controller \"%1\" detached").arg(name);
+    if(it->second.controller)SDL_GameControllerClose(it->second.controller);
+    sdlDevices.erase(it);
+}
+
+// One pass over every open controller, then publish the merged PlayStation and XInput states. The SDL thread is
+// the only writer; the two mutexes guard the readers. Neither lock is held while taking the other, matching the
+// reader order (xinputMutex first in latest()), so the two can never deadlock.
+void sdlReadAndStore() {
+    State psState; Info psInfo; bool havePs=false;
+    XInputState xstate; float strongestLeft=0,strongestRight=0;
+    QVector<XInputPad> pads;
+    for(const auto& [id,device]:sdlDevices) {
+        SDL_GameController* c=device.controller;
+        if(!c)continue;
+        quint16 buttons=0;
+        for(int b=SDL_CONTROLLER_BUTTON_A;b<SDL_CONTROLLER_BUTTON_MAX;++b)
+            if(SDL_GameControllerGetButton(c,SDL_GameControllerButton(b)))buttons|=sdlButtonBit(quint8(b));
+        const float lx=SDL_GameControllerGetAxis(c,SDL_CONTROLLER_AXIS_LEFTX)/32767.f;
+        const float ly=SDL_GameControllerGetAxis(c,SDL_CONTROLLER_AXIS_LEFTY)/32767.f;   // +down, as pad.h
+        const float rx=SDL_GameControllerGetAxis(c,SDL_CONTROLLER_AXIS_RIGHTX)/32767.f;
+        const float ry=SDL_GameControllerGetAxis(c,SDL_CONTROLLER_AXIS_RIGHTY)/32767.f;
+        const float l2=SDL_GameControllerGetAxis(c,SDL_CONTROLLER_AXIS_TRIGGERLEFT)/32767.f;
+        const float r2=SDL_GameControllerGetAxis(c,SDL_CONTROLLER_AXIS_TRIGGERRIGHT)/32767.f;
+        SDL_Joystick* joy=SDL_GameControllerGetJoystick(c);
+        const SDL_JoystickPowerLevel power=joy?SDL_JoystickCurrentPowerLevel(joy):SDL_JOYSTICK_POWER_UNKNOWN;
+        if(device.kind!=Kind::None) {
+            havePs=true;
+            psState=State{buttons,lx,ly,rx,ry,l2,r2};
+            psInfo.kind=device.kind;
+            psInfo.transport=Transport::Unknown;   // SDL does not expose USB vs Bluetooth reliably
+            sdlPsBattery(power,psInfo);
+        } else {
+            ++xstate.connected;
+            xstate.buttons|=buttons;
+            if(const float d=std::max(std::abs(lx),std::abs(ly));d>strongestLeft){strongestLeft=d;xstate.lx=lx;xstate.ly=ly;}
+            if(const float d=std::max(std::abs(rx),std::abs(ry));d>strongestRight){strongestRight=d;xstate.rx=rx;xstate.ry=ry;}
+            xstate.l2=std::max(xstate.l2,l2);
+            xstate.r2=std::max(xstate.r2,r2);
+            pads.push_back({device.slot,sdlBatteryText(power)});
+        }
+    }
+    std::sort(pads.begin(),pads.end(),[](const XInputPad& a,const XInputPad& b){return a.slot<b.slot;});
+    {
+        const std::lock_guard lock(mutex);
+        if(havePs) {
+            const auto stamp=std::chrono::steady_clock::now();
+            newest=psState;newestInfo=psInfo;newestAt=stamp;newestFresh=std::chrono::milliseconds(300);
+            infoAt=stamp;infoFresh=newestFresh;
+        }
+        // no PlayStation controller: leave newestAt stale so latest()/info() go false after the 300 ms window
+    }
+    {
+        const std::lock_guard lock(xinputMutex);
+        xinputCache.merged=xstate;
+        xinputCache.pads=pads;
+    }
+}
+
+void sdlLoop() {
+    if(SDL_Init(SDL_INIT_GAMECONTROLLER)!=0) {   // no SDL_INIT_VIDEO: headless-safe
+        qWarning().noquote()<<QString("pad: SDL2 init failed (%1); no controller input on Linux").arg(SDL_GetError());
+        return;
+    }
+    SDL_GameControllerEventState(SDL_ENABLE);
+    for(int i=0;i<SDL_NumJoysticks();++i)sdlOpenDevice(i);
+    qInfo().noquote()<<QString("pad: SDL2 GameController backend up, %1 controller%2")
+        .arg(sdlDevices.size()).arg(sdlDevices.size()==1?QString():QStringLiteral("s"));
+    for(;;) {
+        SDL_Event event;
+        while(SDL_PollEvent(&event)) {
+            if(event.type==SDL_CONTROLLERDEVICEADDED)sdlOpenDevice(event.cdevice.which);
+            else if(event.type==SDL_CONTROLLERDEVICEREMOVED)sdlCloseDevice(event.cdevice.which);
+        }
+        sdlReadAndStore();
+        SDL_Delay(2);   // ~2 ms refresh keeps the 300 ms freshness window trivially satisfied
+    }
+}
 #endif
 }
 
@@ -581,6 +742,10 @@ void start() {
             std::this_thread::sleep_for(std::chrono::seconds(2));
         }
     }).detach();
+#elif defined(Q_OS_LINUX)
+    static std::atomic_bool started=false;
+    if(started.exchange(true))return;
+    std::thread(sdlLoop).detach();
 #endif
 }
 bool latest(State& out,bool includeRemote) {
@@ -588,6 +753,12 @@ bool latest(State& out,bool includeRemote) {
     // PS bit, sees it with no change of its own. The XInput read takes its own lock, before this one.
 #ifdef Q_OS_WIN
     const bool guide=(xinputRead().buttons&ps)!=0;
+#elif defined(Q_OS_LINUX)
+    bool guide=false;
+    {
+        const std::lock_guard lock(xinputMutex);
+        guide=(xinputCache.merged.buttons&ps)!=0;
+    }
 #else
     const bool guide=false;
 #endif
@@ -653,6 +824,15 @@ bool xinputLatest(XInputState& out) {
     // The scripted-run gate covers XInput exactly as it covers HID: read, never delivered.
     if(scriptOnlyMode.load())return false;
     out=state;return true;
+#elif defined(Q_OS_LINUX)
+    XInputState state;
+    {
+        const std::lock_guard lock(xinputMutex);
+        state=xinputCache.merged;
+    }
+    if(!state.connected)return false;
+    if(scriptOnlyMode.load())return false;
+    out=state;return true;
 #else
     Q_UNUSED(out);return false;
 #endif
@@ -666,6 +846,9 @@ QVector<XInputPad> xinputPads() {
         const DWORD status=api.getStateEx?api.getStateEx(DWORD(slot),&state):XInputGetState(DWORD(slot),&state.state);
         if(status==ERROR_SUCCESS)pads.push_back({slot,xinputBatteryText(slot)});
     }
+#elif defined(Q_OS_LINUX)
+    const std::lock_guard lock(xinputMutex);
+    pads=xinputCache.pads;
 #endif
     return pads;
 }
@@ -779,6 +962,36 @@ quint32 oskPadActions(quint16 buttons, float l2, float r2) {
     if(l2 > 0.5f)             out |= OskPadPagePrev;
     if(r2 > 0.5f)             out |= OskPadPageNext;
     return out;
+}
+
+quint16 sdlButtonBit(quint8 button) {
+    // SDL_GameControllerButton enum values (SDL_gamecontroller.h, stable across SDL 2.x), declared here so the
+    // mapping is pure and builds without SDL; the Linux backend passes the same constants via SDL's own header.
+    enum SdlButton : quint8 {
+        SdlA=0,SdlB=1,SdlX=2,SdlY=3,SdlBack=4,SdlGuide=5,SdlStart=6,SdlLeftStick=7,SdlRightStick=8,
+        SdlLeftShoulder=9,SdlRightShoulder=10,SdlDpadUp=11,SdlDpadDown=12,SdlDpadLeft=13,SdlDpadRight=14
+    };
+    // SDL's standard layout mapped onto the XInput wButtons layout the whole shell already consumes: A is Cross,
+    // B Circle, X Square, Y Triangle, Back Select, Start Start, Guide PS, stick clicks L3/R3, shoulders L1/R1 and
+    // the D-pad the four direction bits. Touchpad, paddles and misc have no XMB meaning and return 0.
+    switch(button) {
+    case SdlA:return cross;
+    case SdlB:return circle;
+    case SdlX:return square;
+    case SdlY:return triangle;
+    case SdlBack:return selectButton;
+    case SdlGuide:return ps;
+    case SdlStart:return startButton;
+    case SdlLeftStick:return l3;
+    case SdlRightStick:return r3;
+    case SdlLeftShoulder:return l1;
+    case SdlRightShoulder:return r1;
+    case SdlDpadUp:return up;
+    case SdlDpadDown:return down;
+    case SdlDpadLeft:return left;
+    case SdlDpadRight:return right;
+    default:return 0;
+    }
 }
 
 QString kindName(Kind kind) {
