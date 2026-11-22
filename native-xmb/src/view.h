@@ -19,6 +19,7 @@
 #include "media_keys.h"
 #include "game_capture.h"
 #include "ingame_backdrop.h"
+#include "game_tap.h"
 #include "text_entry.h"
 #include "frame_trace.h"
 #include "frame_pacer.h"
@@ -229,6 +230,10 @@ private:
     void pollTitleLatch();
     QTimer latchTimer_;
     ingamebg::WindowLatch latch_;
+    // The persistent capture session on the latched window (game_tap.h): always holds the newest good frame on the GPU.
+    std::unique_ptr<GameFrameTap> tap_;
+    void startTap(const QString& why);
+    void stopTap(const QString& why);
     bool inGameBack();
     void drawInGameBackdrop(int width,int height);
     void stopLiveOverlay();

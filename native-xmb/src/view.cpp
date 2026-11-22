@@ -809,7 +809,7 @@ void View::drawBackdrops(QPainter& p) {
     }
 }
 View::~View(){
-    stopLiveOverlay();
+    stopLiveOverlay();tap_.reset();
 #ifdef Q_OS_WIN
     if(volumeKeys_ && qApp)qApp->removeNativeEventFilter(volumeKeys_.get());
 #endif
@@ -5522,11 +5522,31 @@ void View::pollTitleLatch() {
         }
     }
     const auto action=latch_.observe(running,facts,latched && IsWindow(latched));
-    if(action==ingamebg::WindowLatch::Action::Latched)
+    if(action==ingamebg::WindowLatch::Action::Latched) {
         psLog(QStringLiteral("ingame: latched title window hwnd=0x%1 pid=%2 (first foreground)").arg(latch_.hwnd(),0,16).arg(latch_.pid()));
-    else if(action==ingamebg::WindowLatch::Action::Released)
+        startTap(QStringLiteral("latched"));
+    } else if(action==ingamebg::WindowLatch::Action::Released) {
         psLog(QStringLiteral("ingame: title window latch released"));
+        stopTap(QStringLiteral("latch released"));
+    }
 #endif
+}
+void View::startTap(const QString& why) {
+#ifdef Q_OS_WIN
+    if(!tap_)tap_=std::make_unique<GameFrameTap>();
+    QString error;
+    if(tap_->start(latch_.hwnd(),&error))psLog(QStringLiteral("ingame: frame tap started on hwnd=0x%1 (%2)").arg(latch_.hwnd(),0,16).arg(why));
+    else psLog(QStringLiteral("ingame: frame tap unavailable on hwnd=0x%1: %2 (legacy backdrop path)").arg(latch_.hwnd(),0,16).arg(error));
+#else
+    Q_UNUSED(why);
+#endif
+}
+void View::stopTap(const QString& why) {
+    if(!tap_ || !tap_->running())return;
+    const auto s=tap_->stats();
+    tap_->stop();
+    psLog(QStringLiteral("ingame: frame tap stopped (%1) frames=%2 good=%3 blank=%4 cb avg=%5 us max=%6 us gpu=%7 MB")
+        .arg(why).arg(s.frames).arg(s.goodFrames).arg(s.blankFrames).arg(s.avgCallbackUs,0,'f',1).arg(s.maxCallbackUs,0,'f',1).arg(double(s.gpuBytes)/1048576.,0,'f',1));
 }
 void View::enterInGame(const QString& reason) {
     if(!titleRunning()){
