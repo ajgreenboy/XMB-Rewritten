@@ -26,10 +26,6 @@ namespace {
 constexpr qint64 kRefreshCooldownMs=15LL*60*1000;
 constexpr int kMaxDownloadCandidates=8;
 void fail(QString* error,const QString& message) { if(error)*error=message; }
-bool looksLikeHtml(const QByteArray& bytes) {
-    const QString head=QString::fromLatin1(bytes.left(512)).trimmed().toLower();
-    return head.startsWith(QStringLiteral("<!doctype html")) || head.startsWith(QStringLiteral("<html"));
-}
 QString safeName(QString text) {
     text.replace(QRegularExpression(QStringLiteral("[<>:\"/\\\\|?*\\x00-\\x1f]")),QStringLiteral("_"));
     text=text.trimmed().left(100);

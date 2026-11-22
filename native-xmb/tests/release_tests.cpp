@@ -17,6 +17,7 @@
 #include <QProcess>
 #include <QElapsedTimer>
 #include <QTimer>
+#include <QSharedPointer>
 #include <QtConcurrent/QtConcurrentRun>
 #include <cmath>
 #include <cstdio>
@@ -1084,6 +1085,116 @@ int main(int argc,char** argv) {
               "valid empty search games array clears a previous error");
         qunsetenv("XMB_HYDRA_TEST_FIXTURE");qunsetenv("XMB_HYDRA_HOT_URL");qunsetenv("XMB_HYDRA_GAMES_URL");
         qunsetenv("XMB_HYDRA_SOURCES_URL");qunsetenv("XMB_HYDRA_SEARCH_URL");fixture.close();
+    }
+    {
+        // FlareSolverr opt-in fallback (Hydra layer). The direct GET returns an HTML challenge or a
+        // 403, and the mock solver on /v1 (FlareSolverr's own POST endpoint) returns the real JSON.
+        // Proves the fallback is opt-in (no solver -> no /v1 call), fires exactly once as a last
+        // resort after the direct fetch, parses the solved body, and never fires when the direct
+        // fetch already succeeds. Loopback only; no real FlareSolverr, no credentials.
+        QTcpServer solverFixture;
+        check(solverFixture.listen(QHostAddress::LocalHost,0),"FlareSolverr fixture listen");
+        int solverPosts=0;
+        const QByteArray directoryJson=QByteArrayLiteral("{\"total\":1,\"limit\":100,\"sources\":[{\"title\":\"Solver Source\",\"url\":\"https://solver.invalid/feed.json\"}]}");
+        const QByteArray feedJson=QByteArrayLiteral("[{\"title\":\"Solver Game\",\"size\":\"1 GB\",\"uri\":\"https://solver.invalid/game.zip\"}]");
+        const QByteArray hotJson=QByteArrayLiteral("[{\"title\":\"Solver Hot Game\"}]");
+        const QByteArray cleanFeedJson=QByteArrayLiteral("[{\"title\":\"Clean Direct Game\",\"size\":\"1 GB\",\"uri\":\"https://solver.invalid/clean.zip\"}]");
+        const auto respond=[&](QTcpSocket* socket,const QByteArray& status,const QByteArray& contentType,const QByteArray& payload) {
+            socket->write("HTTP/1.1 "+status+"\r\nContent-Type: "+contentType+"\r\nContent-Length: "+QByteArray::number(payload.size())+"\r\nConnection: close\r\n\r\n"+payload);
+            socket->disconnectFromHost();
+        };
+        QObject::connect(&solverFixture,&QTcpServer::newConnection,&app,[&] {
+            auto* socket=solverFixture.nextPendingConnection();
+            auto buffer=QSharedPointer<QByteArray>::create();
+            QObject::connect(socket,&QTcpSocket::readyRead,socket,[&,socket,buffer] {
+                buffer->append(socket->readAll());
+                const int headerEnd=buffer->indexOf("\r\n\r\n");
+                if(headerEnd<0)return;
+                const QByteArray headers=buffer->left(headerEnd);
+                if(buffer->startsWith("POST /v1")) {
+                    // FlareSolverr::request POSTs {"cmd":"request.get","url":...}; only answer once the
+                    // whole body is present (loopback may split it across readyRead emissions).
+                    const QByteArray body=buffer->mid(headerEnd+4);
+                    int contentLength=0;
+                    const int clAt=headers.indexOf("Content-Length:");
+                    if(clAt>=0) {
+                        const int start=clAt+15;
+                        const int end=headers.indexOf("\r\n",start);
+                        contentLength=headers.mid(start,(end<0?headers.size():end)-start).trimmed().toInt();
+                    }
+                    if(contentLength>0 && body.size()<contentLength)return;
+                    ++solverPosts;
+                    const QString target=QJsonDocument::fromJson(body).object().value(QStringLiteral("url")).toString();
+                    QByteArray solved;
+                    if(target.contains(QStringLiteral("/sources-challenge")))solved=directoryJson;
+                    else if(target.contains(QStringLiteral("/feed-challenge")))solved=feedJson;
+                    else if(target.contains(QStringLiteral("/hot-challenge")))solved=hotJson;
+                    else solved=QByteArrayLiteral("[]");
+                    const QByteArray payload=QJsonDocument(QJsonObject{
+                        {QStringLiteral("status"),QStringLiteral("ok")},
+                        {QStringLiteral("solution"),QJsonObject{{QStringLiteral("response"),QString::fromUtf8(solved)}}}
+                    }).toJson(QJsonDocument::Compact);
+                    respond(socket,"200 OK","application/json",payload);
+                    return;
+                }
+                if(headers.contains("/sources-challenge")) { respond(socket,"403 Forbidden","text/plain",{}); return; }
+                if(headers.contains("/feed-challenge")) { respond(socket,"200 OK","text/html",QByteArrayLiteral("<!doctype html><html><head><title>Just a moment...</title></head><body>challenge</body></html>")); return; }
+                if(headers.contains("/hot-challenge")) { respond(socket,"200 OK","text/html",QByteArrayLiteral("<!doctype html><html><body>challenge</body></html>")); return; }
+                if(headers.contains("/feed-clean")) { respond(socket,"200 OK","application/json",cleanFeedJson); return; }
+                respond(socket,"404 Not Found","text/plain",{});
+            });
+            QObject::connect(socket,&QTcpSocket::disconnected,socket,&QObject::deleteLater);
+        });
+        const QString base=QStringLiteral("http://127.0.0.1:%1").arg(solverFixture.serverPort());
+        const QString solverEndpoint=base;   // FlareSolverr::request POSTs <endpoint>/v1
+        qputenv("XMB_HYDRA_TEST_FIXTURE","1");
+        qputenv("XMB_HYDRA_SOURCES_URL",(base+QStringLiteral("/sources-challenge")).toUtf8());
+        qputenv("XMB_HYDRA_HOT_URL",(base+QStringLiteral("/hot-challenge")).toUtf8());
+
+        // 1. No endpoint -> the direct 403 is terminal and FlareSolverr is never contacted.
+        solverPosts=0;
+        QVector<HydraSource> noSolverSources;QString noSolverError;
+        check(!HydraLibrary().listSources(&noSolverSources,&noSolverError) && noSolverSources.isEmpty() &&
+              noSolverError.contains(QStringLiteral("HTTP 403")) && noSolverError.contains(QStringLiteral("source directory")),
+              "no FlareSolverr endpoint: a challenged directory fails with the unchanged 403 error");
+        check(solverPosts==0,"no FlareSolverr endpoint: the solver is never contacted");
+
+        // 2. Configured endpoint -> the challenged directory is solved once and parsed.
+        solverPosts=0;
+        QVector<HydraSource> solvedSources;QString solvedError;
+        check(HydraLibrary(solverEndpoint).listSources(&solvedSources,&solvedError) && solvedSources.size()==1 &&
+              solvedSources.first().title==QStringLiteral("Solver Source") && solvedError.isEmpty(),
+              "configured FlareSolverr solves a challenged directory and the source list is parsed");
+        check(solverPosts==1,"a challenged directory falls back to FlareSolverr exactly once");
+
+        // 3. A selected feed that returns an HTML challenge is solved once and parsed.
+        solverPosts=0;
+        HydraSource challengedFeed;challengedFeed.title=QStringLiteral("Challenged Feed");challengedFeed.url=QUrl(base+QStringLiteral("/feed-challenge"));
+        QVector<GameResult> solvedFeedGames;QString feedError;
+        check(HydraLibrary(solverEndpoint).browseSource(challengedFeed,&solvedFeedGames,&feedError) && solvedFeedGames.size()==1 &&
+              solvedFeedGames.first().name==QStringLiteral("Solver Game") && feedError.isEmpty(),
+              "configured FlareSolverr solves an HTML-challenged selected feed and the game is parsed");
+        check(solverPosts==1,"an HTML-challenged selected feed falls back to FlareSolverr exactly once");
+
+        // 4. The popular hot catalogue path is covered: an HTML challenge is solved once and parsed.
+        solverPosts=0;
+        QVector<PopularTitle> solvedTitles;QString hotError;
+        check(HydraLibrary(solverEndpoint).popularTitles(&solvedTitles,&hotError) && solvedTitles.size()==1 &&
+              solvedTitles.first().title==QStringLiteral("Solver Hot Game") && hotError.isEmpty(),
+              "configured FlareSolverr solves an HTML-challenged hot catalogue and the title is parsed");
+        check(solverPosts==1,"an HTML-challenged hot catalogue falls back to FlareSolverr exactly once");
+
+        // 5. A direct fetch that succeeds never invokes FlareSolverr.
+        solverPosts=0;
+        HydraSource cleanFeed;cleanFeed.title=QStringLiteral("Clean Feed");cleanFeed.url=QUrl(base+QStringLiteral("/feed-clean"));
+        QVector<GameResult> cleanGames;QString cleanError;
+        check(HydraLibrary(solverEndpoint).browseSource(cleanFeed,&cleanGames,&cleanError) && cleanGames.size()==1 &&
+              cleanGames.first().name==QStringLiteral("Clean Direct Game") && cleanError.isEmpty(),
+              "a direct fetch that already succeeds parses without FlareSolverr");
+        check(solverPosts==0,"a successful direct fetch never invokes FlareSolverr");
+
+        qunsetenv("XMB_HYDRA_TEST_FIXTURE");qunsetenv("XMB_HYDRA_SOURCES_URL");qunsetenv("XMB_HYDRA_HOT_URL");
+        solverFixture.close();
     }
     {
         // Malformed source JSON: a null document and unparseable bytes report an error; an empty
