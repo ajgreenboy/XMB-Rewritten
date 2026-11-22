@@ -187,8 +187,8 @@ A title launch plays `gameboot1-5` background presets plus the `anim_gameboot` l
 
 ### Gap
 1. **B5 (implemented 2026-11-21 as an INFERRED model, see "Implemented" below; was: open, narrowed):** the `gameboot1-5` background presets are absent; the logo plays over flat
-   black where the console runs the `gameboot2/3/4/5` background events (0.25 s / 1.25 s / 0.5 s / 0.5 s)
-   behind it. The wordmark itself, its timing and the skip rule are done.
+   black where the console runs the `gameboot2/3` background events (0.25 s / 1.25 s) behind it for an `anim_gameboot`
+   launch (`gameboot4/5` belong to other event sets: BG4 is fired by `anim_otherboot`, BG5 by nothing found). The wordmark itself, its timing and the skip rule are done.
 
 ### Implementation note
 - **file + owner:** `coldboot.cpp` `GameBoot::render` (coldboot/gameboot owner) — replace the flat black
@@ -208,6 +208,13 @@ A title launch plays `gameboot1-5` background presets plus the `anim_gameboot` l
   one-number reduction of a preset, and a veil standing in for the per-layer blends. NOT modelled: the ribbon
   (`LINE1`), HDR and particle presets of gameboot2/3 as real layer inputs (only their effect on overall brightness is
   approximated), and gameboot1/4/5, which anim_gameboot does not fire (their levels are read but nothing schedules them).
+- Corrections after a firmware re-read (2026-11-21, TRACED unless marked; details in `audit/PIPELINE.md` "Game boot (S31)"):
+  the console references `gameboot_stereo.ac3` / `gameboot_multi.ac3` (absent from the extracted dev_flash, so the splash
+  stays silent here); `anim_otherboot` (BG3, BG4, Finished; Delay words 200 / 300, read as 0.2 s / 0.5 s, INFERRED unit)
+  also drives gameboot3/4, selected by a jump table whose callers are untraced; nothing in any RCO fires BG1, BG5 or
+  MoyouZoom. The "mean of keys 1/2" reduction ignores keys 3/4 (gameboot1 about 0.94-1.01, gameboot5 about 1.0, the others
+  0), so it understates gameboot1/5 but is exact for gameboot2/3, the only presets scheduled. No behaviour change for
+  Windows launches.
 - Verify with `XMB_GAMEBOOT_AT=<s>`; `XMB_GAMEBOOT_FLAT=1` restores the old flat black plane for a before/after
   capture from the same build. Gate states `game-boot-logo` (1.4 s) and `game-boot-fade-out` (1.68 s) change
   intentionally (a dimmed XMB backdrop shows behind the wordmark); their references were not re-saved.

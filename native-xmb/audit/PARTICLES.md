@@ -359,6 +359,9 @@ FAR FOCUS_DIST 3.54129, GLARE 0.159705, EMIT VEL MUL 0.19, GLOBAL ALPHA 1):
 | coldboot1, coldboot2 | GLOBAL ALPHA 0, EMIT VEL MUL 3.7496, plus the music_1 look set |
 | gameboot3 | physics: EMIT VEL MIN 0.029756, EMIT VEL MUL 1.52761, AGING SPEED 0.0034476, AGING VARIANCE 0, DELTA TIME 0.08, BROWNIAN 0.0556335, WIND SCALE 0.000152351, WIND DIR X -5.34e-05. look: SIZE MIDDLE 0.073865, SIZE NEAR 0.186308, SIZE FAR 0.0389094, NEAR/FAR FOCUS 7 / 9.81914, NEAR/FAR FOCUS_DIST 2.4303 / 0.138874, NEAR/FAR FOCUS_POW 3.05 / 1.72, NEAR DARKNESS 6.63954, GLARE 0.423566 |
 | gameboot4 | gameboot3 plus GLOBAL ALPHA 0 |
+
+Note (2026-11-21, TRACED in custom_render_plugin.prx, see `PIPELINE.md` "Game boot (S31)"): gameboot3 is started by `anim_gameboot` BG3 and `anim_otherboot` BG3; gameboot4 only by `anim_otherboot` BG4 (and the `anim_gameboot_BG4` handler, which no RCO fires). `anim_gameboot` itself never starts gameboot4, so GLOBAL ALPHA 0 does not occur in a Windows game launch.
+
 | welcome_1, welcome_2 | physics: EMIT PER FRAME 70.5765, EMIT PROB 0.493003, EMIT VEL MIN 0.131537, EMIT VEL MUL 4.16622, EMIT VEL ZSCALE 0.208311, AGING SPEED 0.00101112, AGING VARIANCE 0.5, FRICTION 0.0619405, DELTA TIME 0.0172207, BROWNIAN 0.0794061, SPIN 2.99327, WIND X/Y (0.361019, -0.0347719), WIND SCALE 0.000544572. look: SIZE 0.073865 / 0.0143576 / 0.00746469, NEAR ALIGN 0.118043, SIZE ALIGN 14.1652, FOCUS 7 / 6.31877, FOCUS_DIST 1.59705 / 6.31877, FOCUS_POW 2.22209 / 1.63882, DARKNESS 5.49606 / 4.46526, SPECULAR POWER 29.3486, GLARE 0.222198 / SCALE 6.22156 / P1 1.6344 / P2 8.41834 |
 
 **Conclusion:** for the four ordinary XMB themes (day / night / yoake / higure) and for music playback the

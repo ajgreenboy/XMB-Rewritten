@@ -265,10 +265,33 @@ vsh.elf this session), **measured** (read from a frame of this build), **INFERRE
   `_BG3` (0x1b8) and `_Finished` (0x1d4). The plugin's event table (custom_render_plugin.prx 0x9cc20..0x9cc4c, name,
   opd, 0) routes BG2 to 0xf444 (`override/gameboot2`, 0.25 s), BG3 to 0xf214 (`override/gameboot3`, 1.25 s), BG1 to 0xf6cc
   (`gameboot1`, 0 s), BG4 to 0xefe4 (`gameboot4`, 0.5 s), BG5 to 0xedb4 (`gameboot5`, 0.5 s) and Finished to 0x3bcc (the
-  page closes). `anim_gameboot` fires only BG2, BG3 and Finished; BG1/4/5 and MoyouZoom are fired by other plugins'
-  animations. TRACED (Ghidra on the decrypted PRX, durations from the float table at 0x91d88).
-- No gameboot sound exists in the firmware tree: `vsh/resource` holds only `coldboot_stereo.ac3` and
-  `coldboot_multi.ac3` (and the store's `.vag` set), and no RCO string names a game-boot sound. The sequence is silent here.
+  page closes). `anim_gameboot` fires only BG2, BG3 and Finished; BG1/5 and MoyouZoom are fired by no RCO
+  (BG4 only by anim_otherboot; see below). TRACED (Ghidra on the decrypted PRX, durations from the float table at 0x91d88).
+- Game-boot sound (corrected 2026-11-21; the earlier claim that no string names one was wrong). `custom_render_plugin.prx`
+  (strings at file offsets 581000 and 581048, next to `anim_gameboot`) and `gamelib_plugin.prx` (8256, 8304) both reference
+  `/dev_flash/vsh/resource/gameboot_stereo.ac3` and `gameboot_multi.ac3`, the same pattern as `coldboot_stereo.ac3` /
+  `coldboot_multi.ac3`. TRACED (string search of the decrypted PRX files). The two files are ABSENT from the extracted
+  dev_flash (`vsh/resource` holds only the coldboot pair and the store's `.vag` set), so the sound itself cannot be
+  reproduced or measured; no RCO names it (the references are in the plugin code). This build's game-boot stays silent
+  because the asset is missing, not because the console has no such sound.
+- Other game-boot events (TRACED, custom_render_plugin.prx). The event table, entries of (name, opd, 0) at 0x9cbd8..0x9cc80,
+  routes the handlers (function address; each loads its preset string with a lis/addi pair, read from the code):
+  `anim_gameboot_MoyouZoom` (0xf8f8) -> `override/coldboot1`; `_BG1` (0xf6c8) -> `override/gameboot1`; `_BG2` (0xf440) ->
+  `gameboot2`; `_BG3` (0xf210) -> `gameboot3`; `_BG4` (0xefe0) -> `gameboot4`; `_BG5` (0xedb0) -> `gameboot5`;
+  `anim_otherboot_BG3` (0xeb28) -> `gameboot3`; `anim_otherboot_BG4` (0xe8f8) -> `gameboot4`; `anim_gameboot_Finished`
+  (0x3bcc) and `anim_otherboot_Finished` (0x3b88) both close `page_gameboot`.
+- `anim_otherboot` (custom_render_plugin.rco @3308, 7 children, TRACED from the raw entries): Delay, FireEvent
+  `anim_otherboot_BG3`, Delay, FireEvent `_BG4`, FireEvent `_Finished`. The two Delay words are 0x43480000 and 0x43960000,
+  i.e. the floats 200.0 and 300.0; read in the same unit as `anim_gameboot`'s Delays (milliseconds) that is BG3 at 0.2 s,
+  BG4 at 0.5 s and Finished at 0.5 s. The unit and the cumulative reading are INFERRED from the raw words.
+- Nothing fires BG1, BG5 or MoyouZoom: across every RCO under `vsh/resource` only custom_render_plugin.rco carries the
+  event-name strings and only the three `anim_gameboot` and three `anim_otherboot` events exist there (the names BG1, BG5 and
+  MoyouZoom occur only in the PRX event table). TRACED as an absence in the RCO set; whether plugin code fires them by name
+  is untraced.
+- Which animation plays: a jump table at 0x15418 (relative offsets, index 2 -> code at 0x158d0 that names `anim_gameboot`,
+  index 3 -> code at 0x1586c that names `anim_otherboot`) selects it by an index. TRACED up to the string loads. The caller
+  and the selector value (the `explore_*` plugins start the page) are UNTRACED, so when `anim_otherboot` is used (a
+  non-game launch? a different title type?) is unknown.
 
 What this build does: a press on a game row (`Action::Launch` RPCS3, `Action::LaunchSteam`, `Action::LaunchApp` of kind
 `game`) calls `GameBoot::begin(launch)`; the XMB UI is hidden, the screen goes black and `tex_ps3logo` runs the timeline
@@ -282,8 +305,16 @@ from t 0 (the explore plugin's hide is not in `custom_render_plugin`).
 Background presets (2026-11-21, INFERRED model, `src/gameboot_background.h`): the sequence plays over the live XMB background,
 which BG2 (t 0, 0.25 s) and BG3 (t 0.5 s, 1.25 s) move to `override/gameboot2` and `gameboot3`, drawn as a black veil
 whose opacity is 1 minus a backdrop level (mean of BACKGROUND.mnu keys 1/2: gameboot2 0.8, gameboot3 0). The blend curve
-(linear), the start level and the one-number reduction are INFERRED; no RPCS3 reference exists. Not modelled: the ribbon,
-HDR and particle presets as real layer inputs, gameboot1/4/5 (not fired by anim_gameboot) and any sound.
+(linear), the start level and the one-number reduction are INFERRED; no RPCS3 reference exists. The reduction ignores
+BACKGROUND.mnu keys 3/4 (the line gradient, `ribbon.cpp`). Read from lines.qrc, keys 1/2 vs 3/4: gameboot1 about 0.002 /
+0.94-1.01, gameboot2 0.8 / 0, gameboot3 0 / 0, gameboot4 0 / 0, gameboot5 0 / 0.9995-1.0. So the mean of keys 1/2
+understates gameboot1 and gameboot5 (dark background but bright line gradient), and is exact for gameboot2, 3 and 4.
+Consequence for this build: only gameboot2 and gameboot3 are scheduled (the BG events `anim_gameboot` fires), and their
+keys 3/4 are 0, so the reduction loses nothing there and the Windows launch path (`anim_gameboot`) needs no change.
+`anim_otherboot` (gameboot3 at 0.2 s, gameboot4 at 0.5 s, INFERRED timing) and BG1 / BG5 / MoyouZoom are not played by any
+launch this build starts, so they are not modelled and the understatement does not show. Not modelled: the ribbon,
+HDR and particle presets as real layer inputs and any sound (the game-boot .ac3 files are absent from the firmware tree).
+Conclusion: no behaviour change for Windows launches.
 
 **Auto-Off guide (S29).** `FUN_000c3bb4` (vsh.elf 0xc3bb4), per frame, TRACED:
 - The settings (`FUN_000c357c`, 0xc357c) are read from the registry-style table: ids 0x32 / 0x33 give hours, stored as
