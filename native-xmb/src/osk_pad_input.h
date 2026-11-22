@@ -49,10 +49,14 @@ inline QVector<OskAction> oskPadActions(quint16 edge, float l2, float r2, OskTri
     return actions;
 }
 
-// The page an Accent or Shift action lands on, or -1 when it changes nothing. Shift toggles lower <-> caps by page
-// name; Accent toggles the accent page and is inert (-1) while the layout carries none: the accent rows are not
-// decoded (audit/OSK-FIRMWARE.md 5, 13), and this build does not invent a glyph table to fill the page. A layout
-// whose pages are not named lower/caps (the tenkey panel) falls back to the plain next-page step.
+// The page an Accent or Shift action lands on, or -1 when it changes nothing. The four character pages are two
+// independent switches: Shift (R2, the `a/A` key) toggles capital, Accent (L2, the `a/a-grave` key) toggles accent, so
+// lower -> accent -> lower, caps -> accentCaps -> caps, and Shift keeps whichever accent state the page is in.
+// The page set and the four module row groups are TRACED (audit/OSK-FIRMWARE.md 3.4; the module names both
+// MODE_GUIDE_ALPHABET_ACCENT and MODE_GUIDE_ALPHABET_ACCENT_CAP); that L2 returns to the page it came from and that
+// the capital state survives the switch is INFERRED from the two switches the key faces show, not captured.
+// A layout without an accent page leaves Accent inert (-1). A layout whose pages are not named lower/caps (the
+// tenkey panel) falls back to the plain next-page step for Shift.
 inline int oskPageIndex(const QVector<OskPage>& pages, const QString& name) {
     for (int i = 0; i < pages.size(); ++i)
         if (pages.at(i).name.compare(name, Qt::CaseInsensitive) == 0) return i;
@@ -60,14 +64,22 @@ inline int oskPageIndex(const QVector<OskPage>& pages, const QString& name) {
 }
 inline int oskPageForAction(const QVector<OskPage>& pages, int current, OskAction action) {
     const int lower = oskPageIndex(pages, QStringLiteral("lower"));
+    const int caps = oskPageIndex(pages, QStringLiteral("caps"));
+    const int accent = oskPageIndex(pages, QStringLiteral("accent"));
+    const int accentCaps = oskPageIndex(pages, QStringLiteral("accentCaps"));
     if (action == OskAction::Accent) {
-        const int accent = oskPageIndex(pages, QStringLiteral("accent"));
         if (accent < 0) return -1;
-        return current == accent ? (lower >= 0 ? lower : 0) : accent;
+        if (current == accent) return lower >= 0 ? lower : 0;
+        if (current == accentCaps) return caps >= 0 ? caps : (lower >= 0 ? lower : 0);
+        if (current == caps && accentCaps >= 0) return accentCaps;
+        return accent;
     }
     if (action == OskAction::Shift) {
-        const int caps = oskPageIndex(pages, QStringLiteral("caps"));
         if (lower < 0 || caps < 0) return pages.size() > 1 ? (current + 1) % int(pages.size()) : -1;
+        if (accentCaps >= 0 && accent >= 0) {
+            if (current == accent) return accentCaps;
+            if (current == accentCaps) return accent;
+        }
         return current == caps ? lower : caps;
     }
     return -1;

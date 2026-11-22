@@ -5863,6 +5863,10 @@ void View::keyPressEvent(QKeyEvent* e) {
             else oskClose(false);
             break;
         case Qt::Key_Backspace:oskBackspace();break;
+        // PageUp / PageDown stand in for L2 / R2 (the accent and capital page keys) on a physical keyboard. The binding is
+        // a convenience of this build, not a traced console keyboard mapping; the pad and the on-screen keys are the traced path.
+        case Qt::Key_PageUp:if(!osk_.paletteOpen)oskPadAction(OskAction::Accent);break;
+        case Qt::Key_PageDown:if(!osk_.paletteOpen)oskPadAction(OskAction::Shift);break;
         default: {
             // Ctrl+V and Shift+Insert (QKeySequence::Paste on Windows) paste the clipboard; any other Ctrl chord is not text.
             if(e->matches(QKeySequence::Paste) || (e->key()==Qt::Key_V && (e->modifiers()&Qt::ControlModifier))){oskPaste();break;}
@@ -6385,9 +6389,8 @@ void View::oskPadAction(OskAction action) {
     case OskAction::Shift:case OskAction::Accent: {
         const int target=oskPageForAction(L.pages,osk_.page,action);
         if(target>=0)osk_.page=target;
-        // The accent rows (the a/a-grave page) are not decoded in the module data, so no page exists to open; the key
-        // says so in the log instead of showing an invented glyph table.
-        else if(action==OskAction::Accent)qInfo().noquote()<<"osk: accent page is not captured; the accent key is inert";
+        // A layout with no accent page (the tenkey panel) has nothing for L2 to open; the key does nothing there.
+        else if(action==OskAction::Accent)qInfo().noquote()<<"osk: this layout has no accent page; the accent key does nothing";
         break;
     }
     case OskAction::Mode:qInfo().noquote()<<"osk: Input Mode is unavailable (no IME modules; audit 8.3)";break;

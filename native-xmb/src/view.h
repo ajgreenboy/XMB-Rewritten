@@ -721,7 +721,7 @@ private:
         bool open=false,masked=false;
         bool tenkey=false;         // XMB_OSK_TENKEY=1 forces the phone-style tenkey panel for this open (test hook)
         bool preserveWhitespace=false,allowEmpty=false;
-        // The firmware's own state: `page` indexes OskLayout::pages (0 lower, 1 caps); the palette is the
+        // The firmware's own state: `page` indexes OskLayout::pages (0 lower, 1 caps, 2 accent, 3 accentCaps); the palette is the
         // `@#:` popup with its own 5-visible-row window over the 32 symbols; caretLit is the blink phase.
         bool paletteOpen=false,caretLit=true;
         int page=0,paletteRow=0,paletteColumn=0,paletteScroll=0;

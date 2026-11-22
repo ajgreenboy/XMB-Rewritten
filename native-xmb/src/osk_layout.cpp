@@ -1,4 +1,5 @@
 #include "osk_layout.h"
+#include "osk_accent_rows.h"
 #include "assets.h"
 #include "rco_objects.h"
 
@@ -172,7 +173,7 @@ QVector<LabelGroup> scanLabelGroups(const QByteArray& bytes, const ModuleSegment
             be32(bytes, p + 20) != 0)
             continue;
         const quint32 id = be32(bytes, p + 8);
-        if (id < 0x100 || id > 0x400 || (id & 3u) != 0) continue;
+        if (id < 0x100 || id > 0x800 || (id & 3u) != 0) continue;   // the accent groups sit at ids 0x5cc..0x5f0
         const quint32 vaddr = be32(bytes, p);
         bool ok = false;
         QString text = moduleString(bytes, segments, vaddr, kMaxStringUnits, ok);
@@ -583,7 +584,13 @@ OskLayout committedLayout() {
                                              QStringLiteral("committed table: row strings and function rows (audit 4.2)")));
     layout.pages.push_back(makeCharacterPage(QStringLiteral("caps"), caps, layout.captions.modeCaps, layout.captions,
                                              QStringLiteral("committed table: row strings and function rows (audit 4.2)")));
-    layout.pageNames = QStringList{QStringLiteral("lower"), QStringLiteral("caps"), QStringLiteral("symbolPalette")};
+    // The accent pair: rows traced from the module (osk_accent_rows.h); the mode-cell glyphs are inferred.
+    layout.pages.push_back(makeCharacterPage(QStringLiteral("accent"), oskAccentRows(false), oskAccentModeCaption(false), layout.captions,
+                                             QStringLiteral("committed table: accent rows from module ids 0x5cc..0x5dc; function rows as lower (audit 3.4)")));
+    layout.pages.push_back(makeCharacterPage(QStringLiteral("accentCaps"), oskAccentRows(true), oskAccentModeCaption(true), layout.captions,
+                                             QStringLiteral("committed table: capital accent rows from module ids 0x5e0..0x5f0; function rows as caps (audit 3.4)")));
+    layout.pageNames = QStringList{QStringLiteral("lower"), QStringLiteral("caps"), QStringLiteral("accent"),
+                                   QStringLiteral("accentCaps"), QStringLiteral("symbolPalette")};
 
     layout.textures = committedTextures();
     layout.auxiliaryTextures = QStringList{QStringLiteral("MENU_BASE_0x0"), QStringLiteral("MENU_FOCUS"),
@@ -906,7 +913,7 @@ QVector<OskAssertion> OskLayout::assertions() const {
     add(QStringLiteral("face"), face == QSize(66, 50), QStringLiteral("%1x%2").arg(face.width()).arg(face.height()));
     add(QStringLiteral("columns"), columns == 10, QString::number(columns));
     add(QStringLiteral("rows"), rows == 6, QString::number(rows));
-    add(QStringLiteral("pages"), pages.size() == 2 && pageNames.size() == 3,
+    add(QStringLiteral("pages"), pages.size() == 4 && pageNames.size() == 5,
         QStringLiteral("%1 key pages, page set %2").arg(int(pages.size())).arg(pageNames.join(QStringLiteral(", "))));
 
     const auto rowKeys = [&](int pageIndex, int row) {
@@ -939,6 +946,11 @@ QVector<OskAssertion> OskLayout::assertions() const {
                           rowText(1, 2) == QStringLiteral("ASDFGHJKL\"") && rowText(1, 3) == QStringLiteral("ZXCVBNM-_/");
     add(QStringLiteral("lowerRows"), lowerRows, QStringLiteral("1234567890 / qwertyuiop / asdfghjkl' / zxcvbnm,.?"));
     add(QStringLiteral("capsRows"), capsRows, QStringLiteral("!@#$%^&*() / QWERTYUIOP / ASDFGHJKL\" / ZXCVBNM-_/"));
+    const bool accentRows = rowText(2, 0) == oskAccentRows(false).at(0) && rowText(2, 3) == oskAccentRows(false).at(3) &&
+                            rowText(3, 0) == oskAccentRows(true).at(0) && rowText(3, 3) == oskAccentRows(true).at(3) &&
+                            int(rowKeys(2, 4)) == 7 && int(rowKeys(3, 5)) == 8;
+    add(QStringLiteral("accentRows"), accentRows, QStringLiteral("accent pages: 4 rows of 10 glyphs + the 7 + 8 function keys"),
+        variant == OskVariant::FullKey);
     add(QStringLiteral("moduleRows"), moduleRows, QStringLiteral("character rows read from the module label table"), firmware);
     add(QStringLiteral("paletteGrid"), palette.columns == 7 && palette.rows == 7 && palette.visibleRows == 5 && palette.buttonCount == 49,
         QStringLiteral("%1x%2, %3 buttons, %4 visible").arg(palette.columns).arg(palette.rows).arg(palette.buttonCount).arg(palette.visibleRows));
@@ -1292,6 +1304,28 @@ OskLayout loadOskLayout(Assets& assets, RcoObjects& objects) {
             layout.pages[1] = makeCharacterPage(QStringLiteral("caps"), caps->rows, layout.captions.modeCaps, layout.captions,
                                                 QStringLiteral("character rows: module label table @0x%1 (ids %2); function rows: measured reference (audit 4.2)")
                                                     .arg(caps->offset, 0, 16).arg(capsIds));
+            // The accent pair: two groups after the lower/caps groups whose first rows start with a-grave / A-grave.
+            const LabelGroup* accent = nullptr;
+            const LabelGroup* accentCaps = nullptr;
+            for (const LabelGroup& group : groups) {
+                if (group.rows.size() != 4) continue;
+                if (!accent && group.rows.at(0).startsWith(QChar(0x00e0)) && group.rows.at(1).startsWith(QChar(0x00e8))) accent = &group;
+                if (!accentCaps && group.rows.at(0).startsWith(QChar(0x00c0)) && group.rows.at(1).startsWith(QChar(0x00c8))) accentCaps = &group;
+            }
+            if (accent && accentCaps && layout.pages.size() >= 4) {
+                const QString accentIds = QStringLiteral("0x%1..0x%2").arg(accent->ids.first(), 0, 16).arg(accent->ids.last(), 0, 16);
+                const QString accentCapsIds = QStringLiteral("0x%1..0x%2").arg(accentCaps->ids.first(), 0, 16).arg(accentCaps->ids.last(), 0, 16);
+                layout.pages[2] = makeCharacterPage(QStringLiteral("accent"), accent->rows, oskAccentModeCaption(false), layout.captions,
+                                                    QStringLiteral("character rows: module label table @0x%1 (ids %2); function rows: as lower (inferred)")
+                                                        .arg(accent->offset, 0, 16).arg(accentIds));
+                layout.pages[3] = makeCharacterPage(QStringLiteral("accentCaps"), accentCaps->rows, oskAccentModeCaption(true), layout.captions,
+                                                    QStringLiteral("character rows: module label table @0x%1 (ids %2); function rows: as caps (inferred)")
+                                                        .arg(accentCaps->offset, 0, 16).arg(accentCapsIds));
+                layout.anchors.insert(QStringLiteral("module.accent.ids"), accentIds);
+                layout.anchors.insert(QStringLiteral("module.accentCaps.ids"), accentCapsIds);
+            } else {
+                layout.provenanceChain << QStringLiteral("rows: module accent groups not found; committed accent rows used");
+            }
             layout.moduleRows = true;
             layout.anchors.insert(QStringLiteral("module.lower.ids"), lowerIds);
             layout.anchors.insert(QStringLiteral("module.caps.ids"), capsIds);
