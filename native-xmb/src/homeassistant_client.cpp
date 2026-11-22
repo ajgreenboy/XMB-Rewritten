@@ -189,7 +189,7 @@ QString HomeAssistantClient::origin() const {
 }
 
 bool HomeAssistantClient::configure(const QString& dataDirectory) {
-    base_ = {};configError_.clear();token_.fill('\0');token_.clear();
+    base_ = QUrl();configError_.clear();token_.fill('\0');token_.clear();
     sessionPath_ = QDir(dataDirectory).filePath(QStringLiteral("homeassistant/session.bin"));
     const QString jsonPath = QDir(dataDirectory).filePath(QStringLiteral("homeassistant.json"));
     QString url = qEnvironmentVariable("HA_URL").trimmed();

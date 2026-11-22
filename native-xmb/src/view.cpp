@@ -55,8 +55,8 @@
 #define NOMINMAX
 #include <windows.h>
 #include <Xinput.h>
-#include "boot_profile.h"
 #endif
+#include "boot_profile.h"
 
 namespace xmb {
 namespace {
@@ -5349,6 +5349,7 @@ void View::enterInGame(const QString& reason) {
     quintptr hwnd=0;
     GameWindowInfo info;
     GameCaptureResult capture;
+    std::unique_ptr<LiveOverlay> liveCandidate;
 #ifdef Q_OS_WIN
     const quint32 root=shell_.runningTitlePid();
     QWidget* top=window();
@@ -5366,7 +5367,6 @@ void View::enterInGame(const QString& reason) {
         }
     }
     if(!hwnd && root)hwnd=findMainWindow(root);
-    std::unique_ptr<LiveOverlay> liveCandidate;
     QString overlayReason;
     if(hwnd) {
         info=classifyGameWindow(hwnd);
