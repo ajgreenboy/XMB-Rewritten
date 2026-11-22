@@ -234,6 +234,15 @@ private:
     std::unique_ptr<GameFrameTap> tap_;
     void startTap(const QString& why);
     void stopTap(const QString& why);
+    // Frozen last-good frame first, live overlay only once frames are proven to keep arriving (ingame_backdrop.h).
+    QTimer liveGateTimer_;
+    QElapsedTimer liveGateRaise_;
+    quint64 liveGateGoodBase_=0;
+    bool liveGateDone_=true;           // promoted, dropped, or timed out: no more promotion attempts for this entry
+    bool liveRevealPending_=false;     // the overlay was just promoted: the Qt window stays opaque until its first present
+    void liveGateTick();
+    void beginLiveOverlay(std::unique_ptr<class LiveOverlay> overlay);
+    void refreshFrozenFromTap();
     bool inGameBack();
     void drawInGameBackdrop(int width,int height);
     void stopLiveOverlay();

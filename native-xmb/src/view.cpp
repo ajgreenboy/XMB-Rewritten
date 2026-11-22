@@ -319,6 +319,8 @@ View::View(Shell& shell,Assets& assets,QWidget* parent):QOpenGLWidget(parent),sh
     connect(&psWatcher_,&PsWatcher::cancelled,this,[this]{psPressActionable_=false;});
     psWatcher_.start();
     xmb::bootprof::mark("View psWatcher");
+    liveGateTimer_.setInterval(100);
+    connect(&liveGateTimer_,&QTimer::timeout,this,&View::liveGateTick);
     if(inGameTrackingEnabled()) {
         latchTimer_.setInterval(300);
         connect(&latchTimer_,&QTimer::timeout,this,&View::pollTitleLatch);
@@ -1666,7 +1668,10 @@ void View::paintGL() {
         // Present the frame whose read-back was issued by the previous paint (the pixel-pack buffer has had a whole frame to
         // finish), then issue a new read-back only when something drawn changed. The UI layer's signature (rebuild) is the dirty
         // flag; 66 ms is a heartbeat for the glass icons, whose shimmer is not part of it.
-        if(liveReadPending_)ok=liveBridgePresent(&error);
+        if(liveReadPending_) {
+            ok=liveBridgePresent(&error);
+            if(ok && liveRevealPending_){liveRevealPending_=false;window()->setWindowOpacity(0.);}
+        }
         const bool dirty=rebuild || !liveIssued_ || bridgeStart-liveIssuedNs_>=66'000'000;
         if(ok && dirty) {ok=liveBridgeIssue(device,&error);if(ok){++liveIssued_;liveIssuedNs_=bridgeStart;}}
         else if(ok)++liveSkipped_;
@@ -5580,8 +5585,30 @@ void View::enterInGame(const QString& reason) {
     if(!hwnd && root)hwnd=findMainWindow(root);
     std::unique_ptr<LiveOverlay> liveCandidate;
     QString overlayReason;
+    bool tapFrozen=false;
     if(hwnd) {
         info=classifyGameWindow(hwnd);
+        // The frame tap's last good frame is the opaque backdrop on every entry, whatever the game did on focus loss
+        // (minimise, pause, blank). Only when no good frame was ever seen does the legacy path below apply.
+        if(tap_ && tap_->running() && tap_->hwnd()==hwnd) {
+            const auto stats=tap_->stats();
+            QString detail;
+            psLog(QStringLiteral("ingame: tap frames=%1 good=%2 blank=%3 lastGoodAge=%4 ms cb avg=%5 us max=%6 us size=%7x%8 gpu=%9 MB")
+                .arg(stats.frames).arg(stats.goodFrames).arg(stats.blankFrames).arg(stats.lastGoodAgeMs).arg(stats.avgCallbackUs,0,'f',1)
+                .arg(stats.maxCallbackUs,0,'f',1).arg(stats.width).arg(stats.height).arg(double(stats.gpuBytes)/1048576.,0,'f',1));
+            if(ingamebg::chooseEntryBackdrop(stats.goodFrames>0)==ingamebg::Backdrop::Frozen) {
+                QElapsedTimer grabTimer;grabTimer.start();
+                if(tap_->grabLastGood(&capture.image,&detail)) {
+                    capture.status=GameCaptureStatus::Ok;capture.elapsedMs=int(grabTimer.elapsed());
+                    capture.detail=QStringLiteral("tap last-good frame %1, one CPU copy").arg(detail);
+                    tapFrozen=true;
+                    overlayReason=QStringLiteral("frozen last-good frame (live check pending)");
+                } else psLog(QStringLiteral("ingame: tap had no readable good frame (%1); legacy path").arg(detail));
+            }
+        }
+    }
+    if(hwnd && tapFrozen)psLog(gameCaptureLogLine(info,capture));
+    else if(hwnd) {
         // Overlay first (INGAME-OVERLAY-DESIGN M1): only a windowed or borderless title is composed by DWM in a way a
         // DirectComposition window can sit over. When it is created, the 150-300 ms blocking capture is skipped entirely.
         if(!inGameLiveEnabled())overlayReason=QStringLiteral("XMB_INGAME_LIVE=0");
@@ -5616,15 +5643,76 @@ void View::enterInGame(const QString& reason) {
     // Game Bar style: stay above the game while the in-game XMB is up (INGAME-XMB-DESIGN, "always there").
     setTopmost(reinterpret_cast<HWND>(window()->winId()), true);
     if(liveCandidate) {
-        liveOverlayOwnerOpacity_=window()->windowOpacity();
-        liveOverlay_=std::move(liveCandidate);
-        liveIssued_=0;liveSkipped_=0;liveReadPending_=false;liveBridgeMsSum_=0;liveBridgeMsMax_=0;liveBridgeSamples_=0;
-        window()->setWindowOpacity(0.);
+        beginLiveOverlay(std::move(liveCandidate));
         psLog(QStringLiteral("ingame: overlay=live reason=%1 mode=%2 (DirectComposition over the running title, Qt owner retains focus)")
             .arg(inGameMode_==GameWindowMode::Borderless?QStringLiteral("borderless title"):QStringLiteral("windowed title"),QLatin1String(gameWindowModeName(inGameMode_))));
     } else psLog(QStringLiteral("ingame: overlay=frozen reason=%1").arg(overlayReason));
+    if(tapFrozen && tap_) {
+        liveGateGoodBase_=tap_->stats().goodFrames;liveGateRaise_.start();liveGateDone_=false;
+        if(!liveGateTimer_.isActive())liveGateTimer_.start();
+    }
 #endif
     update();
+}
+// The state both entry and a later promotion share: the overlay window, the bridge counters, and the Qt owner made see-through.
+void View::beginLiveOverlay(std::unique_ptr<LiveOverlay> overlay) {
+    liveOverlayOwnerOpacity_=window()->windowOpacity();
+    liveOverlay_=std::move(overlay);
+    liveIssued_=0;liveSkipped_=0;liveReadPending_=false;liveBridgeMsSum_=0;liveBridgeMsMax_=0;liveBridgeSamples_=0;
+    window()->setWindowOpacity(0.);
+}
+// 10 Hz while the in-game XMB is up over a tapped title: decides when the frozen frame may give way to the live overlay,
+// and when the live overlay must give way to the frozen frame again. All the rules are in ingame_backdrop.h.
+void View::liveGateTick() {
+#ifdef Q_OS_WIN
+    if(!shell_.inGame() || !tap_ || !tap_->running() || !inGameHwnd_){liveGateTimer_.stop();return;}
+    if(liveGateDone_ && !liveOverlay_){liveGateTimer_.stop();return;}
+    const auto stats=tap_->stats();
+    const HWND titleWindow=reinterpret_cast<HWND>(inGameHwnd_);
+    ingamebg::LiveFacts facts;
+    facts.liveEnabled=inGameLiveEnabled();
+    facts.modeAllowsOverlay=inGameMode_==GameWindowMode::Windowed || inGameMode_==GameWindowMode::Borderless;
+    facts.iconic=!IsWindow(titleWindow) || IsIconic(titleWindow);
+    DWORD cloak=0;facts.cloaked=SUCCEEDED(DwmGetWindowAttribute(titleWindow,DWMWA_CLOAKED,&cloak,sizeof(cloak))) && cloak;
+    facts.msSinceRaise=liveGateRaise_.elapsed();
+    facts.goodFramesSinceRaise=int(std::min<quint64>(stats.goodFrames-liveGateGoodBase_,1000));
+    facts.msSinceLastGood=stats.lastGoodAgeMs;
+    facts.lastFrameBlank=stats.lastClassifiedBlank;
+    if(liveOverlay_) {
+        if(!liveRevealPending_ && ingamebg::shouldDropLive(facts)) {
+            psLog(QStringLiteral("ingame: overlay=frozen reason=title no longer drawing (iconic=%1 cloaked=%2 blank=%3), last good frame kept")
+                .arg(facts.iconic).arg(facts.cloaked).arg(facts.lastFrameBlank));
+            liveGateDone_=true;
+            stopLiveOverlay();
+            refreshFrozenFromTap();
+            update();
+        }
+        return;
+    }
+    if(ingamebg::shouldGoLive(facts)) {
+        auto overlay=std::make_unique<LiveOverlay>();QString error;
+        const auto info=classifyGameWindow(inGameHwnd_);
+        liveGateDone_=true;
+        if(overlay->create(quintptr(window()->winId()),info.monitorRect,&error)) {
+            beginLiveOverlay(std::move(overlay));
+            window()->setWindowOpacity(liveOverlayOwnerOpacity_);   // the Qt owner stays opaque until the overlay's first present
+            liveRevealPending_=true;
+            psLog(QStringLiteral("ingame: overlay=live reason=frames kept arriving (%1 good in %2 ms, newest %3 ms old)")
+                .arg(facts.goodFramesSinceRaise).arg(facts.msSinceRaise).arg(facts.msSinceLastGood));
+        } else psLog(QStringLiteral("ingame: overlay stays frozen: live overlay creation failed: %1").arg(error));
+        update();
+    } else if(liveGateRaise_.elapsed()>2000) {
+        liveGateDone_=true;
+        psLog(QStringLiteral("ingame: overlay=frozen reason=no live proof within 2 s (good frames since raise %1, lastGoodAge=%2 ms, blank=%3, iconic=%4, cloaked=%5)")
+            .arg(facts.goodFramesSinceRaise).arg(facts.msSinceLastGood).arg(facts.lastFrameBlank).arg(facts.iconic).arg(facts.cloaked));
+    }
+#endif
+}
+// A game that blanked after the overlay went live: the picture kept is the newest good one, not the one from the entry.
+void View::refreshFrozenFromTap() {
+    if(!tap_ || !tap_->running())return;
+    QImage image;QString detail;
+    if(tap_->grabLastGood(&image,&detail)){inGameBackdrop_=image;psLog(QStringLiteral("ingame: frozen frame refreshed from the tap (%1)").arg(detail));}
 }
 bool View::inGameBack() {
     if(!shell_.inGame())return false;
@@ -5716,7 +5804,7 @@ void View::syncInGameWindow() {
 }
 void View::stopLiveOverlay() {
     if(!liveOverlay_)return;
-    liveOverlay_.reset();liveReadPending_=false;
+    liveOverlay_.reset();liveReadPending_=false;liveRevealPending_=false;
     window()->setWindowOpacity(liveOverlayOwnerOpacity_);
     psLog(QStringLiteral("ingame: DirectComposition live overlay stopped"));
 }
@@ -5799,7 +5887,7 @@ bool View::liveBridgePresent(QString* error) {
 void View::drawInGameBackdrop(int width,int height) {
     glBindFramebuffer(GL_FRAMEBUFFER,defaultFramebufferObject());glViewport(0,0,width,height);
     glDisable(GL_BLEND);glDisable(GL_DEPTH_TEST);glDisable(GL_SCISSOR_TEST);
-    if(liveOverlay_) {
+    if(liveOverlay_ && !liveRevealPending_) {
         // Premultiplied black dim: DWM supplies the live game, not a captured texture.
         glClearColor(0.f,0.f,0.f,float(inGameDim()));glClear(GL_COLOR_BUFFER_BIT);return;
     }
