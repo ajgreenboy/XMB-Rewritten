@@ -29,6 +29,7 @@
 #include "boot_prefetch.h"
 #include <QCommandLineParser>
 #include <QDir>
+#include <QStandardPaths>
 #include <QMainWindow>
 #include <QSurfaceFormat>
 #include <QKeyEvent>
@@ -825,8 +826,20 @@ int main(int argc,char** argv) {
         const QString value=launchConfig.value(QLatin1String(key)).toString();
         return value.isEmpty()?QString():QDir::cleanPath(QDir(QCoreApplication::applicationDirPath()).absoluteFilePath(value));
     };
+    // Portable default data dir. Windows keeps the beside-the-exe convention. Linux (and in
+    // particular an AppImage, whose mount is read-only and ephemeral) resolves writable app data
+    // under $XDG_DATA_HOME / ~/.local/share instead, so profiles, preferences, crashes and the
+    // firmware download all land on a real, persistent disk.
+    const auto defaultDataDir=[]()->QString{
+#ifdef Q_OS_WIN
+        return QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("data"));
+#else
+        const QString xdg=QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+        return xdg.isEmpty()?QDir(QDir::homePath()).filePath(QStringLiteral(".local/share/re-ps3-native")):xdg;
+#endif
+    };
     const QString data=parser.isSet("data-dir")?parser.value("data-dir"):!configPathValue("dataDir").isEmpty()?configPathValue("dataDir")
-        :QDir(QCoreApplication::applicationDirPath()).filePath("data");
+        :defaultDataDir();
     xmb::diagnostics::setCrashDirectory(data);
     if(xmb::diagnostics::safeMode())qWarning().noquote()<<"safe mode:"<<xmb::diagnostics::kSafeModeNotice;
     if(parser.isSet("steam-root"))qputenv("XMB_STEAM_ROOT",parser.value("steam-root").toUtf8());

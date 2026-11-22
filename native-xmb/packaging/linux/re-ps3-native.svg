@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#161b36"/>
+      <stop offset="1" stop-color="#0c0f22"/>
+    </linearGradient>
+    <clipPath id="round">
+      <rect x="0" y="0" width="256" height="256" rx="48" ry="48"/>
+    </clipPath>
+  </defs>
+  <g clip-path="url(#round)">
+    <rect width="256" height="256" fill="url(#bg)"/>
+    <!-- three flowing XMB-style wave ribbons -->
+    <path d="M0 92 C 48 70, 96 118, 128 108 C 160 98, 208 70, 256 84 L 256 106 C 208 92, 160 120, 128 130 C 96 140, 48 92, 0 114 Z"
+          fill="#bfeaf6" opacity="0.95"/>
+    <path d="M0 128 C 48 106, 96 154, 128 144 C 160 134, 208 106, 256 120 L 256 142 C 208 128, 160 156, 128 166 C 96 176, 48 128, 0 150 Z"
+          fill="#8fdef0" opacity="0.90"/>
+    <path d="M0 164 C 48 142, 96 190, 128 180 C 160 170, 208 142, 256 156 L 256 178 C 208 164, 160 192, 128 202 C 96 212, 48 164, 0 186 Z"
+          fill="#62d0e8" opacity="0.85"/>
+  </g>
+  <rect x="0" y="0" width="256" height="256" rx="48" ry="48" fill="none" stroke="#000000" stroke-opacity="0.25" stroke-width="2"/>
+</svg>
