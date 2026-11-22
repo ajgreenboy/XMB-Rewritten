@@ -97,8 +97,25 @@ bool fetchRetryable(const FetchOutcome& outcome) {
     return false;
 }
 
+// Classifies a failed fetch for the screen (see HydraFailureKind). Only conditions a repeat can fix are
+// Timeout/Server/Other; a refusal or an oversized body is permanent, and a rate limit needs time.
+HydraFailure classifyFailure(const FetchOutcome& outcome) {
+    HydraFailure failure; failure.status=outcome.status;
+    if(outcome.overflow)failure.kind=HydraFailureKind::TooLarge;
+    else if(outcome.status==401 || outcome.status==403)failure.kind=HydraFailureKind::Refused;
+    else if(outcome.status==429)failure.kind=HydraFailureKind::RateLimited;
+    else if(outcome.status>=500)failure.kind=HydraFailureKind::Server;
+    else if(outcome.timedOut || outcome.networkError==QNetworkReply::TimeoutError)failure.kind=HydraFailureKind::Timeout;
+    else failure.kind=HydraFailureKind::Other;
+    return failure;
+}
+
 QString fetchErrorString(const QString& service,const FetchOutcome& outcome,qint64 maxBody) {
-    if(outcome.overflow)return QStringLiteral("Hydra %1 response exceeds %2 MiB; retry").arg(service).arg(maxBody/(1024*1024));
+    if(outcome.overflow)return QStringLiteral("Hydra %1 response exceeds %2 MiB").arg(service).arg(maxBody/(1024*1024));
+    // A refusal is an access decision (anti-bot or auth), never transient: say so without promising a
+    // retry will fix it. 429 asks for time, not an immediate repeat. Neither is ever retried automatically.
+    if(outcome.status==401 || outcome.status==403)return QStringLiteral("Hydra %1 refused access (HTTP %2)").arg(service).arg(outcome.status);
+    if(outcome.status==429)return QStringLiteral("Hydra %1 is rate limiting requests (HTTP 429); try again later").arg(service);
     if(outcome.invalidRedirect)return QStringLiteral("Hydra %1 redirect is not safe HTTP(S); retry").arg(service);
     if(outcome.invalidUrl)return QStringLiteral("Hydra %1 URL must be HTTP(S); retry").arg(service);
     if(outcome.timedOut)return QStringLiteral("Hydra %1 request timed out; retry").arg(service);
@@ -230,7 +247,7 @@ RetryPolicy retryPolicy() {
 // `sharedBudget` lets one user action that makes several requests (the paginated source directory)
 // run under ONE budget: every page and every backoff draws on the same clock, so a long listing cannot
 // stretch the wait past the budget by giving each page a fresh one. Without it the call owns its budget.
-bool fetchBodyWithRetry(const QUrl& url,const QString& service,qint64 maxBody,QByteArray* out,QString* error,QElapsedTimer* sharedBudget=nullptr) {
+bool fetchBodyWithRetry(const QUrl& url,const QString& service,qint64 maxBody,QByteArray* out,QString* error,QElapsedTimer* sharedBudget=nullptr,HydraFailure* failure=nullptr) {
     const RetryPolicy policy=retryPolicy();
     QElapsedTimer ownBudget;
     if(!sharedBudget)ownBudget.start();
@@ -255,27 +272,29 @@ bool fetchBodyWithRetry(const QUrl& url,const QString& service,qint64 maxBody,QB
         sleepFor(wait);
     }
     if(error)*error=fetchErrorString(service,outcome,maxBody);
+    if(failure)*failure=classifyFailure(outcome);
     return false;
 }
 // One page of the Hydra source directory (Browse Sources), under the directory action's shared budget.
 // A transient 500/502/503/504 or timeout is retried inside that budget; 4xx (403, 429 included), unsafe
 // redirects and oversized bodies are terminal and are not replayed. The error text names the source
 // directory (not just "library") so the screen shows which request failed.
-bool fetchDirectoryPage(const QUrl& url,QElapsedTimer* budget,QJsonObject* out,QString* error) {
+bool fetchDirectoryPage(const QUrl& url,QElapsedTimer* budget,QJsonObject* out,QString* error,HydraFailure* failure) {
     const QString service=QStringLiteral("source directory");
-    QByteArray body; if(!fetchBodyWithRetry(url,service,kMaxBody,&body,error,budget))return false;
+    QByteArray body; if(!fetchBodyWithRetry(url,service,kMaxBody,&body,error,budget,failure))return false;
     QJsonParseError parseError;
     const QJsonDocument document=QJsonDocument::fromJson(body,&parseError);
     if(document.isNull() || !document.isObject()) {
         if(error)*error=QStringLiteral("Hydra %1 returned invalid JSON; retry").arg(service);
+        if(failure)*failure=HydraFailure{HydraFailureKind::Other,0};
         return false;
     }
     if(out)*out=document.object(); return true;
 }
-bool fetchDocumentWithRetry(const QUrl& url, QJsonDocument* out, QString* error) {
-    QByteArray body; if(!fetchBodyWithRetry(url,QStringLiteral("source"),kMaxSourceBody,&body,error))return false;
+bool fetchDocumentWithRetry(const QUrl& url, QJsonDocument* out, QString* error, HydraFailure* failure) {
+    QByteArray body; if(!fetchBodyWithRetry(url,QStringLiteral("source"),kMaxSourceBody,&body,error,nullptr,failure))return false;
     QJsonParseError parseError; const auto document=QJsonDocument::fromJson(body,&parseError);
-    if(document.isNull()) { if(error)*error=QStringLiteral("Hydra source returned invalid JSON; retry"); return false; }
+    if(document.isNull()) { if(error)*error=QStringLiteral("Hydra source returned invalid JSON; retry"); if(failure)*failure=HydraFailure{HydraFailureKind::Other,0}; return false; }
     if(out)*out=document; return true;
 }
 // The catalogue's dedup key. It must agree with the shell's gameSearchKey() so a game merged here
@@ -433,8 +452,9 @@ void rankGameResults(QVector<GameResult>* results,const QString& query) {
     };
     std::stable_sort(results->begin(),results->end(),[&](const GameResult& left,const GameResult& right){return score(left)<score(right);});
 }
-bool HydraLibrary::listSources(QVector<HydraSource>* out, QString* error) const {
+bool HydraLibrary::listSources(QVector<HydraSource>* out, QString* error, HydraFailure* failure) const {
     if(error)error->clear();
+    if(failure)*failure=HydraFailure{};
     if(out)out->clear();
     QVector<HydraSource> all;
     int pageNumber=1;
@@ -446,7 +466,7 @@ bool HydraLibrary::listSources(QVector<HydraSource>* out, QString* error) const 
     QElapsedTimer directoryBudget; directoryBudget.start();
     for(;;) {
         QJsonObject root;
-        if(!fetchDirectoryPage(QUrl(endpoint+QStringLiteral("?page=%1&limit=100").arg(pageNumber)),&directoryBudget,&root,error))return false;
+        if(!fetchDirectoryPage(QUrl(endpoint+QStringLiteral("?page=%1&limit=100").arg(pageNumber)),&directoryBudget,&root,error,failure))return false;
         if(!root.contains(QStringLiteral("sources")) || !root.value(QStringLiteral("sources")).isArray()) {
             if(error)*error=QStringLiteral("Hydra source directory returned an invalid sources response; retry");
             return false;
@@ -523,13 +543,14 @@ bool HydraLibrary::searchGames(const QString& query, QVector<GameResult>* out, Q
     QVector<GameResult> results=buildGameCatalog(records,sources); rankGameResults(&results,query);
     if(out)*out=results; return true;
 }
-bool HydraLibrary::browseSource(const HydraSource& source, QVector<GameResult>* out, QString* error) const {
+bool HydraLibrary::browseSource(const HydraSource& source, QVector<GameResult>* out, QString* error, HydraFailure* failure) const {
     if(error)error->clear(); if(out)out->clear();
+    if(failure)*failure=HydraFailure{};
     if(!source.url.isValid()) { if(error)*error=QStringLiteral("Hydra source has an invalid URL; retry"); return false; }
     QJsonDocument document;
-    if(!fetchDocumentWithRetry(source.url,&document,error))return false;
+    if(!fetchDocumentWithRetry(source.url,&document,error,failure))return false;
     QString parseError; const auto releases=parseReleaseIndex(document,&parseError);
-    if(!parseError.isEmpty()) { if(error)*error=QStringLiteral("Hydra source returned invalid release JSON; retry"); return false; }
+    if(!parseError.isEmpty()) { if(error)*error=QStringLiteral("Hydra source returned invalid release JSON; retry"); if(failure)*failure=HydraFailure{HydraFailureKind::Other,0}; return false; }
     QVector<GameResult> games; QHash<QString,int> gameIndexes;
     for(const auto& release:releases) {
         QString name=release.raw.value(QStringLiteral("gameTitle")).toString().trimmed();

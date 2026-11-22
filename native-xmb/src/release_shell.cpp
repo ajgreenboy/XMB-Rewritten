@@ -396,7 +396,30 @@ QVector<Entry> downloadHubRows(const QVector<ReleaseSource>& sources) {
 // Browse worker result: source-complete popular games. Covers are deliberately not part of
 // first paint; they are fetched after the Store page is visible.
 struct BrowseOutcome { QVector<GameResult> games; QHash<int,QImage> covers; QString error; };
-struct HydraSourcesOutcome { QVector<HydraSource> sources; QString error; };
+struct HydraSourcesOutcome { QVector<HydraSource> sources; QString error; HydraFailure failure; };
+// Source feed worker result: the games, the library's own error text and why the request failed.
+struct HydraSourceOutcome { QVector<GameResult> games; QString error; HydraFailure failure; };
+// A repeat can help only when the failure was transient. A refusal (HTTP 401/403) is the host's decision
+// and an oversized feed stays oversized, so those pages get no Retry row; a rate limit says to wait and
+// keeps a manual one. Nothing here ever retries on its own.
+bool hydraRetryCanHelp(const HydraFailure& failure) {
+    return failure.kind!=HydraFailureKind::Refused && failure.kind!=HydraFailureKind::TooLarge;
+}
+// The on-screen reason for a failed Hydra request, worded for the failure's category. Falls back to the
+// library's own text for timeouts, 5xx and anything unclassified, where Retry stays offered.
+QString hydraFailureText(const HydraFailure& failure,const QString& libraryError,bool directory) {
+    switch(failure.kind) {
+    case HydraFailureKind::Refused:
+        return directory?QObject::tr("The source directory blocks the app (HTTP %1)").arg(failure.status)
+                        :QObject::tr("This source blocks the app (HTTP %1)").arg(failure.status);
+    case HydraFailureKind::RateLimited:
+        return directory?QObject::tr("The source directory is rate limiting requests; try again later")
+                        :QObject::tr("The source is rate limiting requests; try again later");
+    case HydraFailureKind::TooLarge:
+        return directory?QObject::tr("Source directory too large for this device"):QObject::tr("Source too large for this device");
+    default: return libraryError;
+    }
+}
 // Lazy cross-source resolution worker result for one selected source-browsed game.
 struct ResolveOutcome { GameResult game; QString error; };
 }
@@ -642,7 +665,11 @@ void Shell::openHydraSources() {
         busy_=false;status_.clear();busyProgress_=-1.;busySpinnerPhase_=-1.;
         if(pages_.size()!=depth)return;
         Page page; page.title=tr("Browse Sources"); page.identity=++pageIdentityCounter_; page.hydraRetryKind=1; page.hydraRequest=generation;
-        if(!result.error.isEmpty()) { Entry row=releaseRow(QStringLiteral("hydra:sources:error"),tr("Could not load Hydra sources"),Action::GameRetry); row.detail=result.error; page.entries.append(std::move(row)); }
+        if(!result.error.isEmpty()) {
+            const bool retry=hydraRetryCanHelp(result.failure);
+            Entry row=releaseRow(QStringLiteral("hydra:sources:error"),tr("Could not load Hydra sources"),retry?Action::GameRetry:Action::Unavailable);
+            row.detail=hydraFailureText(result.failure,result.error,true); row.disabled=!retry; page.entries.append(std::move(row));
+        }
         else if(result.sources.isEmpty())page.entries.append(releaseRow(QStringLiteral("hydra:sources:empty"),tr("No Hydra sources available."),Action::Unavailable));
         for(const auto& source:result.sources) {
             Entry row=releaseRow(QStringLiteral("hydra:source:")+source.url.toString(),source.title,Action::ReleaseFolder,source.url.toString());
@@ -652,7 +679,7 @@ void Shell::openHydraSources() {
         page.hydraRetryUrl.clear(); page.hydraRetryName.clear();
         pages_.push_back(std::move(page)); emit changed();
     });
-    watcher->setFuture(QtConcurrent::run([]{ HydraSourcesOutcome result; HydraLibrary().listSources(&result.sources,&result.error); return result; }));
+    watcher->setFuture(QtConcurrent::run([]{ HydraSourcesOutcome result; HydraLibrary().listSources(&result.sources,&result.error,&result.failure); return result; }));
     emit changed();
 }
 
@@ -660,24 +687,28 @@ void Shell::openHydraSource(const QString& sourceIndex,const QString& sourceName
     if(busy() || pages_.size()>=32)return;
     const quint64 generation=++hydraPageGeneration_; const int depth=pages_.size();
     const QUrl url(sourceIndex); busy_=true;status_=tr("Loading source feed...");busyProgress_=-1.;busySpinnerPhase_=0.;busyClock_.start();
-    auto* watcher=new QFutureWatcher<QPair<QVector<GameResult>,QString>>(this);
-    connect(watcher,&QFutureWatcher<QPair<QVector<GameResult>,QString>>::finished,this,[this,watcher,generation,depth,url,sourceName]{
+    auto* watcher=new QFutureWatcher<HydraSourceOutcome>(this);
+    connect(watcher,&QFutureWatcher<HydraSourceOutcome>::finished,this,[this,watcher,generation,depth,url,sourceName]{
         const auto result=watcher->result();watcher->deleteLater();
         if(generation!=hydraPageGeneration_)return;
         busy_=false;status_.clear();busyProgress_=-1.;busySpinnerPhase_=-1.;
         if(pages_.size()!=depth)return;
-        Page page;page.title=sourceName.isEmpty()?(url.fileName().isEmpty()?tr("Hydra Source"):url.fileName()):sourceName;page.identity=++pageIdentityCounter_;page.hydraRetryKind=2;page.hydraRetryUrl=url.toString();page.hydraRetryName=sourceName;page.downloadResults=result.first;
+        Page page;page.title=sourceName.isEmpty()?(url.fileName().isEmpty()?tr("Hydra Source"):url.fileName()):sourceName;page.identity=++pageIdentityCounter_;page.hydraRetryKind=2;page.hydraRetryUrl=url.toString();page.hydraRetryName=sourceName;page.downloadResults=result.games;
         for(int i=0;i<page.downloadResults.size();++i) { const auto& game=page.downloadResults[i]; Entry row=releaseRow(QStringLiteral("game:result:")+QString::number(i),game.name,Action::GameSearchResult,QString::number(i)); row.detail=optionCount(game);row.gameTile=true;page.entries.append(std::move(row)); }
         if(page.entries.isEmpty())page.entries.append(releaseRow(QStringLiteral("hydra:source:empty"),tr("No games in this source."),Action::Unavailable));
-        if(!result.second.isEmpty()) { Entry row=releaseRow(QStringLiteral("hydra:source:error"),tr("Source unavailable"),Action::GameRetry);row.detail=result.second;page.entries.append(std::move(row)); }
+        if(!result.error.isEmpty()) {
+            const bool retry=hydraRetryCanHelp(result.failure);
+            Entry row=releaseRow(QStringLiteral("hydra:source:error"),tr("Source unavailable"),retry?Action::GameRetry:Action::Unavailable);
+            row.detail=hydraFailureText(result.failure,result.error,false);row.disabled=!retry;page.entries.append(std::move(row));
+        }
         pages_.push_back(std::move(page));emit changed();
     });
     watcher->setFuture(QtConcurrent::run([url,sourceName]{
-        HydraLibrary library;HydraSource source;source.title=sourceName;source.url=url;QVector<GameResult> games;QString error;
+        HydraLibrary library;HydraSource source;source.title=sourceName;source.url=url;HydraSourceOutcome outcome;
         // Opening a source only fetches and parses its index. Cross-source choices are resolved
         // lazily for the selected game at the Download action, never eagerly for every row.
-        library.browseSource(source,&games,&error);
-        return qMakePair(games,error);
+        library.browseSource(source,&outcome.games,&outcome.error,&outcome.failure);
+        return outcome;
     })); emit changed();
 }
 

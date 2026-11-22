@@ -528,6 +528,8 @@ int main(int argc,char** argv) {
         int source500ThenSuccessRequests=0;
         int source500AlwaysRequests=0;
         int source404Requests=0;
+        int source403Requests=0;
+        int source401Requests=0;
         int source503RetryAfterRequests=0;
         int sourceStallRequests=0;
         int source429Requests=0;
@@ -600,6 +602,16 @@ int main(int argc,char** argv) {
                 if(request.contains("/source-500-always")) {
                     ++source500AlwaysRequests;
                     socket->write("HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                    socket->disconnectFromHost();return;
+                }
+                if(request.contains("/source-403")) {
+                    ++source403Requests;
+                    socket->write("HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                    socket->disconnectFromHost();return;
+                }
+                if(request.contains("/source-401")) {
+                    ++source401Requests;
+                    socket->write("HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
                     socket->disconnectFromHost();return;
                 }
                 if(request.contains("/source-404")) {
@@ -994,6 +1006,12 @@ int main(int argc,char** argv) {
             check(!HydraLibrary().listSources(&dirSources,&dirError) && dirSources.isEmpty() && dirError.contains(QStringLiteral("HTTP 403")) && dirError.contains(QStringLiteral("source directory")),
                   "directory: HTTP 403 is surfaced with its status");
             check(dir403Requests==1,"directory: HTTP 403 is terminal (exactly one request)");
+            {
+                HydraFailure directoryFailure;dirSources.clear();dirError.clear();
+                HydraLibrary().listSources(&dirSources,&dirError,&directoryFailure);
+                check(directoryFailure.kind==HydraFailureKind::Refused && directoryFailure.status==403 && !dirError.contains(QStringLiteral("retry")),
+                      "directory: a 403 is classified Refused and its error makes no retry promise");
+            }
             qputenv("XMB_HYDRA_SOURCES_URL",(base+QStringLiteral("/sources-429")).toUtf8());
             dirSources.clear();dirError.clear();
             QElapsedTimer rateClock;rateClock.start();
@@ -1112,6 +1130,41 @@ int main(int argc,char** argv) {
          check(!HydraLibrary().browseSource(feed,&feedGames,&fixtureError) && feedGames.isEmpty() &&
                fixtureError.contains(QStringLiteral("HTTP 429")) && source429Requests==1,
                "HTTP 429 rate limit on a selected feed is terminal (never auto-retried)");
+         // Failure categories drive the on-screen reason and whether a Retry row is offered. Refusals are
+         // reported as refusals (no "retry" promise), classified, and never replayed.
+         {
+             HydraFailure failure;
+             feed.url=QUrl(base+QStringLiteral("/source-403"));feedGames.append(GameResult{});fixtureError.clear();
+             check(!HydraLibrary().browseSource(feed,&feedGames,&fixtureError,&failure) && feedGames.isEmpty() &&
+                   failure.kind==HydraFailureKind::Refused && failure.status==403 && source403Requests==1,
+                   "a 403 on a selected feed is classified Refused and requested exactly once (no automatic retry)");
+             check(fixtureError.contains(QStringLiteral("refused access (HTTP 403)")) && !fixtureError.contains(QStringLiteral("retry")),
+                   "a refused feed's error does not promise that retrying helps");
+             failure=HydraFailure{};
+             feed.url=QUrl(base+QStringLiteral("/source-401"));feedGames.append(GameResult{});fixtureError.clear();
+             check(!HydraLibrary().browseSource(feed,&feedGames,&fixtureError,&failure) &&
+                   failure.kind==HydraFailureKind::Refused && failure.status==401 && source401Requests==1,
+                   "a 401 on a selected feed is classified Refused and requested exactly once");
+             failure=HydraFailure{};
+             feed.url=QUrl(base+QStringLiteral("/source-429"));feedGames.append(GameResult{});fixtureError.clear();
+             check(!HydraLibrary().browseSource(feed,&feedGames,&fixtureError,&failure) &&
+                   failure.kind==HydraFailureKind::RateLimited && failure.status==429 && fixtureError.contains(QStringLiteral("try again later")),
+                   "a 429 on a selected feed is classified RateLimited and asks to try again later");
+             failure=HydraFailure{};
+             feed.url=QUrl(base+QStringLiteral("/source-over-64m"));feedGames.append(GameResult{});fixtureError.clear();
+             check(!HydraLibrary().browseSource(feed,&feedGames,&fixtureError,&failure) &&
+                   failure.kind==HydraFailureKind::TooLarge && !fixtureError.contains(QStringLiteral("retry")),
+                   "a feed over the 64 MiB cap is classified TooLarge without a retry promise");
+             failure=HydraFailure{};
+             feed.url=QUrl(base+QStringLiteral("/source-500-always"));feedGames.append(GameResult{});fixtureError.clear();
+             check(!HydraLibrary().browseSource(feed,&feedGames,&fixtureError,&failure) &&
+                   failure.kind==HydraFailureKind::Server && failure.status==500 && fixtureError.contains(QStringLiteral("retry")),
+                   "a persistent 5xx is classified Server and keeps the retry wording");
+             failure=HydraFailure{};
+             feed.url=QUrl(base+QStringLiteral("/source-feed-large"));feedGames.clear();fixtureError=QStringLiteral("stale error");
+             check(HydraLibrary().browseSource(feed,&feedGames,&fixtureError,&failure) && failure.kind==HydraFailureKind::None,
+                   "a successful open leaves the failure category at None");
+         }
          // A positive Retry-After is honoured: the retry waits the server's stated delay, not just the short backoff.
          feed.url=QUrl(base+QStringLiteral("/source-retryafter-short"));feedGames.clear();fixtureError=QStringLiteral("stale error");
          QElapsedTimer honoredClock;honoredClock.start();

@@ -6,6 +6,11 @@
 #include <QVector>
 
 namespace xmb {
+// Why a Hydra request failed, so the screen can say what is true and offer Retry only where retrying
+// can help. Refused (HTTP 401/403) and TooLarge (over the body cap) can never succeed on a repeat;
+// RateLimited needs time; Timeout and Server (5xx) are transient; Other covers everything else.
+enum class HydraFailureKind { None, Refused, RateLimited, TooLarge, Timeout, Server, Other };
+struct HydraFailure { HydraFailureKind kind=HydraFailureKind::None; int status=0; };
 // One entry in the Hydra Launcher library (api.hydralibrary.com/sources). The url is the release-index
 // JSON (e.g. https://hydralinks.cloud/sources/fitgirl.json) that importSource() can read.
 struct HydraSource {
@@ -77,7 +82,7 @@ bool hasMoreSources(int pageNumber, int accumulated, const SourcesPage& page);
 // Blocking client, like the other network clients; call from a worker.
 class HydraLibrary {
 public:
-    bool listSources(QVector<HydraSource>* out, QString* error=nullptr) const;
+    bool listSources(QVector<HydraSource>* out, QString* error=nullptr, HydraFailure* failure=nullptr) const;
     // The source names that ship extract-and-play (no-setup) games: description/title says
     // "pre-installed"/"portable", or its downloads are direct-host rather than torrent.
     bool preinstalledSources(QStringList* out, QString* error=nullptr) const;
@@ -86,7 +91,7 @@ public:
     bool searchGames(const QString& query, QVector<GameResult>* out, QString* error=nullptr) const;
     // Read one source's release-index JSON without importing or mutating saved feeds. The returned
     // records are intentionally source-scoped; callers may resolve a selected title through /games.
-    bool browseSource(const HydraSource& source, QVector<GameResult>* out, QString* error=nullptr) const;
+    bool browseSource(const HydraSource& source, QVector<GameResult>* out, QString* error=nullptr, HydraFailure* failure=nullptr) const;
     bool popularTitles(QVector<PopularTitle>* out, QString* error=nullptr) const;
     // Resolve the complete cross-source choices for one selected source-scoped game: a single
     // /games search for its name, then an exact-name union into the source-only game. Returns true
