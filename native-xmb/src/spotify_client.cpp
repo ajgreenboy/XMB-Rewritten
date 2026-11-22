@@ -1,4 +1,5 @@
 #include "spotify_client.h"
+#include "credential_store.h"
 
 #include <QCryptographicHash>
 #include <QDesktopServices>
@@ -18,15 +19,6 @@
 #include <QUrlQuery>
 #include <QtDebug>
 #include <climits>
-
-#ifdef Q_OS_WIN
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
-#include <dpapi.h>
-#pragma comment(lib, "crypt32.lib")
-#endif
 
 namespace xmb {
 namespace {
@@ -69,23 +61,10 @@ QString join(QString base, const QString& path) {
     return base + path;
 }
 
-#ifdef Q_OS_WIN
-QByteArray seal(const QByteArray& plain, bool protect) {
-    const QByteArray entropy = QByteArrayLiteral("xmb-native-spotify-session-v1");
-    DATA_BLOB in{static_cast<DWORD>(plain.size()), reinterpret_cast<BYTE*>(const_cast<char*>(plain.constData()))};
-    DATA_BLOB extra{static_cast<DWORD>(entropy.size()), reinterpret_cast<BYTE*>(const_cast<char*>(entropy.constData()))};
-    DATA_BLOB out{0, nullptr};
-    const BOOL ok = protect ? CryptProtectData(&in, L"XMB Spotify session", &extra, nullptr, nullptr, CRYPTPROTECT_UI_FORBIDDEN, &out)
-                            : CryptUnprotectData(&in, nullptr, &extra, nullptr, nullptr, CRYPTPROTECT_UI_FORBIDDEN, &out);
-    if (!ok) return {};
-    QByteArray result(reinterpret_cast<const char*>(out.pbData), int(out.cbData));
-    SecureZeroMemory(out.pbData, out.cbData);
-    LocalFree(out.pbData);
-    return result;
+namespace {
+const QString CredentialRecord = QStringLiteral("xmb-native-spotify-session-v1");
+const QString CredentialDescription = QStringLiteral("XMB Spotify session");
 }
-#else
-QByteArray seal(const QByteArray&, bool) { return {}; }
-#endif
 
 QString artistsOf(const QJsonObject& track) {
     QStringList names;
@@ -350,7 +329,7 @@ bool SpotifyClient::saveSession() {
     if (sessionPath_.isEmpty() || refreshToken_.isEmpty()) return false;
     QByteArray plain = QJsonDocument(QJsonObject{{"v", 1}, {"clientId", clientId_}, {"refresh", QString::fromLatin1(refreshToken_)}})
                            .toJson(QJsonDocument::Compact);
-    const QByteArray sealed = seal(plain, true);
+    const QByteArray sealed = xmb::sealCredential(CredentialRecord, plain, CredentialDescription);
     plain.fill('\0');
     if (sealed.isEmpty()) return false;
     QDir().mkpath(QFileInfo(sessionPath_).absolutePath());
@@ -368,7 +347,7 @@ bool SpotifyClient::restoreSession() {
     file.close();
     static const QByteArray magic = QByteArrayLiteral("XMBSP1\n");
     if (!bytes.startsWith(magic)) { forgetSession();return false; }
-    QByteArray plain = seal(bytes.mid(magic.size()), false);
+    QByteArray plain = xmb::unsealCredential(CredentialRecord, bytes.mid(magic.size()));
     bytes.fill('\0');
     if (plain.isEmpty()) return false;   // another Windows user's record: leave it alone
     const auto record = QJsonDocument::fromJson(plain).object();

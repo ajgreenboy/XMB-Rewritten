@@ -1,4 +1,5 @@
 #include "homeassistant_client.h"
+#include "credential_store.h"
 
 #include <QDir>
 #include <QFile>
@@ -15,15 +16,6 @@
 #include <QtDebug>
 #include <algorithm>
 #include <cmath>
-
-#ifdef Q_OS_WIN
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
-#include <dpapi.h>
-#pragma comment(lib, "crypt32.lib")
-#endif
 
 namespace xmb {
 namespace {
@@ -96,23 +88,10 @@ QString normalizedBase(QUrl url) {
     return url.toString(QUrl::FullyEncoded);
 }
 
-#ifdef Q_OS_WIN
-QByteArray seal(const QByteArray& plain, bool protect) {
-    const QByteArray entropy = QByteArrayLiteral("xmb-native-homeassistant-session-v1");
-    DATA_BLOB in{static_cast<DWORD>(plain.size()), reinterpret_cast<BYTE*>(const_cast<char*>(plain.constData()))};
-    DATA_BLOB extra{static_cast<DWORD>(entropy.size()), reinterpret_cast<BYTE*>(const_cast<char*>(entropy.constData()))};
-    DATA_BLOB out{0, nullptr};
-    const BOOL ok = protect ? CryptProtectData(&in, L"XMB Home Assistant session", &extra, nullptr, nullptr, CRYPTPROTECT_UI_FORBIDDEN, &out)
-                            : CryptUnprotectData(&in, nullptr, &extra, nullptr, nullptr, CRYPTPROTECT_UI_FORBIDDEN, &out);
-    if (!ok) return {};
-    QByteArray result(reinterpret_cast<const char*>(out.pbData), int(out.cbData));
-    SecureZeroMemory(out.pbData, out.cbData);
-    LocalFree(out.pbData);
-    return result;
+namespace {
+const QString CredentialRecord = QStringLiteral("xmb-native-homeassistant-session-v1");
+const QString CredentialDescription = QStringLiteral("XMB Home Assistant session");
 }
-#else
-QByteArray seal(const QByteArray&, bool) { return {}; }
-#endif
 
 HaEntity parseEntity(const QJsonObject& object) {
     HaEntity entity;
@@ -253,7 +232,7 @@ bool HomeAssistantClient::saveSession() {
     if (sessionPath_.isEmpty() || token_.isEmpty() || !configured()) return false;
     QByteArray plain = QJsonDocument(QJsonObject{{"v", 1}, {"origin", origin()}, {"token", QString::fromLatin1(token_)}})
                            .toJson(QJsonDocument::Compact);
-    const QByteArray sealed = seal(plain, true);
+    const QByteArray sealed = xmb::sealCredential(CredentialRecord, plain, CredentialDescription);
     plain.fill('\0');
     if (sealed.isEmpty()) return false;
     QDir().mkpath(QFileInfo(sessionPath_).absolutePath());
@@ -272,7 +251,7 @@ bool HomeAssistantClient::restoreSession() {
     QByteArray bytes = file.readAll();
     file.close();
     if (!bytes.startsWith(SessionMagic)) { QFile::remove(sessionPath_);return false; }
-    QByteArray plain = seal(bytes.mid(SessionMagic.size()), false);
+    QByteArray plain = xmb::unsealCredential(CredentialRecord, bytes.mid(SessionMagic.size()));
     bytes.fill('\0');
     if (plain.isEmpty()) return false;   // another Windows user's record: leave it alone
     const QJsonObject record = QJsonDocument::fromJson(plain).object();

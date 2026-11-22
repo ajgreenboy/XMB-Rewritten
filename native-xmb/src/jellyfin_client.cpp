@@ -1,5 +1,6 @@
 #include "jellyfin_client.h"
 #include "jellyfin_stream.h"
+#include "credential_store.h"
 
 #include <QBuffer>
 #include <QCryptographicHash>
@@ -24,20 +25,6 @@
 #include <cmath>
 #include <limits>
 #include <utility>
-
-#ifdef Q_OS_WIN
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <windows.h>
-#include <dpapi.h>
-#ifdef _MSC_VER
-#pragma comment(lib, "crypt32.lib")
-#endif
-#endif
 
 namespace xmb {
 namespace {
@@ -99,36 +86,10 @@ QImage decodeBoundedTrickplay(const QByteArray& bytes) {
     return image.isNull() ? QImage{} : image;
 }
 
-#ifdef Q_OS_WIN
-QByteArray protectForUser(const QByteArray& plain) {
-    const QByteArray entropy = QByteArrayLiteral("xmb-native-jellyfin-session-v1");
-    DATA_BLOB in{static_cast<DWORD>(plain.size()), reinterpret_cast<BYTE*>(const_cast<char*>(plain.constData()))};
-    DATA_BLOB extra{static_cast<DWORD>(entropy.size()), reinterpret_cast<BYTE*>(const_cast<char*>(entropy.constData()))};
-    DATA_BLOB out{0, nullptr};
-    if (!CryptProtectData(&in, L"XMB Jellyfin session", &extra, nullptr, nullptr,
-                          CRYPTPROTECT_UI_FORBIDDEN, &out)) return {};
-    QByteArray result(reinterpret_cast<const char*>(out.pbData), int(out.cbData));
-    SecureZeroMemory(out.pbData, out.cbData);
-    LocalFree(out.pbData);
-    return result;
+namespace {
+const QString CredentialRecord = QStringLiteral("xmb-native-jellyfin-session-v1");
+const QString CredentialDescription = QStringLiteral("XMB Jellyfin session");
 }
-
-QByteArray unprotectForUser(const QByteArray& sealed) {
-    const QByteArray entropy = QByteArrayLiteral("xmb-native-jellyfin-session-v1");
-    DATA_BLOB in{static_cast<DWORD>(sealed.size()), reinterpret_cast<BYTE*>(const_cast<char*>(sealed.constData()))};
-    DATA_BLOB extra{static_cast<DWORD>(entropy.size()), reinterpret_cast<BYTE*>(const_cast<char*>(entropy.constData()))};
-    DATA_BLOB out{0, nullptr};
-    if (!CryptUnprotectData(&in, nullptr, &extra, nullptr, nullptr,
-                            CRYPTPROTECT_UI_FORBIDDEN, &out)) return {};
-    QByteArray result(reinterpret_cast<const char*>(out.pbData), int(out.cbData));
-    SecureZeroMemory(out.pbData, out.cbData);
-    LocalFree(out.pbData);
-    return result;
-}
-#else
-QByteArray protectForUser(const QByteArray&) { return {}; }
-QByteArray unprotectForUser(const QByteArray&) { return {}; }
-#endif
 
 bool safeToken(const QString& token) {
     if (token.isEmpty() || token.size() > 4096) return false;
@@ -1075,7 +1036,7 @@ bool JellyfinClient::saveSession() {
                        {QStringLiteral("token"), QString::fromUtf8(accessToken_)}};
     QByteArray plain = QJsonDocument(record).toJson(QJsonDocument::Compact);
     record.insert(QStringLiteral("token"), QString{});
-    const QByteArray sealed = protectForUser(plain);
+    const QByteArray sealed = xmb::sealCredential(CredentialRecord, plain, CredentialDescription);
     plain.fill('\0');
     if (sealed.isEmpty()) return false;
     const QFileInfo info(sessionPath_);
@@ -1100,7 +1061,7 @@ bool JellyfinClient::restoreSession() {
     if (!bytes.startsWith(magic)) { forgetSession(); return false; }
     QByteArray sealed = bytes.mid(magic.size());
     bytes.fill('\0');
-    const QByteArray plain = unprotectForUser(sealed);
+    const QByteArray plain = xmb::unsealCredential(CredentialRecord, sealed);
     sealed.fill('\0');
     if (plain.isEmpty()) return false; // the record belongs to another user or machine: leave it alone
     const auto document = QJsonDocument::fromJson(plain);

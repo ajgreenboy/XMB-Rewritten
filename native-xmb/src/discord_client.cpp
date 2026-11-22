@@ -1,4 +1,5 @@
 #include "discord_client.h"
+#include "credential_store.h"
 #include <QCoreApplication>
 #include <QCryptographicHash>
 #include <QDesktopServices>
@@ -17,12 +18,6 @@
 #include <QTimer>
 #include <QUrlQuery>
 #include <algorithm>
-#ifdef Q_OS_WIN
-#define NOMINMAX
-#include <windows.h>
-#include <dpapi.h>
-#pragma comment(lib, "crypt32.lib")
-#endif
 
 namespace xmb {
 namespace {
@@ -34,21 +29,9 @@ QByteArray randomToken(int length) {
     for (int i = 0; i < length; ++i) result[i] = alphabet[QRandomGenerator::system()->bounded(int(sizeof(alphabet) - 1))];
     return result;
 }
-// Same per-Windows-user DPAPI protection as Spotify, with separate entropy and record.
-QByteArray seal(const QByteArray& plain, bool protect) {
-#ifdef Q_OS_WIN
-    const QByteArray entropy = QByteArrayLiteral("xmb-native-discord-session-v1");
-    DATA_BLOB in{static_cast<DWORD>(plain.size()), reinterpret_cast<BYTE*>(const_cast<char*>(plain.constData()))};
-    DATA_BLOB extra{static_cast<DWORD>(entropy.size()), reinterpret_cast<BYTE*>(const_cast<char*>(entropy.constData()))};
-    DATA_BLOB out{0, nullptr};
-    const BOOL ok = protect ? CryptProtectData(&in, L"XMB Discord session", &extra, nullptr, nullptr, CRYPTPROTECT_UI_FORBIDDEN, &out)
-                            : CryptUnprotectData(&in, nullptr, &extra, nullptr, nullptr, CRYPTPROTECT_UI_FORBIDDEN, &out);
-    if (!ok) return {};
-    QByteArray result(reinterpret_cast<const char*>(out.pbData), int(out.cbData));
-    SecureZeroMemory(out.pbData, out.cbData);LocalFree(out.pbData);return result;
-#else
-    Q_UNUSED(plain); Q_UNUSED(protect); return {};
-#endif
+namespace {
+const QString CredentialRecord = QStringLiteral("xmb-native-discord-session-v1");
+const QString CredentialDescription = QStringLiteral("XMB Discord session");
 }
 }
 namespace discord {
@@ -245,7 +228,7 @@ bool DiscordClient::acceptToken(const QByteArray& bytes) {
 bool DiscordClient::saveSession() {
     if (sessionPath_.isEmpty() || !signedIn()) return false;
     QByteArray plain = QJsonDocument(QJsonObject{{"v", 1}, {"clientId", clientId_}, {"refresh", QString::fromLatin1(refreshToken_)}}).toJson(QJsonDocument::Compact);
-    const QByteArray encrypted = seal(plain, true);plain.fill('\0');if (encrypted.isEmpty()) return false;
+    const QByteArray encrypted = xmb::sealCredential(CredentialRecord, plain, CredentialDescription);plain.fill('\0');if (encrypted.isEmpty()) return false;
     QDir().mkpath(QFileInfo(sessionPath_).absolutePath());QSaveFile file(sessionPath_);const QByteArray magic("XMBDC1\n");
     return file.open(QIODevice::WriteOnly) && file.write(magic) == magic.size() && file.write(encrypted) == encrypted.size() && file.commit();
 }
@@ -253,7 +236,7 @@ bool DiscordClient::restoreSession() {
     if (!configured() || signedIn()) return false;QFile file(sessionPath_);
     if (!file.exists() || file.size() <= 7 || file.size() > 16384 || !file.open(QIODevice::ReadOnly)) return false;
     QByteArray bytes = file.readAll();if (!bytes.startsWith("XMBDC1\n")) return false;
-    QByteArray plain = seal(bytes.mid(7), false);bytes.fill('\0');if (plain.isEmpty()) return false;
+    QByteArray plain = xmb::unsealCredential(CredentialRecord, bytes.mid(7));bytes.fill('\0');if (plain.isEmpty()) return false;
     const auto record = QJsonDocument::fromJson(plain).object();plain.fill('\0');const QString token = record.value(QStringLiteral("refresh")).toString();
     if (record.value(QStringLiteral("clientId")).toString() != clientId_ || token.isEmpty() || token.size() > 4096) return false;
     refreshToken_ = token.toLatin1();accessExpiry_ = {};return true;

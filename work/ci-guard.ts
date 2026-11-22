@@ -16,12 +16,16 @@ const problems: string[] = [];
 // Deliberately NOT in CI: needs a real interactive desktop (it opens fullscreen windows). Run by hand, see
 // native-xmb/audit/INGAME-OVERLAY-DESIGN.md. The Steam Linux discovery tests are likewise out: they
 // exercise the $HOME-based ~/.steam/steam and ~/.local/share/Steam paths that only the Linux port hosts,
-// which the windows-latest CI runner never builds. Add a name here only with a reason.
-const manualOptions = new Set(["XMB_OVERLAY_BUILD_TESTS", "XMB_STEAM_LINUX_BUILD_TESTS"]);
+// which the windows-latest CI runner never builds. The credential-store tests need libsecret (Secret
+// Service) and the system-power tests assert the Linux logind/systemctl mapping, so both are Linux-only.
+// Add a name here only with a reason.
+const manualOptions = new Set(["XMB_OVERLAY_BUILD_TESTS", "XMB_STEAM_LINUX_BUILD_TESTS",
+    "XMB_CREDENTIAL_STORE_BUILD_TESTS"]);
 // xmb-firmware-rust-parity-tests needs a Rust toolchain (cargo) to build the firmware-crypto
 // staticlib; the windows-latest CI runner has none, so it is built and run by hand behind
 // -DXMB_RUST_FIRMWARE_CRYPTO=ON (see native-xmb/rust-edge/firmware-crypto/README.md).
-const manualTargets = new Set(["xmb-overlay-standin", "xmb-steam-linux-tests", "xmb-firmware-rust-parity-tests"]);
+const manualTargets = new Set(["xmb-overlay-standin", "xmb-steam-linux-tests", "xmb-firmware-rust-parity-tests",
+    "xmb-credential-store-tests"]);
 
 const options = [...new Set([...cmake.matchAll(/^\s*option\((XMB_[A-Z0-9_]+_BUILD_TESTS)\b/gm)].map((m) => m[1]))];
 const enabled = new Set([...yml.matchAll(/-D(XMB_[A-Z0-9_]+_BUILD_TESTS)=ON/g)].map((m) => m[1]));
