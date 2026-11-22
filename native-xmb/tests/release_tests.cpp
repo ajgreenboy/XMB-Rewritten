@@ -1363,18 +1363,23 @@ int main(int argc,char** argv) {
         qunsetenv("XMB_HYDRA_SOURCES_URL");qunsetenv("XMB_HYDRA_SEARCH_URL");fixture.close();
     }
     {
-        // FlareSolverr opt-in fallback (Hydra layer). The direct GET returns an HTML challenge or a
-        // 403, and the mock solver on /v1 (FlareSolverr's own POST endpoint) returns the real JSON.
-        // Proves the fallback is opt-in (no solver -> no /v1 call), fires exactly once as a last
-        // resort after the direct fetch, parses the solved body, and never fires when the direct
-        // fetch already succeeds. Loopback only; no real FlareSolverr, no credentials.
+        // FlareSolverr PRIMARY for source feeds (Hydra layer). The mock solver on /v1 (FlareSolverr's
+        // own POST endpoint) returns the real JSON, and the direct GETs serve payloads distinct from the
+        // solver's, so a feed that came from the solver can never be confused with one from the direct
+        // endpoint. Proves: a configured endpoint makes browseSource() call the solver FIRST and return
+        // its result without also hitting the direct endpoint; a solver failure falls back to the direct
+        // fetch; an empty endpoint never contacts the solver. The catalogue API paths keep their
+        // last-resort fallback (listSources and popularTitles below). Loopback only; no real FlareSolverr.
         QTcpServer solverFixture;
         check(solverFixture.listen(QHostAddress::LocalHost,0),"FlareSolverr fixture listen");
         int solverPosts=0;
+        int primaryDirectGets=0,fallbackDirectGets=0,directOnlyGets=0;
         const QByteArray directoryJson=QByteArrayLiteral("{\"total\":1,\"limit\":100,\"sources\":[{\"title\":\"Solver Source\",\"url\":\"https://solver.invalid/feed.json\"}]}");
         const QByteArray feedJson=QByteArrayLiteral("[{\"title\":\"Solver Game\",\"size\":\"1 GB\",\"uri\":\"https://solver.invalid/game.zip\"}]");
+        const QByteArray primaryDirectJson=QByteArrayLiteral("[{\"title\":\"Direct Primary Game\",\"size\":\"1 GB\",\"uri\":\"https://solver.invalid/primary.zip\"}]");
+        const QByteArray fallbackDirectJson=QByteArrayLiteral("[{\"title\":\"Fallback Direct Game\",\"size\":\"1 GB\",\"uri\":\"https://solver.invalid/fallback.zip\"}]");
+        const QByteArray directOnlyJson=QByteArrayLiteral("[{\"title\":\"Direct Only Game\",\"size\":\"1 GB\",\"uri\":\"https://solver.invalid/direct.zip\"}]");
         const QByteArray hotJson=QByteArrayLiteral("[{\"title\":\"Solver Hot Game\"}]");
-        const QByteArray cleanFeedJson=QByteArrayLiteral("[{\"title\":\"Clean Direct Game\",\"size\":\"1 GB\",\"uri\":\"https://solver.invalid/clean.zip\"}]");
         const auto respond=[&](QTcpSocket* socket,const QByteArray& status,const QByteArray& contentType,const QByteArray& payload) {
             socket->write("HTTP/1.1 "+status+"\r\nContent-Type: "+contentType+"\r\nContent-Length: "+QByteArray::number(payload.size())+"\r\nConnection: close\r\n\r\n"+payload);
             socket->disconnectFromHost();
@@ -1401,9 +1406,17 @@ int main(int argc,char** argv) {
                     if(contentLength>0 && body.size()<contentLength)return;
                     ++solverPosts;
                     const QString target=QJsonDocument::fromJson(body).object().value(QStringLiteral("url")).toString();
+                    // /feed-fallback asks the solver to fail (a down/broken solver) so the caller must
+                    // fall back to the direct fetch.
+                    if(target.contains(QStringLiteral("/feed-fallback"))) {
+                        respond(socket,"200 OK","application/json",QJsonDocument(QJsonObject{
+                            {QStringLiteral("status"),QStringLiteral("error")},
+                            {QStringLiteral("message"),QStringLiteral("solver down")}}).toJson(QJsonDocument::Compact));
+                        return;
+                    }
                     QByteArray solved;
                     if(target.contains(QStringLiteral("/sources-challenge")))solved=directoryJson;
-                    else if(target.contains(QStringLiteral("/feed-challenge")))solved=feedJson;
+                    else if(target.contains(QStringLiteral("/feed-primary")))solved=feedJson;
                     else if(target.contains(QStringLiteral("/hot-challenge")))solved=hotJson;
                     else solved=QByteArrayLiteral("[]");
                     const QByteArray payload=QJsonDocument(QJsonObject{
@@ -1414,9 +1427,10 @@ int main(int argc,char** argv) {
                     return;
                 }
                 if(headers.contains("/sources-challenge")) { respond(socket,"403 Forbidden","text/plain",{}); return; }
-                if(headers.contains("/feed-challenge")) { respond(socket,"200 OK","text/html",QByteArrayLiteral("<!doctype html><html><head><title>Just a moment...</title></head><body>challenge</body></html>")); return; }
+                if(headers.contains("/feed-primary")) { ++primaryDirectGets; respond(socket,"200 OK","application/json",primaryDirectJson); return; }
+                if(headers.contains("/feed-fallback")) { ++fallbackDirectGets; respond(socket,"200 OK","application/json",fallbackDirectJson); return; }
+                if(headers.contains("/feed-direct")) { ++directOnlyGets; respond(socket,"200 OK","application/json",directOnlyJson); return; }
                 if(headers.contains("/hot-challenge")) { respond(socket,"200 OK","text/html",QByteArrayLiteral("<!doctype html><html><body>challenge</body></html>")); return; }
-                if(headers.contains("/feed-clean")) { respond(socket,"200 OK","application/json",cleanFeedJson); return; }
                 respond(socket,"404 Not Found","text/plain",{});
             });
             QObject::connect(socket,&QTcpSocket::disconnected,socket,&QObject::deleteLater);
@@ -1427,6 +1441,7 @@ int main(int argc,char** argv) {
         qputenv("XMB_HYDRA_SOURCES_URL",(base+QStringLiteral("/sources-challenge")).toUtf8());
         qputenv("XMB_HYDRA_HOT_URL",(base+QStringLiteral("/hot-challenge")).toUtf8());
 
+        // Catalogue API keeps the last-resort fallback (unchanged).
         // 1. No endpoint -> the direct 403 is terminal and FlareSolverr is never contacted.
         solverPosts=0;
         QVector<HydraSource> noSolverSources;QString noSolverError;
@@ -1435,7 +1450,7 @@ int main(int argc,char** argv) {
               "no FlareSolverr endpoint: a challenged directory fails with the unchanged 403 error");
         check(solverPosts==0,"no FlareSolverr endpoint: the solver is never contacted");
 
-        // 2. Configured endpoint -> the challenged directory is solved once and parsed.
+        // 2. Configured endpoint -> the challenged directory is solved once and parsed (fallback).
         solverPosts=0;
         QVector<HydraSource> solvedSources;QString solvedError;
         check(HydraLibrary(solverEndpoint).listSources(&solvedSources,&solvedError) && solvedSources.size()==1 &&
@@ -1443,16 +1458,7 @@ int main(int argc,char** argv) {
               "configured FlareSolverr solves a challenged directory and the source list is parsed");
         check(solverPosts==1,"a challenged directory falls back to FlareSolverr exactly once");
 
-        // 3. A selected feed that returns an HTML challenge is solved once and parsed.
-        solverPosts=0;
-        HydraSource challengedFeed;challengedFeed.title=QStringLiteral("Challenged Feed");challengedFeed.url=QUrl(base+QStringLiteral("/feed-challenge"));
-        QVector<GameResult> solvedFeedGames;QString feedError;
-        check(HydraLibrary(solverEndpoint).browseSource(challengedFeed,&solvedFeedGames,&feedError) && solvedFeedGames.size()==1 &&
-              solvedFeedGames.first().name==QStringLiteral("Solver Game") && feedError.isEmpty(),
-              "configured FlareSolverr solves an HTML-challenged selected feed and the game is parsed");
-        check(solverPosts==1,"an HTML-challenged selected feed falls back to FlareSolverr exactly once");
-
-        // 4. The popular hot catalogue path is covered: an HTML challenge is solved once and parsed.
+        // 3. The popular hot catalogue path is covered: an HTML challenge is solved once and parsed.
         solverPosts=0;
         QVector<PopularTitle> solvedTitles;QString hotError;
         check(HydraLibrary(solverEndpoint).popularTitles(&solvedTitles,&hotError) && solvedTitles.size()==1 &&
@@ -1460,14 +1466,47 @@ int main(int argc,char** argv) {
               "configured FlareSolverr solves an HTML-challenged hot catalogue and the title is parsed");
         check(solverPosts==1,"an HTML-challenged hot catalogue falls back to FlareSolverr exactly once");
 
-        // 5. A direct fetch that succeeds never invokes FlareSolverr.
-        solverPosts=0;
-        HydraSource cleanFeed;cleanFeed.title=QStringLiteral("Clean Feed");cleanFeed.url=QUrl(base+QStringLiteral("/feed-clean"));
-        QVector<GameResult> cleanGames;QString cleanError;
-        check(HydraLibrary(solverEndpoint).browseSource(cleanFeed,&cleanGames,&cleanError) && cleanGames.size()==1 &&
-              cleanGames.first().name==QStringLiteral("Clean Direct Game") && cleanError.isEmpty(),
-              "a direct fetch that already succeeds parses without FlareSolverr");
-        check(solverPosts==0,"a successful direct fetch never invokes FlareSolverr");
+        // Source-feed PRIMARY semantics.
+        // 4. With the endpoint configured, browseSource() calls the solver FIRST, returns its result,
+        // and does NOT also hit the direct endpoint when the solver succeeds.
+        solverPosts=0;primaryDirectGets=0;
+        HydraSource primaryFeed;primaryFeed.title=QStringLiteral("Primary Feed");primaryFeed.url=QUrl(base+QStringLiteral("/feed-primary"));
+        QVector<GameResult> primaryGames;QString primaryError;
+        check(HydraLibrary(solverEndpoint).browseSource(primaryFeed,&primaryGames,&primaryError) && primaryGames.size()==1 &&
+              primaryGames.first().name==QStringLiteral("Solver Game") && primaryError.isEmpty(),
+              "configured FlareSolverr fetches a source feed through the solver first and parses its result");
+        check(solverPosts==1,"a configured source feed calls the solver exactly once (first)");
+        check(primaryDirectGets==0,"a solver success does not also hit the direct endpoint");
+
+        // 5. A solver failure falls back to the direct fetch.
+        solverPosts=0;fallbackDirectGets=0;
+        HydraSource fallbackFeed;fallbackFeed.title=QStringLiteral("Fallback Feed");fallbackFeed.url=QUrl(base+QStringLiteral("/feed-fallback"));
+        QVector<GameResult> fallbackGames;QString fallbackError;
+        check(HydraLibrary(solverEndpoint).browseSource(fallbackFeed,&fallbackGames,&fallbackError) && fallbackGames.size()==1 &&
+              fallbackGames.first().name==QStringLiteral("Fallback Direct Game") && fallbackError.isEmpty(),
+              "a solver failure falls back to the direct source feed fetch and parses it");
+        check(solverPosts==1 && fallbackDirectGets==1,"a solver failure calls the solver once then falls back to one direct fetch");
+
+        // 6. With no endpoint the solver is never contacted and the direct fetch is used unchanged.
+        solverPosts=0;directOnlyGets=0;
+        HydraSource directFeed;directFeed.title=QStringLiteral("Direct Feed");directFeed.url=QUrl(base+QStringLiteral("/feed-direct"));
+        QVector<GameResult> directGames;QString directError;
+        check(HydraLibrary().browseSource(directFeed,&directGames,&directError) && directGames.size()==1 &&
+              directGames.first().name==QStringLiteral("Direct Only Game") && directError.isEmpty(),
+              "with no endpoint a source feed is fetched directly and parsed");
+        check(solverPosts==0 && directOnlyGets==1,"an empty endpoint never contacts the solver (direct fetch only)");
+
+        // 7. ReleaseSources::fetchSourceJson is also PRIMARY (exercised through importSource): with the
+        // endpoint configured, a source import fetches through the solver first and never hits direct.
+        QTemporaryDir releaseTemp;check(releaseTemp.isValid(),"release temp dir for solver-primary import");
+        Preferences solverPrefs(releaseTemp.path());
+        check(solverPrefs.setValue(QStringLiteral("debrid/flareSolverrUrl"),solverEndpoint),"solver URL preference accepted");
+        ReleaseSources solverStore(releaseTemp.path(),solverPrefs);
+        solverPosts=0;primaryDirectGets=0;
+        QString importError;
+        check(solverStore.importSource(QUrl(base+QStringLiteral("/feed-primary")),&importError) && importError.isEmpty(),
+              "configured FlareSolverr imports a source feed through the solver first");
+        check(solverPosts==1 && primaryDirectGets==0,"a source import calls the solver first and does not hit the direct endpoint");
 
         qunsetenv("XMB_HYDRA_TEST_FIXTURE");qunsetenv("XMB_HYDRA_SOURCES_URL");qunsetenv("XMB_HYDRA_HOT_URL");
         solverFixture.close();

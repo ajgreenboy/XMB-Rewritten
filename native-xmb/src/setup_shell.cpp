@@ -248,6 +248,10 @@ QVector<Entry> Shell::setupRows(const QString& step) {
         rows<<row(prefix,tr("Real-Debrid API Key"),QStringLiteral("debrid:edit"),
             tr("Optional: enter your Real-Debrid API key for release downloads. Leave it unset for ordinary direct downloads. Change it later in Settings > System Settings > Download Manager."),
             preferences_.value(QStringLiteral("debrid/realDebridToken")).toString().isEmpty()?tr("Not set"):QStringLiteral("********"));
+        const QString solverUrl=preferences_.value(QStringLiteral("debrid/flareSolverrUrl")).toString().trimmed();
+        rows<<row(prefix+QStringLiteral(":flaresolverr"),tr("FlareSolverr Address"),QStringLiteral("debrid:editflaresolverr"),
+            tr("Optional: base URL of a local FlareSolverr instance (e.g. http://localhost:8191) used to fetch sources behind Cloudflare bot protection. Leave it unset for ordinary direct downloads. Change it later in Settings > System Settings > Download Manager."),
+            solverUrl.isEmpty()?tr("Not set"):solverUrl);
         rows<<cont()<<skip();
     } else if(step==QLatin1String("finish")) {
         const auto path=[&](const char* kind){const QString value=preferences_.value(QStringLiteral("library/")+QLatin1String(kind)).toString();return value.isEmpty()?tr("not set"):nativePath(value);};
@@ -295,6 +299,7 @@ void Shell::activateSetup(const Entry& entry) {
     }
     if(command==QLatin1String("finish")) {setupFinish(false);return;}
     if(command==QLatin1String("debrid:edit")) {editDebridToken();return;}
+    if(command==QLatin1String("debrid:editflaresolverr")) {editFlareSolverrUrl();return;}
     if(command==QLatin1String("why")) {
         showMessage(tr("dev_flash"),
             tr("dev_flash is the folder of PlayStation 3 system software files from your own console or your own RPCS3 installation. The XMB reads its icons, text, sounds and fonts from it. This program never downloads or includes it.\n\nLook for a folder named dev_flash that contains vsh, data and sys, for example in your RPCS3 folder. It must hold:\n%1")

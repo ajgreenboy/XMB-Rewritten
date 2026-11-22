@@ -17,8 +17,10 @@ inline bool looksLikeHtml(const QByteArray& bytes) {
 class FlareSolverr {
 public:
     explicit FlareSolverr(const QString& endpoint):endpoint_(endpoint) {}
+    // `timeoutMs` bounds the whole HTTP round-trip to the solver, so a down (hanging) solver fails
+    // fast and the caller can fall back to its direct path rather than stalling the feed open.
     bool request(const QUrl& url, QByteArray* response, QString* error=nullptr,
-                 const std::atomic_bool* cancel=nullptr) const;
+                 const std::atomic_bool* cancel=nullptr, int timeoutMs=15000) const;
 private:
     QString endpoint_;
 };

@@ -119,9 +119,11 @@ class HydraLibrary {
 public:
     // Default construction keeps every existing call site working (no FlareSolverr fallback).
     HydraLibrary() = default;
-    // An optional FlareSolverr base URL (e.g. "http://localhost:8191") enables the opt-in fallback:
-    // when a feed's direct fetch fails or returns an HTML challenge, the library asks the solver once
-    // as a separate last resort. Empty (the default) leaves the fetch path byte-identical to before.
+    // An optional FlareSolverr base URL (e.g. "http://localhost:8191"). For browseSource() it is
+    // PRIMARY: a configured endpoint fetches the selected source feed through the solver first, and
+    // falls back to the direct fetch only when the solver fails. The catalogue API paths (listSources,
+    // popularTitles, popularGame, searchGames) keep the solver as a last-resort fallback after a failed
+    // or HTML-challenged direct fetch. Empty (the default) leaves every fetch path byte-identical.
     explicit HydraLibrary(QString flareSolverrEndpoint);
     void setFlareSolverrEndpoint(const QString& endpoint);
 
