@@ -750,15 +750,45 @@ bool Shell::titleRunning() const {
     return (!game_.isNull() && game_->state()==QProcess::Running) || adoptedPid_ ||
         (!steamGameId_.isEmpty() && steamTrack_.seenRunning && steamTrack_.consecutiveStopped==0);
 }
+// Linux: the running client is not observable (no registry), so the only supported hand-off is the
+// steam:// URI. The XMB asks the OS to open it and makes no claim about whether the title started or
+// exited; there is no lifecycle watch. XMB_STEAM_HANDOFF_CAPTURE (a file path) records the URI instead
+// of opening it, so a scripted or smoke run can verify the exact hand-off without touching the desktop.
+bool Shell::startSteamUriHandoff(const QString& appId,const QString& title) {
+    const QString uri=steamLaunchUri(appId);
+    if(uri.isEmpty()){showMessage(title,tr("This is not a Steam app."),MessageKind::Page);return false;}
+    const QString capture=qEnvironmentVariable("XMB_STEAM_HANDOFF_CAPTURE").trimmed();
+    if(!capture.isEmpty()) {
+        QFile file(capture);
+        if(!file.open(QIODevice::WriteOnly|QIODevice::Append)) {
+            qWarning().noquote()<<"steam: hand-off capture could not be opened:"<<capture;
+            showMessage(title,tr("Steam could not be opened."),MessageKind::Page);
+            return false;
+        }
+        file.write((uri+QLatin1Char('\n')).toUtf8());
+        qInfo().noquote()<<"steam: hand-off (captured)"<<uri<<"for"<<title;
+        return true;
+    }
+    qInfo().noquote()<<"steam: hand-off"<<uri<<"for"<<title;
+    if(QDesktopServices::openUrl(QUrl(uri))){interactionAudio_.play(InteractionAudio::Cue::Confirm);return true;}
+    showMessage(title,tr("Steam could not be opened."),MessageKind::Page);
+    return false;
+}
 // Steam launches itself, so the only honest lifecycle signal is Steam's own registry state. The
 // handoff records the app id, watches Apps\<id>\Running, and reports the return when it clears.
 bool Shell::startSteamTracked(const QString& appId,const QString& title) {
+#ifndef Q_OS_WIN
+    // No registry observation on Linux: hand the steam:// URI to the OS and stop, claiming nothing
+    // about launch or exit. The Windows lifecycle path below is the only one that watches state.
+    return startSteamUriHandoff(appId,title);
+#else
     // Steam background mode: the client must be up (hidden) before it is asked to launch anything. When it already is,
     // the launch runs at once; otherwise the XMB starts it, shows what it is waiting for, and launches when it is ready.
     if(steamLaunchPending_){qInfo().noquote()<<"steam hide: a launch is already waiting for the Steam client; ignored"<<title;return true;}
     steamLaunchPending_=true;
     ensureSteamClient(title,[this,appId,title]{steamLaunchPending_=false;startSteamNow(appId,title);});
     return true;
+#endif
 }
 bool Shell::startSteamNow(const QString& appId,const QString& title) {
     // Behind the launch cover: Steam may start a launcher, apply an update or switch modes before the game shows.

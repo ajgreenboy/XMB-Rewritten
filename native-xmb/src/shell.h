@@ -1373,6 +1373,7 @@ private:
     bool startSteamTracked(const QString& appId,const QString& title);
     bool startSteamNow(const QString& appId,const QString& title);
     bool launchSteamApp(const QString& appId,const QString& title);   // startSteamNow without the cover
+    bool startSteamUriHandoff(const QString& appId,const QString& title);
     // Runs start() behind the launch cover (or at once when the cover is off or a title already runs).
     void coverLaunch(const QString& title,bool steam,std::function<bool()> start);
     LaunchCover* launchCover_=nullptr;
