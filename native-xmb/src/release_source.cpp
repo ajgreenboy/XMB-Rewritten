@@ -324,20 +324,25 @@ ReleaseSources::ReleaseSources(const QString& dataDirectory,const Preferences& p
     :dataDirectory_(dataDirectory),preferences_(preferences) {}
 bool ReleaseSources::fetchSourceJson(const QUrl& jsonUrl,QVector<IndexedRelease>* releases,QString* name,QString* error,const std::atomic_bool* cancel) const {
     if(error)error->clear();
-    QByteArray bytes; QBuffer buffer(&bytes);buffer.open(QIODevice::WriteOnly);
-    QString directError;
-    const bool fetched=fetch(jsonUrl,&buffer,64LL*1024*1024,30000,&directError,{},true,cancel);
-    if(cancel && cancel->load()){fail(error,QStringLiteral("Download cancelled"));return false;}
+    QByteArray bytes;
+    // FlareSolverr is PRIMARY for source feeds: when an endpoint is configured, a remote (http/https)
+    // feed is fetched through the solver first. On solver failure (error/timeout/empty) it falls back
+    // to the existing direct fetch. A local file: index never goes through the solver.
     const QString solver=preferences_.value(QStringLiteral("debrid/flareSolverrUrl")).toString().trimmed();
-    if(!solver.isEmpty() && (!fetched || looksLikeHtml(bytes))) {
+    const bool remote=(jsonUrl.scheme()==QStringLiteral("http") || jsonUrl.scheme()==QStringLiteral("https"));
+    bool fetched=false;
+    if(!solver.isEmpty() && remote) {
         QString solverError;
-        if(!FlareSolverr(solver).request(jsonUrl,&bytes,&solverError,cancel)) {
-            fail(error,fetched?QStringLiteral("Source returned an HTML challenge (FlareSolverr: %1)").arg(solverError)
-                               :QStringLiteral("%1 (FlareSolverr: %2)").arg(directError,solverError));
-            return false;
-        }
-    } else if(!fetched) {
-        fail(error,directError);return false;
+        fetched=FlareSolverr(solver).request(jsonUrl,&bytes,&solverError,cancel);
+        if(cancel && cancel->load()){fail(error,QStringLiteral("Download cancelled"));return false;}
+        // On solver failure fall through to the direct fetch below.
+    }
+    if(!fetched) {
+        QBuffer buffer(&bytes);buffer.open(QIODevice::WriteOnly);
+        QString directError;
+        fetched=fetch(jsonUrl,&buffer,64LL*1024*1024,30000,&directError,{},true,cancel);
+        if(cancel && cancel->load()){fail(error,QStringLiteral("Download cancelled"));return false;}
+        if(!fetched){fail(error,directError);return false;}
     }
     QJsonParseError parse;
     const auto document=QJsonDocument::fromJson(QString::fromUtf8(bytes).toUtf8(),&parse);

@@ -8,7 +8,7 @@
 #include <QTimer>
 
 namespace xmb {
-bool FlareSolverr::request(const QUrl& url, QByteArray* response, QString* error,const std::atomic_bool* cancel) const {
+bool FlareSolverr::request(const QUrl& url, QByteArray* response, QString* error,const std::atomic_bool* cancel,int timeoutMs) const {
     if(response)*response=QByteArray();
     if(cancel && cancel->load()){if(error)*error=QStringLiteral("Download cancelled");return false;}
     if(endpoint_.isEmpty()) { if(error)*error=QStringLiteral("No FlareSolverr endpoint configured"); return false; }
@@ -25,7 +25,7 @@ bool FlareSolverr::request(const QUrl& url, QByteArray* response, QString* error
     QTimer cancellation;
     QObject::connect(&cancellation,&QTimer::timeout,&loop,[&]{if(cancel->load())reply->abort();});
     if(cancel)cancellation.start(100);
-    timer.start(120000);
+    timer.start(timeoutMs>0?timeoutMs:15000);
     if(!reply->isFinished())loop.exec();
     if(cancel && cancel->load()){if(error)*error=QStringLiteral("Download cancelled");return false;}
     if(timedOut){ reply->deleteLater(); if(error)*error=QStringLiteral("FlareSolverr timed out"); return false; }

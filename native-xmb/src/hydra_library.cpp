@@ -41,10 +41,11 @@ struct FetchOutcome {
 };
 bool fetchBody(const QUrl& url,const QString& service,QByteArray* out,QString* error,const QString& solver=QString{});
 
-// The FlareSolverr last resort, shared by the single-attempt and retry fetch paths. It is only
-// called after the direct fetch failed or returned an HTML challenge, and never inside the retry
-// loop, so it never changes the bounded-retry/backoff/403-429 behaviour. Returns false (and records
-// the solver's error) when no endpoint is configured or the solver cannot produce a body.
+// One FlareSolverr request, shared by the catalogue paths (as their last resort after a failed or
+// HTML-challenged direct fetch) and the source-feed path (as its PRIMARY fetch). It is never called
+// inside the retry loop, so it never changes the bounded-retry/backoff/403-429 behaviour. Returns
+// false (and records the solver's error) when no endpoint is configured or the solver cannot produce
+// a body; the caller decides whether that false is a terminal error or a prompt to fall back direct.
 bool solveWithFlareSolverr(const QUrl& url,const QString& endpoint,QByteArray* out,QString* solverError) {
     if(endpoint.isEmpty())return false;
     QByteArray solved; QString error;
@@ -309,8 +310,21 @@ bool fetchDirectoryPage(const QUrl& url,QElapsedTimer* budget,QJsonObject* out,Q
     }
     if(out)*out=document.object(); return true;
 }
+// A selected source feed (the Browse Sources path). Third-party source feeds are the one Hydra fetch
+// known to sit behind Cloudflare bot protection, so when a FlareSolverr endpoint is configured it is
+// tried FIRST and its result returned directly. Only when the solver fails (error/timeout/empty) does
+// the library fall back to the existing bounded-retry direct GET. With no endpoint the direct path is
+// unchanged (byte-identical): the solver branch is skipped and the retry policy is untouched.
 bool fetchDocumentWithRetry(const QUrl& url, QJsonDocument* out, QString* error,const QString& solver=QString{}) {
-    QByteArray body; if(!fetchBodyWithRetry(url,QStringLiteral("source"),&body,error,nullptr,solver))return false;
+    QByteArray body; bool haveBody=false;
+    if(!solver.isEmpty()) {
+        QString solverError;
+        haveBody=solveWithFlareSolverr(url,solver,&body,&solverError);
+        // On solver failure fall through to the direct fetch below.
+    }
+    if(!haveBody) {
+        if(!fetchBodyWithRetry(url,QStringLiteral("source"),&body,error,nullptr))return false;
+    }
     QJsonParseError parseError; const auto document=QJsonDocument::fromJson(body,&parseError);
     if(document.isNull()) { if(error)*error=QStringLiteral("Hydra source returned invalid JSON; retry"); return false; }
     if(out)*out=document; return true;
