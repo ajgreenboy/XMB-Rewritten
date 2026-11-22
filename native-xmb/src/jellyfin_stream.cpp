@@ -189,7 +189,18 @@ void JellyfinStream::acceptConnections() {
                 pump(current);
             }
         });
-        connect(socket, &QTcpSocket::disconnected, this, [this, socket] { removeRequest(socket); });
+        connect(socket, &QTcpSocket::disconnected, this, [this, socket] {
+            // The player can take a short error reply (Content-Length known) and hang up before the upstream
+            // reply's own finished() is delivered; the rejection must not depend on that ordering.
+            auto* current = requests_.value(socket, nullptr);
+            if (current && current->headersSent && current->status >= 400 && !current->reported) {
+                current->reported = true;
+                if (current->reply)
+                    current->errorBody += current->reply->peek(std::max<qint64>(0, 512 - current->errorBody.size()));
+                emit upstreamRejected(current->status, describe(current), scrubDiagnostic(current->errorBody));
+            }
+            removeRequest(socket);
+        });
         connect(request->timeout, &QTimer::timeout, this, [this, socket] {
             auto* current = requests_.value(socket, nullptr);
             if (current) {
