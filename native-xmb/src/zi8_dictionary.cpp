@@ -248,9 +248,13 @@ std::vector<std::u16string> zi8Candidates(const Zi8Dictionary& dictionary,const 
     const auto add=[&](const std::u16string& word) {
         if(out.size()<limit && seen.insert(zi8Fold(word)).second)out.push_back(word);
     };
+    // The typed word heads the list (recording: "h", not a dictionary word, is the first line). A word the dictionary has
+    // nothing for lists nothing: the recording never shows that case, and an empty column is what the keyboard drew before.
+    std::vector<std::u16string> found=dictionary.exactMatches(typed,limit);
+    for(const auto& word:dictionary.completions(typed,limit))found.push_back(word);
+    if(found.empty())return out;
     add(typed);
-    for(const auto& word:dictionary.exactMatches(typed,limit))add(word);
-    for(const auto& word:dictionary.completions(typed,limit))add(word);
+    for(const auto& word:found)add(word);
     return out;
 }
 

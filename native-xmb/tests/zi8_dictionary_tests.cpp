@@ -255,7 +255,8 @@ int main() {
         check(join(d.exactMatches(u("ha"),100))=="ha","exact pass reports only the typed length");
         check(join(d.completions(u("ha"),100))=="hat hats hatch halo hall","completion pass skips the typed length itself");
         check(join(zi8Candidates(d,u("he"),100))=="he her here hen","candidates: the typed word, then completions");
-        check(join(zi8Candidates(d,u("hx"),100))=="hx","candidates: an unknown word still lists itself");
+        check(zi8Candidates(d,u("hx"),100).empty(),"candidates: a word the dictionary has nothing for lists nothing");
+        check(zi8Candidates(d,u("42"),100).empty(),"candidates: digits outside the table list nothing");
         check(join(zi8Candidates(d,u("ha"),4))=="ha hat hats hatch","candidates: typed word not repeated, limit holds");
         check(join(zi8Candidates(d,u("HA"),3))=="HA hat hats","candidates: matching folds case, the typed word stays as typed");
         check(zi8Candidates(d,std::u16string(),10).empty(),"candidates: empty word gives nothing");

@@ -144,7 +144,9 @@ is no separate frequency field and no re-sorting.
 3. the completions, without repeating a word already listed.
 
 Native: `zi8Candidates` does exactly that, matching case-insensitively (the files are lower case) and keeping the typed word as
-typed; at most `kOskMaxCandidates` = 100 lines (FIT: see 7).
+typed; at most `kOskMaxCandidates` = 100 lines (FIT: see 7). When the dictionary has no word for the typed text (e.g. "42", or
+"hx") the native list is empty rather than the typed word alone: the recording never shows that case (UNKNOWN), and an empty
+column is what the keyboard drew before the dictionary was read.
 
 ### Validation against the recording (R)
 

@@ -66,7 +66,7 @@ std::u16string zi8Fold(const std::u16string& text);
 
 // The prediction list the console shows for a composition word (audit/ZI8-DICTIONARY-FORMAT.md 6): the typed word
 // itself, then the exact-length dictionary words, then the completions, without repeating a word, at most `limit` lines.
-// An empty word or an unloaded dictionary gives an empty list.
+// An empty word, an unloaded dictionary or a word with no dictionary match gives an empty list.
 std::vector<std::u16string> zi8Candidates(const Zi8Dictionary& dictionary,const std::u16string& typed,std::size_t limit);
 
 }  // namespace xmb
