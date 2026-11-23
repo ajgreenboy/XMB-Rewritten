@@ -3833,7 +3833,10 @@ void View::drawScene(QPainter& p) {
                         const auto columnId=shell_.categories()[shell_.category()].id;
                         const bool settingsColumn=level==0 && columnId==QLatin1String("settings");
                         const bool networkColumn=level==0 && columnId==QLatin1String("network");
-                        const qreal helpWidth=settingsColumn?965.:networkColumn?1005.:panelAmount>.001?std::min<qreal>(1182.,1240.-labelX):1182.;
+                        qreal helpWidth=settingsColumn?965.:networkColumn?1005.:panelAmount>.001?std::min<qreal>(1182.,1240.-labelX):1182.;
+                        // A focused game row's date line stops short of the "PS3" badge (a long played-time detail ran under the
+                        // pill); the rest wraps to the next line. The 12 px gap is a fit, not a traced constant.
+                        if(gameBadgeRow)helpWidth=std::max<qreal>(120.,std::min<qreal>(helpWidth,gameBadge::badgeRect(labelX,y).left()-labelX-12.));
                         QFont helpFont(shell_.fontFamily());helpFont.setPixelSize(helpSize);
                         helpFont.setHintingPreference(QFont::PreferNoHinting);
                         QTextLayout wrap(helpText,helpFont);QTextOption option;
