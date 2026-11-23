@@ -530,6 +530,10 @@ int main(int argc,char** argv) {
         int source500AlwaysRequests=0;
         int source404Requests=0;
         int source403Requests=0;
+        int hot500ThenSuccessRequests=0;
+        int hot500AlwaysRequests=0;
+        int hot403Requests=0;
+        int hot429Requests=0;
         int source401Requests=0;
         int source503RetryAfterRequests=0;
         int sourceStallRequests=0;
@@ -563,6 +567,35 @@ int main(int argc,char** argv) {
                 QByteArray body;
                 int delay=hot?0:(title==39?900:(title%5)*15);
                 bool fail=false;
+                // Hot catalogue retry fixture: one transient 500 is retried to a valid 40-entry
+                // array; repeated 500 stays bounded; 403/429 are terminal (never auto-retried).
+                if(request.contains("/hot-500-then-success")) {
+                    ++hot500ThenSuccessRequests;
+                    if(hot500ThenSuccessRequests==1) {
+                        socket->write("HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                        socket->disconnectFromHost();return;
+                    }
+                    QJsonArray rows;
+                    for(int i=0;i<40;++i)rows.append(QJsonObject{{QStringLiteral("title"),QStringLiteral("Hot %1").arg(i,2,10,QChar('0'))}});
+                    const QByteArray hotBody=QJsonDocument(rows).toJson(QJsonDocument::Compact);
+                    socket->write("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: "+QByteArray::number(hotBody.size())+"\r\nConnection: close\r\n\r\n"+hotBody);
+                    socket->disconnectFromHost();return;
+                }
+                if(request.contains("/hot-500-always")) {
+                    ++hot500AlwaysRequests;
+                    socket->write("HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                    socket->disconnectFromHost();return;
+                }
+                if(request.contains("/hot-403")) {
+                    ++hot403Requests;
+                    socket->write("HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                    socket->disconnectFromHost();return;
+                }
+                if(request.contains("/hot-429")) {
+                    ++hot429Requests;
+                    socket->write("HTTP/1.1 429 Too Many Requests\r\nRetry-After: 7\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                    socket->disconnectFromHost();return;
+                }
                 if(request.contains("/source-redirect")) {
                     const QByteArray response=QByteArrayLiteral("HTTP/1.1 302 Found\r\nLocation: /source-feed\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
                     socket->write(response);socket->disconnectFromHost();return;
@@ -890,7 +923,8 @@ int main(int argc,char** argv) {
         GameResult invalid; fixtureError.clear();
         check(!HydraLibrary().popularGame(titles[20],&invalid,&fixtureError) && invalid.options.isEmpty() &&
               fixtureError.contains(QStringLiteral("HTTP 500")) && fixtureError.contains(QStringLiteral("retry")) &&
-              !fixtureError.contains(QStringLiteral("127.0.0.1")),"HTTP 500 is actionable without URL leakage");
+              fixtureError.contains(QStringLiteral("library")) && !fixtureError.contains(QStringLiteral("catalogue")) &&
+              !fixtureError.contains(QStringLiteral("127.0.0.1")),"HTTP 500 is actionable without URL leakage and names the library stage");
         const int rateLimitBefore=rateLimitRequests;
         fixtureError.clear();
         check(!HydraLibrary().popularGame(titles[21],&invalid,&fixtureError) && fixtureError.contains(QStringLiteral("HTTP 429")),
@@ -940,6 +974,37 @@ int main(int argc,char** argv) {
             check(!HydraLibrary().popularTitles(&titles,&fixtureError) && titles.isEmpty() && !fixtureError.isEmpty(),
                   "invalid hot catalogue response is actionable");
         }
+        // The single initial Popular /catalogue/hot GET shares the selected-feed bounded retry:
+        // a transient 500 is retried to success; a repeated 500 is bounded with no partial output and
+        // a catalogue-stage error; 403/429 stay terminal. The error names the stage, so an empty
+        // Popular page distinguishes a hot-catalogue failure from a per-title library failure.
+        qputenv("XMB_HYDRA_HOT_URL",(base+QStringLiteral("/hot-500-then-success")).toUtf8());
+        titles.clear();fixtureError=QStringLiteral("stale error");
+        check(HydraLibrary().popularTitles(&titles,&fixtureError) && titles.size()==40 && fixtureError.isEmpty(),
+              "transient HTTP 500 on the hot catalogue is retried once and then succeeds");
+        check(hot500ThenSuccessRequests==2,"a single hot 500 costs exactly one automatic retry (two requests)");
+        qputenv("XMB_HYDRA_HOT_URL",(base+QStringLiteral("/hot-500-always")).toUtf8());
+        titles.append(PopularTitle{});fixtureError.clear();
+        QElapsedTimer hot500Clock;hot500Clock.start();
+        check(!HydraLibrary().popularTitles(&titles,&fixtureError) && titles.isEmpty() &&
+              fixtureError.contains(QStringLiteral("HTTP 500")) && fixtureError.contains(QStringLiteral("catalogue")) &&
+              !fixtureError.contains(QStringLiteral("library")) && !fixtureError.contains(QStringLiteral("127.0.0.1")),
+              "repeated hot 500 fails bounded, names the catalogue stage, and leaks no URL");
+        check(hot500AlwaysRequests==3,"repeated hot 500 is bounded to the retry attempt cap");
+        check(hot500Clock.elapsed()<10000,"repeated hot 500 returns within the short backoff budget");
+        qputenv("XMB_HYDRA_HOT_URL",(base+QStringLiteral("/hot-403")).toUtf8());
+        titles.clear();fixtureError.clear();
+        check(!HydraLibrary().popularTitles(&titles,&fixtureError) && titles.isEmpty() &&
+              fixtureError.contains(QStringLiteral("HTTP 403")) && fixtureError.contains(QStringLiteral("refused access")) &&
+              !fixtureError.contains(QStringLiteral("retry")),
+              "hot catalogue 403 is terminal and worded as an access refusal, not a retryable failure");
+        check(hot403Requests==1,"hot catalogue 403 is never auto-retried");
+        qputenv("XMB_HYDRA_HOT_URL",(base+QStringLiteral("/hot-429")).toUtf8());
+        titles.clear();fixtureError.clear();
+        check(!HydraLibrary().popularTitles(&titles,&fixtureError) && titles.isEmpty() &&
+              fixtureError.contains(QStringLiteral("HTTP 429")),
+              "hot catalogue 429 rate limit is terminal");
+        check(hot429Requests==1,"hot catalogue 429 is never auto-retried");
         qputenv("XMB_HYDRA_SOURCES_URL",(base+QStringLiteral("/sources")).toUtf8());
         qputenv("XMB_HYDRA_SEARCH_URL",(base+QStringLiteral("/search")).toUtf8());
         QVector<HydraSource> fixtureSources;fixtureError=QStringLiteral("stale error");

@@ -153,14 +153,9 @@ bool fetchJson(const QUrl& url, QJsonObject* out, QString* error,const QString& 
     }
     if(out)*out=document.object(); return true;
 }
-// The Hydra Cloud catalogue endpoints (catalogue/hot, catalogue/featured) answer a bare JSON array.
-bool fetchJsonArray(const QUrl& url, QJsonArray* out, QString* error,const QString& solver=QString{}) {
-    QByteArray body; if(!fetchBody(url,QStringLiteral("catalogue"),kMaxBody,&body,error,solver))return false;
-    QJsonParseError parseError;
-    const QJsonDocument document=QJsonDocument::fromJson(body,&parseError);
-    if(document.isNull() || !document.isArray()) { if(error)*error=QStringLiteral("Hydra catalogue returned invalid JSON; retry"); return false; }
-    if(out)*out=document.array(); return true;
-}
+// The Hot catalogue endpoint (catalogue/hot) answers a bare JSON array; it is fetched through
+// fetchJsonArrayWithRetry (below, next to the retry machinery) so the single initial Popular GET
+// shares the reviewed bounded retry. A bare-array fetch with no retry is no longer used.
 bool safeRedirect(const QUrl& from, const QUrl& to) {
     const bool valid=(to.scheme()==QLatin1String("http") || to.scheme()==QLatin1String("https")) && !to.host().isEmpty();
     if(!valid)return false;
@@ -327,6 +322,18 @@ bool fetchBodyWithRetry(const QUrl& url,const QString& service,qint64 maxBody,QB
     if(error)*error=fetchErrorString(service,outcome,maxBody);
     if(failure)*failure=classifyFailure(outcome);
     return false;
+}
+// The Hot catalogue GET (Popular Games) reuses the selected-feed bounded retry: a transient
+// 500/502/503/504 or timeout is retried a bounded number of times, while permanent 4xx (403/429),
+// unsafe redirects and oversized bodies stay terminal. A 200 with a malformed body still fails the
+// validation below (unchanged), so a bad shape is never retried as if it were a transient error.
+// A configured FlareSolverr endpoint stays the last resort after the retry loop (never when empty).
+bool fetchJsonArrayWithRetry(const QUrl& url, QJsonArray* out, QString* error,const QString& solver=QString{}) {
+    QByteArray body; if(!fetchBodyWithRetry(url,QStringLiteral("catalogue"),kMaxBody,&body,error,nullptr,nullptr,solver))return false;
+    QJsonParseError parseError;
+    const QJsonDocument document=QJsonDocument::fromJson(body,&parseError);
+    if(document.isNull() || !document.isArray()) { if(error)*error=QStringLiteral("Hydra catalogue returned invalid JSON; retry"); return false; }
+    if(out)*out=document.array(); return true;
 }
 // One page of the Hydra source directory (Browse Sources), under the directory action's shared budget.
 // A transient 500/502/503/504 or timeout is retried inside that budget; 4xx (403, 429 included), unsafe
@@ -740,7 +747,7 @@ bool HydraLibrary::popularTitles(QVector<PopularTitle>* out,QString* error) cons
     QJsonArray hot;
     const QString url=loopbackEndpoint("XMB_HYDRA_HOT_URL",
         QStringLiteral("https://api.hydralauncher.gg/catalogue/hot?take=40&skip=0"));
-    if(!fetchJsonArray(QUrl(url),&hot,error,flareSolverrEndpoint_))return false;
+    if(!fetchJsonArrayWithRetry(QUrl(url),&hot,error,flareSolverrEndpoint_))return false;
     if(!validPopularTitleArray(hot)) {
         if(error)*error=QStringLiteral("Hydra catalogue returned an invalid popular title entry; retry");
         return false;
