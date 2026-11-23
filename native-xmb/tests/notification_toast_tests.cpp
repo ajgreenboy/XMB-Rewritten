@@ -102,6 +102,24 @@ int main(int argc, char** argv) {
     const PixelRect fractional = overlayWindow(small, 1.25, 0.4, 0.6);
     check(fractional.x <= small.x * 1.25 + .4 && fractional.x + fractional.w >= small.right() * 1.25 + .4, "the window is rounded outward so the edge is not clipped");
 
+    // ---- The info bar steps aside for the toast (recording R) ---------------------------------------------------
+    check(near(barOpacity(0., true), 1.) && near(barOpacity(1., true), 0.), "the bar is fully hidden under a fully shown toast and back at its start");
+    check(near(barOpacity(.25, true) + .25, 1.), "the bar's opacity is the toast's fade turned around");
+    check(near(barOpacity(1., false), 1.), "a toast that is not drawn (empty, or the PS menu is up) leaves the bar alone");
+    check(near(barOpacity(7., true), 0.) && near(barOpacity(-3., true), 1.), "out-of-range fade values are clamped");
+
+    // ---- The measured soft shadow ----------------------------------------------------------------------------
+    double meanX = 0, meanY = 0;
+    for (int i = 0; i < kShadowTaps; ++i) {
+        meanX += shadowTap(i).dx / kShadowTaps;
+        meanY += shadowTap(i).dy / kShadowTaps;
+    }
+    check(near(meanX, kShadowOffset) && near(meanY, kShadowOffset), "the taps average to the measured offset (3 px = 720p 2 px, right and down)");
+    check(shadowTap(0).dx != shadowTap(1).dx && shadowTap(0).dy != shadowTap(2).dy, "the four taps are distinct (a blur, not a copy)");
+    check(kShadowOffset < 4., "the shadow is smaller than the firmware template's 4/5 px copy");
+    check(near(std::pow(1. - shadowTapCoverage(), kShadowTaps), kShadowMultiply, 1e-9), "where the taps overlap the box is multiplied by the measured .63");
+    check(shadowTapCoverage() > 0. && shadowTapCoverage() < .5, "one tap is a light veil");
+
     std::printf("notification-toast: %d checks, %d failed\n", checks, failures);
     return failures == 0 ? 0 : 1;
 }

@@ -1,10 +1,12 @@
 # Helpers for work/notify-overlay-e2e.ts (audit/INFO-BAR.md, in-game toast).
 #   -Mode shot    -Out <png>            capture the primary monitor and write <png>.json (monitor size, foreground window,
 #                                        and every visible topmost tool window: class, rect, extended styles)
+#   -Mode backdrop -Seconds <n>         show a borderless full-screen game-like gradient for n seconds (a neutral stand-in for a
+#                                        running game's picture, so the capture shows the overlay over a game, not the XMB behind it)
 #   -Mode compose -Xmb <png> -Game <png> -Out <png>
 #                                        crop the toast's region (design 1100..1920 x 60..210) from an XMB grab and from a
 #                                        monitor capture, stack them with a label, scale x2, write <png>
-param([string]$Mode, [string]$Out, [string]$Xmb, [string]$Game)
+param([string]$Mode, [string]$Out, [string]$Xmb, [string]$Game, [string]$Ref, [int]$Seconds = 8)
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Drawing
 Add-Type @'
@@ -38,7 +40,22 @@ public static class W {
 }
 '@
 [void][W]::SetProcessDPIAware()
-if ($Mode -eq 'shot') {
+if ($Mode -eq 'backdrop') {
+  Add-Type -AssemblyName System.Windows.Forms
+  $f = New-Object System.Windows.Forms.Form
+  $f.FormBorderStyle = 'None'; $f.StartPosition = 'Manual'; $f.Bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds; $f.Text = 'Notify Overlay Backdrop'
+  $f.add_Paint({ param($s, $e)
+    $r = $s.ClientRectangle
+    $b = New-Object System.Drawing.Drawing2D.LinearGradientBrush $r, ([System.Drawing.Color]::FromArgb(40, 70, 120)), ([System.Drawing.Color]::FromArgb(150, 110, 60)), 35.0
+    $e.Graphics.FillRectangle($b, $r)
+    $p = New-Object System.Drawing.Pen ([System.Drawing.Color]::FromArgb(90, 255, 255, 255)), 3
+    for ($i = 0; $i -lt 12; $i++) { $e.Graphics.DrawLine($p, 0, $i * 100, $r.Width, $i * 100 - 300) }
+  })
+  $t = New-Object System.Windows.Forms.Timer; $t.Interval = $Seconds * 1000; $t.add_Tick({ $f.Close() })
+  $f.add_Shown({ $t.Start() })
+  [void]$f.ShowDialog()
+}
+elseif ($Mode -eq 'shot') {
   $w = [W]::GetSystemMetrics(0); $h = [W]::GetSystemMetrics(1)
   $bmp = New-Object System.Drawing.Bitmap $w, $h
   $g = [System.Drawing.Graphics]::FromImage($bmp)
@@ -62,13 +79,15 @@ elseif ($Mode -eq 'compose') {
   }
   $a = & $crop $Xmb; $b = & $crop $Game
   $label = 22
-  $sheet = New-Object System.Drawing.Bitmap 1640, (($label + 150) * 2 * 2)
+  $rows = @(@('XMB toast (View::drawNotification)', $a), @('In-game NotifyOverlay window over a stand-in title', $b))
+  if ($Ref) { $rows += ,@('Recording M2, 51 s (720p frame, same crop)', (& $crop $Ref)) }
+  $sheet = New-Object System.Drawing.Bitmap 1640, (($label + 150) * 2 * $rows.Count)
   $g = [System.Drawing.Graphics]::FromImage($sheet)
   $g.Clear([System.Drawing.Color]::FromArgb(24, 24, 24))
   $g.InterpolationMode = 'NearestNeighbor'
   $font = New-Object System.Drawing.Font 'Segoe UI', 16
   $y = 0
-  foreach ($pair in @(@('XMB toast (View::drawNotification)', $a), @('In-game NotifyOverlay window over a stand-in title', $b))) {
+  foreach ($pair in $rows) {
     $g.DrawString($pair[0], $font, [System.Drawing.Brushes]::White, 6, $y + 4)
     $g.DrawImage($pair[1], (New-Object System.Drawing.Rectangle 0, ($y + $label * 2), 1640, 300))
     $y += ($label + 150) * 2

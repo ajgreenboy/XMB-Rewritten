@@ -1894,12 +1894,28 @@ void View::drawNotification(QPainter& p,double amount) {
         notificationTextureWarned_=true;
         qWarning().noquote()<<"notify: texture missing system_plugin"<<notificationShown_.icon<<"(drawn without the icon)";
     }
+    // The measured soft shadow (notification_toast.h, kShadowOffset): ink and shadow are drawn apart so the shadow is the
+    // measured 3 px right/down, four taps wide, not the firmware Text template's 4/5 px copy.
+    auto toastMaterial=TextRenderer::defaultMaterial();
+    const double baseFactor=1.-std::pow(.25,1./2.2);   // what the renderer's .25 shadow colour multiplies the layer by at full coverage
+    toastMaterial.shadow.setAlphaF(std::clamp(toast::shadowTapCoverage()/baseFactor,0.,1.));
     const auto label=[&](const toast::TextRect& r,const QString& value,const QFont& font,QColor colour) {
         colour.setAlphaF(colour.alphaF()*alpha);
         const QRectF rect(r.x,r.y,r.w,r.h);
-        if(textRenderer_.ready()) {textRenderer_.draw(*this,p,rect,value,font,colour,Qt::AlignLeft|Qt::AlignVCenter);return;}
+        if(textRenderer_.ready()) {
+            for(int tap=0;tap<toast::kShadowTaps;++tap) {
+                const auto at=toast::shadowTap(tap);
+                toastMaterial.shadowX=at.dx;toastMaterial.shadowY=-at.dy;
+                textRenderer_.draw(*this,p,rect,value,font,colour,Qt::AlignLeft|Qt::AlignVCenter,toastMaterial,"toast",0,true,false);
+            }
+            textRenderer_.draw(*this,p,rect,value,font,colour,Qt::AlignLeft|Qt::AlignVCenter,toastMaterial,"toast",0,false,true);
+            return;
+        }
         QFont plain=font;plain.setStyleStrategy(QFont::PreferAntialias);plain.setHintingPreference(QFont::PreferNoHinting);p.setFont(plain);
-        p.setPen(QColor(0,0,0,int(90*alpha)));p.drawText(rect.translated(1,1),Qt::AlignLeft|Qt::AlignVCenter,value);
+        for(int tap=0;tap<toast::kShadowTaps;++tap) {
+            const auto at=toast::shadowTap(tap);
+            p.setPen(QColor(0,0,0,int(std::lround(255.*toast::shadowTapCoverage()*alpha))));p.drawText(rect.translated(at.dx,at.dy),Qt::AlignLeft|Qt::AlignVCenter,value);
+        }
         p.setPen(colour);p.drawText(rect,Qt::AlignLeft|Qt::AlignVCenter,value);
     };
     label(layout.title,title,titleFont,QColor(toast::kTitleGrey,toast::kTitleGrey,toast::kTitleGrey));
@@ -3942,6 +3958,10 @@ void View::drawScene(QPainter& p) {
         // The item menu's band is up (from the latch, so it stays up through its close ramp) or on its way in.
         const bool optionsBandUp=optionsDrawn() && !optionsShown_.player;
         if((!messageScreen || modalPage) && !choiceBandUp && !optionsBandUp) {
+            // While a notification toast is up the console hides the whole bar (recording R, frames 68-72: plate, clock,
+            // face and slots all absent for the toast's five seconds and back at the next frame; audit/INFO-BAR.md,
+            // "Toast"). The bar's opacity is the toast's own fade turned around, so the two cross-fade in step.
+            const double barFade=xmb::toast::barOpacity(notificationEase_.value,!shell_.psMenuOpen() && !notificationShown_.title.isEmpty());
             // Measured from the saved 1920x1080 firmware frames (audit/ITEM-MENU-INFO-FIRMWARE.md B3/E4):
             // the visible plate is 591x58 at (1329,75), flush to the right screen edge. The tile's own 1 px
             // transparent margin lies just outside that core (x1328/y74) and its right border falls past
@@ -3956,7 +3976,7 @@ void View::drawScene(QPainter& p) {
                 // the plate on every edge (measured y74 95.74, y133 94.13, x1328 102.3 on the canonical frame). The
                 // source grid now starts one pixel in, so the plate's core is exactly rows 75..132 and columns
                 // 1329..1919 with nothing outside it. [TRACED: the core rect and the tile's own margin.]
-                drawNineSlice(p,"xmb_plugin_normal","tex_indi_bg",QRectF(1329,75,600,58),8.,1.,1.);
+                drawNineSlice(p,"xmb_plugin_normal","tex_indi_bg",QRectF(1329,75,600,58),8.,barFade,1.);
                 // Both ramps then still measure 17% weak (F2: alpha 0.291 top / 0.292 bottom against the console's
                 // 0.351 / 0.352). The deficit is one row per edge: the console's ramp peaks on its first row and
                 // decays over ~6 rows, and this tile's own first row is that peak at 0.291. A 1 px white row per
@@ -3964,8 +3984,8 @@ void View::drawScene(QPainter& p) {
                 // 0.351/0.352 within a thousandth. [TRACED: the target alphas and their difference. FIT: expressing
                 // the difference as a 1 px top-up row rather than a brighter tile.]
                 p.save();p.setPen(Qt::NoPen);
-                p.fillRect(QRectF(1329,75,591,1),QColor(255,255,255,22));
-                p.fillRect(QRectF(1329,132,591,1),QColor(255,255,255,22));
+                p.fillRect(QRectF(1329,75,591,1),QColor(255,255,255,int(std::lround(22*barFade))));
+                p.fillRect(QRectF(1329,132,591,1),QColor(255,255,255,int(std::lround(22*barFade))));
                 p.restore();
             } else {
                 // The decoder reads this tile (audit/TEXTURE-COVERAGE.md: 3174/3174); if a future flash
@@ -3976,7 +3996,7 @@ void View::drawScene(QPainter& p) {
                 p.setOpacity(.12);p.drawImage(infoBar,assets_.image("system_plugin","tex_infobar"));
                 p.setOpacity(1);p.setBrush(Qt::NoBrush);p.setPen(QPen(QColor(255,255,255,90),1));p.drawRoundedRect(infoBar.adjusted(.5,.5,-.5,-.5),4,4);p.restore();
             }
-            text({1240,82,525,45},shell_.clockText(),27,Qt::white,Qt::AlignRight|Qt::AlignVCenter);
+            if(barFade>.002)text({1240,82,525,45},shell_.clockText(),27,QColor(255,255,255,int(std::lround(255*barFade))),Qt::AlignRight|Qt::AlignVCenter);
             // The analog clock face: one geometry for every page. FIDELITY-ROOT-BAR F6/F7 measure the console's
             // root face at 1774,88 -> 1805,119 (32x32, 3 px ring ink, centre 1789.5/103.5) with a filled interior,
             // and the message page's own frames measure the same face (ring ink 1774..1776 and 1803..1805, rows
@@ -4003,12 +4023,12 @@ void View::drawScene(QPainter& p) {
             // a 45..70 dimmed plate). Its radius is the ring's inner edge, 14-3/2 = 12.5.
             // [TRACED: the interiors, the ring geometry and the sample's distance from the centre. FIT: the alpha
             // expressed as an 8-bit disc.]
-            const int discAlpha=measuredFace?204:int(std::lround(.606*255.));
+            const int discAlpha=int(std::lround((measuredFace?204.:.606*255.)*barFade));
             const double discRadius=ringRadius-ringStroke/2.;
             p.setPen(Qt::NoPen);p.setBrush(QColor(0,0,0,discAlpha));
             p.drawEllipse(centre,discRadius,discRadius);p.setBrush(Qt::NoBrush);
             for(int shadow=1;shadow>=0;--shadow) {
-                const auto c=centre+QPointF(shadow*1.5,shadow*1.5);p.setPen(QPen(shadow?QColor(0,0,0,150):QColor(255,255,255),ringStroke,Qt::SolidLine,Qt::RoundCap));
+                const auto c=centre+QPointF(shadow*1.5,shadow*1.5);p.setPen(QPen(shadow?QColor(0,0,0,int(std::lround(150*barFade))):QColor(255,255,255,int(std::lround(255*barFade))),ringStroke,Qt::SolidLine,Qt::RoundCap));
                 p.drawEllipse(c,ringRadius,ringRadius);p.drawLine(c,c+hand(time.minute()*6,minuteLength));p.drawLine(c,c+hand((time.hour()%12)*30+time.minute()*.5,hourLength));
             }
             p.restore();
@@ -4058,12 +4078,14 @@ void View::drawScene(QPainter& p) {
             const auto infoSlot=[&](double offset,const char* texture,bool active,int count) {
                 if(!active)return;
                 const QRectF slot(iconAnchorX+offset,88,32,32);
+                p.save();p.setOpacity(p.opacity()*barFade);
                 p.drawImage(slot,assets_.image(QStringLiteral("xmb_plugin_normal"),QLatin1String(texture)));
-                if(count<=0)return;
+                p.restore();
+                if(count<=0 || barFade<=.002)return;
                 // online_num sits at +14/+2 inside the slot. Its RCO size 10 has no measured px mapping
                 // (the clock text is also size 10 but renders a 22 px cap), so 15 px is a fit that keeps
                 // the count inside the 32 px slot.
-                text(QRectF(slot.left()+14,slot.top()+2,30,18),xmb::toast::badgeText(count),15,Qt::white,Qt::AlignLeft|Qt::AlignVCenter);
+                text(QRectF(slot.left()+14,slot.top()+2,30,18),xmb::toast::badgeText(count),15,QColor(255,255,255,int(std::lround(255*barFade))),Qt::AlignLeft|Qt::AlignVCenter);
             };
             infoSlot(-244.,"tex_indi_message",unreadMessages>0,unreadMessages);  // the app's own unread events (Shell message log)
             infoSlot(-274.,"tex_indi_chat",false,0);                     // no text-chat session

@@ -284,9 +284,28 @@ firmware glyph (`tex_notification_*`) and one or two text lines. Two-line events
 Real producers: every existing `notify()` call, plus new "Signed out." (detail Spotify / Jellyfin) after a
 confirmed sign-out of those services, which previously gave no feedback. SteamCMD already announced sign in/out.
 
-Honest differences: the toast leaves the info-bar clock faintly visible through the 0.88 fill (M2 has no bar; R
-hides it, alpha not separable); text shadow is the firmware's 4/5 px, larger than the recording's ~2 px; the
-glyph for non-friend events is the info glyph, not the Friends faces.
+Info bar under the toast (recording R, 1 fps, the gapvid rpcs3 frames; the only toast in R is frames 68-72
+"Signed in."): the whole bar - plate, clock text, analog face and the message slot - is absent for all five frames and is
+fully back at frame 73, the first frame after the toast; frame 67, just before, is the boot with no bar yet, so the
+evidence is "hidden for the toast's life, back the moment it ends". M2 has no bar at all. `View` therefore multiplies
+every bar element's opacity by `toast::barOpacity(toastAmount)` = 1 - the toast's own fade, so the bar cross-fades out as
+the toast fades in (200 ms) and back as it fades out (100 ms). With no toast the factor is exactly 1 and the bar's
+drawing is unchanged. The fill alpha was not touched.
+
+Text shadow (M2 frame 51 s, pixels, 1280x720): under the full stop (ink rows 94-95, columns 1196-1198) the 2 rows
+directly below read luma 45 over a 63 background (x0.71), recovering to the background by the 6th row; right of the
+stem of the "i" in "Signed" it reads 40 (x0.63); to the right of the stop the shadow reaches about 5 columns at the
+lower rows only. That is a soft shadow about 2 px at 720p (3 px at 1080p), right and down, with about 1 px of blur and a
+peak multiply of about 0.63. The firmware Text template's hard 4/5 px copy (4 px right, 5 px down at 1080p, which the
+rest of the XMB keeps) reads as doubled text on the toast, so the toast uses `toast::kShadowOffset` = 3,
+`kShadowSpread` = 0.75 and `kShadowMultiply` = 0.63, drawn as four taps around the offset (shadow-only passes of the
+text renderer in the XMB, translucent black text in the overlay; ink drawn once on top). Every other text surface keeps
+the firmware shadow.
+
+Honest differences: M2 has no bar to compare, so the hide is measured on R only; the toast box is 0.88 over the
+background, so whatever is behind (wallpaper, a game) shows through slightly, as in the recordings; the glyph for
+non-friend events is the info glyph, not the Friends faces; our text face is wider than the console's at equal cap
+height.
 
 ### In-game overlay
 
@@ -298,8 +317,8 @@ geometry, fill, glyph square, text rows and ink greys come from `src/notificatio
   on, at the right edge/top of that monitor's centred 16:9 design area, scaled by that monitor's `DesignSpace` factor
   (DPI-independent, as the XMB). No slide: a window move per frame is not worth it; the fade is the traced 200 ms in /
   100 ms out (`kFadeInMs`/`kFadeOutMs`, window opacity). Lifetime and queue are the shell's, unchanged.
-- Glyph is fitted to its ink square as the view does; text uses plain Qt drawing with a 1 px shadow, not the XMB's
-  firmware text renderer, so glyph edges differ slightly.
+- Glyph is fitted to its ink square as the view does; text uses plain Qt drawing with the same four-tap measured shadow,
+  not the XMB's firmware text renderer, so glyph edges differ slightly. There is no info bar in the overlay to hide.
 - Unchanged: never activates, click-through (`WS_EX_TRANSPARENT|NOACTIVATE|TOOLWINDOW`), always on top, hidden by the
   shell when the notification expires or the XMB is raised over the game.
 
@@ -308,4 +327,4 @@ notification with the `NOTIFY=` script token, and checks the overlay window's si
 auto-hide, then composes the XMB toast and the overlay capture side by side. Result (1920x1080): window 250x107 at
 x 1568 (right edge 1818, top 82), 9/9 checks pass.
 
-Tests: `xmb-notification-toast-tests` (46 checks, pure logic incl. layout and overlay-window mapping).
+Tests: `xmb-notification-toast-tests` (55 checks, pure logic incl. layout and overlay-window mapping).

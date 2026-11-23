@@ -123,7 +123,12 @@ void NotifyOverlay::paintEvent(QPaintEvent*) {
         QFont font(fontFamily_);font.setPixelSize(size);font.setStyleStrategy(QFont::PreferAntialias);
         font.setHintingPreference(QFont::PreferNoHinting);p.setFont(font);
         const QRectF at(r.x,r.y,r.w,r.h);
-        p.setPen(QColor(0,0,0,90));p.drawText(at.translated(1,1),Qt::AlignLeft|Qt::AlignVCenter,text);
+        // The measured soft shadow, the same four taps the XMB toast draws (notification_toast.h).
+        for(int tap=0;tap<toast::kShadowTaps;++tap) {
+            const auto shadow=toast::shadowTap(tap);
+            p.setPen(QColor(0,0,0,int(std::lround(255.*toast::shadowTapCoverage()))));
+            p.drawText(at.translated(shadow.dx,shadow.dy),Qt::AlignLeft|Qt::AlignVCenter,text);
+        }
         p.setPen(QColor(grey,grey,grey));p.drawText(at,Qt::AlignLeft|Qt::AlignVCenter,text);
     };
     label(layout_.title,drawnTitle_,int(toast::kTextSize),toast::kTitleGrey);

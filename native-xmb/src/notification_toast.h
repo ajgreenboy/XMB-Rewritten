@@ -130,6 +130,36 @@ inline constexpr double kSlideDistance = 48.;   // the XMB toast slides in from 
 inline constexpr int kFadeInMs = 200;            // the shared mode-5 move time (View::moveMilliseconds)
 inline constexpr int kFadeOutMs = 100;           // the firmware's own hide fade (View::notificationHideMilliseconds)
 
+// While a toast is up the console shows no info bar at all (recording R, frames 68-72: plate, clock, face and the
+// message slot are absent for the toast's whole life and back on the next 1 fps frame). The bar's opacity is the
+// toast's own fade (`toastAmount`, 0..1) turned around, so the two cross-fade in step; `toastDrawn` is false when the
+// toast is not being drawn (empty, or the PS menu is up), and the bar is then untouched.
+inline double barOpacity(double toastAmount, bool toastDrawn) {
+    if (!toastDrawn) return 1.;
+    return 1. - std::clamp(toastAmount, 0., 1.);
+}
+
+// The toast's text shadow, measured on M2 frame 51 s at 1280x720 (audit/INFO-BAR.md "Toast"): under the full stop
+// (ink rows 94-95) the shadow is darkest on the 2 rows straight below it, luma 45 over a 63 background (x0.71) and
+// back to the background by the 6th row; beside the stem of the "i" it is 40 (x0.63). That is a soft shadow about
+// 2 px at 720p = 3 px at 1080p, right and down, with about 1 px of blur - not the firmware Text template's hard 4/5 px
+// copy, which read as doubled text beside this measurement. A blurred shadow is drawn as four taps around the offset.
+inline constexpr double kShadowOffset = 3.;      // design px, right and down (720p 2 x 1.5)
+inline constexpr double kShadowSpread = .75;     // each tap sits this far from the offset on both axes (blur ~1.1 px)
+inline constexpr double kShadowMultiply = .63;   // the darkest the shadow makes the box under it (measured 0.63 .. 0.71)
+inline constexpr int kShadowTaps = 4;
+struct ShadowTap {
+    double dx = 0, dy = 0;
+};
+inline ShadowTap shadowTap(int index) {
+    const double sx = (index & 1) ? 1. : -1., sy = (index & 2) ? 1. : -1.;
+    return ShadowTap{kShadowOffset + sx * kShadowSpread, kShadowOffset + sy * kShadowSpread};
+}
+// Per-tap coverage so that where all taps overlap the box is multiplied by kShadowMultiply: (1 - a)^taps = multiply.
+inline double shadowTapCoverage() {
+    return 1. - std::pow(kShadowMultiply, 1. / kShadowTaps);
+}
+
 struct TextRect {
     double x = 0, y = 0, w = 0, h = 0;
 };

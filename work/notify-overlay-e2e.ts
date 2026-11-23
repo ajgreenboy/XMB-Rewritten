@@ -63,7 +63,9 @@ mkdirSync(out, { recursive: true });
   const run = spawnXmb(dir, ['full', ...Array(10).fill('wait'), 'ENTER', 'wait', 'pause=3000', `NOTIFY=${NOTE}`, 'pause=12000', 'quit']);
   const raised = await waitFor(dir, /script: notify/, 60000);
   check('game: the notification was raised while the title ran', raised);
-  await sleep(1000);   // past the 200 ms fade-in, inside the 5.1 s life
+  // A neutral game-like picture over the monitor, so the capture is the overlay over a game and not over the XMB window left behind it.
+  const backdrop = Bun.spawn(['powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', tools, '-Mode', 'backdrop', '-Seconds', '4'], { stdout: 'ignore', stderr: 'ignore' });
+  await sleep(2600);   // the form is up and the overlay's 200 ms fade-in is long done; the notification lives 5.1 s
   ps(['-Mode', 'shot', '-Out', win(`${dir}/overlay.png`)]);
   const shot = JSON.parse(readFileSync(`${dir}/overlay.png.json`, 'utf8').replace(/^\uFEFF/, ''));
   const windows = ([] as string[]).concat(shot.topmost || []).map(l => { const [h, cls, rect, ex, title] = l.split('|'); const [x, y, w, hh] = rect.split(',').map(Number); return { h: Number(h), cls, x, y, w, hh, ex: Number(ex), title }; });
@@ -77,7 +79,8 @@ mkdirSync(out, { recursive: true });
     check('game: it is not the foreground window (no focus stolen)', overlay.h !== shot.foreground);
     check('game: it is a layered window carrying WS_EX_LAYERED', (overlay.ex & 0x80000) !== 0);
   }
-  await sleep(6500);   // 2100 + 3000 ms life has passed
+  backdrop.kill();
+  await sleep(5500);   // 2100 + 3000 ms life has passed
   ps(['-Mode', 'shot', '-Out', win(`${dir}/after.png`)]);
   const after = JSON.parse(readFileSync(`${dir}/after.png.json`, 'utf8').replace(/^\uFEFF/, ''));
   const still = ([] as string[]).concat(after.topmost || []).some(l => { const [, cls, rect, ex] = l.split('|'); const hh = Number(rect.split(',')[3]); return cls.startsWith('Qt') && (Number(ex) & 0x20) && (Number(ex) & 0x08000000) && hh >= 100 && hh <= 110; });
@@ -89,7 +92,7 @@ mkdirSync(out, { recursive: true });
 }
 
 // 3. Side by side.
-ps(['-Mode', 'compose', '-Xmb', win(`${out}/xmb/xmb-toast.png`), '-Game', win(`${out}/game/overlay.png`), '-Out', win(`${out}/side-by-side.png`)]);
+ps(['-Mode', 'compose', '-Xmb', win(`${out}/xmb/xmb-toast.png`), '-Game', win(`${out}/game/overlay.png`), '-Ref', 'C:/dev/out/gapvid/m2/frame-00051000.jpg', '-Out', win(`${out}/side-by-side.png`)]);
 check('side-by-side written', existsSync(`${out}/side-by-side.png`), `${out}/side-by-side.png`);
 console.log(failures ? `\n${failures} FAILED` : '\nall passed');
 process.exit(failures ? 1 : 0);
