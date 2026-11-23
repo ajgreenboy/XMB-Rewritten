@@ -1,30 +1,41 @@
 # Native application captures
 
-## 2026-11-21 — root README gallery (real Steam titles)
+## 2026-11-23: root README gallery (v0.3.29)
 
-The seven screenshots that illustrate the repository root `README.md` (`screenshots/v0.3.21/`) are real, unmodified
-native renders, not AI generation and not mockups. They replace the earlier fixture gallery (`v0.3.1/`), which showed
-fictional game titles.
+The ten images in `screenshots/readme/` illustrate the repository root `README.md`. They replace the earlier gallery
+(`v0.3.21/`, which showed account-level views from a personal machine). Regenerate them with
+`bun work/readme-shots.ts --exe <re-ps3-native.exe> --publish native-xmb/screenshots/readme`.
 
-- **Build.** `re-ps3-native.exe` version 0.3.21, built from `native-xmb/` with MSVC 19.44 and Qt 6.12 on 2026-11-21.
-- **Method.** The application's own framebuffer capture. Each frame was produced by launching the app with
-  `--dev-flash C:\dev\rpcs3\bin\dev_flash --vsh-modules C:\dev\xmb\fw493\vsh_module --data-dir <scratch>` and a
-  scripted input sequence (`--script "full,wait,…,grab=<file>.png,quit"`, one token per 300 ms), so the grab is
-  whatever the renderer actually drew at that moment — full screen, 1920x1080. No image was edited after capture.
-- **"Real game assets".** The Game column reads Steam from the registry (`SteamPath`) plus
-  `libraryfolders.vdf` / `appmanifest_*.acf`, so the ten titles at the top of the Game column are this machine's
-  actually installed Steam library. Row artwork is resolved from Steam's local `appcache/librarycache` (real
-  header/hero images); the detail lines ("Multiplayer", "Fighting", …) are Steam's own collection labels. Nothing was
-  drawn or fetched to fake a title.
-- **Verification.** Every grab writes a sidecar JSON (the app's own state dump) recording the category, the focused
-  row, and each row's id, title, detail and artwork-readiness. All seven frames were checked against that sidecar:
-  1920x1080, non-blank, the Game column listing the real titles with artwork ready, and the options-menu capture's
-  log recording `shell: options opened … rows= 8 Sort By|Start|Open in Steam Library|Store Page|Screenshots|Verify
-  Game Files|Delete|Information`.
-- **Deliberately excluded.** The Friends column (a contact list), the Steam account list, and the Network column (its
-  Tailscale row names the host and tailnet IP) were not captured, so no personal or identifying data appears.
-- **Format.** The app writes PNG grabs; the repository copies are JPEG (quality 92) to keep the clone small. The
-  lossless PNG grabs remain in the local (git-ignored) capture scratch, not in the repository.
+- **Build.** `re-ps3-native.exe` 0.3.29 (source revision e574c03), built with `native-xmb/build.ps1`.
+- **Method.** The app's own framebuffer grab (`--script "...,grab=<file>.png,quit"`, one token per 300 ms), 1920x1080, with
+  `--render-clock 30 --background-clock 2026-01-15T14:00:00 --ui-clock 2026-01-15T14:00:00 --focus-time 2000`, so the
+  clock, background and glow are pinned and no real date or time is drawn. `--dev-flash` and `--vsh-modules` point at the
+  local firmware, which is why firmware UI textures appear. After capture each PNG is recompressed by
+  `work/png-optimise.ts` (a 256-colour adaptive palette with error-diffusion dither, about 600 KB each); nothing else is edited.
+- **Privacy.** No friends, account or persona names, avatars, e-mail addresses, IPs, host names or user paths appear. The Friends,
+  Users and Steam account views are not captured.
+
+| File | Shows | Source of the content |
+|---|---|---|
+| `01-game-column.png` | Game column: PS3-style logo tiles, the focused row's "PS3" badge and date line, the game backdrop | The machine's real Steam library, read from the Steam files on disk (`XMB_STEAM_ARTWORK=0`, so nothing is fetched). Steam is never started. |
+| `02-settings.png` | Settings column | Firmware UI only |
+| `03-jellyfin-video-player.png` | Player control matrix with Chapters | `work/jellyfin-standin.ts` on loopback, serving a generated test-pattern clip (a stand-in server, not a real Jellyfin) |
+| `04-jellyfin-music-player.png` | Music page with synced lyrics | The same stand-in server; invented artists and tracks |
+| `05-photo-gallery.png` | Photo Gallery piles | `work/gallery-fixture.ts` (374 generated colour-field images) |
+| `06-on-screen-keyboard.png` | OSK with predictions for "hi" | `osk=Search|,type=hi`; predictions from the firmware's English dictionary |
+| `07-psn-sign-in.png` | PSN Sign In page (no PSN connection, nothing typed) | Firmware UI only |
+| `08-pending-installers-panel.png` | Installing panel | `native-xmb/tests/installer_standin.cpp`, a synthetic installer, through the real Install (show installer) flow |
+| `09-notification-toast.png` | A notification toast | `NOTIFY=Download complete|Sample Title is ready to play` |
+| `10-cold-boot-wordmark.png` | Cold-boot wordmark stage | `XMB_INTRO_GRAB` at the frame nearest intro clock 1.2 s, `XMB_BOOT_CLOCK` pinned |
+
+The Jellyfin and installer captures start from stand-ins, so they show that the XMB drives those flows, not a run against a real
+Jellyfin server or a real repack installer.
+
+## 2026-11-21: earlier root README gallery (removed)
+
+The v0.3.21 gallery (`screenshots/v0.3.21/`) was removed on 2026-11-23.
+
+## Earlier captures
 
 October23,2026. Captures are unmodified application screenshots from Computer Use.
 

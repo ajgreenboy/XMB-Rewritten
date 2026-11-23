@@ -1,8 +1,10 @@
 # XMB-Rewritten: a native PS3 XMB for Windows
 
-![The native XMB, Game column with installed Steam titles](native-xmb/screenshots/v0.3.21/01-game-column.jpg)
+![The Game column with PS3-style logo tiles, the focused row's badge and date line, and a game backdrop](native-xmb/screenshots/readme/01-game-column.png)
 
-A native C++20 / Qt 6 recreation of the PlayStation 3 **4.93 XMB**, built as a living-room PC (HTPC) front end. It draws the console's own interface from the firmware's assets, which it reads from your own copy of the PS3 system software, and reproduces its look, motion, sounds and navigation. It is **not affiliated with Sony**, and **no Sony firmware or assets are in this repository**.
+A native Windows recreation of the PlayStation 3 **4.93 XMB**, built as a living-room PC (HTPC) front end. It is a C++20 / Qt 6 program that draws the console's own interface from the firmware's assets, which it reads from **your own copy** of the PS3 system software, and reproduces its look, motion, sounds and navigation. It is **not affiliated with Sony**, and **no Sony firmware or assets are in this repository**.
+
+It is not an emulator. Nothing here runs PS3 code. The XMB is a from-scratch renderer and set of services (Steam, Jellyfin, media players and so on) wearing the console's presentation.
 
 One CMake project builds two programs:
 
@@ -13,136 +15,143 @@ One CMake project builds two programs:
 
 ## Screenshots
 
-<!-- Captures: real, unmodified native renders at 1920x1080, taken with the app's own
-     `--script ... grab=...` framebuffer capture against the local 4.93 dev_flash and this
-     machine's real Steam library (installed titles and their Steam artwork). No AI generation
-     and no mockups. The repository copies are JPEG; provenance is in
-     [native-xmb/SCREENSHOTS.md](native-xmb/SCREENSHOTS.md). -->
+Every image is a 1920x1080 framebuffer grab from the current build (v0.3.29), taken by the app's own `--script ... grab=` path with a pinned clock. Apart from the Game column, which shows a real Steam library read from disk, they use synthetic fixtures: a stand-in Jellyfin server with generated media, a generated photo library, a stand-in installer. How each was made is in [SCREENSHOTS.md](native-xmb/SCREENSHOTS.md).
 
 | | |
 |---|---|
-| ![Options menu](native-xmb/screenshots/v0.3.21/02-options-menu.jpg) | ![Settings](native-xmb/screenshots/v0.3.21/03-settings.jpg) |
-| The Options (Triangle) menu on a Steam title | Settings column |
-| ![TV/Video Services](native-xmb/screenshots/v0.3.21/04-tv-video-services.jpg) | ![Video](native-xmb/screenshots/v0.3.21/05-video-column.jpg) |
-| TV/Video Services, with the Jellyfin setup row | Video column |
-| ![Music](native-xmb/screenshots/v0.3.21/06-music-column.jpg) | ![Users](native-xmb/screenshots/v0.3.21/07-users.jpg) |
-| Music column | Users column |
+| ![Settings column](native-xmb/screenshots/readme/02-settings.png) | ![Jellyfin video player](native-xmb/screenshots/readme/03-jellyfin-video-player.png) |
+| The Settings column | The video player's control matrix over a Jellyfin stream, with the Chapters slot |
+| ![Music player](native-xmb/screenshots/readme/04-jellyfin-music-player.png) | ![Photo Gallery](native-xmb/screenshots/readme/05-photo-gallery.png) |
+| The music page with synced lyrics from Jellyfin | The 3D Photo Gallery over a generated 374-photo library |
+| ![On-screen keyboard](native-xmb/screenshots/readme/06-on-screen-keyboard.png) | ![PSN sign-in page](native-xmb/screenshots/readme/07-psn-sign-in.png) |
+| The on-screen keyboard with firmware dictionary predictions for "hi" | The PSN Sign In page. It never connects to PSN |
+| ![Pending Installers panel](native-xmb/screenshots/readme/08-pending-installers-panel.png) | ![Notification toast](native-xmb/screenshots/readme/09-notification-toast.png) |
+| The Installing panel, run against a synthetic installer | A notification toast |
+| ![Cold boot wordmark](native-xmb/screenshots/readme/10-cold-boot-wordmark.png) | |
+| The cold-boot wordmark stage | |
 
-The screenshots show the firmware's icons, fonts and artwork, because that is what the XMB draws. The Game column at
-the top is this machine's actually installed Steam titles — with their Steam artwork and Steam's collection labels —
-rather than fictional fixtures. More notes on captures are in [SCREENSHOTS.md](native-xmb/SCREENSHOTS.md).
+The screenshots show the firmware's icons, fonts and artwork, because that is what the XMB draws.
 
 ## What it does
 
-- **The XMB shell:** category navigation, a page stack with selection restore, the Options menu, message boxes, settings pages, the system menu, themes (`.p3t`), the 4.93 cold-boot intro and the traced interaction sounds.
-- **Local media:** the video player follows the console's own player resources (the Triangle menu is the console's control matrix, with this build's extras in a Native Extras panel after it), video with sidecar subtitles and resume, a music player with a visualizer, photo viewing and the 3D Photo Gallery, and playlists. Folder and file pickers are drawn inside the XMB, so a controller can drive them.
-- **Streaming and content:**
-  - **Jellyfin:** set up from inside the XMB (server address, a server check and an optional LAN search), libraries and folders, direct play and HLS transcodes, subtitles, a remembered sign-in, and a Music-column entry that reuses it (artists, albums, playlists, songs, favourites, lyrics). Playback reports progress to the server, resumes from its position, offers Next Up and Up Next, chapters, audio and subtitle choice, and watched and favourite marks.
-  - **Steam:** installed titles in the Game column, collections, the store, downloads, accounts, and Quit Game that closes the game's own processes.
-  - **Spotify**, **DLNA / UPnP** discovery and **RAWG** artwork.
+Each line below is something the code does and the audits record. Where a feature has only been exercised against test fixtures or stand-ins, it says so; those are not the same as a run against the real service or installer.
+
+### The shell
+
+- **XMB columns** for Users, Settings, Photo, Music, Video, TV/Video Services, Game, Network, PSN and Friends, with a page stack that restores your selection, the Triangle options menu, message boxes, settings pages, the system menu and themes (`.p3t`).
+- **Cold boot** with the Sony Computer Entertainment wordmark stage, the photosensitive-epilepsy notice. `XMB_BOOT_WORDMARK=0` keeps the earlier boot. Kiosk mode skips the intro unless you ask for it ([KIOSK-INTRO.md](native-xmb/audit/KIOSK-INTRO.md)).
+- **Notifications and toasts** drawn from the firmware's own plaque and glyphs, with a message line in the info bar ([NOTIFICATIONS.md](native-xmb/audit/NOTIFICATIONS.md)).
+- **On-screen keyboard** following the console's layout and its pad bindings (L1/R1 caret, L2/R2 pages, accent pages), with a Prediction column read from the firmware's own Zi8 dictionaries. It reads 17 of the alphabetic dictionary files (English US/UK, French, Spanish, Portuguese, German, Italian, Dutch, Danish, Swedish, Finnish, Norwegian, Polish and Russian); other languages fall back to English. You can pick a candidate and commit it, and paste with `Ctrl+V` or the Paste key ([OSK-FIRMWARE.md](native-xmb/audit/OSK-FIRMWARE.md)).
+- **Display scaling:** the 1920x1080 design is scaled to any window size and Windows display scale ([HIGH-DPI.md](native-xmb/audit/HIGH-DPI.md)).
+- **Input:** keyboard, XInput pads (Guide is the PS button), DualShock 3/4 and DualSense over HID, IR and Bluetooth remotes and media keys.
+
+### Games
+
+- **Steam library** in the Game column, read from the installed client's files: titles with **PS3-style transparent logo tiles** instead of boxed headers, collections, store, downloads, accounts and Quit Game. The **focused row shows a "PS3" badge and a date and play-time line**, and the focused game's artwork becomes the backdrop. `XMB_PS3_LOGO_TILES=0` and `XMB_GAME_BADGE=0` turn these off.
+- **Launching a game** fades the XMB to black over the game-boot logo, starts the game behind black, then fades into it ([GAME-LAUNCH-FADE.md](native-xmb/audit/GAME-LAUNCH-FADE.md)). It is tested end to end against a stand-in game, and the timings are design choices, not recovered firmware values.
+- **The in-game XMB** opens over the title's last good frame, and over the live game for borderless and windowed titles. It is not yet verified on real games (see the known gaps).
+- **Pending Installers** keeps downloaded repacks that need a setup program. **Install (show installer)** runs the installer in its own visible window and opens an **Installing panel** with elapsed time, the log's current step, the destination size and a polite-then-confirmed close. It is verified against a synthetic installer only. Real DODI and FitGirl installers have not been run through it ([packaging/README.md](native-xmb/packaging/README.md)).
+- **Release sources and Hydra:** the Download Games hub browses Hydra's source catalogue and imported JSON sources, with an optional FlareSolverr fallback for feeds behind bot protection and Real-Debrid for downloads. This is tested against fixtures and stand-in servers. Real FlareSolverr behaviour has not been observed ([JSON-SOURCE-CATALOG](native-xmb/audit/JSON-SOURCE-CATALOG-2026-11-19.md)).
+- **XMB Manager** imports ROMs, ISOs and PS3 game folders as packages with emulator profiles ([MANAGER.md](native-xmb/MANAGER.md)). An encrypted retail `.pkg` is refused with an explanation.
+
+### Media
+
+- **Jellyfin** is set up from inside the XMB. Libraries, Continue Watching, Next Up, favourites and search; direct play and HLS transcodes; subtitles and audio-track choice; chapters; progress reporting and resume; and a Music-column entry with artists, albums, playlists, songs and synced lyrics. The video player follows the console's control matrix, with a Native Extras panel. It has been run against a stand-in server in this repository, not against a range of real Jellyfin installs ([JELLYFIN-PLAYER.md](native-xmb/audit/JELLYFIN-PLAYER.md)).
+- **Seerr** (TV/Video Services): search, request and track media requests, with the key kept in a Windows DPAPI record. Optional SABnzbd controls appear in Download Management ([SEERR.md](native-xmb/audit/SEERR.md)).
+- **Local media:** video with sidecar subtitles and resume, a music player with a visualizer, photos, playlists, and Continue Watching. The **Photo Gallery** is a native 3D recreation of the console's library area, with piles by day, a grid per pile and a hand-off to the photo viewer ([PHOTO-GALLERY.md](native-xmb/audit/PHOTO-GALLERY.md)).
+- **Also:** Spotify, DLNA / UPnP discovery and RAWG artwork.
+
+### Network, PSN and friends
+
+- **PSN pages in the older firmware's look**, with no PSN connection. Sign In, Account Management and its sub-pages exist as pages; each says that it needs a PlayStation Network connection this program does not make, and nothing typed into them is sent or kept ([PSN-PAGES.md](native-xmb/audit/PSN-PAGES.md)).
+- **Friends column** in the console's layout, listing a person only when a real source lists them. **Discord** friends need your own Discord application and Discord's approval of the `relationships.read` scope, so sign-in may fail until Discord grants it ([DISCORD.md](native-xmb/audit/DISCORD.md), [FRIENDS-COLUMN.md](native-xmb/audit/FRIENDS-COLUMN.md)). Rows with no presence data draw no status dot.
 - **Home and network:** Tailscale, Wake on LAN, Home Assistant and weather, each as a native page.
+
+### Living-room operation
+
+- **Kiosk mode, watchdog and start at sign-in:** a frameless full-screen run on the chosen display, restarted after a crash, with a safe mode for repeated crashes ([SAFE-MODE.md](native-xmb/audit/SAFE-MODE.md)).
 - **System:** Restart, Sleep and Shut Down, audio output switching, a read-only System Check and user management.
-- **Input:** keyboard, XInput pads (Guide is the PS button), DualShock 3, DualShock 4 and DualSense over HID (USB or Bluetooth), IR and Bluetooth remotes and media keys. `Ctrl+V` and `Shift+Insert` paste into the on-screen keyboard, and the keyboard also has a Paste key for a pad.
-- **Living-room operation:** kiosk mode, a crash watchdog with a safe mode, start at sign-in, an in-game system menu over a running title, and web apps in a tracked window that returns to the XMB when closed.
-- **Display scaling:** the 1920x1080 design is scaled to any window size and Windows display scale, at the screen's real pixel resolution, with black bars when the screen is not 16:9. See [HIGH-DPI.md](native-xmb/audit/HIGH-DPI.md).
+- **Updater:** the app checks GitHub Releases, downloads the release zip, verifies its SHA-256 and swaps the install folder.
 
-## Get started on a TV PC
+## Requirements
 
-You need Windows 10 or 11 (x64). The XMB reads your own PS3 4.93 `dev_flash`, which it can download from Sony for you.
+- Windows 10 or 11 (x64), a GPU and driver with OpenGL 3.3.
+- **Your own PS3 4.93 system software (`dev_flash`).** This repository ships none. The installer and the first-run setup can download Sony's official package for you, you can point at a `dev_flash` you already have (for example from your own RPCS3 install), or run `re-ps3-native.exe --firmware-install <folder>` yourself.
+- Optional: the Steam client (Game column), a Jellyfin or Seerr server, and the Visual C++ 2015-2022 x64 redistributable if you run the zip.
 
-1. Download `re-ps3-setup.exe` from the [latest release](https://github.com/ajgreenboy/XMB-Rewritten/releases/latest). The installer is not code-signed, so Windows SmartScreen will warn. Choose More info, then Run anyway.
-2. On the installer's Firmware page leave **Download from Sony now** selected. The installer fetches Sony's 4.93 system software (about 200 MB), checks every entry in it and unpacks it into the XMB's data folder. You can instead point it at a `dev_flash` you already have.
-3. Pick the display number. A single screen is 0. With a monitor and a TV, the TV is usually 1.
-4. Start the XMB. The first-run setup walks through firmware, library folders, controller and start-at-sign-in.
+## Install
 
-Installs run per user and need no administrator rights. Details, the command line and the data folder layout are in [INSTALL.md](native-xmb/INSTALL.md) and [packaging/README.md](native-xmb/packaging/README.md).
+Releases are on the [GitHub Releases page](https://github.com/ajgreenboy/XMB-Rewritten/releases). Each release has:
 
-### Kiosk operation
-
-The Start-menu shortcut and the sign-in task start the XMB through a watchdog in kiosk mode: frameless, full screen on the chosen display, straight to the XMB, and restarted after a crash. Kiosk mode skips the cold-boot intro by default. To play it on every kiosk start, add `"kioskIntro": true` to `xmb-config.json` ([KIOSK-INTRO.md](native-xmb/audit/KIOSK-INTRO.md)).
-
-### Getting the firmware
-
-The XMB needs the PS3 system software. Three ways, in order of effort:
-
-- Let the installer or the first-run setup download Sony's 4.93 package for you.
-- Choose a `dev_flash` folder you already have, for example from your own RPCS3 install.
-- Run `re-ps3-native.exe --firmware-install <folder>` yourself. It prints its progress and skips the download if a valid copy is already there.
-
-The firmware's decryption keys are the publicly known ones that RPCS3 also ships, and they are committed in `native-xmb/src/firmware_keys.inc`. This is a deliberate choice recorded in [FIRMWARE-FETCH.md](native-xmb/audit/FIRMWARE-FETCH.md), which also describes how the download is verified. It is not legal advice. Consider the law where you live and Sony's terms.
-
-## Services
-
-| Service | What you set up |
+| File | Use |
 |---|---|
-| Jellyfin | Open TV/Video Services, choose the Jellyfin row and enter your server address. [JELLYFIN-SETUP.md](native-xmb/audit/JELLYFIN-SETUP.md) |
-| Steam | Nothing. It reads the installed client. Quit Game is described in [STEAM-QUIT.md](native-xmb/audit/STEAM-QUIT.md) |
-| Spotify, DLNA, Wake on LAN, Home Assistant, weather, Discord | A small json file in the data folder each. Formats are in [native-xmb/README.md](native-xmb/README.md), "Network services and media sources" |
+| `re-ps3-setup.exe` | The per-user installer. It needs no administrator rights, offers to download the firmware, asks which display the TV is, and can set up start at sign-in. It is not code-signed, so Windows SmartScreen may warn. |
+| `re-ps3.zip` | The portable folder. Unzip it, write `xmb-config.json` and run `run-kiosk.ps1`. |
+| Updater | Once installed, the app updates itself from the same releases. |
 
-When a Steam game is in front and Steam Input is on for your controller, Steam can take the Guide button. If a tap on Guide opens Steam instead of the XMB, turn off Steam Input for that controller type in Steam, or on the game's own controller settings.
+Details, the command line and the data folder layout are in [INSTALL.md](native-xmb/INSTALL.md) and [packaging/README.md](native-xmb/packaging/README.md).
+
+## Configure
+
+| What | Where |
+|---|---|
+| Paths, display, kiosk intro | `xmb-config.json` ([example](native-xmb/packaging/xmb-config.example.json), [packaging/README.md](native-xmb/packaging/README.md)) |
+| Jellyfin | TV/Video Services, then Jellyfin ([JELLYFIN-SETUP.md](native-xmb/audit/JELLYFIN-SETUP.md)) |
+| Seerr | TV/Video Services, then Seerr ([SEERR.md](native-xmb/audit/SEERR.md)) |
+| Steam | Nothing; it reads the installed client ([STEAM-INTEGRATION.md](native-xmb/audit/STEAM-INTEGRATION.md)) |
+| Spotify, DLNA, Wake on LAN, Home Assistant, weather, Discord | A small json file each in the data folder ([native-xmb/README.md](native-xmb/README.md), [INSTALL.md](native-xmb/INSTALL.md)) |
+| Emulators and imported games | [MANAGER.md](native-xmb/MANAGER.md) |
+
+When a Steam game is in front and Steam Input is on for your controller, Steam can take the Guide button. If a tap on Guide opens Steam instead of the XMB, turn off Steam Input for that controller type.
 
 ## Build from source
 
-You need Windows 10 or 11, Visual Studio 2022 with the C++ workload, Qt 6 (MSVC kit, 6.8 or newer) and a local `dev_flash`.
+You need Windows 10 or 11, Visual Studio 2022 with the C++ workload, Qt 6 (MSVC kit, 6.8 or newer) and a local `dev_flash` to run it.
 
 ```powershell
 & .\native-xmb\build.ps1                 # builds both programs into out\integration
 & .\run-native-xmb.ps1                   # launches the XMB with your dev_flash
 ```
 
-`native-xmb/packaging/build-package.ps1` produces the self-contained folder that the release workflow zips and wraps in the installer. Tests are separate CMake targets, each wired into the GitHub Actions workflow in `.github/workflows/tests.yml`. See [native-xmb/README.md](native-xmb/README.md), "Tests and the verification gate".
+`native-xmb/packaging/build-package.ps1` produces the self-contained folder that the release workflow zips and wraps in the installer. The full build, command line and `--script` language are in [INSTALL.md](native-xmb/INSTALL.md).
 
-## Status
+## Tests and the visual gate
 
-Version **0.3.12**. It builds cleanly, and its own checks pass. Real-hardware testing on a living-room PC is still in progress, so treat anything that depends on a physical TV, remote or game as unverified until you try it.
+- Unit tests are separate CMake targets, each registered in [`tests.yml`](.github/workflows/tests.yml). `bun work/ci-guard.ts` checks that the targets, the `tests/` folder and the workflow agree.
+- `bun work/ab-layers.ts --all --exe <exe>` is the render gate: six content-neutral layers and 28 named states, compared against stored baselines. The baselines live in `out/native-reference/`, which is untracked and absent on a fresh clone, so on a clone you create your own with `--save-reference` ([native-xmb/README.md](native-xmb/README.md)). The named states are self-baselines of this renderer, not measurements of the console.
+- `powershell -NoProfile -ExecutionPolicy Bypass -File work\release-check.ps1 -SkipBuild` runs the release hygiene scans (credentials, firmware data, dumps, document links and stale commit ids) without the build.
+- `bun work/readme-shots.ts` regenerates the screenshots above from synthetic fixtures.
 
-| Measure | Result | Where |
-|---|---|---|
-| Render gate | 6 layers and 28 named states pass against their stored baselines | `bun work/ab-layers.ts --all` |
-| Unit tests | 22 runners in CI: Steam (including account switch and Quit Game), setup, firmware, Jellyfin setup, playback, music and others | [tests.yml](.github/workflows/tests.yml) |
-| Console parity | Compared against the real 4.93 firmware in RPCS3, with differences recorded | [native-xmb/audit/README.md](native-xmb/audit/README.md) |
-| Release hygiene | Credentials, firmware data and broken links are checked before a release | `work/release-check.ps1` |
-| Real-hardware run | In progress on a living-room PC | [RELEASE-CHECKLIST.md](native-xmb/audit/RELEASE-CHECKLIST.md) |
+How close the renderer is to the console, surface by surface, is in [FIDELITY-VERDICT.md](native-xmb/audit/FIDELITY-VERDICT.md).
 
-The 28 states are self-baselines of this renderer, not measurements of the console. How close the renderer is to the console, surface by surface, is in [FIDELITY-VERDICT.md](native-xmb/audit/FIDELITY-VERDICT.md).
+## Status and known gaps
 
-### Known gaps
+Version **0.3.29**. It builds cleanly and its own checks pass. Real-hardware testing on a living-room PC is still in progress, so treat anything that depends on a physical TV, remote or game as unverified until you try it ([RELEASE-CHECKLIST.md](native-xmb/audit/RELEASE-CHECKLIST.md)).
 
-- The system menu over a running game is a translucent overlay drawn over the live game for borderless and windowed titles, and falls back to a frozen frame of the game for exclusive fullscreen (or when the overlay cannot start; `XMB_INGAME_LIVE=0` forces the frozen frame). It is unverified on real games until tried on the HTPC: 4K timing, exclusive fullscreen, Steam Input and anti-cheat tolerance are listed in [INGAME-OVERLAY-DESIGN.md](native-xmb/audit/INGAME-OVERLAY-DESIGN.md).
+- The in-game system menu is a translucent overlay on the live game for borderless and windowed titles. It falls back to a frozen frame for exclusive fullscreen, or when the overlay cannot start (`XMB_INGAME_LIVE=0` forces the frozen frame). 4K timing, exclusive fullscreen, Steam Input and anti-cheat tolerance are listed in [INGAME-OVERLAY-DESIGN.md](native-xmb/audit/INGAME-OVERLAY-DESIGN.md).
+- The "PS3" badge on the focused game row sits at a fixed position, so a long date and play-time line can run under it.
+- Real DODI and FitGirl installers, and a real FlareSolverr, have not been exercised.
 - A DualSense is read directly over HID. Steam Input for PlayStation controllers can hide it from the XMB while a Steam game runs.
 - PSN is not connected. Rows that need it say so.
-- Differences from the console that are recorded and not yet fixed are listed in the parity audits, for example the depth-1 item page icons ([PARITY-SWEEP-6A](native-xmb/audit/PARITY-SWEEP-6A-RPCS3-2026-11-14.md)).
+- Differences from the console that are recorded and not yet fixed are in the parity audits ([audit index](native-xmb/audit/README.md)).
 
 ## Repository layout
 
 | Path | Contents |
 |---|---|
-| `native-xmb/` | The application: `src/`, `manager/`, `packaging/`, `updater/`, `tests/`, `audit/` and the documents |
+| `native-xmb/` | The application: `src/`, `manager/`, `packaging/`, `updater/`, `tests/` and the documents |
 | `native-xmb/audit/` | Design notes, firmware audits, parity sweeps and verification notes |
-| `native-xmb/screenshots/` | Approved UI captures referenced by the docs |
-| `work/` | Verification tools: the render gate, the parity corpus and the release check |
+| `native-xmb/screenshots/` | Screenshots used by the documents |
+| `work/` | Verification tools: the render gate, the parity corpus, the release check and the screenshot script |
 | `run-native-xmb.ps1` | The launcher for a development build |
 | `out/`, `dist/` | Local build and capture output (not tracked) |
 
-## Verification
+More documentation: the [application README](native-xmb/README.md), the [handoff](native-xmb/HANDOFF-2026-11-17.md), the [audit index](native-xmb/audit/README.md), the [HTPC run guide](native-xmb/audit/HTPC-RUN-GUIDE.md) and the [third-party notices](native-xmb/THIRD-PARTY.md).
 
-- `bun work/ab-layers.ts --all --exe <exe>` is the render gate: six content-neutral layers and the named states.
-- `bun work/parity.ts` and `work/transition-compare.ts` compare against console captures.
-- `.\work\release-check.ps1` checks for credentials, firmware data, dumps and broken links.
+## Legal and firmware
 
-The gate and the parity tools compare against `out/native-reference/`, which is not tracked and is absent on a fresh clone. Without it you can still build, run the unit tests and run `release-check.ps1 -SkipBuild`. Create your own baselines with `--save-reference`, as [native-xmb/README.md](native-xmb/README.md) explains.
+The XMB draws the console's interface from PS3 system software that **you** supply. This repository contains source, documents and screenshots only. No firmware, extracted or decrypted assets, analysis databases, console identities, API keys or build outputs are in it. Screenshots show firmware-drawn UI elements because that is what the program renders.
 
-## Documentation
+The firmware downloader fetches Sony's own update file and checks every entry. It decrypts with the publicly known keys that RPCS3 also ships, committed in `native-xmb/src/firmware_keys.inc`. That is a deliberate decision recorded in [FIRMWARE-FETCH.md](native-xmb/audit/FIRMWARE-FETCH.md), not legal advice. Consider the law where you live and Sony's terms.
 
-- [Application README](native-xmb/README.md): architecture, controls, service setup, the full command line.
-- [Install, build and run](native-xmb/INSTALL.md) and [packaging](native-xmb/packaging/README.md).
-- [Current handoff](native-xmb/HANDOFF-2026-11-13.md): state, paths, rules and open work.
-- [Audit index](native-xmb/audit/README.md): every design and verification note.
-- [Release checklist](native-xmb/audit/RELEASE-CHECKLIST.md) and [HTPC run guide](native-xmb/audit/HTPC-RUN-GUIDE.md).
-- [Third-party notices](native-xmb/THIRD-PARTY.md).
-
-## Provenance and honesty
-
-Measurements in the audits are labelled **traced** (from a console frame, resource object or decoded program), **fit** (a native approximation with the condition for removing it) or **unprovable** (with what would settle it). The repository holds source, documents and approved UI screenshots. Firmware, extracted or decrypted assets, analysis databases, console identities, API keys and build outputs are kept out of it, apart from the public firmware keys noted above.
-
-Online services never fabricate results. Nothing signs in, buys, earns a trophy or sends a message on its own, and an encrypted retail `.pkg` is refused with an explanation. No licence for redistribution is assigned by this repository. See the notices for third-party components.
+Online services never fabricate results. Nothing signs in, buys, earns a trophy or sends a message on its own. No licence for redistribution is assigned by this repository. "PlayStation", "PS3" and related marks belong to Sony Interactive Entertainment; game titles and artwork in screenshots belong to their owners. See the third-party notices for components.
