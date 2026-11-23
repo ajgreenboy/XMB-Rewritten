@@ -5,6 +5,7 @@
 #include "media_library.h"
 #include "playback_queue.h"
 #include "interaction_audio.h"
+#include "notification_toast.h"
 #include "profiles.h"
 #include "playlists.h"
 #include "spotify_client.h"
@@ -775,7 +776,13 @@ public:
     static constexpr qint64 notificationShowMs=2100;
     static constexpr qint64 notificationHoldMs=3000;
     static constexpr int notificationWaitingLimit=16;
-    void notify(const QString& title,const QString& detail={},const QString& icon={});
+    // keepInMessages=false is for transient status echoes (a playback speed change) that are not a message worth
+    // an unread count; every other event is also recorded in the Message Box (notification_toast.h).
+    void notify(const QString& title,const QString& detail={},const QString& icon={},bool keepInMessages=true);
+    // The info bar's message slot: this application's own unread events (there is no PSN to send any other).
+    int unreadMessageCount() const { return messageLog_.unread(); }
+    const xmb::toast::MessageLog& messageLog() const { return messageLog_; }
+    void showReceivedMessages();
     // The Sign-In page's endings: the one truthful failure page and the Forgot-password explanation (psn_shell.cpp).
     void psnSignInFailed();
     void psnForgotPassword();
@@ -1507,6 +1514,7 @@ private:
     // Notification queue state. The front entry is the pop-up on screen; its lifetime starts when it is
     // promoted to the front, so a burst of events each gets its full 4 s in turn.
     QVector<Notification> notifications_;
+    xmb::toast::MessageLog messageLog_;
     QTimer notificationTimer_;
     QElapsedTimer notificationClock_;
     bool notificationLog_=false;

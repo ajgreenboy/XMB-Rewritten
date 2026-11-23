@@ -924,6 +924,7 @@ void Shell::applyJellyfinFlag(const QString& itemId,int flag,bool value) {
 void Shell::signOutJellyfin() {
     jellyfinRequest_=0;finishJellyfinPlayback();jellyfin_.signOut();jellyfin_.forgetSession();
     qInfo()<<"jellyfin: signed out; the remembered session was forgotten";
+    notify(tr("Signed out."),QStringLiteral("Jellyfin"));
     jellyfinResume_.clear();jellyfinQueue_=false;loading_=false;status_.clear();
     jellyfinMusicLibraries_=-1;jellyfinMusicWanted_=false;refreshJellyfinMusicRow();
     while(pages_.size()>jellyfinRootDepth_)pages_.removeLast();emit changed();

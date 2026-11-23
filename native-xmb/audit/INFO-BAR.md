@@ -231,3 +231,61 @@ per page setup and the native's per-minute invalidation is a harmless superset r
   observation (the reference frame is minute-resolution; nothing captured shows a seconds field), so it is
   not contradicted and does not need changing on this evidence.
 
+
+---
+
+# Message slot and notification toast - 2026-11-22
+
+Evidence: `C:\dev\out\gapvid\rpcs3\` (R, newer firmware look, 1280x720, 1 fps) and `C:\dev\out\gapvid\m2\` (M2,
+older look). Everything below is truthful-data only: native has no PSN, so no account, avatar, message count or
+"Signed in." event is ever invented.
+
+## Message slot (info bar)
+
+- Source: `Shell::messageLog()` (`src/notification_toast.h`), this application's own event history. Every
+  notification `Shell::notify` accepts is recorded unread (transient playback-speed echoes pass
+  `keepInMessages=false`). Friends > Message Box > Received lists them (newest first, 8 lines) and marks them
+  read; with no events it still shows the firmware's "There are no messages.".
+- The slot (`tex_indi_message`, RCO offset -244, 32x32 at y88) is drawn only while the unread count is above
+  zero, with the count beside it (capped "99+"). At zero nothing is drawn, as before.
+- The row is shifted left when the clock text is longer than the console's: the RCO offsets assume
+  "21/11 13:46" (ink from about x1603, slot right edge 55 px left of it). The US 12-hour default
+  ("10/25 12:32 PM", about 232 px) would put its first glyph under the slot, so the row keeps the 55 px gap.
+- Not matched to R: R's icons are ~19 px at x1413 left of the plate and the newer plate is two rows. Ours keeps
+  the traced 4.93 RCO geometry (32 px) because the owner chose the older look.
+- Avatar slot: skipped. R shows a round PSN avatar that appears only inside the Friends column and sits ~30 px
+  from the message icon, which does not match the RCO avatar offset (-376); the local user's icon is not that
+  object. Nothing drawn.
+- Ticker second line: not built (owner picked the older look).
+
+## Toast
+
+Measured on M2 frame 51 s ("Signed out."), 1280x720, scaled x1.5:
+
+| item | 720p | 1080p value used |
+|---|---|---|
+| box right edge | 1212 | 1818 (fixed; box grows leftwards) |
+| box top / height | 54.7 / 71.6 | 82 / 107 |
+| box width ("Signed out.") | 165.5 | 248 minimum, 640 maximum |
+| corner | ~3 px ramp | radius 5 |
+| fill | (67,61,58) over (105,50,28) | (62,62,62) at alpha 0.88 (solved from three channels) |
+| icon ink left / size | 20 / 31 | 30 / 46.5 (drawn in a 51 px square, fit to ink) |
+| text start / width | 73 / 79 | 110 / 118.5; face 21 px (the console face is narrower than ours at equal cap height) |
+
+Timing: the box is visible 5 consecutive 1 fps frames in M2 (21-25 s and 50-54 s), which agrees with the
+firmware-traced 2100 + 3000 ms (5100 ms alone) in NOTIFICATIONS.md, so queue, lifetime and slide/fade are
+unchanged. Finer appear/fade cannot be measured from 1 fps frames (no 100 ms capture covers a toast). The R-only
+countdown ring is not built.
+
+The `tex_notification` plaque is no longer drawn; `View::drawNotification` draws the box, the event's own
+firmware glyph (`tex_notification_*`) and one or two text lines. Two-line events (title + detail) use the same
+107 px box. The in-game `NotifyOverlay` window still has its old look (not changed here).
+
+Real producers: every existing `notify()` call, plus new "Signed out." (detail Spotify / Jellyfin) after a
+confirmed sign-out of those services, which previously gave no feedback. SteamCMD already announced sign in/out.
+
+Honest differences: the toast leaves the info-bar clock faintly visible through the 0.88 fill (M2 has no bar; R
+hides it, alpha not separable); text shadow is the firmware's 4/5 px, larger than the recording's ~2 px; the
+glyph for non-friend events is the info glyph, not the Friends faces.
+
+Tests: `xmb-notification-toast-tests` (29 checks, pure logic).

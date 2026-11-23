@@ -2528,7 +2528,7 @@ Shell::~Shell(){stopReleaseJobs();host::holdDisplayAwake(false);jellyfinRequest_
 // --- Notifications --------------------------------------------------------------------------------
 // One pop-up on screen at a time; the rest wait in order. The lifetime starts when an entry reaches the
 // front, so a burst of events each gets its own 4 s instead of the last one starving the others.
-void Shell::notify(const QString& title,const QString& detail,const QString& icon) {
+void Shell::notify(const QString& title,const QString& detail,const QString& icon,bool keepInMessages) {
     if(title.isEmpty())return;
     // Per-type suppression: the console keeps /setting/system/notification (friend online / message received)
     // and /setting/system/notificationTrophy (a trophy earned) and its sysconf rows say exactly that. The
@@ -2554,6 +2554,9 @@ void Shell::notify(const QString& title,const QString& detail,const QString& ico
     if(!texture.isEmpty() && !texture.startsWith("tex_notification"))
         texture="tex_notification_"+texture;
     if(!firmwareIcons.contains(texture))texture="tex_notification_info";
+    // The info bar's message slot counts this application's own events: the same ones the pop-up shows, kept unread
+    // until Friends > Message Box > Received is opened. Nothing outside this process ever adds one.
+    if(keepInMessages)messageLog_.add(title,detail);
     // Firmware overflow rule (FUN_00008248): once more than 16 are waiting, the oldest WAITING entry is
     // dropped (its owner is told "3"); the pop-up on screen is never the one trimmed.
     notifications_.push_back(Notification{title,detail.isEmpty()?QString{}:detail,texture,0,0,false});
@@ -2602,6 +2605,15 @@ void Shell::expireNotifications() {
     if(notifications_.isEmpty())notificationTimer_.stop();
     else promoteNotification();
     emit changed();
+}
+void Shell::showReceivedMessages() {
+    const auto ft=[this](const QString& key,const QString& fallback){return assets_.text("explore_category_friend",key,fallback);};
+    const QString title=ft("msg_received_box","Received");
+    if(messageLog_.isEmpty()){showMessage(title,ft("msg_error_no_msg","There are no messages."),MessageKind::Page);return;}
+    // Reading is what clears the info bar's unread count; the list itself stays for the rest of the session.
+    const QString body=messageLog_.receivedText(8);
+    if(messageLog_.markAllRead()>0)emit changed();
+    showMessage(title,body,MessageKind::Page);
 }
 qint64 Shell::notificationRemainingMs() const {
     if(notifications_.isEmpty())return 0;
@@ -2952,6 +2964,7 @@ void Shell::activate() {
         else if(entry.value=="host:audio")body=host::audioOutput();
         else if(!entry.settingsPage.isEmpty())
             body=settingsRowBody(entry,assets_,renderer_,preferences_.value("system/name").toString());
+        if(entry.container==QLatin1String("explore_category_friend") && entry.id==QLatin1String("received")){showReceivedMessages();break;}
         if(body.isEmpty())
             body=entry.value.isEmpty()?host::systemInformation(renderer_,label,preferences_.value("system/name").toString()):entry.value;
         // A one-line answer (the empty states "No players were found." and "No persons have been added.") would
@@ -5156,10 +5169,10 @@ void Shell::chooseSpeed(int index) {
     mediaSpeed_=got>0?got:1.0;
     if(std::abs(got-wanted)<0.01) {
         qInfo().noquote()<<"media: playback speed"<<jfplayer::speedLabel(wanted);
-        notify(QStringLiteral("Playback"),tr("Speed: %1").arg(jfplayer::speedLabel(wanted)));
+        notify(QStringLiteral("Playback"),tr("Speed: %1").arg(jfplayer::speedLabel(wanted)),{},false);
     } else {
         qWarning().noquote()<<"media: playback speed"<<jfplayer::speedLabel(wanted)<<"requested; the player reports"<<got;
-        notify(QStringLiteral("Playback"),tr("This player kept %1 instead of %2.").arg(jfplayer::speedLabel(mediaSpeed_),jfplayer::speedLabel(wanted)));
+        notify(QStringLiteral("Playback"),tr("This player kept %1 instead of %2.").arg(jfplayer::speedLabel(mediaSpeed_),jfplayer::speedLabel(wanted)),{},false);
     }
     interactionAudio_.play(InteractionAudio::Cue::Confirm);
     emit changed();

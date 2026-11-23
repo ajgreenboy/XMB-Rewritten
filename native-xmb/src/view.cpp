@@ -2,6 +2,7 @@
 #include "artwork_backdrop.h"
 #include <QPainterPath>
 #include "psn_pages.h"
+#include "notification_toast.h"
 #include "logo_tiles.h"
 #include "game_badge.h"
 #include "video_panel.h"
@@ -1850,54 +1851,55 @@ void View::drawNineSlice(QPainter& p,const QString& container,const QString& tex
 //   notification_icon_a / _b         the 100x100 tex_notification_<kind> glyph, one icon width left of the text
 //   notification_message_a           the single-line Text, posX 1 (one icon width right of the icon centre)
 //   notification_label0_b/_1_b/_2_b  the three-line Text set, posY 0.5 / -0.375 / -0.5
-// The plaque's on-screen rect is not traced: paf projects the page from vsh.elf, which is absent here. It is
+// SUPERSEDED for drawing (see drawNotification): the on-screen plaque rect was an old fit, now replaced by the measured toast box. It was
 // fitted to the measured information panel (x 1329..1920, y 75..133), sitting under it with a 12 px gap.
+// The notification toast: a dark rounded box hung off the right edge, the event's own glyph at the left and its
+// text beside it. Geometry and fill are the measurements in notification_toast.h (the recordings' "Signed
+// out." box, 720p x 1.5); the queue, lifetime (2100 + 3000 ms) and the slide/fade curve are the firmware-traced
+// ones from audit/NOTIFICATIONS.md and are unchanged. The tex_notification plaque this replaced is no longer drawn.
 void View::drawNotification(QPainter& p,double amount) {
     const double alpha=std::clamp(amount,0.,1.);
     if(notificationShown_.title.isEmpty() || alpha<=.002)return;
     const bool twoLines=!notificationShown_.detail.isEmpty();
-    // Slide in from the right by 48 px while it fades: the console's pop-ups enter from the edge, not from
-    // the centre, and the same curve carries them back out.
-    const double slide=(1.-alpha)*48.;
-    const qreal width=400.,height=twoLines?84.:58.;
-    const QRectF plaque(1920.-24.-width+slide,145.,width,height);
+    namespace toast=xmb::toast;
+    QFont titleFont(shell_.fontFamily());titleFont.setPixelSize(int(toast::kTextSize));
+    QFont detailFont(shell_.fontFamily());detailFont.setPixelSize(int(toast::kDetailSize));
+    const QFontMetrics titleMetrics(titleFont),detailMetrics(detailFont);
+    const int budget=int(toast::maxTextWidth());
+    const QString title=titleMetrics.elidedText(notificationShown_.title,Qt::ElideRight,budget);
+    const QString detail=twoLines?detailMetrics.elidedText(notificationShown_.detail,Qt::ElideRight,budget):QString();
+    const double textWidth=std::max<double>(titleMetrics.horizontalAdvance(title),twoLines?detailMetrics.horizontalAdvance(detail):0.);
+    toast::Box box=toast::toastBox(textWidth);
+    // Slide in from the right by 48 px while it fades, as the pop-up did; the same curve carries it back out.
+    box.x+=(1.-alpha)*48.;
+    p.save();p.setRenderHint(QPainter::Antialiasing,true);
+    p.setPen(Qt::NoPen);p.setBrush(QColor(toast::kFillRed,toast::kFillGreen,toast::kFillBlue,int(std::lround(toast::kFillAlpha*alpha*255.))));
+    p.drawRoundedRect(QRectF(box.x,box.y,box.w,box.h),toast::kBoxRadius,toast::kBoxRadius);
+    p.restore();
     const auto& icon=assets_.bestImage("system_plugin",notificationShown_.icon);
-    // The plaque first: the icon and the text sit on it.
-    drawNineSlice(p,"system_plugin","tex_notification",plaque,16.,alpha*.94);
+    double textLeft=box.x+toast::kIconInkLeft;
     if(!icon.isNull()) {
-        // notification_icon_a/_b: the glyph fills the plaque's height less a 6 px margin, its centre 13 px in.
-        const qreal side=plaque.height()-12.;
-        drawImage(p,"system_plugin",notificationShown_.icon,
-            QRectF(plaque.left()+13.,plaque.center().y()-side/2.,side,side),alpha);
+        const auto place=toast::iconRect(box);
+        drawImage(p,"system_plugin",notificationShown_.icon,QRectF(place.x,place.y,place.side,place.side),alpha);
+        textLeft=box.x+toast::kTextLeft;
     } else if(!notificationTextureWarned_) {
         notificationTextureWarned_=true;
         qWarning().noquote()<<"notify: texture missing system_plugin"<<notificationShown_.icon<<"(drawn without the icon)";
     }
-    // Text starts one icon width to the right of the icon (posX 1 in the object tree). Without the glyph the
-    // text keeps the plaque's own left margin rather than an invented icon-sized hole.
-    const qreal textLeft=plaque.left()+(icon.isNull()?16.:13.+plaque.height()-12.+14.);
-    const qreal textRight=plaque.right()-16.;
-    const int titleSize=22,detailSize=18;
-    QFont titleFont(shell_.fontFamily());titleFont.setPixelSize(titleSize);
-    const QString title=QFontMetrics(titleFont).elidedText(notificationShown_.title,Qt::ElideRight,int(textRight-textLeft));
-    // The detail line gets the same ellipsis as the title; it used to run past the plaque and off the screen edge.
-    QFont detailFont(shell_.fontFamily());detailFont.setPixelSize(detailSize);
-    const QString detail=QFontMetrics(detailFont).elidedText(notificationShown_.detail,Qt::ElideRight,int(textRight-textLeft));
-    const auto label=[&](const QRectF& rect,const QString& value,int size,QColor colour) {
-        if(textRenderer_.ready()) {
-            QFont font(shell_.fontFamily());font.setPixelSize(size);
-            textRenderer_.draw(*this,p,rect,value,font,colour,Qt::AlignLeft|Qt::AlignVCenter);return;
-        }
-        QFont font(shell_.fontFamily());font.setPixelSize(size);font.setStyleStrategy(QFont::PreferAntialias);
-        font.setHintingPreference(QFont::PreferNoHinting);p.setFont(font);
-        p.setPen(QColor(0,0,0,38));p.drawText(rect.translated(1,1),Qt::AlignLeft|Qt::AlignVCenter,value);
+    const auto label=[&](const QRectF& rect,const QString& value,const QFont& font,QColor colour) {
+        colour.setAlphaF(colour.alphaF()*alpha);
+        if(textRenderer_.ready()) {textRenderer_.draw(*this,p,rect,value,font,colour,Qt::AlignLeft|Qt::AlignVCenter);return;}
+        QFont plain=font;plain.setStyleStrategy(QFont::PreferAntialias);plain.setHintingPreference(QFont::PreferNoHinting);p.setFont(plain);
+        p.setPen(QColor(0,0,0,int(90*alpha)));p.drawText(rect.translated(1,1),Qt::AlignLeft|Qt::AlignVCenter,value);
         p.setPen(colour);p.drawText(rect,Qt::AlignLeft|Qt::AlignVCenter,value);
     };
+    const double width=box.right()-textLeft;
     if(twoLines) {
-        label(QRectF(textLeft,plaque.top()+10.,textRight-textLeft,titleSize+6.),title,titleSize,QColor(245,245,245));
-        label(QRectF(textLeft,plaque.top()+10.+titleSize+4.,textRight-textLeft,detailSize+6.),
-            detail,detailSize,QColor(206,206,206));
-    } else label(QRectF(textLeft,plaque.top()+8.,textRight-textLeft,plaque.height()-16.),title,titleSize,QColor(245,245,245));
+        const double block=toast::kTextSize+6.+toast::kDetailSize+6.;
+        const double top=box.y+(box.h-block)/2.;
+        label(QRectF(textLeft,top,width,toast::kTextSize+6.),title,titleFont,QColor(255,255,255));
+        label(QRectF(textLeft,top+toast::kTextSize+4.,width,toast::kDetailSize+6.),detail,detailFont,QColor(214,214,214));
+    } else label(QRectF(textLeft,box.y,width,box.h),title,titleFont,QColor(255,255,255));
 }
 // The operation guide behind "Triangle : Options" (audit/FIDELITY-ROOT-BAR.md 6.1 update 3), all TRACED:
 //   explore_plugin 0x4D5B4 hands the focused item's hint string (its class getter returns msg_option_with_icon
@@ -3951,8 +3953,9 @@ void View::drawScene(QPainter& p) {
             // while its own state is active - never as a permanent placeholder.
             // The offsets are the RCO's own, measured from the clock ink's right edge (1760, B3/E4); the
             // 32 px row is centred on the plate (y 104, so its top is 88). What this build can source:
-            //   -244 tex_indi_message  unread messages. No message store exists here (the Friends column's
-            //                          Message Box row is the firmware's empty state), so the slot stays dark.
+            //   -244 tex_indi_message  unread messages: this application's own event log (Shell::messageLog), never a PSN
+            //                          message. Opening Friends > Message Box > Received reads them. (Friends column's
+            //                          The slot stays dark while the count is zero.
             //   -274 tex_indi_chat     an in-XMB text-chat session. This build has none, so it stays dark.
             //   -342 tex_indi_online   Steam friends' presence: the one real source, with online_num.
             //   -376 avatar            the RCO object's image is null - the firmware resolves the signed-in
@@ -3963,6 +3966,9 @@ void View::drawScene(QPainter& p) {
             //   -410 tex_indi_plus     PlayStation Plus membership. No such state exists here; stays dark.
             // The console frames (out/rpcs3-day-2026-10-28/frames/c-*.png, and the stored root reference)
             // show the row empty apart from the clock and its face, which is what the inactive slots draw.
+            // The message slot's source: this application's own unread events (notification_toast.h). The count is capped
+            // at 99 and the slot stays dark at zero, exactly like every other slot; nothing here is a PSN message.
+            const int unreadMessages=shell_.unreadMessageCount();
             int onlineFriends=0;
             for(const auto& category:shell_.categories()) {
                 if(category.id!="friends")continue;
@@ -3970,7 +3976,16 @@ void View::drawScene(QPainter& p) {
                     if(entry.friendRow && entry.presenceState!=0)++onlineFriends; // persona state 0 = Offline
                 break;
             }
-            const double iconAnchorX=1760.; // measured clock ink right edge (B3/E4)
+            // The RCO offsets assume the console's short clock ("21/11 13:46", ink from about x1603): the message slot's
+            // right edge sits 55 px left of that ink (1548 against 1603, B3/E4). The US 12-hour default is a longer
+            // string ("10/25 12:32 PM", about 232 px) whose first glyph would fall under the slot, so the whole row
+            // keeps the same 55 px gap to the text's own left edge instead of the fixed 1760 anchor.
+            double iconAnchorX=1760.; // measured clock ink right edge (B3/E4)
+            {
+                QFont clockFont(shell_.fontFamily());clockFont.setPixelSize(27);
+                const double clockInkLeft=1765.-QFontMetricsF(clockFont).horizontalAdvance(shell_.clockText());
+                iconAnchorX+=std::min(0.,clockInkLeft-55.-(1760.-244.+32.));
+            }
             // One drawing rule for all five slots: the RCO offset from the clock ink's right edge, the 32x32
             // slot at y 88, the texture, and `active` - the slot's own state. A slot with no state is not
             // drawn at all, which is the row's visibility rule; an active slot with a count also gets its
@@ -3983,9 +3998,9 @@ void View::drawScene(QPainter& p) {
                 // online_num sits at +14/+2 inside the slot. Its RCO size 10 has no measured px mapping
                 // (the clock text is also size 10 but renders a 22 px cap), so 15 px is a fit that keeps
                 // the count inside the 32 px slot.
-                text(QRectF(slot.left()+14,slot.top()+2,18,18),QString::number(count),15,Qt::white,Qt::AlignLeft|Qt::AlignVCenter);
+                text(QRectF(slot.left()+14,slot.top()+2,30,18),xmb::toast::badgeText(count),15,Qt::white,Qt::AlignLeft|Qt::AlignVCenter);
             };
-            infoSlot(-244.,"tex_indi_message",false,0);                  // no unread-message source
+            infoSlot(-244.,"tex_indi_message",unreadMessages>0,unreadMessages);  // the app's own unread events (Shell message log)
             infoSlot(-274.,"tex_indi_chat",false,0);                     // no text-chat session
             infoSlot(-342.,"tex_indi_online",onlineFriends>0,onlineFriends);
             infoSlot(-410.,"tex_indi_plus",false,0);                     // no PlayStation Plus membership

@@ -301,6 +301,7 @@ bool Shell::activateSpotify(const Entry& entry) {
         showConfirm(QObject::tr("Do you want to sign out of Spotify on this PC?"),QString(),[this]{
             spotify_.signOut();spotifyPlaylists_.clear();spotifyNowPlaying_={};
             qInfo().noquote()<<"spotify: signed out; the remembered sign-in was removed";
+            notify(QObject::tr("Signed out."),QStringLiteral("Spotify"));
             emit changed();
         });
         return true;
