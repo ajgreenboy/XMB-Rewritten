@@ -1500,3 +1500,62 @@ table, and a two-key phone-keypad index; the probe above failed because a node i
 character index, not a letter code). The native keyboard reads `data/dic/Zi8DatENUK.z8d` (ENAM for a United States locale) at
 runtime from `--dev-flash` and lists the candidates in the Prediction column; the English (UK) file reproduces both recorded
 lists ("h" and "hi") exactly. Still nothing is bundled or committed, and still no pad binding selects a candidate.
+
+## 17. Choosing a candidate in the Prediction column (traced 2026-11-23)
+
+Sources: `fw493/vsh_module/oskfullkeypanel_plugin.prx` and `ime.prx` (decrypted 4.93 modules, repo-external), imported into a
+scratch Ghidra project (PowerPC:BE:64:A2ALT-32addr, `Ps3Exports` / `Ps3ResolveImports`, split at every `stdu` prologue,
+whole module decompiled, `ListRange` for the float constants the decompiler drops). Addresses are module VAs (file = VA +
+0xf0). Native: `src/osk_predict.h`, `View::oskMove` / `oskPress` / `oskPadAction` / `oskPredict*`, the column draw.
+
+**Focus grid (M).** The panel's focus table at 0x41c80 is 7 rows x 12 columns of element ids: the 10 key columns, then
+columns 10-11 hold element **0x43 (the candidate list)** on rows 0-5 and the copy (0x41) / paste (0x42) buttons on row 6.
+The per-element home cells are at 0x41dd0 (0x43 -> column 10 row 0; 0x18 = `g`, the default focus). The neighbour walk
+`0x26af8` skips disabled elements (`0x70c`: 0x43 is enabled only while the candidate count at +0xb2c is non-zero). So:
+Right from a row's last key, or Left wrapping from its first, lands on the list while it has candidates; with none the move
+wraps as before. From the list, Left lands on column 9 of the row, Right wraps to column 0. The pad handler `0x317c8` refuses
+on an auto-repeat the wraps column 0 -> 0x43 and 0x43 -> column 0, and Up/Down between the list and copy/paste.
+
+**Entering (M).** Moving onto 0x43 with nothing chosen (+0xb28 == -1) sends the IME event 0x8000102 with argument 0
+(`0x317c8`, after `0x1d320`), which `ime.prx` handles as "next candidate" from -1: the first line is chosen.
+
+**Up / Down / L2 / R2 on the list (M).** `0x317c8`: direction 1 (Up) -> 0x8000103, direction 2 (Down) -> 0x8000102, both with
+0x100 in the argument on an auto-repeat; button 0x21 (L2) -> 0x8000113 and 0x22 (R2) -> 0x8000112 (off the list the same
+buttons call the accent and caps page functions 0x1e4fc / 0x1e1e8). `ime.prx`: 0x8000102 increments the chosen index and wraps
+to 0 past the last candidate, but on a repeat (0x100) stays on the last; 0x8000103 is the mirror (wraps to the last, stops on a
+repeat); 0x8000112 / 0x8000113 move by the panel's lines per page (panel vtable +0x30) and clamp to the last / first, no wrap.
+
+**What is drawn (M).** `0x1d320` (focus mover), element 0x43 with a chosen candidate: the key focus (`SBTN_FOCUS` set at +0x50)
+is animated out, `fullkey_button_list_focus` (RCO image `BUTTON_FORCUS`, 198x36, a light bar) gets colour attribute 0x17 =
+(1,1,1,1), and `fullkey_list_text_focus` gets colours 0x32 / 0x33 = (0.23, 0.23, 0.23, 1) (constant 0x420e8). That text object
+holds only the chosen line (the candidate callback `0x36078` and `0x2b678` build its string with every other line blank), so
+the chosen candidate is redrawn in dark grey over a light bar. With focus elsewhere, or nothing chosen, both are alpha 0
+(`0x1d6d8`, `0x36078` at 0x368b4). The RCO gives both text objects the same white style; the grey is set by the code only.
+Native: the `BUTTON_FORCUS` texture behind the line, text (59,59,59). FIT: the bar is stretched to the line's text width and
+the 27 px pitch (its placement comes from layout constants `FUN_00000324(0xcaa/0xcab)` that were not decoded).
+`fullkey_list_window_focus` and `fullkey_list_gem_guide_top/bottom` are the PS Move pointer's list focus and scroll arrows
+(`0xca0c`, only in pointer state 3/5): not drawn natively.
+
+**Pages and the knob (M).** `0x36078` receives one page of candidates (count on the page, total, first index). It shows the page
+that holds the chosen candidate; page count = ceil(total / lines per page); the scroll knob (`fullkey_scroll_knob`) gets size
+attribute 0x16 = strip / pages and position 0x14 = strip top + page x that size. Native: eight lines a page, the knob at the
+chosen candidate's page. FIT: the candidate cap is now 96 (the recorded knob, 13 of 154 px, is 12 pages under this rule).
+
+**Commit (M for the events, inferred for the text).** Cross on 0x43 with a candidate chosen (and not a repeat) plays
+`snd_decide` and sends 0x800000d (0x8000020 for some IME states/layouts; with the PS Move pointer 0x8000010 with the index).
+`ime.prx` 0x800000d, predictive mode with a chosen candidate (around 0x15647): converter vtable +0x34(0x8000500) commits it,
+index = -1, count = 0, then the field is handed its new text. Native: the composition word is replaced by the candidate, the
+caret ends after it, the list empties, and the committed word is not composed again until more is typed after it (FIT: the
+"compose floor"; backing the caret or a deletion before it composes as before). The field's look while stepping through the
+list (whether the composition previews the chosen candidate) is decided inside the converter (`ime_zi`), not traced: the
+native field keeps the typed word until Cross.
+
+**Leaving after a commit (M, with one inference).** The panel's vtable +0x40 (`0x21944`) with 0 returns focus to the key
+saved on a jump into the list, or to 0x18 (`g`) when there is none (a direction entry saves none). `ime.prx` calls it whenever
++0x58 (focus is 0x43) and +0x54 (chosen index) == -1, at several sites (e.g. after its event dispatch). Native: an emptied list,
+a commit, or a new composition word with nothing chosen takes the focus back to `g`. That this runs right after 0x800000d is
+inferred from those call sites, not traced per event.
+
+**Not resolved.** The `a 0` count cell (its text source was not found; it stays `0`); the bar's exact placement; whether a
+layout's type-0x0e / 0x24 records override the grey or the bar image for English; the Triangle/Square/caret behaviour while the
+list has focus (native: as on the keys, which change the composition and so leave the list); copy (0x41) is not drawn natively.

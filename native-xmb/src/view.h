@@ -758,6 +758,11 @@ private:
         int page=0,paletteRow=0,paletteColumn=0,paletteScroll=0;
         bool onPaste=false;      // focus is on the prediction column's Paste button (right of Enter, in the bottom row)
         bool pasteReady=false;   // the last paste found text: the Paste key is drawn enabled (default: as captured, disabled)
+        // The Prediction column as a focus element (audit/OSK-FIRMWARE.md 17, src/osk_predict.h): onPredict is focus on the
+        // candidate list, predictIndex the chosen candidate (-1 none), predictRow the grid row it was entered from (Left / Right
+        // leave to that row), composeFloor where composition restarts after a commit (-1 none).
+        bool onPredict=false;
+        int predictIndex=-1,predictRow=0,composeFloor=-1;
         QString toast;           // the footer confirmation ("Pasted N characters"); never carries the pasted text
         QString title,text;
         int row=0,column=0,cursor=0,maxLength=32;
@@ -781,8 +786,12 @@ private:
     int oskFocusRow_=-1,oskFocusColumn_=-1,oskPrevRow_=-1,oskPrevColumn_=-1;
     qint64 oskFocusAt_=0;
     double oskFocusAmount(int row,int column,qint64 now) const;
-    void oskMove(int dx,int dy);
+    void oskMove(int dx,int dy,bool repeat=false);   // repeat: a held direction's auto-repeat, not a fresh press
     void oskPress();                 // the focused key
+    std::pair<int,int> oskComposition() const;   // the composition word [start, end) after the commit floor
+    void oskPredictCommit();         // Cross on the candidate list: the chosen candidate replaces the composition word
+    void oskPredictLeave();          // focus back to the keys (the firmware's default key, `g`)
+    void oskPredictSync();           // after an edit: an empty list or no chosen candidate takes the focus out of the list
     void oskPaletteMove(int dx,int dy);
     void oskPalettePress();
     void oskInsert(const QString& value);
@@ -793,8 +802,8 @@ private:
     quint64 oskToastSerial_=0;
     void oskClose(bool accept);
     QString oskCharacter(int row,int column) const;
-    // The prediction column (audit/ZI8-DICTIONARY-FORMAT.md): the firmware's own English dictionary, read lazily from the
-    // configured dev_flash (data/dic/Zi8DatENUK.z8d, or ENAM for a United States locale; XMB_OSK_DICTIONARY=<code> picks one).
+    // The prediction column (audit/ZI8-DICTIONARY-FORMAT.md): the firmware's own dictionary for the system locale's language,
+    // read lazily from the configured dev_flash (data/dic/Zi8Dat<code>.z8d, zi8DictionaryCode; XMB_OSK_DICTIONARY=<code> picks one).
     // No file, no list. Masked fields never query it. The list is cached per composition word.
     QStringList oskPredictions();
     const Zi8Dictionary* oskDictionary();

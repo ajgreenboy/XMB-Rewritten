@@ -144,7 +144,7 @@ is no separate frequency field and no re-sorting.
 3. the completions, without repeating a word already listed.
 
 Native: `zi8Candidates` does exactly that, matching case-insensitively (the files are lower case) and keeping the typed word as
-typed; at most `kOskMaxCandidates` = 100 lines (FIT: see 7). When the dictionary has no word for the typed text (e.g. "42", or
+typed; at most `kOskMaxCandidates` = 96 lines (FIT: see 7). When the dictionary has no word for the typed text (e.g. "42", or
 "hx") the native list is empty rather than the typed word alone: the recording never shows that case (UNKNOWN), and an empty
 column is what the keyboard drew before the dictionary was read.
 
@@ -163,29 +163,53 @@ dev_flash (it is skipped in CI).
 
 * Eight lines visible, 18 px pitch, text at x 821 at 720p (1231.5 / 27 px at 1080p), white 235. Native glyph size 18 px at
   1080p: the recorded line inks (x 822..887 for "hibernation") are matched to +-1 px.
-* No line is highlighted in any frame, and no frame shows a candidate being chosen: the native keyboard draws the list and
-  binds nothing to it (no pad or key selects a candidate). The `a 0` cells stay as drawn (the recording reads 0 with eight
-  candidates showing, so the counter is not the candidate count; its meaning is UNKNOWN).
-* Scroll knob: x 939..949, y 270..282 at 720p, the same in the "h" and "hi" frames, drawn only while there are candidates. FIT:
-  its height is the visible share of the list (8 of at most 100 lines), which gives the recorded 13 of 154 px for both words
-  (each has more than 100 completions). Shorter lists draw a longer knob under the same rule (not seen in the recording). The
-  list is never scrolled.
+* No line is highlighted in any frame of the recording, and no frame shows a candidate being chosen. Choosing one is now traced
+  in the modules instead (OSK-FIRMWARE.md 17): the list is a focus element right of the keys, Up/Down step the chosen line,
+  L2/R2 page, Cross commits; the chosen line is drawn dark over the `BUTTON_FORCUS` bar only while the list has focus. The
+  `a 0` cells stay as drawn (the recording reads 0 with eight candidates showing; its meaning is UNKNOWN).
+* Scroll knob: x 939..949, y 270..282 at 720p, the same in the "h" and "hi" frames, drawn only while there are candidates.
+  Traced (OSK-FIRMWARE.md 17): its height is the strip divided by the page count (pages of eight) and it sits at the page that
+  holds the chosen candidate. FIT: at most 96 candidates are kept, the largest list that gives the recorded 13 of 154 px
+  (12 pages).
 * Masked (password) fields never query the dictionary or show candidates.
 
 ## 8. Dictionary choice
 
-`View::oskDictionary` reads `data/dic/Zi8DatENUK.z8d` (or `Zi8DatENAM.z8d` when the Windows locale's territory is the United
-States), lazily on the first composition word, from the configured `--dev-flash`. `XMB_OSK_DICTIONARY=<code>` (e.g. ENUK, ENAM)
-picks one by name. A missing or unreadable file leaves the column empty, as before.
+This build's UI text is the RCOs' English; its System Language row reports the Windows locale (`host.cpp`), so the locale picks
+the file. `View::oskDictionary` reads `data/dic/Zi8Dat<code>.z8d` lazily on the first composition word from the configured
+`--dev-flash`, with `<code>` from `zi8DictionaryCode(language, territory)`:
+
+| Locale language | File |
+|---|---|
+| en | ENAM for territory US, else ENUK |
+| fr | FRCA for CA, else FREU |
+| es | ESEU for ES, else ESSA |
+| pt | PTBZ for BR, else PTEU |
+| de, it, nl, da, sv, fi, pl, ru | DE, IT, NL, DA, SV, FI, PL, RU |
+| nb, nn, no | NO |
+| anything else (ja, zh, ko, ...) | English as above |
+
+`XMB_OSK_DICTIONARY=<code>` (ENUK, ENAM, FREU, DE, ...) picks one by name. A missing or unreadable file leaves the column empty.
+
+### 8.1 The other languages (D, 2026-11-23)
+
+Every alphabetic file present (DA, DE, ENAM, ENUK, ESEU, ESSA, FI, FRCA, FREU, IT, NL, NO, PL, PTBZ, PTEU, RU, SV) has the same
+header, character-table block (byte 1 = 0x80, block halfword 1, 3 bytes per character), two-key index (zero header) and node
+scheme; the reader walks all of them unchanged. Their tables hold 40-59 characters: Latin-1 accents, Latin Extended-A in PL
+(a-ogonek, e-ogonek, l-stroke, z-dot, ...) and FR (oe), and Cyrillic in RU. The 8-bit copy of the table does not match the
+UTF-16 one for FR, PL and RU (it is lossy), so the reader uses only the UTF-16 table. Typed text is folded to lower case over
+Basic Latin, Latin-1, Latin Extended-A and Cyrillic (`zi8FoldChar`); accents are not folded away (`e` does not match `e-acute`,
+as the firmware's walk compares characters). The Chinese files (id 1, ZH, ZH_HK, ZH_TW) have a different block 0 and are refused
+by id. The opt-in `xmb-zi8-tests` check (`XMB_DEV_FLASH`) loads every file, checks its language id and that a capital,
+accented prefix lists the typed word first and only words that start with the folded prefix; no word list is in the repository.
 
 ## 9. Not verified / open
 
-* Other languages: the reader is format-generic for the alphabetic `Zi8Dat*.z8d` files (same header and node scheme, D), but no
-  non-English list was compared with a console. The Chinese files (id 1) use a different block 0 (12-byte records) and are
-  refused by the reader.
+* Other languages: no non-English list was compared with a console. RU loads and completes Cyrillic input (from a physical
+  keyboard), but the native OSK has no Cyrillic key page. The Chinese files are refused.
 * Learned words: the module keeps a 100-entry recent-word ring (`0xbed8`) and the engine has user-dictionary paths; whether the
   console promotes typed or chosen words is not reproduced (the native list is the static dictionary only).
 * Capitalisation: candidates are drawn as stored (lower case); what the console shows after typing a capital is UNKNOWN.
 * The block-word list (slot 4), the suffix trie (slot 12) and the phone-keypad (T9) mode are decoded or identified but unused.
-* The 100-line cap and the knob rule are FIT (section 7); paging or scrolling the list and choosing a candidate are not in the
-  recording.
+* The 96-line cap is FIT (section 7); paging and choosing a candidate are traced in the modules (OSK-FIRMWARE.md 17) but not in
+  the recording.

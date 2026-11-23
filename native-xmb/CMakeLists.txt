@@ -38,7 +38,7 @@ qt_add_executable(re-ps3-native
     src/system_power.cpp src/system_power.h
     src/boot_prefetch.cpp src/boot_prefetch.h
     src/file_ops.cpp src/file_ops.h
-    src/osk_paste.cpp src/osk_paste.h
+    src/osk_paste.cpp src/osk_paste.h src/osk_predict.h
     src/zi8_dictionary.cpp src/zi8_dictionary.h
     src/folder_browser.cpp src/folder_browser.h src/folder_browse_shell.cpp
     src/weather_client.cpp src/weather_client.h src/weather_shell.cpp
@@ -234,7 +234,7 @@ if(XMB_OSK_COMPOSITION_BUILD_TESTS)
 endif()
 option(XMB_ZI8_BUILD_TESTS "Build the Zi8 predictive-text dictionary reader tests (synthetic dictionaries; XMB_DEV_FLASH opts into the real file)" OFF)
 if(XMB_ZI8_BUILD_TESTS)
-    add_executable(xmb-zi8-tests tests/zi8_dictionary_tests.cpp src/zi8_dictionary.cpp src/zi8_dictionary.h)
+    add_executable(xmb-zi8-tests tests/zi8_dictionary_tests.cpp src/zi8_dictionary.cpp src/zi8_dictionary.h src/osk_predict.h)
     target_include_directories(xmb-zi8-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 endif()
 option(XMB_PS_PAD_STATUS_BUILD_TESTS "Build the PS-menu controller panel and confirm-hint decision tests" OFF)

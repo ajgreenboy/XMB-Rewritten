@@ -1,5 +1,7 @@
 #include "zi8_dictionary.h"
+#include "osk_predict.h"
 
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
@@ -298,6 +300,100 @@ int main() {
         check(bad.loaded() && bad.completions(u("s"),10).empty(),"index: a non-zero index header gives no candidates (as ime_zi)");
     }
 
+    // Accented and non-ASCII characters: the UTF-16 table is the authority (the 8-bit copy is lossy for Extended-A and
+    // Cyrillic, as in the real French, Polish and Russian files), and typed capitals fold to the stored lower case.
+    {
+        // 0xe9 e-acute, 0xfc u-diaeresis, 0xf1 n-tilde, 0x153 oe, 0x142 l-stroke, 0x17c z-dot, 0x43f.. Cyrillic pe, er, i.
+        const std::u16string chars=u"etaoinsrhlcdu\u00e9\u00fc\u00f1\u0153\u0142\u017c\u043f\u0440\u0438\u0430\u0432-'";
+        Trie t;
+        const std::vector<std::u16string> words={u"\u00e9t\u00e9",u"\u00e9tait",u"\u00e9tant",u"\u00e9trier",u"t\u00fcr",u"t\u00fcren",
+            u"a\u00f1o",u"a\u00f1os",u"c\u0153ur",u"c\u0153urs",u"\u0142as",u"\u0142ad",u"\u017cona",u"\u017cart",
+            u"\u043f\u0440\u0438",u"\u043f\u0440\u0438\u0432\u0435\u0442",u"\u043f\u0440\u0438\u0440\u043e\u0434\u0430"};
+        // The Cyrillic words above use letters outside the table (ve, ie, o, de): keep only the ones the table spells.
+        for(const auto& w:words) {
+            bool ok=true;
+            for(char16_t c:w)if(chars.find(c)==std::u16string::npos)ok=false;
+            if(ok)t.add(w,true);
+        }
+        t.add(u"\u043f\u0440\u0438\u0432\u0430\u0440",false);  // "privar" extends the latest root group
+        Zi8Dictionary d;
+        std::string error;
+        check(d.load(buildFile(t,chars,{}),&error),"accented fixture loads ("+error+")");
+        check(d.characters()==chars,"UTF-16 character table read in full, including Extended-A and Cyrillic");
+        const auto count=[&](const std::u16string& typed){ return zi8Candidates(d,typed,100).size(); };
+        check(count(u"\u00e9t")==5,"e-acute prefix: typed word + 4 completions");
+        check(count(u"\u00c9T")==5 &&zi8Candidates(d,u"\u00c9T",100).front()==u"\u00c9T","capital E-acute folds; the typed word stays as typed");
+        check(zi8Candidates(d,u"\u00e9t\u00e9",100)==std::vector<std::u16string>{u"\u00e9t\u00e9"},"exact accented word is listed once");
+        check(count(u"T\u00dc")==3,"capital U-diaeresis folds to u-diaeresis");
+        check(count(u"A\u00d1")==3,"capital N-tilde folds");
+        check(count(u"C\u0152")==3,"capital OE (U+0152) folds to oe (U+0153)");
+        check(count(u"\u0141")==3,"capital L-stroke (U+0141) folds to U+0142");
+        check(count(u"\u017b")==3,"capital Z-dot (U+017B) folds to U+017C");
+        check(count(u"\u041f\u0420\u0418")==2 && zi8Candidates(d,u"\u041f\u0420\u0418",100).at(1)==u"\u043f\u0440\u0438\u0432\u0430\u0440",
+              "Cyrillic capitals fold (PRI -> pri, privar)");
+        check(count(u"e")==0,"plain e does not match e-acute (no accent folding)");
+        check(zi8FoldChar(0x178)==0xff && zi8FoldChar(0x401)==0x451 && zi8FoldChar(0x139)==0x13a && zi8FoldChar(0x138)==0x138 &&
+              zi8FoldChar(0xd7)==0xd7 && zi8FoldChar(0xdf)==0xdf,"fold edge cases: Y-diaeresis, IO, L-acute, kra, times, sharp s");
+    }
+
+    // Choosing and committing a candidate (src/osk_predict.h; audit/OSK-FIRMWARE.md 17): the ime.prx step, page and commit rules
+    // over a candidate list built from a synthetic dictionary.
+    {
+        const Trie trie=sampleTrie();
+        Zi8Dictionary d; d.load(buildFile(trie,kChars,{}));
+        const auto list=zi8Candidates(d,u("h"),100);   // h he her here hen ha hat hats hatch halo hall
+        const int n=int(list.size());
+        check(n==11,"selection fixture: 11 candidates for 'h' ("+join(list)+")");
+        check(oskPredictStep(-1,n,1,false)==0,"entering the list chooses the first candidate (next from -1)");
+        check(oskPredictStep(0,n,1,false)==1 && oskPredictStep(5,n,-1,false)==4,"down / up step by one");
+        check(oskPredictStep(n-1,n,1,false)==0,"down on the last candidate wraps to the first on a press");
+        check(oskPredictStep(n-1,n,1,true)==n-1,"an auto-repeat stops at the last candidate");
+        check(oskPredictStep(0,n,-1,false)==n-1,"up on the first candidate wraps to the last on a press");
+        check(oskPredictStep(0,n,-1,true)==0,"an auto-repeat stops at the first candidate");
+        check(oskPredictStep(-1,0,1,false)==-1,"no candidates, nothing chosen");
+        check(oskPredictPageStep(2,n,8,1)==10 && oskPredictPageStep(9,n,8,1)==10,"page down moves eight and clamps to the last");
+        check(oskPredictPageStep(9,n,8,-1)==1 && oskPredictPageStep(3,n,8,-1)==0,"page up moves eight and clamps to the first");
+        check(oskPredictPageFirst(-1,8)==0 && oskPredictPageFirst(7,8)==0 && oskPredictPageFirst(8,8)==8 && oskPredictPageFirst(10,8)==8,
+              "the page shown is the chosen candidate's");
+        check(oskPredictPageCount(n,8)==2 && oskPredictPageCount(96,8)==12 && oskPredictPageCount(97,8)==13 && oskPredictPageCount(0,8)==0,
+              "page count");
+        const auto knob0=oskPredictKnob(100.,154.,96,8,-1),knob11=oskPredictKnob(100.,154.,96,8,95);
+        check(knob0.visible && std::abs(knob0.height-154./12.)<1e-9 && knob0.top==100.,"knob: strip / pages, at the top on page one");
+        check(std::abs(knob11.top-(100.+11*154./12.))<1e-9,"knob: at the last page for the last candidate");
+        check(!oskPredictKnob(100.,154.,0,8,-1).visible,"knob: hidden without candidates");
+        // Commit: "say h|" with "here" chosen -> "say here|", the committed word is no longer composed.
+        const auto commit=oskPredictCommit(u("say h"),4,5,list.at(3));
+        check(narrow(commit.text)=="say here" && commit.cursor==8 && commit.composeFloor==8,"commit replaces the composition word: "+narrow(commit.text));
+        check(oskPredictComposeStart(4,8,commit.composeFloor)==8,"after a commit the word before the caret is not composed again");
+        check(oskPredictComposeStart(4,9,8)==8,"a letter typed after the commit starts a new composition");
+        check(oskPredictComposeStart(4,6,8)==4 && oskPredictComposeStart(4,8,-1)==4,"the floor applies only at or after itself");
+        const auto middle=oskPredictCommit(u("hx yz"),0,1,u("hat"));
+        check(narrow(middle.text)=="hatx yz" && middle.cursor==3,"commit in the middle keeps the text after the caret");
+        // Accented candidates commit as stored (UTF-16).
+        const auto accented=oskPredictCommit(u"\u00c9T",0,2,u"\u00e9t\u00e9");
+        check(accented.text==u"\u00e9t\u00e9" && accented.cursor==3,"an accented candidate commits as its UTF-16 text");
+    }
+
+    // Language choice and the Chinese files.
+    {
+        check(zi8DictionaryCode("en","US")=="ENAM" && zi8DictionaryCode("en","GB")=="ENUK" && zi8DictionaryCode("en","AU")=="ENUK",
+              "English: US -> ENAM, else ENUK");
+        check(zi8DictionaryCode("fr","CA")=="FRCA" && zi8DictionaryCode("fr","FR")=="FREU" && zi8DictionaryCode("fr","BE")=="FREU","French");
+        check(zi8DictionaryCode("es","ES")=="ESEU" && zi8DictionaryCode("es","MX")=="ESSA" && zi8DictionaryCode("es","419")=="ESSA","Spanish");
+        check(zi8DictionaryCode("pt","BR")=="PTBZ" && zi8DictionaryCode("pt","PT")=="PTEU","Portuguese");
+        check(zi8DictionaryCode("de","AT")=="DE" && zi8DictionaryCode("it","IT")=="IT" && zi8DictionaryCode("nl","BE")=="NL" &&
+              zi8DictionaryCode("da","DK")=="DA" && zi8DictionaryCode("sv","FI")=="SV" && zi8DictionaryCode("fi","FI")=="FI" &&
+              zi8DictionaryCode("nb","NO")=="NO" && zi8DictionaryCode("nn","NO")=="NO" && zi8DictionaryCode("pl","PL")=="PL" &&
+              zi8DictionaryCode("ru","RU")=="RU","single-file languages");
+        check(zi8DictionaryCode("ja","JP")=="ENUK" && zi8DictionaryCode("zh","CN")=="ENUK" && zi8DictionaryCode("ko","US")=="ENAM",
+              "languages without an alphabetic file fall back to English");
+        auto chinese=buildFile(sampleTrie(),kChars,{});
+        chinese[0]=0x01;
+        Zi8Dictionary d;
+        std::string error;
+        check(!d.load(chinese,&error) && !d.loaded(),"a Chinese (id 1) file is refused ("+error+")");
+    }
+
     // Malformed input never crashes or hangs.
     {
         Zi8Dictionary d;
@@ -336,6 +432,40 @@ int main() {
                   "real ENUK 'hi' = the recording's eight lines: "+join(zi8Candidates(d,u("hi"),8)));
             check(join(zi8Candidates(d,u("h"),8))=="h here had have has ha hack habit",
                   "real ENUK 'h' = the recording's eight lines: "+join(zi8Candidates(d,u("h"),8)));
+        }
+        // Every other alphabetic file: it loads, carries the language id the audit lists, and a typed capital prefix (with an
+        // accented letter where the language has one) lists the typed word first and only stored words that start with the
+        // folded prefix. Structural checks only: no firmware word list is written into this test.
+        struct Language { const char* code; std::uint8_t id; std::u16string prefix; };
+        const Language languages[]={
+            {"ENAM",0x3b,u"HI"},{"DE",0x05,u"GR\u00dc"},{"SV",0x09,u"H\u00c4"},{"FI",0x0a,u"K\u00c4"},{"NO",0x0b,u"HV"},
+            {"DA",0x0c,u"HV"},{"NL",0x0d,u"GE"},{"PL",0x16,u"\u017b"},{"RU",0x27,u"\u041f\u0420\u0418"},{"IT",0x2f,u"CI"},
+            {"FREU",0x3f,u"\u00c9T"},{"FRCA",0x40,u"\u00c9T"},{"ESSA",0x41,u"A\u00d1"},{"ESEU",0x42,u"A\u00d1"},
+            {"PTEU",0x43,u"N\u00c3"},{"PTBZ",0x44,u"CORA\u00c7"}};
+        for(const Language& language:languages) {
+            const std::string file=std::string(flash)+"/data/dic/Zi8Dat"+language.code+".z8d";
+            std::ifstream lin(file,std::ios::binary);
+            if(!lin) { std::printf("SKIP  real %s: not readable\n",language.code); continue; }
+            std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(lin)),std::istreambuf_iterator<char>());
+            Zi8Dictionary d;
+            std::string error;
+            const bool loaded=d.load(bytes,&error);
+            check(loaded && d.languageId()==language.id,std::string("real ")+language.code+" loads with its language id ("+error+")");
+            if(!loaded)continue;
+            const auto list=zi8Candidates(d,language.prefix,100);
+            const std::u16string folded=zi8Fold(language.prefix);
+            bool prefixed=list.size()>1 && list.front()==language.prefix;
+            for(std::size_t i=1;i<list.size();++i)
+                if(list[i].compare(0,folded.size(),folded)!=0)prefixed=false;
+            check(prefixed,std::string("real ")+language.code+": typed word first, "+std::to_string(list.size()-1)+
+                  " stored words all start with the folded prefix");
+        }
+        for(const char* code:{"ZH","ZH_HK","ZH_TW"}) {
+            std::ifstream zin(std::string(flash)+"/data/dic/Zi8Dat"+code+".z8d",std::ios::binary);
+            if(!zin)continue;
+            std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(zin)),std::istreambuf_iterator<char>());
+            Zi8Dictionary d;
+            check(!d.load(bytes),std::string("real ")+code+" is refused (different block layout)");
         }
     } else std::printf("SKIP  real dictionary: XMB_DEV_FLASH not set\n");
 

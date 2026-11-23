@@ -21,6 +21,7 @@ constexpr std::size_t kHeaderBytes=4+6*kHeaderSlots;
 constexpr std::size_t kMainSlot=0,kIndexSlot=1;  // the trie and its two-key index (ime_zi walks slot n with slot n+1)
 // A walk that visits more nodes than this is treated as a malformed file (the English tries hold ~31k words in ~100k nodes).
 constexpr std::size_t kStepBudget=4'000'000;
+constexpr std::uint8_t kChineseLanguageId=0x01;
 
 bool fail(std::string* error,const char* message) {
     if(error)*error=message;
@@ -29,18 +30,55 @@ bool fail(std::string* error,const char* message) {
 
 }  // namespace
 
+char16_t zi8FoldChar(char16_t c) {
+    // The scripts the alphabetic dictionaries' character tables use (D: every table is ASCII, Latin-1, Latin Extended-A or
+    // Cyrillic): Basic Latin, Latin-1 (not the multiplication sign; Y-diaeresis lives in Extended-A), Latin Extended-A's
+    // case pairs, Cyrillic.
+    if(c>=u'A' && c<=u'Z')return char16_t(c+32);
+    if(c>=0xc0 && c<=0xde && c!=0xd7)return char16_t(c+32);
+    if(c==0x178)return 0xff;                                        // Y-diaeresis
+    if(c>=0x100 && c<=0x137 && !(c&1))return char16_t(c+1);         // A-macron .. K-cedilla (upper case even)
+    if(c>=0x139 && c<=0x148 && (c&1))return char16_t(c+1);          // L-acute .. N-caron (upper case odd)
+    if(c>=0x14a && c<=0x177 && !(c&1))return char16_t(c+1);         // Eng .. Y-circumflex, OE (upper case even)
+    if(c>=0x179 && c<=0x17e && (c&1))return char16_t(c+1);          // Z-acute .. Z-caron (upper case odd)
+    if(c>=0x410 && c<=0x42f)return char16_t(c+0x20);                // Cyrillic A .. YA
+    if(c>=0x400 && c<=0x40f)return char16_t(c+0x50);                // Cyrillic IE-grave .. DZHE (IO among them)
+    return c;
+}
+
 std::u16string zi8Fold(const std::u16string& text) {
     std::u16string out=text;
-    for(char16_t& c:out) {
-        if(c>=u'A' && c<=u'Z')c=char16_t(c+32);
-        else if(c>=0xc0 && c<=0xde && c!=0xd7)c=char16_t(c+32);
-    }
+    for(char16_t& c:out)c=zi8FoldChar(c);
     return out;
+}
+
+std::string zi8DictionaryCode(const std::string& language,const std::string& territory) {
+    // The alphabetic dictionaries dev_flash/data/dic carries (D: Zi8Dat<code>.z8d) by the ISO 639 language and ISO 3166
+    // territory of the system locale. Regional files: English US/UK, French Canada/Europe, Spanish Spain/Latin America,
+    // Portuguese Brazil/Europe. Languages without a file here (Japanese uses ATOK, Chinese a different block layout, the
+    // rest none) fall back to English, as the keyboard did before it read any other file.
+    const auto is=[&](const char* code){ return language==code; };
+    if(is("fr"))return territory=="CA"?"FRCA":"FREU";
+    if(is("es"))return territory=="ES"?"ESEU":"ESSA";
+    if(is("pt"))return territory=="BR"?"PTBZ":"PTEU";
+    if(is("de"))return "DE";
+    if(is("it"))return "IT";
+    if(is("nl"))return "NL";
+    if(is("da"))return "DA";
+    if(is("sv"))return "SV";
+    if(is("fi"))return "FI";
+    if(is("nb") || is("nn") || is("no"))return "NO";
+    if(is("pl"))return "PL";
+    if(is("ru"))return "RU";
+    return territory=="US"?"ENAM":"ENUK";
 }
 
 bool Zi8Dictionary::load(std::vector<std::uint8_t> bytes,std::string* error) {
     *this=Zi8Dictionary();
     if(bytes.size()<kHeaderBytes)return fail(error,"file is shorter than the Zi8 header");
+    // Language id 1 is the Chinese files (D): their block 0 is a different record layout (12-byte records, an alternate
+    // slot table when byte 3 > 3), which this reader does not decode.
+    if(bytes[0]==kChineseLanguageId)return fail(error,"Chinese (id 1) dictionaries use a different block layout");
     bytes_=std::move(bytes);
     const auto slotSize=[&](std::size_t slot){ return std::size_t(u24(4+slot*6)); };
     const auto slotOffset=[&](std::size_t slot){ return std::size_t(u24(7+slot*6)); };

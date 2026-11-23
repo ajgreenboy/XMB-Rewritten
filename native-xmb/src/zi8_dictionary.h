@@ -60,9 +60,15 @@ private:
     std::size_t index_=0,indexEnd_=0;    // the two-key index entries [index_, indexEnd_), 0 when absent
 };
 
-// Lower-cases the characters the English dictionaries hold (ASCII and Latin-1 letters); everything else is returned
-// unchanged. The dictionaries store lower-case words.
+// Lower-cases the letters the alphabetic dictionaries hold (Basic Latin, Latin-1, Latin Extended-A, Cyrillic); everything
+// else is returned unchanged. The dictionaries store lower-case words.
+char16_t zi8FoldChar(char16_t c);
 std::u16string zi8Fold(const std::u16string& text);
+
+// The dictionary code (the <code> of dev_flash/data/dic/Zi8Dat<code>.z8d) for a system locale given as an ISO 639 language
+// ("fr") and an ISO 3166 territory ("CA"): FRCA/FREU, ESEU/ESSA, PTBZ/PTEU, DE, IT, NL, DA, SV, FI, NO, PL, RU, and English
+// (ENAM for the United States, else ENUK) for every other language.
+std::string zi8DictionaryCode(const std::string& language,const std::string& territory);
 
 // The prediction list the console shows for a composition word (audit/ZI8-DICTIONARY-FORMAT.md 6): the typed word
 // itself, then the exact-length dictionary words, then the completions, without repeating a word, at most `limit` lines.

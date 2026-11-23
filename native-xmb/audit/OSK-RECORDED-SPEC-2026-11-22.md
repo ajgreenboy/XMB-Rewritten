@@ -102,6 +102,10 @@ Update 2026-11-23: the dictionary is now decoded (`ZI8-DICTIONARY-FORMAT.md`). T
 the firmware's English (UK) file, which reproduces both recorded lists line for line; the knob is drawn while candidates
 exist; the counter still reads 0.
 
+Update 2026-11-23 (later): choosing a candidate is not in the recording but is now traced in the modules and implemented
+(OSK-FIRMWARE.md 17): Right from a row's last key enters the list, Up/Down step the chosen line (dark text over the firmware's
+`BUTTON_FORCUS` bar), L2/R2 page it, Cross commits the candidate in place of the composition word and focus returns to `g`.
+
 ## 5. Dim behind the window
 
 The darkening is a black layer whose final alpha is about 0.68-0.70 (background 131 -> 42 at (100,100), multiplier

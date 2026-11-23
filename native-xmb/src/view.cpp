@@ -20,6 +20,7 @@
 #include "raf_render.h"
 #include "osk_composition.h"
 #include "osk_paste.h"
+#include "osk_predict.h"
 #include <QClipboard>
 #include <QGuiApplication>
 #include <QMimeData>
@@ -1531,7 +1532,7 @@ void View::paintGL() {
     const OskLayout& oskL=osk_.tenkey?oskPanelLayout_:oskLayout_;
     if(osk_.open)osk_.caretLit=((blinkMs/qMax(1,oskL.caret.blinkMilliseconds))%2)==0;
     if(osk_.open) {
-        const int focusRow=osk_.onPaste?-2:osk_.row,focusColumn=osk_.onPaste?-2:osk_.column;
+        const int focusRow=osk_.onPaste?-2:osk_.onPredict?-3:osk_.row,focusColumn=osk_.onPaste?-2:osk_.onPredict?-3:osk_.column;
         if(focusRow!=oskFocusRow_ || focusColumn!=oskFocusColumn_) {
             // The first focus after the panel opens has no key to fade out of.
             oskPrevRow_=oskFocusRow_;oskPrevColumn_=oskFocusColumn_;
@@ -1583,6 +1584,7 @@ void View::paintGL() {
     if(osk_.open)signature+=QString::asprintf("osk %d %d %d %d %d %d %d %d %d %d ",
         osk_.row,osk_.column,osk_.cursor,osk_.page,int(osk_.paletteOpen),osk_.paletteRow,osk_.paletteColumn,
         osk_.paletteScroll,int(osk_.caretLit),int(osk_.onPaste))+
+        QString::asprintf("predict %d %d %d ",int(osk_.onPredict),osk_.predictIndex,osk_.composeFloor)+
         (osk_.masked?QString(osk_.text.size(),oskL.mask.glyph):osk_.text)+
         QString::asprintf(" paste %d ",int(osk_.pasteReady))+osk_.toast;
     // The fade runs on the clock, not on a shell change: its alpha (quantised by 1/256) and the closing copy's state are
@@ -6508,8 +6510,12 @@ void View::pollController() {
     const qint64 nextRepeat=std::max(repeatAt_,now-repeatInterval)+repeatInterval;
     const auto movement=quint16(edge|(repeat?buttons:0));
     if(osk_.open) { // X press, Circle cancel, Square backspace, Triangle space, START accept (the PS3 keyboard's bindings)
-        if(movement&XINPUT_GAMEPAD_DPAD_LEFT)oskMove(-1,0);if(movement&XINPUT_GAMEPAD_DPAD_RIGHT)oskMove(1,0);
-        if(movement&XINPUT_GAMEPAD_DPAD_UP)oskMove(0,-1);if(movement&XINPUT_GAMEPAD_DPAD_DOWN)oskMove(0,1);
+        // A direction that moves on a held repeat rather than its press edge is an auto-repeat (the candidate list treats it apart).
+        const auto held=quint16(movement&~edge);
+        if(movement&XINPUT_GAMEPAD_DPAD_LEFT)oskMove(-1,0,held&XINPUT_GAMEPAD_DPAD_LEFT);
+        if(movement&XINPUT_GAMEPAD_DPAD_RIGHT)oskMove(1,0,held&XINPUT_GAMEPAD_DPAD_RIGHT);
+        if(movement&XINPUT_GAMEPAD_DPAD_UP)oskMove(0,-1,held&XINPUT_GAMEPAD_DPAD_UP);
+        if(movement&XINPUT_GAMEPAD_DPAD_DOWN)oskMove(0,1,held&XINPUT_GAMEPAD_DPAD_DOWN);
         if(edge&XINPUT_GAMEPAD_A)oskPress();
         // Circle is Back: it closes the symbol palette first and the keyboard second, like Escape (audit 4.3).
         if(edge&XINPUT_GAMEPAD_B){if(osk_.paletteOpen){osk_.paletteOpen=false;update();}else oskClose(false);}
@@ -6671,19 +6677,26 @@ QVector<QPair<double,QColor>> oskFocusFill(const QString& role) {
 }
 // The badge pill artwork is drawn this much larger than the 20 px the first draw used (recorded pill 26x15 vs 18x9 here).
 constexpr double oskBadgeScale=1.45;
-// The prediction list (audit/ZI8-DICTIONARY-FORMAT.md 6-7): eight lines visible (recording), at most 100 kept (FIT: the knob's
-// recorded 13 of 154 px is 8 of ~100), drawn at 18 px (the recorded "hibernation" inks 66 px at 720p = 99 here).
-constexpr int oskVisibleCandidates=8;
-constexpr std::size_t kOskMaxCandidates=100;
+// The prediction list (audit/ZI8-DICTIONARY-FORMAT.md 6-7, OSK-FIRMWARE.md 17): eight lines a page (recording; the panel's lines
+// per page), drawn at 18 px (the recorded "hibernation" inks 66 px at 720p = 99 here). At most 96 kept, FIT: the knob is the strip
+// divided by the page count (traced, 0x36078) and the recorded knob is 13 of 154 px for "h" and "hi" (12 pages), and 96 is the
+// largest list with 12 pages of eight.
+constexpr int oskVisibleCandidates=kOskPredictLinesPerPage;
+constexpr std::size_t kOskMaxCandidates=96;
 constexpr int oskCandidatePixels=18;
 }
 const Zi8Dictionary* View::oskDictionary() {
     if(!oskDictionaryTried_) {
         oskDictionaryTried_=true;
         // The console's IME reads the dictionary of the system language; the recording's lists are the English (UK) file's.
-        // A United States locale reads the American file. XMB_OSK_DICTIONARY=<code> (ENUK, ENAM, ...) picks one by name.
+        // This build's System Language is the Windows locale (host.cpp, Settings > System > System Language), so the locale
+        // picks the file (zi8DictionaryCode: FREU/FRCA, DE, ESEU/ESSA, ..., ENAM for the United States, else ENUK).
+        // XMB_OSK_DICTIONARY=<code> (ENUK, ENAM, FREU, DE, ...) picks one by name.
         QString code=qEnvironmentVariable("XMB_OSK_DICTIONARY").trimmed().toUpper();
-        if(code.isEmpty())code=QLocale::system().territory()==QLocale::UnitedStates?QStringLiteral("ENAM"):QStringLiteral("ENUK");
+        if(code.isEmpty()) {
+            const QStringList parts=QLocale::system().name().split(QLatin1Char('_'));
+            code=QString::fromStdString(zi8DictionaryCode(parts.value(0).toStdString(),parts.value(1).toStdString()));
+        }
         static const QRegularExpression valid(QStringLiteral("^[A-Z_]{2,8}$"));
         if(!valid.match(code).hasMatch())code=QStringLiteral("ENUK");
         const QString relative=QStringLiteral("data/dic/Zi8Dat%1.z8d").arg(code);
@@ -6701,18 +6714,66 @@ const Zi8Dictionary* View::oskDictionary() {
 QStringList View::oskPredictions() {
     // Masked (password) fields never show or query predictions.
     if(osk_.masked)return {};
-    const auto word=oskCompositionRange(osk_.text,osk_.cursor);
+    const auto word=oskComposition();
     const QString typed=osk_.text.mid(word.first,word.second-word.first);
-    if(typed.isEmpty())return {};
+    if(typed.isEmpty()) {
+        if(!oskPredictFor_.isEmpty()){oskPredictFor_.clear();oskPredictList_.clear();osk_.predictIndex=-1;}
+        return {};
+    }
     if(typed==oskPredictFor_)return oskPredictList_;
+    // A new composition word is a new candidate list: nothing is chosen in it yet (0x36078 takes the chosen index from the IME's
+    // fresh list, which marks none until a candidate is stepped to).
     oskPredictFor_=typed;
     oskPredictList_.clear();
+    osk_.predictIndex=-1;
     if(const Zi8Dictionary* dictionary=oskDictionary()) {
         const std::u16string text(reinterpret_cast<const char16_t*>(typed.utf16()),std::size_t(typed.size()));
         for(const std::u16string& candidate:zi8Candidates(*dictionary,text,kOskMaxCandidates))
             oskPredictList_<<QString::fromStdU16String(candidate);
     }
     return oskPredictList_;
+}
+std::pair<int,int> View::oskComposition() const {
+    const auto word=oskCompositionRange(osk_.text,osk_.cursor);
+    return {oskPredictComposeStart(word.first,word.second,osk_.composeFloor),word.second};
+}
+void View::oskPredictLeave() {
+    // FUN_00021944(0) in oskfullkeypanel_plugin: back to the key focus saved on a jump into the list, and to `g` (element 0x18,
+    // the default focus) when the list was entered by a direction, which saves none.
+    osk_.onPredict=false;
+    const OskLayout& L=osk_.tenkey?oskPanelLayout_:oskLayout_;
+    osk_.row=L.defaultFocusRow;
+    osk_.column=L.defaultFocusColumn;
+    update();
+}
+void View::oskPredictSync() {
+    // ime.prx calls the panel's leave (vtable +0x40 with 0) whenever the focus is in the list (+0x58) and no candidate is chosen
+    // (+0x54 == -1): an emptied list, or a new composition word whose list has nothing chosen yet.
+    if(!osk_.onPredict)return;
+    const QStringList list=oskPredictions();
+    if(list.isEmpty() || osk_.predictIndex<0 || osk_.predictIndex>=int(list.size()))oskPredictLeave();
+}
+void View::oskPredictCommit() {
+    // Cross on the list sends the IME its confirm event (0x317c8 -> 0x800000d); with a candidate chosen ime.prx commits it through
+    // the converter, sets the list to none (count 0, index -1) and hands the field its new text. The composition word becomes the
+    // candidate, the caret ends after it, and the committed word is not composed again (osk_predict.h).
+    const QStringList list=oskPredictions();
+    if(osk_.predictIndex<0 || osk_.predictIndex>=int(list.size()))return;
+    const auto word=oskComposition();
+    const QString candidate=list.at(osk_.predictIndex);
+    const std::u16string text(reinterpret_cast<const char16_t*>(osk_.text.utf16()),std::size_t(osk_.text.size()));
+    const std::u16string chosen(reinterpret_cast<const char16_t*>(candidate.utf16()),std::size_t(candidate.size()));
+    const auto commit=xmb::oskPredictCommit(text,word.first,word.second,chosen);
+    if(int(commit.text.size())>osk_.maxLength) {
+        qInfo().noquote()<<"osk: candidate not committed (the field's length limit)";
+        return;
+    }
+    osk_.text=QString::fromStdU16String(commit.text);
+    osk_.cursor=commit.cursor;
+    osk_.composeFloor=commit.composeFloor;
+    osk_.predictIndex=-1;
+    oskPredictSync();
+    update();
 }
 QString View::oskCharacter(int row,int column) const {
     // One source for a key's character: the resolved page, never a table in this file.
@@ -6760,7 +6821,9 @@ void View::oskInsert(const QString& value) {
     // Limit only the inserted text. Editing a full field must never discard its existing suffix.
     int count=std::min(int(value.size()),std::max(0,osk_.maxLength-int(osk_.text.size())));
     if(count>0 && count<value.size() && value[count-1].isHighSurrogate() && value[count].isLowSurrogate())--count;
-    osk_.text.insert(osk_.cursor,value.left(count));osk_.cursor+=count;update();
+    osk_.text.insert(osk_.cursor,value.left(count));osk_.cursor+=count;
+    oskPredictSync();
+    update();
 }
 int View::oskPasteRow() const {
     const OskLayout& l=osk_.tenkey?oskPanelLayout_:oskLayout_;
@@ -6788,6 +6851,7 @@ void View::oskPaste() {
                     result.verdict==xmb::oskpaste::Verdict::NoRoom;
     if(!result.text.isEmpty()) {
         osk_.text.insert(osk_.cursor,result.text);osk_.cursor+=int(result.text.size());
+        oskPredictSync();
     }
     qInfo().noquote()<<QString("osk: paste verdict=%1 characters=%2 removed=%3 masked=%4")
         .arg(int(result.verdict)).arg(result.characters).arg(result.removed).arg(int(osk_.masked));
@@ -6797,16 +6861,46 @@ void View::oskBackspace() {
     if(osk_.cursor>0) {
         const int before=oskAdjacent(osk_.text,osk_.cursor,false);
         osk_.text.remove(before,osk_.cursor-before);osk_.cursor=before;
+        if(osk_.cursor<osk_.composeFloor)osk_.composeFloor=-1;   // deleting into the committed word composes it again
     }
+    oskPredictSync();
     update();
 }
-void View::oskMove(int dx,int dy) {
+void View::oskMove(int dx,int dy,bool repeat) {
     // The palette owns the arrows while it is open: it is a 7x5 window over the symbol list (audit 4.3).
     if(osk_.paletteOpen) { oskPaletteMove(dx,dy);return; }
     const OskLayout& L=osk_.tenkey?oskPanelLayout_:oskLayout_;
     const OskPage* page=L.page(osk_.page);
     if(!page || page->rows.isEmpty())return;
     const int rowCount=int(page->rows.size());
+    // The Prediction column is focus element 0x43, the two cells right of the ten key columns on every row above the bottom one
+    // (focus table 0x41c80; audit/OSK-FIRMWARE.md 17). It takes focus only while it lists candidates (0x70c).
+    oskPredictSync();
+    if(osk_.onPredict) {
+        const int count=int(oskPredictions().size());
+        // Up / Down step the chosen candidate (ime.prx: wrap on a press, stop at the end on an auto-repeat).
+        if(dy!=0) { osk_.predictIndex=oskPredictStep(osk_.predictIndex,count,dy,repeat);update();return; }
+        // Left lands on column 9 of the row the list was entered from, Right wraps to column 0 of it (an auto-repeat does not
+        // wrap out of the list: 0x317c8 refuses 0x43 -> column 0 on a repeat).
+        if(dx>0 && repeat)return;
+        osk_.onPredict=false;
+        osk_.row=std::clamp(osk_.predictRow,0,rowCount-1);
+        osk_.column=dx<0?L.columns-1:0;
+        if(const OskKey* key=page->keyAt(osk_.row,osk_.column))osk_.column=key->column;
+        update();return;
+    }
+    if(dx!=0 && dy==0 && osk_.row<oskPasteRow() && !oskPredictions().isEmpty()) {
+        const OskKey* current=page->keyAt(osk_.row,osk_.column);
+        const int first=current?current->column:osk_.column,end=current?current->column+current->span:osk_.column+1;
+        // Right from the row's last key, or Left wrapping from its first (not on an auto-repeat: 0x317c8 refuses column 0 ->
+        // 0x43 on a repeat), lands on the list; nothing chosen yet means "next" from -1, the first candidate (0x8000102).
+        if((dx>0 && end>=L.columns) || (dx<0 && first<=0 && !repeat)) {
+            osk_.onPredict=true;
+            osk_.predictRow=osk_.row;
+            if(osk_.predictIndex<0)osk_.predictIndex=oskPredictStep(-1,int(oskPredictions().size()),1,false);
+            update();return;
+        }
+    }
     // The Paste button sits right of the grid, level with one row: Right from that row's last key lands on it, Left or
     // Right leaves it again, Up and Down move to the neighbouring row's last key (audit/OSK-PASTE.md).
     if(osk_.onPaste) {
@@ -6868,6 +6962,7 @@ void View::oskPalettePress() {
 void View::oskPress() {
     if(osk_.paletteOpen) { oskPalettePress();return; }
     if(osk_.onPaste) { oskPaste();update();return; }
+    if(osk_.onPredict) { oskPredictCommit();return; }
     const OskLayout& L=osk_.tenkey?oskPanelLayout_:oskLayout_;
     const OskKey* key=L.keyAt(osk_.page,osk_.row,osk_.column);
     if(!key)return;
@@ -6893,9 +6988,20 @@ void View::oskPress() {
 // and the pad's L1/R1/L2/R2/SELECT (pollController) both land here, so a badge and its button always do the same thing.
 void View::oskPadAction(OskAction action) {
     const OskLayout& L=osk_.tenkey?oskPanelLayout_:oskLayout_;
+    // On the candidate list L2 / R2 are the IME's page up / page down (0x317c8: 0x21 -> 0x8000113, 0x22 -> 0x8000112), not
+    // the accent and capital pages.
+    if(osk_.onPredict && (action==OskAction::Accent || action==OskAction::Shift)) {
+        osk_.predictIndex=oskPredictPageStep(osk_.predictIndex,int(oskPredictions().size()),kOskPredictLinesPerPage,
+                                             action==OskAction::Shift?1:-1);
+        update();
+        return;
+    }
     switch(action) {
-    case OskAction::CaretLeft:osk_.cursor=oskAdjacent(osk_.text,osk_.cursor,false);break;
-    case OskAction::CaretRight:osk_.cursor=oskAdjacent(osk_.text,osk_.cursor,true);break;
+    case OskAction::CaretLeft:case OskAction::CaretRight:
+        osk_.cursor=oskAdjacent(osk_.text,osk_.cursor,action==OskAction::CaretRight);
+        if(osk_.cursor<osk_.composeFloor)osk_.composeFloor=-1;   // the caret left the committed word's end: compose as before
+        oskPredictSync();
+        break;
     case OskAction::Shift:case OskAction::Accent: {
         const int target=oskPageForAction(L.pages,osk_.page,action);
         if(target>=0)osk_.page=target;
@@ -7052,7 +7158,7 @@ void View::drawOsk(QPainter& p,double panelAlpha,double scale,double dimFactor) 
     // console draws it while the prediction list has candidates; it is drawn for every composition word (with or without
     // the dictionary), which is what the recording shows for the words it types.
     if(!osk_.masked) {
-        const auto word=oskCompositionRange(composed,osk_.cursor);
+        const auto word=oskComposition();   // after a committed candidate the word is no longer being composed (osk_predict.h)
         if(word.second>word.first) {
             const double x0=textX-scroll+advance(composed.left(word.first));
             const double x1=textX-scroll+advance(composed.left(word.second));
@@ -7092,7 +7198,7 @@ void View::drawOsk(QPainter& p,double panelAlpha,double scale,double dimFactor) 
                               double(l.gridOrigin.y()+row.row*l.cell.height()+l.faceInset.y()),
                               double(key.span*l.cell.width()-2*l.faceInset.x()),
                               double(l.cell.height()-2*l.faceInset.y()));
-            const bool focused=!osk_.onPaste && osk_.row==row.row && osk_.column>=key.column && osk_.column<key.column+key.span;
+            const bool focused=!osk_.onPaste && !osk_.onPredict && osk_.row==row.row && osk_.column>=key.column && osk_.column<key.column+key.span;
             // The highlight cross-fades (oskFocusFade): the gaining key rises, the key that just lost focus falls. The first
             // focus after the panel opens (no previous key) is lit at once, and a move inside one wide key does not restart it.
             const bool previous=oskPrevRow_==row.row && oskPrevColumn_>=key.column && oskPrevColumn_<key.column+key.span;
@@ -7203,12 +7309,13 @@ void View::drawOsk(QPainter& p,double panelAlpha,double scale,double dimFactor) 
         strip.setColorAt(0,QColor(121,115,115));strip.setColorAt(1,QColor(141,137,138));
         p.setBrush(strip);p.drawRect(QRectF(listRect.right()-13,listRect.top(),13,listRect.height()));
         // The knob, drawn only while there are candidates (recording "h" and "hi": x 939..949, y 270..282 at 720p, bright
-        // 183-186 at both edges and 126 in the middle, the same in both frames). FIT: its height is the visible share of
-        // the list, 8 of at most kOskMaxCandidates lines, which is the recorded 13 of 154 px for both words (each has
-        // more than 100 completions); the list is never scrolled here, so the knob stays at the top.
-        if(!predictions.isEmpty()) {
-            const double share=std::min(1.,double(oskVisibleCandidates)/double(predictions.size()));
-            const QRectF knob(1408.5,listRect.top()-1.5,15.,std::max(6.,(listRect.height()+1.5)*share));
+        // 183-186 at both edges and 126 in the middle, the same in both frames). Traced (0x36078): its height is the strip
+        // divided by the page count and it sits at the page that holds the chosen candidate (osk_predict.h); the recorded
+        // 13 of 154 px is 12 pages.
+        const xmb::OskPredictKnob placed=xmb::oskPredictKnob(listRect.top()-1.5,listRect.height()+1.5,int(predictions.size()),
+                                                             oskVisibleCandidates,osk_.predictIndex);
+        if(placed.visible) {
+            const QRectF knob(1408.5,placed.top,15.,std::max(6.,placed.height));
             QLinearGradient shade(knob.left(),0,knob.right(),0);
             const std::pair<double,int> stops[]={{0.,150},{.1,183},{.2,170},{.32,147},{.45,131},{.55,126},{.65,130},
                                                  {.75,146},{.84,167},{.92,185},{1.,170}};
@@ -7217,13 +7324,26 @@ void View::drawOsk(QPainter& p,double panelAlpha,double scale,double dimFactor) 
         }
     }
     {   // The candidate lines (recording: white 235, text at x 821, first line centred on y 285, 18 px pitch at 720p; eight
-        // visible, no highlight on any line). The list starts at the typed word itself.
+        // visible, no highlight on any line while the keys have focus). The list starts at the typed word itself. The page shown
+        // is the one that holds the chosen candidate (0x36078).
+        // The chosen candidate, only while the list has focus (0x1d320 element 0x43 and 0x36078): the panel's list focus bar
+        // fullkey_button_list_focus (RCO image BUTTON_FORCUS, colour 1,1,1,1) behind its line and the line drawn again by
+        // fullkey_list_text_focus in 0.23 grey (attributes 0x32 / 0x33 = 0.23, 0.23, 0.23, 1). Both are alpha 0 otherwise. FIT:
+        // the bar is stretched to the line's text width and pitch (its runtime placement constants were not decoded).
         p.save();
         p.setClipRect(QRectF(listRect.left(),listRect.top(),listRect.width()-13,listRect.height()));
-        for(int line=0;line<int(predictions.size()) && line<oskVisibleCandidates;++line) {
+        const int first=oskPredictPageFirst(osk_.predictIndex,oskVisibleCandidates);
+        for(int line=0;line<oskVisibleCandidates && first+line<int(predictions.size());++line) {
             const double centre=427.5+line*27.;
-            label(QRectF(1231.5,centre-15.,listRect.right()-13-1231.5,30.),predictions.at(line),oskCandidatePixels,
-                  QColor(235,235,235),Qt::AlignLeft|Qt::AlignVCenter);
+            const bool chosen=osk_.onPredict && first+line==osk_.predictIndex;
+            if(chosen) {
+                const QRectF bar(listRect.left(),centre-13.5,listRect.width()-13,27.);
+                const QImage& focusBar=texture(QStringLiteral("BUTTON_FORCUS"));
+                if(!focusBar.isNull())p.drawImage(bar,focusBar);
+                else p.fillRect(bar,QColor(228,228,228));
+            }
+            label(QRectF(1231.5,centre-15.,listRect.right()-13-1231.5,30.),predictions.at(first+line),oskCandidatePixels,
+                  chosen?QColor(59,59,59):QColor(235,235,235),Qt::AlignLeft|Qt::AlignVCenter);
         }
         p.restore();
     }
