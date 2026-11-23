@@ -135,7 +135,8 @@ jobs:
             @{ Name = 'logo-tiles'; Exe = 'xmb-logo-tiles-tests.exe'; Args = @() },
             @{ Name = 'game-badge'; Exe = 'xmb-game-badge-tests.exe'; Args = @() },
             @{ Name = 'psn-pages'; Exe = 'xmb-psn-pages-tests.exe'; Args = @() },
-            @{ Name = 'notification-toast'; Exe = 'xmb-notification-toast-tests.exe'; Args = @() }, 'friends-ui'; 'xmb-friends-ui-tests.exe';
+            @{ Name = 'notification-toast'; Exe = 'xmb-notification-toast-tests.exe'; Args = @() },
+            @{ Name = 'friends-ui'; Exe = 'xmb-friends-ui-tests.exe'; Args = @() },
             @{ Name = 'rawg';       Exe = 'xmb-rawg-tests.exe';       Args = @() },
             @{ Name = 'store-wave'; Exe = 'xmb-store-wave-tests.exe'; Args = @() },
             @{ Name = 'pending-installer'; Exe = 'xmb-pending-installer-tests.exe'; Args = @() },
