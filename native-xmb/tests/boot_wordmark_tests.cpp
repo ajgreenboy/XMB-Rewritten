@@ -56,6 +56,35 @@ int main() {
         CHECK(near(baseline,549.) && near(capHeight,24.));
         CHECK(near(baseline/1.5,366.) && near((baseline-capHeight)/1.5,350.));
     }
+    // The ramp under the wordmark: one linear clock from this boot to m2's, the text's first/last visible moments on the stage's ends.
+    {
+        CHECK(near(recordingTime(startSeconds),11.67) && near(recordingTime(logoFirstVisibleSeconds),14.84));
+        CHECK(near(recordingPerSecond,3.17/1.9));
+        // Black before the recording's background starts, 1 (the existing background) once the ramp is done, monotone between.
+        CHECK(backgroundAlpha(0)==0 && backgroundAlpha(-5)==0 && backgroundAlpha(startSeconds)<.12);   // the tone map shows nothing below about .1: m2 is .003 at 11.6 s
+        CHECK(backgroundAlpha(rampEnd)==1 && backgroundAlpha(rampEnd+.5)==1 && backgroundAlpha(1e9)==1);
+        double last=-1;bool ok=true;
+        for(int i=0;i<=900;++i){const double a=backgroundAlpha(i*.01);if(a<last-1e-12||a<0||a>1)ok=false;last=a;}
+        CHECK(ok);
+        // The fitted knots: alpha .168 at 12.0 s, .564 at 14.0 s, .718 at 14.8 s (the table, which already corrects for the tone map).
+        CHECK(near(backgroundAlpha(startSeconds+(12.0-11.67)/recordingPerSecond),.168,1e-9));
+        CHECK(near(backgroundAlpha(startSeconds+(14.0-11.67)/recordingPerSecond),.564,1e-9));
+        CHECK(near(backgroundAlpha(logoFirstVisibleSeconds),.718,.02));
+        // The ramp is done well before ShowGUI (5.5 s) and the handoff is continuous: no step at rampEnd.
+        CHECK(rampEnd<5.5 && rampEnd>logoFirstVisibleSeconds);
+        CHECK(backgroundAlpha(rampEnd-.01)>.99);
+        // Ribbon: dark at the first frame (no flash), monotone up, exactly the native ribbon from ribbonFullAt, never above it.
+        CHECK(ribbonGain(0)==0 && ribbonGain(-1)==0);
+        CHECK(ribbonGain(.05)<.1 && ribbonGain(startSeconds)<.2);
+        last=-1;ok=true;
+        for(int i=0;i<=900;++i){const double g=ribbonGain(i*.01);if(g<last-1e-12||g<0||g>1)ok=false;last=g;}
+        CHECK(ok);
+        CHECK(ribbonGain(ribbonFullAt)==1 && ribbonGain(ribbonFullAt+3)==1 && ribbonGain(1e9)==1);
+        CHECK(ribbonFullAt<logoFirstVisibleSeconds);
+        // piecewise: flat outside the knots, linear inside.
+        const Knot k[]={{1,10},{3,20}};
+        CHECK(piecewise(k,0)==10 && piecewise(k,4)==20 && near(piecewise(k,2),15));
+    }
     std::printf(failures?"boot-wordmark: %d failure(s)\n":"boot-wordmark: all tests passed\n",failures);
     return failures?1:0;
 }

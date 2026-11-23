@@ -107,6 +107,8 @@ private:
 public:
     double wordmarkAlpha(double t) const { return wordmarkEnabled_?bootwordmark::alphaAt(wordmark_,t):0.; }
     const bootwordmark::Schedule& wordmarkSchedule() const { return wordmark_; }
+    // The background ramp and ribbon fade-in that run under the wordmark (boot_wordmark.h): on with the stage, off with XMB_BOOT_WORDMARK=0.
+    bool rampActive() const { return ready_ && wordmarkEnabled_; }
 };
 
 // Game boot (S31) and the Auto-Off guide (S29), audit/PIPELINE.md "Game boot and the Auto-Off guide".

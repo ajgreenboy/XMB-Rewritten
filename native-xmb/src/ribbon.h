@@ -71,6 +71,8 @@ public:
     // Drives the schedule from the cold-boot intro's clock (NormalBG2 at stageTwo seconds) instead of the ribbon's own
     // frame time, whose stage two starts after 229 cloth steps (the RPCS3 measurement, audit/PIPELINE.md).
     void setBootTime(double seconds,double stageTwo) { bootOverride_=seconds;stageTwo_=stageTwo; }
+    // Multiplies the ribbon composite (the cold boot's fade-in under the wordmark, boot_wordmark.h ribbonGain); 1 is the native ribbon.
+    void setBootGain(float gain) { bootGain_=gain; }
 private:
     static constexpr int side_=19,points_=side_*side_,grid_=128;
     struct Cloth {
@@ -100,6 +102,7 @@ private:
     // The initializers are the base file's values, used only when the MNU cannot be read.
     QVector3D colour3_{.847347f,.846155f,.846448f},colour4_{.92487f,.922603f,.922933f};
     double bootSeconds_=0,bootOverride_=-1,stageTwo_=229/60.;
+    float bootGain_=1;
     Preset clockPreset(double dayFraction) const;
     void advancePresets(double dt,double dayFraction);
     Cloth cloth_;

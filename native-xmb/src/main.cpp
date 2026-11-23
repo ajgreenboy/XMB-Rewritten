@@ -1453,6 +1453,12 @@ int main(int argc,char** argv) {
         if(!when.isValid()){qCritical()<<"background-clock requires an ISO date/time";return 2;}
         view->setBackgroundClock(when);
     }
+    // Measurement only: XMB_BOOT_CLOCK=<ISO date/time> pins the background's time of day while the cold-boot intro still runs
+    // (--background-clock implies no intro), so a boot capture can be compared with a recording made at another hour.
+    if(!parser.isSet("background-clock")) {
+        const auto when=QDateTime::fromString(qEnvironmentVariable("XMB_BOOT_CLOCK"),Qt::ISODate);
+        if(when.isValid())view->setBackgroundClock(when);
+    }
     if(parser.isSet("render-clock")) {
         bool ok=false;const double seconds=parser.value("render-clock").toDouble(&ok);
         if(!ok || seconds<0){qCritical()<<"render-clock requires a non-negative number of seconds";return 2;}

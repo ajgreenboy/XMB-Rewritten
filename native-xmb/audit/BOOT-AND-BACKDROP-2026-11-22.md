@@ -61,11 +61,55 @@ Side-by-side sheets (reference left, ours right, both at 960x540, paired at equa
 14.8 s against ours 0.34 / 0.73 / 1.20 / 1.66 / 2.05 s): `C:\dev\out\sce-wordmark\sbs-wordmark-full.png` and
 `sbs-wordmark-crop.png` (text band, 2.5x).
 
+### The ramp under the wordmark (background and ribbon, added with the stage; follows `XMB_BOOT_WORDMARK`)
+
+The first wordmark pass left the 4.93 background fade in place, so the wordmark stood on black with a bright grey ribbon. m2 shows
+something else, measured on all its frames (1280x720, 200 ms, 4x3 cell means; no frame is committed):
+
+| Item | m2 measurement |
+|---|---|
+| Background | black until about 11.55 s, then a near-linear brightening of the whole frame, in step with its plateau: mean luma (top and bottom rows) over plateau 0.02 / 0.12 / 0.27 / 0.43 / 0.54 / 0.72 / 0.82 / 0.92 / 0.97 / 1.00 at 11.8 / 12.4 / 13.0 / 13.6 / 14.0 / 14.8 / 15.4 / 16.0 / 17.0 / 17.6 s |
+| Channels | red first, green and blue later: at 14.0 s red 0.58, green 0.51, blue 0.42 of their plateaus; at 12.4 s 0.18 / 0.06 / 0.03 (the dark ramp is brown, not grey) |
+| Whole frame | top-left (94,55,37) at 14.8 s, plateau (130,75,55) from 17.0 s; lower-right glow (171,88,68) at the plateau, reaching it with the rest; the glow is the brightest cell from the first visible frame |
+| Ribbon | first visible about 11.1 s, no flash; peak (top 1 % of pixels, left half) 10 / 30 / 51 / 95 / 151 / 194 / 217 / 224 grey-red at 11.4 / 11.8 / 12.2 / 13.0 / 13.8 / 14.6 / 15.4 / 15.8 s (green channel 1 / 16 / 33 / 65 / 106 / 137 / 150 / 155); after subtracting the background under it the ribbon is neutral grey, so its brown look is the background's |
+
+Implementation (`src/boot_wordmark.h` `backgroundAlpha`, `ribbonGain`; `View::paintGL`, `Ribbon::setBootGain`; on only while the
+wordmark stage is):
+
+- One linear clock from our boot to m2's: our 0.2 s is m2 11.67 s (the text's first visible moment), our 2.1 s is m2 14.84 s
+  (its last trace), factor 3.17 / 1.9 = 1.67 m2 seconds per second. The ramp is stretched over the whole stage; only the text's hold gives way.
+- Background: the shader's `_Alpha` follows a knot table (m2 11.4 .. 18.2 s). Our alpha is scene radiance before the tone map and
+  the ribbon's glare adds to the background cells, so the table is FITTED, not read: iterated until our own capture with the clock
+  pinned to the recording's time of day (`XMB_BOOT_CLOCK=2026-11-22T09:38:00`, measurement-only) matched m2's luma ratio within
+  about 0.03 at every sample from 0.3 to 3.0 s (red/green/blue within 0.02 / 0.03 / 0.07: our blue rises a little earlier than m2's).
+  It reaches 1 (the existing background, unscaled) at 3.4 s, ahead of the logo's end and far ahead of ShowGUI (5.5 s).
+- Ribbon: a gain on the ribbon's additive composite, 0 at the first frame (this is the flash: coldboot1's preset is bright and dims
+  as it gives way to coldboot2, so the native ribbon is at its brightest in the first 0.3 s; it was not a bug in the cloth), 0.14 at
+  0.2 s, 0.60 at 1.0 s, 1 from 1.6 s, fitted so the ribbon's peak (green, top 1 %) follows m2's within about 10 %.
+- Hand-off: no existing stage moves. The logo (first visible 2.1 s), ShowGUI (5.5 s), the notice (6.15 .. 11.35 s) and the preset
+  weights (coldboot1 to coldboot2 to clock) keep their times. The ramp continues behind the logo, so the logo now sits on dark
+  brown (alpha 0.72 at 2.1 s, 1 from 3.4 s) instead of black. DELIBERATE DEPARTURE from the 4.93-only boot, where the background
+  is smoothstep(t / 7.5 s) (0.19 at 2.1 s, 0.82 at 5.5 s). The notice's black plate is the full background from 3.4 s (it was
+  0.82 .. 1.0 over 5.5 .. 7.5 s). No XMB frame changes: the first one is at 11.35 s or later, when both ramps are 1.
+- `XMB_BOOT_WORDMARK=0` restores the previous boot exactly: smoothstep alpha, ribbon gain 1 (the shader multiplies by 1.0), no
+  wordmark. Skip, `--no-intro`, `--script`, `--background-clock`, kiosk and safe mode never create the intro and are untouched.
+
+Capture method (reuse): `XMB_INTRO_GRAB=<dir>@t1,t2,...` (intro clock, one PNG per time, windowed run), `XMB_BOOT_CLOCK` as above,
+`--dev-flash`, `--vsh-modules`, `--data-dir <scratch>`; reference frames from `xmb-reference-frames.exe`; sheets with the earlier
+System.Drawing script (reference left, ours right, both 960x540). Sheets: `C:\dev\out\boot-ramp\sbs-ramp-full.png` (m2 11.8 / 12.2 /
+13.0 / 14.4 / 14.8 s against ours 0.34 / 0.73 / 1.20 / 1.66 / 2.05 s) and `sbs-ramp-handoff.png` (m2 15.6 / 16.6 s against 2.5 / 3.0 s,
+ours with the logo).
+Unit tests: `tests/boot_wordmark_tests.cpp` (clock, alpha 0 before / 1 after / monotone, ribbon gain 0 at the first frame / 1 from
+1.6 s / monotone, knot interpolation).
+
+Remaining differences under the ramp: the plateau colour and the glow's position follow our clock and month (m2's was a different
+month at 09:38, our plateau is 14 % brighter in red); the top-centre glow of November is stronger than m2's top-left one; late ribbon
+(after 2.5 s) peaks about 5 % dimmer in green than m2's; the ramp is fitted at 21 to 33 samples per run at 126 fps, with 0.01 s of
+timing jitter.
+
 Differences that remain (not fixed):
 
-- Background and ribbon under the wordmark. m2 has already started its brown ramp and its ribbon is faint and brown; ours is black
-  until about 2.1 s (the 4.93 `anim_coldboot2` timeline, traced to R) with a grey ribbon, and our ribbon also flashes bright in the
-  first 0.3 s. This is the largest visible gap. Moving the background ramp earlier would change an existing stage, so it was not done.
+- Background and ribbon under the wordmark: fixed by the ramp section above (was: black background, grey ribbon, bright flash in the first 0.3 s).
 - The hold is 0.46 s against 1.73 s (the stage is 1.9 s long instead of 3.17 s).
 - Glyph shapes are Verdana's; the original wordmark's letterforms (a wider, rounder face) differ, most visibly the `y` and `C`.
 - Verdana is a Windows font; another machine falls back to the firmware UI font and will look different.
@@ -75,7 +119,7 @@ Differences that remain (not fixed):
 
 ### Remaining differences (not fixed)
 
-- Ours shows a brighter ribbon in the first ~0.3 s (t 0-0.3 s) than the recording's first visible frames; the recording is black
+- (Fixed with the wordmark stage on, by the ribbon gain; still true with XMB_BOOT_WORDMARK=0.) Ours shows a brighter ribbon in the first ~0.3 s (t 0-0.3 s) than the recording's first visible frames; the recording is black
   until 55.0 s, so the first 0.6 s of our timeline have no counterpart. Cause not investigated.
 - Background colour differs by time of day (the recording was 13:47, our run 18:2x); `--background-clock` implies no intro so it
   cannot be pinned for boot captures.

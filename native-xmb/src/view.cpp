@@ -1476,6 +1476,11 @@ void View::paintGL() {
         particles_.setGlobalAlpha(coldboot_.introHoldsGui()?0.:weights.toClock);
         const double fade=std::clamp(boot/7.5,0.,1.); // DAT_00091e20, the 7.5 s that BootBG2 passes with the clock preset
         backgroundAlpha_=float(fade*fade*(3-2*fade));
+        // Under the wordmark stage the background and ribbon follow the m2 recording's ramp instead (boot_wordmark.h; XMB_BOOT_WORDMARK=0
+        // keeps the smoothstep above and the unscaled ribbon).
+        const bool ramp=coldboot_.rampActive();
+        if(ramp)backgroundAlpha_=float(bootwordmark::backgroundAlpha(boot));
+        ribbon_.setBootGain(ramp?float(bootwordmark::ribbonGain(boot)):1.f);
         backgroundToColdboot2_=weights.toColdboot2;backgroundToClock_=weights.toClock;
     } else {
         // No intro: the XMB is already past boot, so the ribbon holds the clock preset like HDR, particles and the

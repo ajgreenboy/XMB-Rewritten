@@ -280,10 +280,10 @@ bool Ribbon::init(QOpenGLFunctions_3_3_Core& gl,Assets& assets) {
     static const char* composite=R"(#version 330 core
 in vec4 v_tc[10];
 layout(location=0) out vec4 colour;
-uniform sampler2D sum;uniform vec3 colour3,colour4;
+uniform sampler2D sum;uniform vec3 colour3,colour4;uniform float gain;
 void main(){
     float l=texture(sum,v_tc[0].xy).r;
-    colour=vec4(l*0.7*mix(colour3,colour4,v_tc[0].x),1.0);
+    colour=vec4(l*0.7*gain*mix(colour3,colour4,v_tc[0].x),1.0);
 })";
     if(!composite_.addShaderFromSourceCode(QOpenGLShader::Vertex,fullscreenVertex) || !composite_.addShaderFromSourceCode(QOpenGLShader::Fragment,composite) || !composite_.link()) {
         qWarning().noquote()<<"ribbon: composite failed:"<<composite_.log();return false;
@@ -828,7 +828,7 @@ void Ribbon::render(QOpenGLFunctions_3_3_Core& gl,double seconds,double dayFract
     encode_->release(2);fresLut_->release(1);stripes_->release(0);lines_.release();
     // 5. Composite onto the target (LinesController: background + lines x gradient).
     gl.glBindFramebuffer(GL_FRAMEBUFFER,targetFbo);gl.glViewport(0,0,pixelWidth,pixelHeight);
-    composite_.bind();uniformcache::set(composite_,"sum",0);uniformcache::set(composite_,"colour3",colour3_);uniformcache::set(composite_,"colour4",colour4_);
+    composite_.bind();uniformcache::set(composite_,"sum",0);uniformcache::set(composite_,"colour3",colour3_);uniformcache::set(composite_,"colour4",colour4_);uniformcache::set(composite_,"gain",bootGain_);
     gl.glActiveTexture(GL_TEXTURE0);gl.glBindTexture(GL_TEXTURE_2D,sum_->texture());
     gl.glBindVertexArray(emptyVao_);gl.glDrawArrays(GL_TRIANGLES,0,3);gl.glBindVertexArray(0);
     gl.glBindTexture(GL_TEXTURE_2D,0);composite_.release();
