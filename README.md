@@ -129,7 +129,6 @@ How close the renderer is to the console, surface by surface, is in [FIDELITY-VE
 Version **0.3.29**. It builds cleanly and its own checks pass. Real-hardware testing on a living-room PC is still in progress, so treat anything that depends on a physical TV, remote or game as unverified until you try it ([RELEASE-CHECKLIST.md](native-xmb/audit/RELEASE-CHECKLIST.md)).
 
 - The in-game system menu is a translucent overlay on the live game for borderless and windowed titles. It falls back to a frozen frame for exclusive fullscreen, or when the overlay cannot start (`XMB_INGAME_LIVE=0` forces the frozen frame). 4K timing, exclusive fullscreen, Steam Input and anti-cheat tolerance are listed in [INGAME-OVERLAY-DESIGN.md](native-xmb/audit/INGAME-OVERLAY-DESIGN.md).
-- The "PS3" badge on the focused game row sits at a fixed position, so a long date and play-time line can run under it.
 - Real DODI and FitGirl installers, and a real FlareSolverr, have not been exercised.
 - A DualSense is read directly over HID. Steam Input for PlayStation controllers can hide it from the XMB while a Steam game runs.
 - PSN is not connected. Rows that need it say so.

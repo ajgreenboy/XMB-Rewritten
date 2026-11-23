@@ -3790,7 +3790,14 @@ void View::drawScene(QPainter& p) {
                     static const bool gameBadgeOn=gameBadge::enabled();
                     const bool gameBadgeRow=gameBadge::shouldDraw(gameBadgeOn,entry.gameTile,active && level==shell_.depth() && i==column.selection) && !waitCoversNote && !inlineStandIn;
                     QString helpText=entry.detail;
-                    if(gameBadgeRow)helpText=gameBadge::composeLine(gameBadge::dateLine(entry.lastPlayed,shell_.dateFormat()),entry.detail);
+                    if(gameBadgeRow) {
+                        helpText=gameBadge::composeLine(gameBadge::dateLine(entry.lastPlayed,shell_.dateFormat()),entry.detail);
+                        // The line may wrap to stay clear of the badge: it breaks only between its " - " parts, never inside
+                        // one ("58 h 24 min played" stays together), so each part's own spaces become no-break spaces.
+                        QStringList parts=helpText.split(QStringLiteral(" - "));
+                        for(auto& part:parts)part.replace(QLatin1Char(' '),QChar(0x00A0));
+                        helpText=parts.join(QStringLiteral(" - "));
+                    }
                     if(gameBadgeRow) {
                         // The firmware's own badge art (explore_plugin_full item_tex_ps3format, 110x28 grey pill with the
                         // "PS3" lettering), stretched to the measured ink box (the frame's pill is wider than the art's own aspect).
