@@ -16,6 +16,7 @@
 #include "text_renderer.h"
 #include "osk_layout.h"
 #include "osk_pad_input.h"
+#include "zi8_dictionary.h"
 #include "rco_objects.h"
 #include "media_keys.h"
 #include "game_capture.h"
@@ -792,6 +793,15 @@ private:
     quint64 oskToastSerial_=0;
     void oskClose(bool accept);
     QString oskCharacter(int row,int column) const;
+    // The prediction column (audit/ZI8-DICTIONARY-FORMAT.md): the firmware's own English dictionary, read lazily from the
+    // configured dev_flash (data/dic/Zi8DatENUK.z8d, or ENAM for a United States locale; XMB_OSK_DICTIONARY=<code> picks one).
+    // No file, no list. Masked fields never query it. The list is cached per composition word.
+    QStringList oskPredictions();
+    const Zi8Dictionary* oskDictionary();
+    Zi8Dictionary oskDictionary_;
+    bool oskDictionaryTried_=false;
+    QString oskPredictFor_;
+    QStringList oskPredictList_;
     void drawImage(QPainter& painter,const QString& container,const QString& texture,const QRectF& rect,qreal opacity=1);
     // RCO item glyphs are the firmware's white glass masks (the folder family, album placeholders and the other
     // item textures): their alpha never reaches opaque, and the icon program shows only about a fifth of the mask

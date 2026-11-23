@@ -98,6 +98,10 @@ ship English dictionaries (`dev_flash/data/dic/Zi8DatENAM.z8d` and `Zi8DatENUK.z
 list stays empty and no candidates, counter values or word list are fabricated. The "a 0" counter reads 0 in the recording
 with eight candidates showing, so an empty native list does not change the counter.
 
+Update 2026-11-23: the dictionary is now decoded (`ZI8-DICTIONARY-FORMAT.md`). The native column draws the candidates from
+the firmware's English (UK) file, which reproduces both recorded lists line for line; the knob is drawn while candidates
+exist; the counter still reads 0.
+
 ## 5. Dim behind the window
 
 The darkening is a black layer whose final alpha is about 0.68-0.70 (background 131 -> 42 at (100,100), multiplier
@@ -149,7 +153,7 @@ callers and draws no such pair.
 | Symbol key caption | `@#:` | `*%#` | `*%#` |
 | Caret | 27 px, 12 px serifs | 22 px (33), 4 px serifs (7) | recording's |
 | Palette key icon | 4 x 3 squares | 3 x 3 flat cells | 3 x 3 |
-| Prediction column | copy 62 px + paste 62 px | one wide Paste, list y 271..424 | one wide Paste; candidates still absent (no readable dictionary) |
+| Prediction column | copy 62 px + paste 62 px | one wide Paste, list y 271..424 | one wide Paste; candidates from the firmware dictionary (ZI8-DICTIONARY-FORMAT.md) |
 | Composition underline | not recorded | 2 px grey bar under the typed word, ends at a space | drawn (`oskCompositionRange`) |
 | Function captions | centred | right-aligned | right-aligned |
 | Title text | 27 px at x 520 | 23 px at x 531 | 23 px at x 531 |

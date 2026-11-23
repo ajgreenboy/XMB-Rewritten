@@ -1493,3 +1493,10 @@ inventing either would be fabrication, so:
 Follow-up if wanted: reverse `ime_zi.prx`'s `.z8d` reader (rea/Ghidra), then load `data/dic/Zi8DatENAM.z8d` lazily from `--dev-flash`
 at runtime like the other firmware assets, decode on demand, never copy it. No pad binding for choosing a candidate is added:
 the recording shows no candidate being selected (no highlight in any frame), so there is no evidence to implement it from.
+
+**Update 2026-11-23: decoded.** The `.z8d` format and `ime_zi.prx`'s walk are now reversed and documented in
+`ZI8-DICTIONARY-FORMAT.md` (a nibble-coded trie with inline or pointer children and siblings, a 40-character frequency-ordered
+table, and a two-key phone-keypad index; the probe above failed because a node is one nibble of flags plus one nibble of
+character index, not a letter code). The native keyboard reads `data/dic/Zi8DatENUK.z8d` (ENAM for a United States locale) at
+runtime from `--dev-flash` and lists the candidates in the Prediction column; the English (UK) file reproduces both recorded
+lists ("h" and "hi") exactly. Still nothing is bundled or committed, and still no pad binding selects a candidate.

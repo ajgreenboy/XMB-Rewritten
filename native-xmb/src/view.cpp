@@ -46,6 +46,8 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QDir>
+#include <QLocale>
+#include <QRegularExpression>
 #include <QTime>
 #include <cmath>
 #include <numbers>
@@ -6669,6 +6671,48 @@ QVector<QPair<double,QColor>> oskFocusFill(const QString& role) {
 }
 // The badge pill artwork is drawn this much larger than the 20 px the first draw used (recorded pill 26x15 vs 18x9 here).
 constexpr double oskBadgeScale=1.45;
+// The prediction list (audit/ZI8-DICTIONARY-FORMAT.md 6-7): eight lines visible (recording), at most 100 kept (FIT: the knob's
+// recorded 13 of 154 px is 8 of ~100), drawn at 18 px (the recorded "hibernation" inks 66 px at 720p = 99 here).
+constexpr int oskVisibleCandidates=8;
+constexpr std::size_t kOskMaxCandidates=100;
+constexpr int oskCandidatePixels=18;
+}
+const Zi8Dictionary* View::oskDictionary() {
+    if(!oskDictionaryTried_) {
+        oskDictionaryTried_=true;
+        // The console's IME reads the dictionary of the system language; the recording's lists are the English (UK) file's.
+        // A United States locale reads the American file. XMB_OSK_DICTIONARY=<code> (ENUK, ENAM, ...) picks one by name.
+        QString code=qEnvironmentVariable("XMB_OSK_DICTIONARY").trimmed().toUpper();
+        if(code.isEmpty())code=QLocale::system().territory()==QLocale::UnitedStates?QStringLiteral("ENAM"):QStringLiteral("ENUK");
+        static const QRegularExpression valid(QStringLiteral("^[A-Z_]{2,8}$"));
+        if(!valid.match(code).hasMatch())code=QStringLiteral("ENUK");
+        const QString relative=QStringLiteral("data/dic/Zi8Dat%1.z8d").arg(code);
+        QFile file(QDir(assets_.root()).filePath(relative));
+        if(file.open(QIODevice::ReadOnly) && file.size()<(16<<20)) {
+            const QByteArray bytes=file.readAll();
+            std::string error;
+            if(oskDictionary_.load(std::vector<std::uint8_t>(bytes.begin(),bytes.end()),&error))
+                qInfo().noquote()<<"osk: prediction dictionary"<<relative<<"loaded";
+            else qInfo().noquote()<<"osk: prediction dictionary"<<relative<<"not read:"<<QString::fromStdString(error);
+        } else qInfo().noquote()<<"osk: no prediction dictionary at"<<relative;
+    }
+    return oskDictionary_.loaded()?&oskDictionary_:nullptr;
+}
+QStringList View::oskPredictions() {
+    // Masked (password) fields never show or query predictions.
+    if(osk_.masked)return {};
+    const auto word=oskCompositionRange(osk_.text,osk_.cursor);
+    const QString typed=osk_.text.mid(word.first,word.second-word.first);
+    if(typed.isEmpty())return {};
+    if(typed==oskPredictFor_)return oskPredictList_;
+    oskPredictFor_=typed;
+    oskPredictList_.clear();
+    if(const Zi8Dictionary* dictionary=oskDictionary()) {
+        const std::u16string text(reinterpret_cast<const char16_t*>(typed.utf16()),std::size_t(typed.size()));
+        for(const std::u16string& candidate:zi8Candidates(*dictionary,text,kOskMaxCandidates))
+            oskPredictList_<<QString::fromStdU16String(candidate);
+    }
+    return oskPredictList_;
 }
 QString View::oskCharacter(int row,int column) const {
     // One source for a key's character: the resolved page, never a table in this file.
@@ -7005,8 +7049,8 @@ void View::drawOsk(QPainter& p,double panelAlpha,double scale,double dimFactor) 
     // characters that ends at the caret - is underlined 2 px (3 here) at y 251..252 of a field that starts at 225, in a solid
     // (145,145,145), from the word's first pen position to its last (recorded "hi": x 341..355, "h": 341..353). It is there from the
     // first letter until a space (or any non-word character) is typed. A masked field shows bullets and no underline. The
-    // console draws it while the prediction list has candidates; this build has no dictionary (OSK-FIRMWARE 8.2), so it is
-    // drawn for every composition word, which is what the recording shows for the words it types.
+    // console draws it while the prediction list has candidates; it is drawn for every composition word (with or without
+    // the dictionary), which is what the recording shows for the words it types.
     if(!osk_.masked) {
         const auto word=oskCompositionRange(composed,osk_.cursor);
         if(word.second>word.first) {
@@ -7144,8 +7188,8 @@ void View::drawOsk(QPainter& p,double panelAlpha,double scale,double dimFactor) 
         }
     }
     // The prediction column: the candidate list, its header, the mode and count cells, then the two buttons outside
-    // the 10-column grid (4.4). The list stays empty: the console's candidates come from ime.prx's dictionary, which a
-    // PC build does not have, and fabricating them would be a different feature (8.2).
+    // the 10-column grid (4.4). The candidates come from the firmware's own dictionary (oskPredictions; audit/
+    // ZI8-DICTIONARY-FORMAT.md); without the file the list stays empty.
     // The list's own nine-slice is pre-composite artwork (CANDIDATE_WINDOW0x0 reads 129,130,129 where the frame
     // measures 110,110,110), so the measured plate is drawn: fill 110 with the slice's light top and dark bottom edge.
     // Recorded geometry (720p x1.5): the list 812..940 plus a 9 px scroll strip, y 271..424; the header 426..446; the single wide
@@ -7153,10 +7197,35 @@ void View::drawOsk(QPainter& p,double panelAlpha,double scale,double dimFactor) 
     const QRectF listRect(1218,406,206,231),headerRect(1218,640,206,30);
     p.setPen(Qt::NoPen);p.setBrush(QColor(114,112,113));
     p.drawRect(listRect);
+    const QStringList predictions=oskPredictions();
     {   // the scroll strip: lighter, with a short lighter knob at the top (recorded x 940..949, 121,115,115 -> 141,137,138)
         QLinearGradient strip(listRect.right()-13,0,listRect.right(),0);
         strip.setColorAt(0,QColor(121,115,115));strip.setColorAt(1,QColor(141,137,138));
         p.setBrush(strip);p.drawRect(QRectF(listRect.right()-13,listRect.top(),13,listRect.height()));
+        // The knob, drawn only while there are candidates (recording "h" and "hi": x 939..949, y 270..282 at 720p, bright
+        // 183-186 at both edges and 126 in the middle, the same in both frames). FIT: its height is the visible share of
+        // the list, 8 of at most kOskMaxCandidates lines, which is the recorded 13 of 154 px for both words (each has
+        // more than 100 completions); the list is never scrolled here, so the knob stays at the top.
+        if(!predictions.isEmpty()) {
+            const double share=std::min(1.,double(oskVisibleCandidates)/double(predictions.size()));
+            const QRectF knob(1408.5,listRect.top()-1.5,15.,std::max(6.,(listRect.height()+1.5)*share));
+            QLinearGradient shade(knob.left(),0,knob.right(),0);
+            const std::pair<double,int> stops[]={{0.,150},{.1,183},{.2,170},{.32,147},{.45,131},{.55,126},{.65,130},
+                                                 {.75,146},{.84,167},{.92,185},{1.,170}};
+            for(const auto& stop:stops)shade.setColorAt(stop.first,QColor(stop.second,stop.second,stop.second));
+            p.setBrush(shade);p.drawRect(knob);
+        }
+    }
+    {   // The candidate lines (recording: white 235, text at x 821, first line centred on y 285, 18 px pitch at 720p; eight
+        // visible, no highlight on any line). The list starts at the typed word itself.
+        p.save();
+        p.setClipRect(QRectF(listRect.left(),listRect.top(),listRect.width()-13,listRect.height()));
+        for(int line=0;line<int(predictions.size()) && line<oskVisibleCandidates;++line) {
+            const double centre=427.5+line*27.;
+            label(QRectF(1231.5,centre-15.,listRect.right()-13-1231.5,30.),predictions.at(line),oskCandidatePixels,
+                  QColor(235,235,235),Qt::AlignLeft|Qt::AlignVCenter);
+        }
+        p.restore();
     }
     // Header: the recorded bar is (89,89,87) at the top easing to (82,80,81), darker toward its middle-right.
     QLinearGradient header(0,headerRect.top(),0,headerRect.bottom());

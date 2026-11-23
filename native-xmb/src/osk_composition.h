@@ -3,8 +3,7 @@
 // The on-screen keyboard's composition word: the run of word characters that ends at the caret. The recording
 // (audit/OSK-RECORDED-SPEC-2026-11-22.md 2) underlines that run in the entry row while it is being typed and drops the
 // underline as soon as a space is typed. Pure and header-only so tests/osk_composition_tests.cpp covers it without a
-// window. There is no dictionary behind this: the underline is the only part of the console's prediction behaviour
-// this build reproduces (audit/OSK-FIRMWARE.md 8.2).
+// window. The same range is the word the Prediction column completes (View::oskPredictions, audit/ZI8-DICTIONARY-FORMAT.md).
 
 #include <QChar>
 #include <QString>
