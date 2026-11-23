@@ -48,7 +48,7 @@ qt_add_executable(re-ps3-native
     src/wifi_client.cpp src/wifi_client.h src/wifi_shell.cpp
     src/bluetooth_client.cpp src/bluetooth_client.h src/bluetooth_shell.cpp
     src/wol_client.cpp src/wol_client.h src/homeassistant_client.cpp src/homeassistant_client.h src/home_shell.cpp
-    src/psn_pages.h src/psn_shell.cpp src/notification_toast.h
+    src/psn_pages.h src/psn_shell.cpp src/notification_toast.h src/friends_ui.h
     src/photo_viewport.cpp src/photo_viewport.h
     src/gallery_params.cpp src/gallery_params.h src/gallery_model.cpp src/gallery_model.h src/gallery_thumbs.cpp src/gallery_thumbs.h
     src/gallery_controller.cpp src/gallery_controller.h src/gallery_floor.h src/gallery_scene.cpp src/gallery_scene.h src/gallery_chrome.cpp src/gallery_view.h src/gallery_replay.cpp
@@ -326,6 +326,15 @@ if(XMB_NOTIFICATION_TOAST_BUILD_TESTS)
     target_link_libraries(xmb-notification-toast-tests PRIVATE Qt6::Core)
     if(MSVC)
         target_compile_options(xmb-notification-toast-tests PRIVATE /W4 /permissive- /utf-8)
+    endif()
+endif()
+option(XMB_FRIENDS_UI_BUILD_TESTS "Build the Friends column visual-rule tests (avatar tile, status dot, speech bubble gating, options rows)" OFF)
+if(XMB_FRIENDS_UI_BUILD_TESTS)
+    qt_add_executable(xmb-friends-ui-tests tests/friends_ui_tests.cpp src/friends_ui.h)
+    target_include_directories(xmb-friends-ui-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(xmb-friends-ui-tests PRIVATE Qt6::Core)
+    if(MSVC)
+        target_compile_options(xmb-friends-ui-tests PRIVATE /W4 /permissive- /utf-8)
     endif()
 endif()
 option(XMB_RAWG_BUILD_TESTS "Build the RAWG client game-detail parser fixture tests (synthetic fixture, no network)" OFF)

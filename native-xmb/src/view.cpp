@@ -3,6 +3,7 @@
 #include <QPainterPath>
 #include "psn_pages.h"
 #include "notification_toast.h"
+#include "friends_ui.h"
 #include "logo_tiles.h"
 #include "game_badge.h"
 #include "video_panel.h"
@@ -3529,7 +3530,11 @@ void View::drawScene(QPainter& p) {
                 // [TRACED: both ink widths and their quads. FIT: nothing - the box equals the measured ink.]
                 // Sweep 8 item 2: the depth-1 item row reuses the level-0 pair (50 unfocused / 128 focused), so the
                 // non-bullet branch is 50+78*focus at every depth now, not the smaller 40+16*focus this build had.
-                const double size=(bullet?18+focus*21:50+focus*78)*entryScale;
+                // A friend row's avatar tile is the older firmware's (recording m2: 52 px at rest, 73 px focused, 111 px with the options
+                // panel open; friends_ui.h), not the item-icon pair.
+                const bool optionsOnThisRow=optionsDrawn() && !optionsShown_.player && active && level==shell_.depth() && i==column.selection;
+                const double size=(entry.friendRow && !bullet?friendsui::avatarSize(focus,optionsOnThisRow?optionsOpenEase_.value:0.)
+                                                              :(bullet?18+focus*21:50+focus*78))*entryScale;
                 // Firmware folder glyphs: a folder row in the Game column carries the emblem of what it holds - the
                 // captured Game Data Utility row is item_tex_ps3game_folder (folder + gamepad, explore_category_game.rco
                 // and explore_plugin_full.rco), not the bare storage folder. Steam's All Games / collection / Not
@@ -3548,6 +3553,7 @@ void View::drawScene(QPainter& p) {
                 const double cardHeight=72+focus*104;
                 double iconWidth=tile?cardHeight*(320./176.)*entryScale:size,iconHeight=tile?cardHeight*entryScale:size;
                 if(behind>.001 && tile){iconWidth=size;iconHeight=size;}
+                if(entry.friendRow && !tile && entry.artwork.isNull() && behind<.001)iconWidth=iconHeight=size*friendsui::kDefaultAvatarInk;
                 const bool seerrPoster=behind<.001 && entry.artwork.width()<entry.artwork.height() &&
                     (entry.id.startsWith(QLatin1String("seerr:result:")) || entry.id==QLatin1String("seerr:media-status"));
                 if(seerrPoster) {
@@ -3565,7 +3571,34 @@ void View::drawScene(QPainter& p) {
                 // icontex items are glass icons like the categories: the firmware draws them with the same shader at
                 // brightness 1, behind an open page 0.247 (focused row 0.698) (RPCS3 capture, audit/PIPELINE.md);
                 // everything else is RCO or file artwork.
-                if(entry.gameTile) {
+                if(entry.friendRow && behind<.001) {
+                    // The darker band behind the focused friend while its Triangle panel is open (m2 33 s).
+                    if(optionsOnThisRow && focus>.5) {
+                        p.save();p.setOpacity(columnAlpha*optionsOpenEase_.value*focus);
+                        p.fillRect(friendsui::optionsBandRect(iconX,y),QColor(70,24,10,92));p.restore();
+                    }
+                    // The resting plate of the newer recording stays off (friends_ui.h kRestingPlate).
+                    if(friendsui::kRestingPlate && focus>.5) {
+                        p.save();p.setOpacity(columnAlpha*focus);p.setPen(QPen(QColor(255,255,255,120),1.5));p.setBrush(QColor(255,255,255,70));
+                        p.drawRoundedRect(friendsui::plateRect(iconX,y),friendsui::kPlateRadius,friendsui::kPlateRadius);p.restore();
+                    }
+                }
+                if(entry.friendRow && !entry.artwork.isNull() && behind<.001) {
+                    // A real avatar picture on the glossy rounded tile the firmware draws friends on: the picture, a soft top
+                    // highlight, a light edge. The default avatar (no picture) is the firmware's own glossy texture below.
+                    const QRectF tileRect(iconX-size/2,y-size/2,size,size);
+                    p.save();p.setOpacity(iconAlpha);
+                    QPainterPath clip;clip.addRoundedRect(tileRect,friendsui::kTileRadius,friendsui::kTileRadius);
+                    p.setClipPath(clip,Qt::IntersectClip);p.drawImage(tileRect,entry.artwork);
+                    QLinearGradient gloss(tileRect.topLeft(),tileRect.bottomLeft());
+                    gloss.setColorAt(0,QColor(255,255,255,92));gloss.setColorAt(.48,QColor(255,255,255,22));
+                    gloss.setColorAt(.5,QColor(0,0,0,0));gloss.setColorAt(1,QColor(0,0,0,56));
+                    p.fillRect(tileRect,gloss);p.setClipping(false);
+                    p.setPen(QPen(QColor(255,255,255,96),1.5));p.setBrush(Qt::NoBrush);
+                    p.drawRoundedRect(tileRect.adjusted(.75,.75,-.75,-.75),friendsui::kTileRadius,friendsui::kTileRadius);
+                    p.restore();
+                }
+                else if(entry.gameTile) {
                     // Native installed PKGs render ICON0 directly in this slot: no launcher card/chrome.
                     const QRectF card(iconX-iconWidth/2,y-iconHeight/2,iconWidth,iconHeight);
                     if(entry.artwork.isNull())drawItemGlyph(p,entry.container,itemTexture,card,iconAlpha);
@@ -3589,16 +3622,44 @@ void View::drawScene(QPainter& p) {
                     iconQueue_.push_back({entry.texture,{iconX,y},quad,brightness,columnAlpha,2700+157.2*depth});
                 }
                 else drawItemGlyph(p,entry.container,itemTexture,{iconX-iconWidth/2,y-iconHeight/2,iconWidth,iconHeight},iconAlpha);
-                if(entry.friendRow) {
-                    p.save();p.setOpacity(iconAlpha);p.setPen(QPen(QColor(20,20,20,180),1.5));
-                    p.setBrush(entry.presenceState==0?QColor(130,130,130):entry.presenceState==7?QColor(110,190,245):QColor(140,220,110));
-                    p.drawEllipse(QPointF(iconX+size*.36,y+size*.36),5+focus*2,5+focus*2);p.restore();
+                // The status dot (m2: 14 px, blue online, grey offline, left of the name) only where a real presence value exists;
+                // Discord's friend list has none, so those rows draw no dot rather than a made-up "offline".
+                if(entry.friendRow && behind<.001) {
+                    const auto presence=!entry.presenceKnown?friendsui::Presence::Unknown:entry.presenceState?friendsui::Presence::Online:friendsui::Presence::Offline;
+                    if(friendsui::dotVisible(presence)) {
+                        p.save();p.setOpacity(iconAlpha);p.setPen(Qt::NoPen);p.setBrush(QColor::fromRgba(friendsui::dotColour(presence)));
+                        p.drawEllipse(QPointF(iconX+friendsui::kDotOffsetX*entryScale,y),friendsui::kDotDiameter/2,friendsui::kDotDiameter/2);p.restore();
+                    }
                 }
                 // Observed on the console by MaXMB (MIT, styles.css "labels-idle"; not yet confirmed on our references,
                 // whose clips never rest on a row): after 4 s on one row of Photo/Music/Video/Game/Network/PSN, the
                 // other rows' titles fade out over 0.8 s.
                 static const QSet<QString> idleCategories{"photo","music","video","game","network","psn"};
                 const qint64 resting=focusTime();
+                // The speech bubble above a focused friend (m2 42 s): only when that person has real status text to show.
+                if(entry.friendRow && active && level==shell_.depth() && i==column.selection && focus>.9 && behind<.001
+                   && !optionsOnThisRow && friendsui::bubbleVisible(entry.statusText,resting)) {
+                    const QString said=friendsui::bubbleText(entry.statusText);
+                    QFont bubbleFont(shell_.fontFamily());bubbleFont.setPixelSize(22);
+                    const QFontMetricsF fm(bubbleFont);
+                    const double inner=friendsui::kBubbleWidth-2*friendsui::kBubblePadding;
+                    const QStringList wrapped=friendsui::wrapWords(said,inner,[&](const QString& s){return fm.horizontalAdvance(s);});
+                    const int lines=std::max(1,int(wrapped.size()));
+                    const QRectF box=friendsui::bubbleRect(iconX,y,lines);
+                    p.save();p.setOpacity(columnAlpha);p.setPen(Qt::NoPen);p.setBrush(QColor(168,170,176,222));
+                    p.drawRoundedRect(box,12,12);
+                    QPolygonF tail;tail<<QPointF(box.left()+14,box.bottom()-1)<<QPointF(box.left()+34,box.bottom()-1)<<QPointF(box.left()+10,box.bottom()+13);
+                    p.drawPolygon(tail);
+                    p.restore();
+                    // The firmware's bubble text has no drop shadow, so the renderer is called directly with shadow off.
+                    for(int line=0;line<wrapped.size();++line) {
+                        const QRectF lineRect(box.left()+friendsui::kBubblePadding,box.top()+friendsui::kBubblePadding+line*friendsui::kBubbleLineHeight,inner,friendsui::kBubbleLineHeight);
+                        if(textRenderer_.ready()) {
+                            QFont lineFont(shell_.fontFamily());lineFont.setPixelSize(19);
+                            textRenderer_.draw(*this,p,lineRect,wrapped[line],lineFont,QColor(255,255,255,int(255*columnAlpha)),Qt::AlignLeft|Qt::AlignVCenter,0.,false);
+                        } else text(lineRect,wrapped[line],19,QColor(255,255,255,int(255*columnAlpha)),Qt::AlignLeft|Qt::AlignVCenter);
+                    }
+                }
                 const double idleFade=active && level==0 && idleCategories.contains(shell_.categories()[shell_.category()].id)?
                     std::clamp((resting-4000)/800.,0.,1.)*(1.-focus):0.;
                 // A Settings page's idle dim (TRACED, sysconf_plugin; audit/PAGE-MOVE.md "The Settings idle dim"):
@@ -3630,7 +3691,8 @@ void View::drawScene(QPainter& p) {
                 // icon size and keep the narrow column gutter.
                 // Sweep 8 item 2: a depth-1 item row's label sits icon-centre+111 (740 = 629+111), not the top
                 // level's +113, so the item-row gutter is the 64 px icon shift plus 111.
-                const double labelX=kColumnX+((tile && behind<.001)?173:level==0?113:(itemRow?itemShift+111.:60.))+ahead*210+offset;
+                const double labelX=(entry.friendRow && behind<.001 && level==0)?iconX+friendsui::kNameOffsetX
+                    :kColumnX+((tile && behind<.001)?173:level==0?113:(itemRow?itemShift+111.:60.))+ahead*210+offset;
                 const double alpha=(.455+.545*focus)*(entry.disabled?.55:1.);
                 // A row's own value wins when it sets one (the sign-in page's fields: server URL, user name and
                 // the password as dots). Every other row leaves Entry::fieldValue empty, so this falls through to
@@ -3973,7 +4035,7 @@ void View::drawScene(QPainter& p) {
             for(const auto& category:shell_.categories()) {
                 if(category.id!="friends")continue;
                 for(const auto& entry:category.entries)
-                    if(entry.friendRow && entry.presenceState!=0)++onlineFriends; // persona state 0 = Offline
+                    if(entry.friendRow && entry.presenceKnown && entry.presenceState!=0)++onlineFriends; // persona state 0 = Offline
                 break;
             }
             // The RCO offsets assume the console's short clock ("21/11 13:46", ink from about x1603): the message slot's

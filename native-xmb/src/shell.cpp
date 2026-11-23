@@ -1,6 +1,7 @@
 #include "shell.h"
 #include "game_badge.h"
 #include "psn_pages.h"
+#include "friends_ui.h"
 #include "pending_installers.h"
 #include "diagnostics.h"
 #include "player_chrome.h"
@@ -1811,7 +1812,8 @@ void Shell::rebuildFriends() {
         entries=staticFriendEntries_;
         for(const auto& person:discordFriendList_) {
             auto e=item("discord-friend:"+person.id,person.name,"tex_Avatar_Default","explore_category_friend",Action::OpenUrl,"https://discord.com/channels/@me/"+person.id);
-            e.friendRow=true;e.artworkUrl=person.avatarUrl;e.artwork=discordFriends_.avatar(person.avatarUrl);entries.push_back(std::move(e));
+            e.friendRow=true;e.presenceKnown=person.presence>=0;e.presenceState=person.presence>0?1:0;e.statusText=person.status;
+            e.profileUrl=QStringLiteral("https://discord.com/users/")+person.id;e.artworkUrl=person.avatarUrl;e.artwork=discordFriends_.avatar(person.avatarUrl);entries.push_back(std::move(e));
         }
         // Signed out, the row starts the OAuth sign-in (or says how to set it up); signed in, it opens Discord.
         auto open=discordFriends_.signedIn()
@@ -1941,12 +1943,13 @@ Shell::Shell(QString dataDirectory,Assets& assets,QObject* parent):QObject(paren
         {"friends","Friends","qgl/icontex","8n",{
             // category_friend.xml: items, icons and titles are the firmware's (explore_category_friend); PSN-backed
             // features answer with the firmware's own empty-state messages.
+            // Row order and fixed rows are the older firmware's (recording m2, 45 s): Block List, Add a Friend, Players Met,
+            // Start New Chat, Message Box, then the friends. m2 shows no Chat Room (Text Only) row, so it is not listed.
+            item("block",friendText("msg_ignore_list","Block List"),"item_tex_IgnoreList","explore_category_friend",Action::Information,friendText("msg_error_not_registered","No persons have been added.")),
             item("add",friendText("msg_friend_register","Add a Friend"),"item_tex_NewFriend","explore_category_friend"),
             item("players",friendText("msg_play_with","Players Met"),"item_tex_Players","explore_category_friend",Action::Information,friendText("msg_error_no_player","No players were found.")),
-            item("chatroom",friendText("msg_text_chatroom","Chat Room (Text Only)"),"item_tex_ChatRoomText","explore_category_friend"),
             item("chat",friendText("msg_start_new_chat2","Start New Chat"),"item_tex_NewAvc","explore_category_friend"),
-            item("messages",friendText("msg_msg_box","Message Box"),"item_tex_Messages","explore_category_friend",Action::SettingsPage,"messages"),
-            item("block",friendText("msg_ignore_list","Block List"),"item_tex_IgnoreList","explore_category_friend",Action::Information,friendText("msg_error_not_registered","No persons have been added."))}}
+            item("messages",friendText("msg_msg_box","Message Box"),"item_tex_Messages","explore_category_friend",Action::SettingsPage,"messages"),}}
     };
     // The Network column's rows come from the firmware's own category_network.xml (the proof of the
     // XMBML-driven column mechanism); it keeps the list above when the definition cannot be read.
@@ -2253,7 +2256,21 @@ Shell::Shell(QString dataDirectory,Assets& assets,QObject* parent):QObject(paren
         emit changed();
     });
     discordFriendsError_=discordFriends_.configured()?QStringLiteral("Select Refresh Discord Friends to sign in."):(discordFriends_.unset()?QStringLiteral("Not set up yet. Discord Connection says how."):discordFriends_.configurationError());
+    // Test only: XMB_TEST_FRIENDS=<json file> lists fixture friends ([{"id","name","presence":"online|offline","status"}]) so the
+    // Friends column can be captured without Discord. Nothing is sent anywhere; unset in every real run.
+    QHash<QString,QImage> fixtureAvatars;
+    if(const QString fixture=qEnvironmentVariable("XMB_TEST_FRIENDS");!fixture.isEmpty()) {
+        QFile file(fixture);
+        if(file.open(QIODevice::ReadOnly))for(const auto& value:QJsonDocument::fromJson(file.readAll()).array()) {
+            const auto o=value.toObject();DiscordFriend person;person.id=o.value("id").toString();person.name=o.value("name").toString();
+            const QString presence=o.value("presence").toString();person.presence=presence=="online"?1:presence=="offline"?0:-1;
+            person.status=o.value("status").toString();discordFriendList_.push_back(person);
+            if(const QImage picture(o.value("avatarFile").toString());!picture.isNull())fixtureAvatars.insert(person.id,picture);
+        }
+    }
     rebuildFriends();
+    for(auto& category:categories_)if(category.id=="friends")for(auto& entry:category.entries)
+        if(entry.friendRow && fixtureAvatars.contains(entry.id.mid(15)))entry.artwork=fixtureAvatars.value(entry.id.mid(15));
     for(auto& category:categories_)if(category.id=="game") {
         category.entries.push_back(item("game:download-hub",QObject::tr("Download Games"),"item_tex_plain_folder",full,Action::DownloadHub));
         // The Pending Installers row is reconciled on every content refresh
@@ -3697,6 +3714,18 @@ void Shell::buildOptions() {
         addOption({"msg_info","Information"},OptionCommand::Information,"always-last");
         return;
     }
+    // ---- A friend row (recording m2, 33-35 s): Status, Comment, Profile ----------------------------------------
+    // Profile opens the friend's real profile page; Status and Comment are PlayStation Network features and are listed
+    // with the reason they cannot act (friends_ui.h), never faked.
+    if(entry.friendRow) {
+        for(const auto& row:friendsui::friendOptions(!entry.profileUrl.isEmpty(),entry.presenceKnown)) {
+            const auto command=row.kind==friendsui::OptionKind::Profile?OptionCommand::FriendProfile
+                :row.kind==friendsui::OptionKind::Status?OptionCommand::FriendStatus:OptionCommand::FriendComment;
+            addOption({"",row.title},command,"friend-row",row.enabled,row.note);
+            options_.last().submenu=row.submenu;
+        }
+        return;
+    }
     // ---- Spotify's Now Playing row: the commands Spotify takes for the active Connect device ---------------
     if(entry.action==Action::SpotifyNowPlaying) {
         addOption({"msg_play","Play"},OptionCommand::SpotifyResume,"spotify-now");
@@ -4280,6 +4309,20 @@ void Shell::optionsActivate() {
         resetOptions();
         interactionAudio_.play(InteractionAudio::Cue::Confirm);
         openSteamCmdPage();
+        emit changed();
+        break;
+    case OptionCommand::FriendProfile:
+        resetOptions();
+        if(!entry.profileUrl.isEmpty() && !QDesktopServices::openUrl(QUrl(entry.profileUrl)))
+            showMessage(entry.title,QObject::tr("The profile page could not be opened."),MessageKind::Page);
+        interactionAudio_.play(InteractionAudio::Cue::Confirm);
+        emit changed();
+        break;
+    case OptionCommand::FriendStatus:
+    case OptionCommand::FriendComment:
+        // Only reachable when the row is enabled (a real presence value); the panel closes on the friend's own status.
+        resetOptions();
+        showMessage(entry.title,entry.statusText.isEmpty()?(entry.presenceState?QObject::tr("Online"):QObject::tr("Offline")):entry.statusText,MessageKind::Page);
         emit changed();
         break;
     case OptionCommand::SteamLink: {

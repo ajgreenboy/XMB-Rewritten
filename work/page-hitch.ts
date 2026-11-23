@@ -54,7 +54,7 @@ const PAGES: Page[] = [
   { name: 'game/download-hub', cat: 6, row: 17 }, { name: 'game/manage-hub', cat: 6, row: 18 }, { name: 'game/store-message', cat: 6, row: 15 },
   { name: 'network/tailscale', cat: 7, row: 5 }, { name: 'network/homeassistant', cat: 7, row: 7 },
   { name: 'network/weather', cat: 7, row: 8 }, { name: 'network/wifi', cat: 7, row: 10 },
-  { name: 'friends/messages', cat: 9, row: 4 }, { name: 'friends/players-message', cat: 9, row: 1 }, { name: 'friends/discord-setup', cat: 9, row: 8 },
+  { name: 'friends/messages', cat: 9, row: 4 }, { name: 'friends/players-message', cat: 9, row: 2 }, { name: 'friends/discord-setup', cat: 9, row: 7 },
   { name: 'users/new-user', cat: 0, row: 5 }, { name: 'users/steam-accounts', cat: 0, row: 7 },
   { name: 'options-panel', cat: 6, row: 10, inner: ['TRIANGLE', 'wait', 'wait', 'wait', 'TRIANGLE'], back: 0 },
 ];

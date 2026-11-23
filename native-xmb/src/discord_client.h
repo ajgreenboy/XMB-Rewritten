@@ -10,7 +10,8 @@ class QNetworkAccessManager;
 class QTcpServer;
 
 namespace xmb {
-struct DiscordFriend { QString id, name, avatarUrl; };
+// presence: -1 unknown (Discord's relationships list carries none), 0 offline, 1 online. status: the person's own status line, or empty.
+struct DiscordFriend { QString id, name, avatarUrl; int presence = -1; QString status; };
 
 // Plain-language messages for each way the Discord sign-in or friends request can fail, so the
 // Friends column says what to fix (docs: audit/DISCORD.md). Pure functions, covered by tests/discord_tests.cpp.

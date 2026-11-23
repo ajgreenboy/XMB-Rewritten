@@ -197,7 +197,10 @@ struct Entry {
     // The artwork is a title's transparent logo (logo_tiles.h): drawn unframed and letterboxed, never boxed or cropped.
     bool logoArt=false;
     bool rawgArtworkVisible=false; // this row displays RAWG artwork and needs provider credit
-    int presenceState=0;
+    int presenceState=0;              // meaningful only when presenceKnown (persona state 0 offline, else online)
+    bool presenceKnown=false;         // a real source gave this person a presence value; false draws no status dot
+    QString statusText;               // the friend's own real status line, shown in the speech bubble; empty draws none
+    QString profileUrl;               // the friend's real profile page, for the Triangle menu's Profile row
     // A row this build cannot act on but still lists, so the reason stays reachable and the state stays
     // visible: drawn dimmed, and only the Continue Watching page sets it today (a remembered title whose
     // file is gone). Everything else leaves it false, so no other row renders differently.
@@ -294,7 +297,9 @@ enum class OptionCommand { Activate, Information,
     UserAutoLoginTarget,
     // A Jellyfin image subtitle the client cannot draw: re-open the title with that stream burned into a
     // server transcode (MenuOption::index is the server's stream index).
-    SubtitleBurnIn, ReleaseDownloadCancel, ReleaseDownloadRetry, ReleaseDownloadPause, ReleaseDownloadResume, ReleaseDownloadPauseAll, ReleaseDownloadResumeAll, SeerrDownloadPause, SeerrDownloadResume, SeerrDownloadCancel, SeerrDownloadWatch };
+    SubtitleBurnIn, ReleaseDownloadCancel, ReleaseDownloadRetry, ReleaseDownloadPause, ReleaseDownloadResume, ReleaseDownloadPauseAll, ReleaseDownloadResumeAll, SeerrDownloadPause, SeerrDownloadResume, SeerrDownloadCancel, SeerrDownloadWatch,
+    // A friend row's Triangle menu (friends_ui.h): Profile opens the friend's real profile page; Status and Comment are listed with the reason they cannot act.
+    FriendProfile, FriendStatus, FriendComment };
 // A label read from the RCO text table: the key plus the English string it should resolve to. The fallback
 // is used only when the local flash image has no table; whenever the RCO is present, its value is the label.
 struct OptionLabel { const char* key=nullptr; QString fallback; };
