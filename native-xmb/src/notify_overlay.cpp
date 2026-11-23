@@ -2,29 +2,47 @@
 #include "design_space.h"
 #include "assets.h"
 #include <QGuiApplication>
+#include <QFont>
 #include <QFontMetrics>
 #include <QPainter>
 #include <QScreen>
 #include <algorithm>
+#include <cmath>
 #ifdef Q_OS_WIN
 #define NOMINMAX
 #include <windows.h>
 #endif
 
 namespace xmb {
+
 NotifyOverlay::NotifyOverlay(Assets& assets,const QString& fontFamily):
     QWidget(nullptr,Qt::FramelessWindowHint|Qt::WindowStaysOnTopHint|Qt::Tool|Qt::WindowDoesNotAcceptFocus),
     assets_(assets),fontFamily_(fontFamily) {
     setAttribute(Qt::WA_TranslucentBackground);
     setAttribute(Qt::WA_ShowWithoutActivating);
     setAttribute(Qt::WA_TransparentForMouseEvents);
+    fade_.setEasingCurve(QEasingCurve::Linear);
+    connect(&fade_,&QVariantAnimation::valueChanged,this,[this](const QVariant& value){setWindowOpacity(value.toDouble());});
+    connect(&fade_,&QVariantAnimation::finished,this,[this]{
+        if(wanted_)return;
+        hide();title_.clear();detail_.clear();icon_.clear();
+    });
+}
+
+void NotifyOverlay::fadeTo(double target,int milliseconds) {
+    fade_.stop();
+    fade_.setDuration(milliseconds);
+    fade_.setStartValue(windowOpacity());
+    fade_.setEndValue(target);
+    fade_.start();
 }
 
 void NotifyOverlay::showNotification(const QString& title,const QString& detail,const QString& icon) {
-    if(isVisible() && title_==title && detail_==detail && icon_==icon)return;
+    if(wanted_ && isVisible() && title_==title && detail_==detail && icon_==icon)return;
     title_=title;detail_=detail;icon_=icon;
     QScreen* screen=QGuiApplication::primaryScreen();
 #ifdef Q_OS_WIN
+    // The monitor the game is on: the foreground window's centre.
     const HWND foreground=GetForegroundWindow();
     RECT bounds{};
     if(foreground && GetWindowRect(foreground,&bounds)) {
@@ -34,65 +52,81 @@ void NotifyOverlay::showNotification(const QString& title,const QString& detail,
 #endif
     if(!screen)return;
     const QRect area=screen->geometry();
-    // Use the same centred crop-fill coordinates as the XMB's own notification pass.
+    // The same centred contain-fit design space as the XMB's own pass, so the toast sits where it does there.
     const DesignSpace design(area.size());
-    const qreal sx=design.x,sy=design.y;
-    const int width=qRound(400*sx),height=qRound((detail.isEmpty()?58:84)*sy);
-    setGeometry(area.left()+qRound(design.left+1896*sx)-width,area.top()+qRound(design.top+145*sy),width,height);
+    const bool twoLines=!detail_.isEmpty();
+    QFont titleFont(fontFamily_);titleFont.setPixelSize(int(toast::kTextSize));
+    QFont detailFont(fontFamily_);detailFont.setPixelSize(int(toast::kDetailSize));
+    const QFontMetrics titleMetrics(titleFont),detailMetrics(detailFont);
+    const int budget=int(toast::maxTextWidth());
+    drawnTitle_=titleMetrics.elidedText(title_,Qt::ElideRight,budget);
+    drawnDetail_=twoLines?detailMetrics.elidedText(detail_,Qt::ElideRight,budget):QString();
+    const double textWidth=std::max<double>(titleMetrics.horizontalAdvance(drawnTitle_),twoLines?detailMetrics.horizontalAdvance(drawnDetail_):0.);
+    const QImage image=assets_.bestImage(QStringLiteral("system_plugin"),icon_);
+    layout_=toast::layoutToast(textWidth,!image.isNull(),twoLines);
+    scale_=design.x;
+    const auto rect=toast::overlayWindow(layout_.box,design.x,design.left,design.top);
+    designOrigin_=QPointF(design.left-rect.x,design.top-rect.y);
+    setGeometry(area.left()+rect.x,area.top()+rect.y,rect.w,rect.h);
 #ifdef Q_OS_WIN
     const HWND hwnd=reinterpret_cast<HWND>(winId());
     const LONG_PTR styles=GetWindowLongPtr(hwnd,GWL_EXSTYLE);
     SetWindowLongPtr(hwnd,GWL_EXSTYLE,styles|WS_EX_TOPMOST|WS_EX_NOACTIVATE|WS_EX_TOOLWINDOW|WS_EX_TRANSPARENT|WS_EX_LAYERED);
     SetWindowPos(hwnd,HWND_TOPMOST,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE|SWP_FRAMECHANGED);
 #endif
+    const bool fresh=!isVisible() || !wanted_;
+    wanted_=true;
+    if(!isVisible())setWindowOpacity(0.);
     show();
     update();
+    if(fresh)fadeTo(1.,toast::kFadeInMs);
 }
 
 void NotifyOverlay::hideNotification() {
-    hide();title_.clear();detail_.clear();icon_.clear();
+    if(!isVisible()){title_.clear();detail_.clear();icon_.clear();return;}
+    if(!wanted_)return;   // already fading out
+    wanted_=false;
+    fadeTo(0.,toast::kFadeOutMs);
+}
+
+// The visible (alpha) bounds of a texture, as the XMB view fits them: RCO glyphs carry transparent padding.
+QRect NotifyOverlay::inkBounds(const QString& texture,const QImage& image) {
+    auto bounds=inkBounds_.value(texture);
+    if(!bounds.isNull())return bounds;
+    const QImage argb=image.convertToFormat(QImage::Format_ARGB32);
+    for(int y=0;y<argb.height();++y){const auto* row=reinterpret_cast<const QRgb*>(argb.constScanLine(y));for(int x=0;x<argb.width();++x)if(qAlpha(row[x])>16)bounds=bounds.united(QRect(x,y,1,1));}
+    if(bounds.isNull())bounds=image.rect();
+    inkBounds_.insert(texture,bounds);
+    return bounds;
 }
 
 void NotifyOverlay::paintEvent(QPaintEvent*) {
+    if(title_.isEmpty())return;
     QPainter p(this);
-    p.setRenderHint(QPainter::SmoothPixmapTransform);
-    const qreal height=detail_.isEmpty()?58.:84.;
-    p.scale(width()/400.0,this->height()/height);
-    const QRectF plaque(0,0,400,height);
-    const QImage background=assets_.bestImage(QStringLiteral("system_plugin"),QStringLiteral("tex_notification"));
-    if(!background.isNull()) {
-        const qreal i=std::min<qreal>(16.,std::min(background.width(),background.height())/2.);
-        const qreal sx[]={0.,i,background.width()-i,qreal(background.width())};
-        const qreal sy[]={0.,i,background.height()-i,qreal(background.height())};
-        const qreal dx[]={0.,i,400.-i,400.},dy[]={0.,i,height-i,height};
-        p.save();p.setOpacity(.94);
-        for(int row=0;row<3;++row)for(int col=0;col<3;++col)
-            p.drawImage(QRectF(dx[col],dy[row],dx[col+1]-dx[col],dy[row+1]-dy[row]),background,
-                QRectF(sx[col],sy[row],sx[col+1]-sx[col],sy[row+1]-sy[row]));
-        p.restore();
-    } else {
-        p.setPen(Qt::NoPen);p.setBrush(QColor(20,20,20,220));p.drawRoundedRect(plaque,12,12);
+    p.setRenderHints(QPainter::Antialiasing|QPainter::SmoothPixmapTransform|QPainter::TextAntialiasing);
+    p.setCompositionMode(QPainter::CompositionMode_Source);p.fillRect(rect(),Qt::transparent);p.setCompositionMode(QPainter::CompositionMode_SourceOver);
+    p.setTransform(QTransform(scale_,0,0,scale_,designOrigin_.x(),designOrigin_.y()));   // 1920x1080 design units, as the XMB view draws
+    const auto& box=layout_.box;
+    p.setPen(Qt::NoPen);
+    p.setBrush(QColor(toast::kFillRed,toast::kFillGreen,toast::kFillBlue,int(std::lround(toast::kFillAlpha*255.))));
+    p.drawRoundedRect(QRectF(box.x,box.y,box.w,box.h),toast::kBoxRadius,toast::kBoxRadius);
+    if(layout_.hasIcon) {
+        const QImage image=assets_.bestImage(QStringLiteral("system_plugin"),icon_);
+        if(!image.isNull()) {
+            const auto bounds=inkBounds(icon_,image);
+            const QRectF slot(layout_.icon.x,layout_.icon.y,layout_.icon.side,layout_.icon.side);
+            const QSizeF size=QSizeF(bounds.size()).scaled(slot.size(),Qt::KeepAspectRatio);
+            p.drawImage(QRectF(slot.center()-QPointF(size.width()/2,size.height()/2),size),image,bounds);
+        }
     }
-    const QImage image=assets_.bestImage(QStringLiteral("system_plugin"),icon_);
-    if(!image.isNull()) {
-        const qreal side=height-12.;
-        p.drawImage(QRectF(13.,(height-side)/2.,side,side),image);
-    }
-    const qreal left=image.isNull()?16.:13.+height-12.+14.;
-    const qreal textWidth=400.-16.-left;
-    QFont titleFont(fontFamily_);titleFont.setPixelSize(22);
-    const QString title=QFontMetrics(titleFont).elidedText(title_,Qt::ElideRight,int(textWidth));
-    QFont detailFont(fontFamily_);detailFont.setPixelSize(18);
-    const QString detail=QFontMetrics(detailFont).elidedText(detail_,Qt::ElideRight,int(textWidth));
-    const auto label=[&](const QRectF& rect,const QString& text,int size,const QColor& colour) {
+    const auto label=[&](const toast::TextRect& r,const QString& text,int size,int grey) {
         QFont font(fontFamily_);font.setPixelSize(size);font.setStyleStrategy(QFont::PreferAntialias);
         font.setHintingPreference(QFont::PreferNoHinting);p.setFont(font);
-        p.setPen(QColor(0,0,0,38));p.drawText(rect.translated(1,1),Qt::AlignLeft|Qt::AlignVCenter,text);
-        p.setPen(colour);p.drawText(rect,Qt::AlignLeft|Qt::AlignVCenter,text);
+        const QRectF at(r.x,r.y,r.w,r.h);
+        p.setPen(QColor(0,0,0,90));p.drawText(at.translated(1,1),Qt::AlignLeft|Qt::AlignVCenter,text);
+        p.setPen(QColor(grey,grey,grey));p.drawText(at,Qt::AlignLeft|Qt::AlignVCenter,text);
     };
-    if(!detail_.isEmpty()) {
-        label(QRectF(left,10.,textWidth,28.),title,22,QColor(245,245,245));
-        label(QRectF(left,36.,textWidth,24.),detail,18,QColor(206,206,206));
-    } else label(QRectF(left,8.,textWidth,height-16.),title,22,QColor(245,245,245));
+    label(layout_.title,drawnTitle_,int(toast::kTextSize),toast::kTitleGrey);
+    if(layout_.twoLines)label(layout_.detail,drawnDetail_,int(toast::kDetailSize),toast::kDetailGrey);
 }
 }

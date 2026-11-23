@@ -279,7 +279,7 @@ countdown ring is not built.
 
 The `tex_notification` plaque is no longer drawn; `View::drawNotification` draws the box, the event's own
 firmware glyph (`tex_notification_*`) and one or two text lines. Two-line events (title + detail) use the same
-107 px box. The in-game `NotifyOverlay` window still has its old look (not changed here).
+107 px box. The in-game `NotifyOverlay` window uses the same toast (see "In-game overlay" below).
 
 Real producers: every existing `notify()` call, plus new "Signed out." (detail Spotify / Jellyfin) after a
 confirmed sign-out of those services, which previously gave no feedback. SteamCMD already announced sign in/out.
@@ -288,4 +288,24 @@ Honest differences: the toast leaves the info-bar clock faintly visible through 
 hides it, alpha not separable); text shadow is the firmware's 4/5 px, larger than the recording's ~2 px; the
 glyph for non-friend events is the info glyph, not the Friends faces.
 
-Tests: `xmb-notification-toast-tests` (29 checks, pure logic).
+### In-game overlay
+
+`NotifyOverlay` (the window shown over a running game, `src/notify_overlay.cpp`) now draws the same measured toast. The
+geometry, fill, glyph square, text rows and ink greys come from `src/notification_toast.h` (`layoutToast`), which
+`View::drawNotification` also uses, so the two cannot drift. Differences by construction:
+
+- The window is exactly the toast box (`toast::overlayWindow`, rounded outward), on the monitor the foreground window is
+  on, at the right edge/top of that monitor's centred 16:9 design area, scaled by that monitor's `DesignSpace` factor
+  (DPI-independent, as the XMB). No slide: a window move per frame is not worth it; the fade is the traced 200 ms in /
+  100 ms out (`kFadeInMs`/`kFadeOutMs`, window opacity). Lifetime and queue are the shell's, unchanged.
+- Glyph is fitted to its ink square as the view does; text uses plain Qt drawing with a 1 px shadow, not the XMB's
+  firmware text renderer, so glyph edges differ slightly.
+- Unchanged: never activates, click-through (`WS_EX_TRANSPARENT|NOACTIVATE|TOOLWINDOW`), always on top, hidden by the
+  shell when the notification expires or the XMB is raised over the game.
+
+Evidence: `work/notify-overlay-e2e.ts` launches the XMB's own exe as a stand-in title (`--zf-text-sink`), raises a
+notification with the `NOTIFY=` script token, and checks the overlay window's size/position/styles/not-foreground and
+auto-hide, then composes the XMB toast and the overlay capture side by side. Result (1920x1080): window 250x107 at
+x 1568 (right edge 1818, top 82), 9/9 checks pass.
+
+Tests: `xmb-notification-toast-tests` (46 checks, pure logic incl. layout and overlay-window mapping).

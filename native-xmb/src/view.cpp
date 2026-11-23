@@ -1879,37 +1879,31 @@ void View::drawNotification(QPainter& p,double amount) {
     const QString title=titleMetrics.elidedText(notificationShown_.title,Qt::ElideRight,budget);
     const QString detail=twoLines?detailMetrics.elidedText(notificationShown_.detail,Qt::ElideRight,budget):QString();
     const double textWidth=std::max<double>(titleMetrics.horizontalAdvance(title),twoLines?detailMetrics.horizontalAdvance(detail):0.);
-    toast::Box box=toast::toastBox(textWidth);
+    const auto& icon=assets_.bestImage("system_plugin",notificationShown_.icon);
+    auto layout=toast::layoutToast(textWidth,!icon.isNull(),twoLines);
     // Slide in from the right by 48 px while it fades, as the pop-up did; the same curve carries it back out.
-    box.x+=(1.-alpha)*48.;
+    const double slide=(1.-alpha)*toast::kSlideDistance;
+    layout.box.x+=slide;layout.icon.x+=slide;layout.title.x+=slide;layout.detail.x+=slide;
+    const auto& box=layout.box;
     p.save();p.setRenderHint(QPainter::Antialiasing,true);
     p.setPen(Qt::NoPen);p.setBrush(QColor(toast::kFillRed,toast::kFillGreen,toast::kFillBlue,int(std::lround(toast::kFillAlpha*alpha*255.))));
     p.drawRoundedRect(QRectF(box.x,box.y,box.w,box.h),toast::kBoxRadius,toast::kBoxRadius);
     p.restore();
-    const auto& icon=assets_.bestImage("system_plugin",notificationShown_.icon);
-    double textLeft=box.x+toast::kIconInkLeft;
-    if(!icon.isNull()) {
-        const auto place=toast::iconRect(box);
-        drawImage(p,"system_plugin",notificationShown_.icon,QRectF(place.x,place.y,place.side,place.side),alpha);
-        textLeft=box.x+toast::kTextLeft;
-    } else if(!notificationTextureWarned_) {
+    if(layout.hasIcon)drawImage(p,"system_plugin",notificationShown_.icon,QRectF(layout.icon.x,layout.icon.y,layout.icon.side,layout.icon.side),alpha);
+    else if(!notificationTextureWarned_) {
         notificationTextureWarned_=true;
         qWarning().noquote()<<"notify: texture missing system_plugin"<<notificationShown_.icon<<"(drawn without the icon)";
     }
-    const auto label=[&](const QRectF& rect,const QString& value,const QFont& font,QColor colour) {
+    const auto label=[&](const toast::TextRect& r,const QString& value,const QFont& font,QColor colour) {
         colour.setAlphaF(colour.alphaF()*alpha);
+        const QRectF rect(r.x,r.y,r.w,r.h);
         if(textRenderer_.ready()) {textRenderer_.draw(*this,p,rect,value,font,colour,Qt::AlignLeft|Qt::AlignVCenter);return;}
         QFont plain=font;plain.setStyleStrategy(QFont::PreferAntialias);plain.setHintingPreference(QFont::PreferNoHinting);p.setFont(plain);
         p.setPen(QColor(0,0,0,int(90*alpha)));p.drawText(rect.translated(1,1),Qt::AlignLeft|Qt::AlignVCenter,value);
         p.setPen(colour);p.drawText(rect,Qt::AlignLeft|Qt::AlignVCenter,value);
     };
-    const double width=box.right()-textLeft;
-    if(twoLines) {
-        const double block=toast::kTextSize+6.+toast::kDetailSize+6.;
-        const double top=box.y+(box.h-block)/2.;
-        label(QRectF(textLeft,top,width,toast::kTextSize+6.),title,titleFont,QColor(255,255,255));
-        label(QRectF(textLeft,top+toast::kTextSize+4.,width,toast::kDetailSize+6.),detail,detailFont,QColor(214,214,214));
-    } else label(QRectF(textLeft,box.y,width,box.h),title,titleFont,QColor(255,255,255));
+    label(layout.title,title,titleFont,QColor(toast::kTitleGrey,toast::kTitleGrey,toast::kTitleGrey));
+    if(twoLines)label(layout.detail,detail,detailFont,QColor(toast::kDetailGrey,toast::kDetailGrey,toast::kDetailGrey));
 }
 // The operation guide behind "Triangle : Options" (audit/FIDELITY-ROOT-BAR.md 6.1 update 3), all TRACED:
 //   explore_plugin 0x4D5B4 hands the focused item's hint string (its class getter returns msg_option_with_icon

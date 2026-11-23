@@ -123,4 +123,57 @@ inline IconRect iconRect(const Box& box) {
     return IconRect{box.x + kIconInkLeft, box.y + box.h / 2. - kIconInkSize / 2., kIconInkSize};
 }
 
+inline constexpr int kTitleGrey = 255;           // title ink (white)
+inline constexpr int kDetailGrey = 214;          // detail line ink
+inline constexpr double kLineGap = 6.;           // extra height each text row carries below its font size
+inline constexpr double kSlideDistance = 48.;   // the XMB toast slides in from the right by this much while it fades
+inline constexpr int kFadeInMs = 200;            // the shared mode-5 move time (View::moveMilliseconds)
+inline constexpr int kFadeOutMs = 100;           // the firmware's own hide fade (View::notificationHideMilliseconds)
+
+struct TextRect {
+    double x = 0, y = 0, w = 0, h = 0;
+};
+// Everything a surface needs to draw one toast, in 1920x1080 coordinates: the box, the glyph square (when the event
+// has a glyph) and the one or two text rows. The XMB view and the in-game overlay window both draw from this, so
+// the two cannot drift apart.
+struct Layout {
+    Box box;
+    bool hasIcon = false;
+    bool twoLines = false;
+    IconRect icon;
+    TextRect title, detail;   // detail stays empty for a one-line toast
+};
+inline Layout layoutToast(double textWidth, bool hasIcon, bool twoLines) {
+    Layout out;
+    out.box = toastBox(textWidth);
+    out.hasIcon = hasIcon;
+    out.twoLines = twoLines;
+    out.icon = iconRect(out.box);
+    const double left = out.box.x + (hasIcon ? kTextLeft : kIconInkLeft);
+    const double width = out.box.right() - left;
+    if (twoLines) {
+        const double block = kTextSize + kLineGap + kDetailSize + kLineGap;
+        const double top = out.box.y + (out.box.h - block) / 2.;
+        out.title = TextRect{left, top, width, kTextSize + kLineGap};
+        out.detail = TextRect{left, top + kTextSize + 4., width, kDetailSize + kLineGap};
+    } else {
+        out.title = TextRect{left, out.box.y, width, out.box.h};
+    }
+    return out;
+}
+
+// The in-game overlay is a window the size of the box alone. `scale` is the monitor's design-to-pixel factor
+// (DesignSpace::x) and (originX, originY) the design area's top-left on that monitor in pixels. The result is the
+// window rectangle in monitor pixels, rounded OUTWARD so the box's antialiased edge is never clipped.
+struct PixelRect {
+    int x = 0, y = 0, w = 0, h = 0;
+};
+inline PixelRect overlayWindow(const Box& box, double scale, double originX, double originY) {
+    const int left = int(std::floor(originX + box.x * scale));
+    const int top = int(std::floor(originY + box.y * scale));
+    const int right = int(std::ceil(originX + box.right() * scale));
+    const int bottom = int(std::ceil(originY + box.bottom() * scale));
+    return PixelRect{left, top, right - left, bottom - top};
+}
+
 }  // namespace xmb::toast

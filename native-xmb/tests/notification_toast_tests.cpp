@@ -73,6 +73,35 @@ int main(int argc, char** argv) {
     check(near(icon.y + icon.side / 2., small.y + small.h / 2.), "the icon is centred on the box");
     check(icon.x + icon.side < small.x + kTextLeft, "the icon ends before the text begins");
 
+    // ---- The shared layout (XMB view and in-game overlay draw from it) ---------------------------------------
+    const Layout one = layoutToast(118.5, true, false);
+    check(near(one.box.w, small.w) && near(one.box.right(), 1818.), "the layout's box is the measured toast box");
+    check(near(one.title.x, one.box.x + kTextLeft), "with a glyph the text starts at the measured text left");
+    check(near(one.title.y, one.box.y) && near(one.title.h, one.box.h), "a one-line title is centred over the whole box");
+    check(near(one.title.x + one.title.w, one.box.right()), "the text row runs to the box's right edge");
+    check(near(one.icon.x, iconRect(one.box).x) && near(one.icon.side, kIconInkSize), "the layout carries the icon square");
+    const Layout bare = layoutToast(118.5, false, false);
+    check(near(bare.title.x, bare.box.x + kIconInkLeft), "without a glyph the text takes the icon's place");
+    const Layout two = layoutToast(200., true, true);
+    check(two.twoLines && two.detail.y > two.title.y, "a two-line toast stacks the detail under the title");
+    check(near(two.title.y + two.title.h, two.detail.y + 2.), "the detail row follows the title row (2 px overlap, as the view drew it)");
+    check(two.title.y >= two.box.y && two.detail.y + two.detail.h <= two.box.bottom(), "both rows fit inside the 107 px box");
+    check(near((two.title.y - two.box.y), (two.box.bottom() - (two.detail.y + two.detail.h)), 2.1), "the two-line block is vertically centred (rows overlap 2 px)");
+    check(kTitleGrey == 255 && kDetailGrey < kTitleGrey, "the detail line is dimmer than the title");
+    check(kFadeInMs == 200 && kFadeOutMs == 100, "fade times are the traced 200 ms in / 100 ms out");
+
+    // ---- The overlay window: the box mapped onto a monitor ---------------------------------------------------
+    const PixelRect hd = overlayWindow(small, 1., 0., 0.);
+    check(hd.x + hd.w == 1818 && hd.y == 82 && hd.h == 107, "at 1080p the overlay window is the box itself");
+    const PixelRect qhd = overlayWindow(small, 1440. / 1080., 0., 0.);
+    check(qhd.x + qhd.w == 2424 && qhd.y == 109 && qhd.h >= 142 && qhd.h <= 144, "at 1440p the window scales by 4/3 and keeps its right edge");
+    const PixelRect ultra = overlayWindow(small, 1., 240., 0.);   // 16:9 area centred on a 2400x1080 monitor
+    check(ultra.x + ultra.w == 2058, "a monitor wider than 16:9 shifts the box with the design area's origin");
+    const PixelRect half = overlayWindow(small, 720. / 1080., 0., 0.);
+    check(half.w * 3 >= int(small.w * 2) && half.w * 3 <= int(small.w * 2) + 6, "a 720p monitor shrinks the window by 2/3");
+    const PixelRect fractional = overlayWindow(small, 1.25, 0.4, 0.6);
+    check(fractional.x <= small.x * 1.25 + .4 && fractional.x + fractional.w >= small.right() * 1.25 + .4, "the window is rounded outward so the edge is not clipped");
+
     std::printf("notification-toast: %d checks, %d failed\n", checks, failures);
     return failures == 0 ? 0 : 1;
 }
