@@ -1846,6 +1846,33 @@ int main(int argc,char** argv) {
               "configured FlareSolverr solves an HTML-challenged hot catalogue and the title is parsed");
         check(solverPosts==1,"an HTML-challenged hot catalogue falls back to FlareSolverr exactly once");
 
+        // 3b. The opt-in ranked-catalogue cache composes with the solver without changing it: a solver-
+        // solved catalogue is stored like any other validated success; a cache hit never contacts the
+        // solver; a forced refresh (explicit Retry) goes live again, solver included; and an empty
+        // endpoint with a cache directory still never contacts the solver and stores nothing on failure.
+        {
+            QTemporaryDir solverCacheDir;
+            solverPosts=0;
+            QVector<PopularTitle> first,second,third,none;QString cacheError;
+            check(HydraLibrary(solverEndpoint,solverCacheDir.path()).popularTitles(&first,&cacheError) && first.size()==1 && solverPosts==1,
+                  "cache miss + configured FlareSolverr: the challenged hot catalogue is solved once");
+            check(HydraLibrary(solverEndpoint,solverCacheDir.path()).popularTitles(&second,&cacheError) && second.size()==1 &&
+                  second.first().title==QStringLiteral("Solver Hot Game") && solverPosts==1,
+                  "a cached catalogue is served without contacting FlareSolverr again");
+            check(HydraLibrary(solverEndpoint,solverCacheDir.path()).popularTitles(&third,&cacheError,/*forceRefresh=*/true) && third.size()==1 && solverPosts==2,
+                  "a forced refresh skips the cached read and goes live through FlareSolverr");
+            QTemporaryDir emptyCacheDir;
+            solverPosts=0;
+            check(!HydraLibrary(QString{},emptyCacheDir.path()).popularTitles(&none,&cacheError) && none.isEmpty() && solverPosts==0 &&
+                  !HydraCatalogueCache(emptyCacheDir.path()).load(base+QStringLiteral("/hot-challenge"),&none),
+                  "no endpoint + cache directory: a challenged catalogue fails, never contacts the solver and stores nothing");
+            // The genre-scoped path never contacts the solver when there is nothing to resolve.
+            solverPosts=0;
+            QVector<GameResult> noGames;QString genreError;
+            check(HydraLibrary(solverEndpoint).popularGames(QVector<PopularTitleGroup>{},QStringLiteral("Action"),&noGames,&genreError) && noGames.isEmpty() && solverPosts==0,
+                  "a genre with no matching titles resolves nothing and contacts no one");
+        }
+
         // Source-feed PRIMARY semantics.
         // 4. With the endpoint configured, browseSource() calls the solver FIRST, returns its result,
         // and does NOT also hit the direct endpoint when the solver succeeds.
