@@ -1,4 +1,5 @@
 #include "view.h"
+#include "artwork_backdrop.h"
 #include "psn_pages.h"
 #include "logo_tiles.h"
 #include "game_badge.h"
@@ -1331,10 +1332,9 @@ void View::paintGL() {
     const auto pace=pacedClock?pacer_.step(nowNs,true):xmb::FramePacer::Step{std::clamp(double(nowNs-previousFrameNs_)/1.e9,0.,.1),double(nowNs)/1.e9,false};
     const double dt=pace.dt;previousFrameNs_=nowNs;
     const qint64 artworkTime=focusedBackgroundIsPage_ && focusTimeOverride_<0?pageBackdropClock_.elapsed():focusTime();
-    const bool showArtwork=!focusedBackground_.isNull() && artworkTime>=artworkDwellMs && !shell_.mediaOpen() && !shell_.psMenuOpen();
-    const double fadeStep=dt*1000./artworkFadeMs;
-    focusedBackgroundOpacity_=std::clamp(focusedBackgroundOpacity_+(showArtwork?fadeStep:-fadeStep),0.,1.);
-    departingBackgroundOpacity_=std::max(0.,departingBackgroundOpacity_-fadeStep);
+    const bool showArtwork=!focusedBackground_.isNull() && backdrop::dwellElapsed(artworkTime) && !shell_.mediaOpen() && !shell_.psMenuOpen();
+    focusedBackgroundOpacity_=backdrop::step(focusedBackgroundOpacity_,showArtwork,dt);
+    departingBackgroundOpacity_=backdrop::departingStep(departingBackgroundOpacity_,dt);
     if(departingBackgroundOpacity_==0.)departingBackground_={};
     const double renderSeconds=secondsOverride_>=0.?secondsOverride_:pace.contentSeconds; // fixed for A/B captures
     // Every move is a firmware paf animation (PafEase): 200 ms in accel mode 5 for the category and item moves and
@@ -1466,7 +1466,10 @@ void View::paintGL() {
         const auto weights=Ribbon::bootWeights(boot,Coldboot::normalBg);
         ribbon_.setBootTime(boot,Coldboot::normalBg);
         hdr_.setBoot(weights.toColdboot2,weights.toClock);
-        particles_.setGlobalAlpha(weights.toClock); // PARTICLES skips coldboot2: GLOBAL ALPHA 0 until NormalBG2 (RPCS3 capture)
+        // PARTICLES skips coldboot2: GLOBAL ALPHA 0 until NormalBG2 (RPCS3 capture). The dust is a GUI layer, so it also
+        // stays off while the intro and the health notice hold the GUI: the recording shows no specks over the notice
+        // (frames 61-65 s) and the first ones on the first XMB frame (65.9 s; audit/BOOT-AND-BACKDROP-2026-11-22.md).
+        particles_.setGlobalAlpha(coldboot_.introHoldsGui()?0.:weights.toClock);
         const double fade=std::clamp(boot/7.5,0.,1.); // DAT_00091e20, the 7.5 s that BootBG2 passes with the clock preset
         backgroundAlpha_=float(fade*fade*(3-2*fade));
         backgroundToColdboot2_=weights.toColdboot2;backgroundToClock_=weights.toClock;

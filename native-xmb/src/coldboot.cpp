@@ -249,7 +249,7 @@ bool Coldboot::init(QOpenGLFunctions_3_3_Core& gl,Assets& assets) {
         noticeFamily_=assets.fontFamily();
         if(noticeText_.isEmpty())qWarning()<<"coldboot: sysconf_plugin has no msg_health_warning_start string; no notice";
     }
-    noticeCloseAt_=showGui+noticeHold_;
+    noticeCloseAt_=showGui+noticeDelay+noticeHold_;
     ready_=true;
     qInfo().noquote()<<QString("coldboot: coldboot.raf scene and coldboot.jsx timeline (appear %1 s, blur %2 s, whole %3 s, fade %4-%5 s)")
         .arg(appearStart_).arg(blurStart_).arg(wholeStart_).arg(fadeStart_).arg(scriptEnd_);
@@ -270,9 +270,9 @@ void Coldboot::start() {
 void Coldboot::skip() {
     if(GameBoot::active()){GameBoot::skip();return;}
     const double t=seconds();
-    if(noticeShown() && t>=showGui && t<1e8) {
+    if(noticeShown() && t>=showGui && t<1e8) {   // from ShowGUI: a press in the delay before the widget appears is locked out too
         // 0x5ab6c / 0x5abcc: ignored while the lock flag is set, else cancel the auto-close timer and hide (200 ms).
-        const bool locked=t<showGui+noticeLock_;
+        const bool locked=t<showGui+noticeDelay+noticeLock_;
         if(!locked && t<noticeCloseAt_)noticeCloseAt_=t;
         qInfo().noquote()<<QString("coldboot: notice press at %1 s (%2)").arg(t,0,'f',3).arg(locked?"input lock, ignored":"closing");
         return;
@@ -283,6 +283,10 @@ void Coldboot::skip() {
 
 bool Coldboot::holdsGui() const {
     if(GameBoot::active())return true;
+    return introHoldsGui();
+}
+
+bool Coldboot::introHoldsGui() const {
     if(!ready_)return false;
     const double t=seconds();
     return t<showGui || (noticeShown() && t<noticeCloseAt_+noticeFade);
@@ -291,7 +295,7 @@ bool Coldboot::holdsGui() const {
 // Shown at once (FUN_0005bdf8 shows the widget with 0x14b518 = 0), held until noticeCloseAt_, then hidden over
 // 200 ms. The hide's curve is paf's (paf_73CF3BB9) and not traced: linear here (INFERRED).
 double Coldboot::noticeAlpha(double t) const {
-    if(!noticeShown() || t<showGui || t>1e8)return 0;
+    if(!noticeShown() || t<showGui+noticeDelay || t>1e8)return 0;
     if(t<noticeCloseAt_)return 1;
     return std::max(0.,1-(t-noticeCloseAt_)/noticeFade);
 }
@@ -413,9 +417,9 @@ void Coldboot::render(QOpenGLFunctions_3_3_Core& gl,int pixelWidth,int pixelHeig
 // the centre (322.5 .. 1597.5: line 3 ends at 1590, line 2 would need ~1330 for its next word), the block's cap
 // top to last baseline centred on y 540 (first cap top 478.5, last baseline 598.5). sysconf_plugin builds this
 // widget in code ("body" / "body_text", FUN_0005bf30), so no RCO object carries the rect. Drawn over the boot
-// background with no plate (the frame is black because that run drew no background; INFERRED), no shadow (INFERRED).
+// background with no plate (the frame is black because that run drew no background; INFERRED), the shadow is measured on the RPCS3 recording (see the stamps below).
 void Coldboot::renderNotice(QOpenGLFunctions_3_3_Core& gl,int pixelWidth,int pixelHeight,GLuint targetFbo,double alpha) {
-    constexpr qreal left=322.5,width=1275,capHeight=18,pitch=34,centreY=540;
+    constexpr qreal left=322.5,width=1275,capHeight=18,pitch=34,centreY=540,shadowOffset=2,shadowSpread=1.;
     QFont font(noticeFamily_);font.setPixelSize(100);
     const qreal capAt100=QFontMetricsF(font).capHeight();
     font.setPixelSize(std::max(1,int(std::lround(capHeight*100/std::max<qreal>(1,capAt100)))));
@@ -437,9 +441,19 @@ void Coldboot::renderNotice(QOpenGLFunctions_3_3_Core& gl,int pixelWidth,int pix
     QPainter painter(&device);
     painter.setRenderHints(QPainter::Antialiasing|QPainter::TextAntialiasing);
     painter.setTransform(DesignSpace(pixelWidth,pixelHeight).transform());
-    painter.setOpacity(alpha);painter.setPen(Qt::white);
     // Line k's top is k * pitch in its layout, so its baseline lands on firstBaseline + k * pitch.
-    for(const auto& layout:layouts)layout->draw(&painter,{left,firstBaseline-metrics.ascent()});
+    const QPointF origin{left,firstBaseline-metrics.ascent()};
+    // The recording (rpcs3 boot, 61-65 s, 1280x720) shows a soft dark drop shadow under every glyph: about 2 design px
+    // down and right, about 1.5 px of blur, peak about 35 % black (MEASURED by eye on the zoomed glyphs, FIT for the
+    // blur and the strength). A 3 x 3 stamp grid around the offset stands in for the blur; nine stamps of 4.5 % add up
+    // to the 35 % at the centre of a stroke.
+    painter.setPen(Qt::black);
+    for(int dy=-1;dy<=1;++dy)for(int dx=-1;dx<=1;++dx) {
+        painter.setOpacity(alpha*.045*(dx==0&&dy==0?1.5:1.));
+        for(const auto& layout:layouts)layout->draw(&painter,origin+QPointF(shadowOffset+dx*shadowSpread,shadowOffset+dy*shadowSpread));
+    }
+    painter.setOpacity(alpha);painter.setPen(Qt::white);
+    for(const auto& layout:layouts)layout->draw(&painter,origin);
     painter.end();
 }
 

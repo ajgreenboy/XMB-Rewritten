@@ -361,10 +361,8 @@ private:
     qint64 focusTime() const { return focusTimeOverride_>=0?focusTimeOverride_:(focusClock_.isValid()?focusClock_.elapsed():0); }
     qint64 focusKey_=-1;
     QString focusedEntryId_;
-    // ICON0 is row art; PIC1 is a separate, delayed background. Timing is a
-    // native fit until a frame-timed firmware capture establishes the constants.
-    static constexpr qint64 artworkDwellMs=2000;
-    static constexpr double artworkFadeMs=350.;
+    // ICON0 is row art; PIC1 is a separate, delayed background. Its dwell and fades are measured from the
+    // recording: artwork_backdrop.h, audit/BOOT-AND-BACKDROP-2026-11-22.md.
     QString focusedBackgroundPath_;
     QImage focusedBackground_,departingBackground_;
     quint64 focusedBackgroundRequest_=0;

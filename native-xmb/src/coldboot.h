@@ -32,6 +32,10 @@ public:
     // HDR/PARTICLES coldboot1 at once, then coldboot2 over 3 s), NormalBG2 at 4 s (0x11b20: the clock keyframes over
     // 7.5 s), ShowGUI at 5.5 s (0x4110), Finished at 10 s (0x3c10: page_coldboot closed).
     static constexpr double normalBg=4.0,showGui=5.5,finished=10.0;
+    // The notice's widget appears this long after ShowGUI. MEASURED on the RPCS3 boot recording (audit/
+    // BOOT-AND-BACKDROP-2026-11-22.md): with the origin fixed by the logo's fade (ghost at 56.6 s and 59.5 s), the
+    // text jumps on at 60.62 s, 0.65 s after ShowGUI; it closes at 65.5 s, so the 5 s hold runs from the appearance.
+    static constexpr double noticeDelay=0.65;
     Coldboot();
     ~Coldboot();
     bool init(QOpenGLFunctions_3_3_Core& gl,Assets& assets);
@@ -51,6 +55,8 @@ public:
     void setNoticeEnabled(bool enabled) { noticeEnabled_=enabled; }
     // The boot still owns the screen: the intro before ShowGUI, then the notice until its close fade ends.
     bool holdsGui() const;
+    // Only the cold-boot intro and its notice (not the game boot): the GUI layers (dust particles) stay off until it ends.
+    bool introHoldsGui() const;
     void render(QOpenGLFunctions_3_3_Core& gl,int pixelWidth,int pixelHeight,GLuint targetFbo);
 private:
     struct Actor { QString name; QVector3D position,scale,rotation; QVector2D uvOffset,uvScale; GLuint texture=0; };
