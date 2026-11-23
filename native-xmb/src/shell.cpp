@@ -1084,9 +1084,8 @@ QVector<Entry> Shell::steamFolderEntries(const QString& mode) const {
     };
     const auto add=[&](const QString& appId,const QString& title,const QString& detail,Action action) {
         auto e=item("steam:"+appId,title,"game_tex_default_ps3","explore_plugin_full",action,appId);
-        QString fullDetail=detail;
-        const QString played=steamActivityText(steamActivity_.value(appId),preferences_.value("clock/dateFormat").toInt());
-        if(!played.isEmpty())fullDetail+=(fullDetail.isEmpty()?QString():QStringLiteral(" - "))+played;
+        // No last-played date or play time on the row (owner direction 2026-11-23); the Triangle panel still has them.
+        const QString fullDetail=detail;
         // Inside a page these are ordinary items, not the category column's wide provider
         // tiles: a gameTile row here is laid out at the wide-tile size and lands out of
         // alignment. Artwork is centre-cropped to a square for the same reason.
@@ -1539,15 +1538,11 @@ void Shell::refreshContent() {
                     e.artwork=result.art.value("steam:"+game.appId);e.gameTile=true;
                     e.logoArt=result.logoIds.contains(e.id);
                     e.rawgArtworkVisible=!e.logoArt && result.rawgPaths.contains(e.id);
-                    // The detail line says what Steam itself recorded: time played and the last session.
+                    // The row's line under the title carries only the collection label (owner direction 2026-11-23): no
+                    // last-played date and no play time. Steam's recorded activity still orders the column and is still
+                    // shown in the game's Triangle panel ("Open in Steam Library").
                     QStringList detail;
                     const QString label=collectionLabel(game.appId);if(!label.isEmpty())detail<<label;
-                    // With the game badge on, the date moves to the focused row's date line (view.cpp) and the
-                    // detail keeps only what else Steam recorded; with it off the detail carries both, as before.
-                    auto recorded=steamActivity_.value(game.appId);
-                    if(gameBadge::enabled() && recorded.lastPlayed>86400){e.lastPlayed=recorded.lastPlayed;recorded.lastPlayed=0;}
-                    const QString activity=steamActivityText(recorded,preferences_.value("clock/dateFormat").toInt());
-                    if(!activity.isEmpty())detail<<activity;
                     e.detail=detail.join(QStringLiteral(" - "));installed.push_back(std::move(e));
                 }
                 // Most recently played first, as a console lists its recent titles; never-played keep Steam's order.

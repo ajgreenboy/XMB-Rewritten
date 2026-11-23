@@ -99,7 +99,11 @@ expect(!!never, "never-played title listed");
 const off = await run("badge-off", { XMB_GAME_BADGE: "0" }, moves);
 expect(off.code === 0, "opt-out run exits 0");
 console.log("badge-off rows:", off.rows.map((r) => `${r.id} detail=${JSON.stringify(r.detail)}`));
-expect(/Last played/.test(off.rows.find((r) => r.id === "steam:3001")?.detail ?? ""), "XMB_GAME_BADGE=0 keeps the date in the detail line");
+// Rows carry no last-played date or play time in either mode (owner direction 2026-11-23).
+for (const rows of [on.rows, off.rows]) {
+  const d = rows.find((r) => r.id === "steam:3001")?.detail ?? "";
+  expect(!/played|\d+ h|\d+ min/i.test(d), `row detail has no last-played/play-time text (${JSON.stringify(d)})`);
+}
 console.log(`screenshots: ${on.shot} ${off.shot}`);
 console.log(problems.length ? `\nFAILED ${problems.length} check(s)` : "\ngame-badge e2e: all checks passed");
 process.exit(problems.length ? 1 : 0);
