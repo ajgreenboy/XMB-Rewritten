@@ -9,6 +9,7 @@
 #include <QFile>
 #include <QHash>
 #include <QMediaDevices>
+#include <QFontDatabase>
 #include <QFontMetricsF>
 #include <QOpenGLPaintDevice>
 #include <QTimer>
@@ -250,6 +251,11 @@ bool Coldboot::init(QOpenGLFunctions_3_3_Core& gl,Assets& assets) {
         if(noticeText_.isEmpty())qWarning()<<"coldboot: sysconf_plugin has no msg_health_warning_start string; no notice";
     }
     noticeCloseAt_=showGui+noticeDelay+noticeHold_;
+    wordmarkEnabled_=bootwordmark::enabledFrom(qgetenv("XMB_BOOT_WORDMARK").constData());
+    wordmark_=bootwordmark::fitted(bootwordmark::startSeconds,bootwordmark::logoFirstVisibleSeconds);
+    // The wordmark's own typeface is not in the firmware (tex_scelogo reads "Sony Interactive Entertainment"). Verdana is the
+    // closest wide humanist sans measured (audit/BOOT-AND-BACKDROP-2026-11-22.md "The wordmark stage"); without it the firmware's UI font stands in.
+    wordmarkFamily_=QFontDatabase::families().contains(QStringLiteral("Verdana"))?QStringLiteral("Verdana"):assets.fontFamily();
     ready_=true;
     qInfo().noquote()<<QString("coldboot: coldboot.raf scene and coldboot.jsx timeline (appear %1 s, blur %2 s, whole %3 s, fade %4-%5 s)")
         .arg(appearStart_).arg(blurStart_).arg(wholeStart_).arg(fadeStart_).arg(scriptEnd_);
@@ -367,6 +373,7 @@ void Coldboot::render(QOpenGLFunctions_3_3_Core& gl,int pixelWidth,int pixelHeig
     if(GameBoot::active())return;
     if(!started_ || pixelWidth<=0 || pixelHeight<=0)return;
     if(const double alpha=noticeAlpha(seconds());alpha>0)renderNotice(gl,pixelWidth,pixelHeight,targetFbo,alpha);
+    if(const double alpha=wordmarkAlpha(seconds());alpha>0)renderWordmark(gl,pixelWidth,pixelHeight,targetFbo,alpha);
     if(!logoVisible())return;
     std::array<QVector4D,3> colours;QVector3D lightPosition,lightColour,attenuation;
     state(seconds(),colours,lightPosition,lightColour,attenuation);
@@ -454,6 +461,33 @@ void Coldboot::renderNotice(QOpenGLFunctions_3_3_Core& gl,int pixelWidth,int pix
     }
     painter.setOpacity(alpha);painter.setPen(Qt::white);
     for(const auto& layout:layouts)layout->draw(&painter,origin);
+    painter.end();
+}
+
+// "Sony Computer Entertainment" (boot_wordmark.h): three words, each at its measured left edge and stretched to its measured
+// ink width, on the measured baseline, at the cap height measured on the m2 frames; warm light grey (the recording's ink over
+// black reads 233/212/209 at full opacity, 12.8 s: MEASURED). The glyph shapes are Verdana's, not the wordmark's own.
+void Coldboot::renderWordmark(QOpenGLFunctions_3_3_Core& gl,int pixelWidth,int pixelHeight,GLuint targetFbo,double alpha) {
+    QFont font(wordmarkFamily_);font.setPixelSize(100);
+    const qreal capAt100=QFontMetricsF(font).capHeight();
+    font.setPixelSize(std::max(1,int(std::lround(bootwordmark::capHeight*100/std::max<qreal>(1,capAt100)))));
+    const QFontMetricsF metrics(font);
+    gl.glBindFramebuffer(GL_FRAMEBUFFER,targetFbo);gl.glViewport(0,0,pixelWidth,pixelHeight);
+    QOpenGLPaintDevice device(QSize(pixelWidth,pixelHeight));
+    QPainter painter(&device);
+    painter.setRenderHints(QPainter::Antialiasing|QPainter::TextAntialiasing);
+    painter.setTransform(DesignSpace(pixelWidth,pixelHeight).transform());
+    painter.setFont(font);painter.setPen(QColor(236,218,215));painter.setOpacity(alpha);
+    for(const auto& word:bootwordmark::words) {
+        const QString text=QString::fromLatin1(word.text);
+        const QRectF ink=metrics.tightBoundingRect(text);
+        if(ink.width()<=0)continue;
+        const qreal sx=word.width/ink.width();
+        painter.save();
+        painter.translate(word.left,bootwordmark::baseline);painter.scale(sx,1);
+        painter.drawText(QPointF(-ink.left(),0),text);
+        painter.restore();
+    }
     painter.end();
 }
 

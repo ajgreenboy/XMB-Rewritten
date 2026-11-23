@@ -1,5 +1,6 @@
 #pragma once
 #include "assets.h"
+#include "boot_wordmark.h"
 #include "rsx_program.h"
 #include <QAudioFormat>
 #include <QByteArray>
@@ -97,6 +98,15 @@ private:
     bool noticeShown() const { return noticeEnabled_ && !noticeText_.isEmpty(); }
     double noticeAlpha(double t) const;
     void renderNotice(QOpenGLFunctions_3_3_Core& gl,int pixelWidth,int pixelHeight,GLuint targetFbo,double alpha);
+    // The "Sony Computer Entertainment" stage (boot_wordmark.h, audit/BOOT-AND-BACKDROP-2026-11-22.md "The wordmark stage"): on by default, off with
+    // XMB_BOOT_WORDMARK=0. Drawn in the first seconds, ahead of the logo; the logo and every later stage keep their times.
+    bool wordmarkEnabled_=true;
+    bootwordmark::Schedule wordmark_;
+    QString wordmarkFamily_;
+    void renderWordmark(QOpenGLFunctions_3_3_Core& gl,int pixelWidth,int pixelHeight,GLuint targetFbo,double alpha);
+public:
+    double wordmarkAlpha(double t) const { return wordmarkEnabled_?bootwordmark::alphaAt(wordmark_,t):0.; }
+    const bootwordmark::Schedule& wordmarkSchedule() const { return wordmark_; }
 };
 
 // Game boot (S31) and the Auto-Off guide (S29), audit/PIPELINE.md "Game boot and the Auto-Off guide".

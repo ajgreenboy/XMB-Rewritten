@@ -26,14 +26,52 @@ match the recording's frame at 63.2 s to within a pixel in a zoomed crop.
 Side-by-side sheets (reference left, ours right, same scale, mapping t = R - 54.45 s): `C:\dev\out\boot-backdrop\boot-sbs-1.png`,
 `boot-sbs-2.png`, notice crop `notice-crop-new.png`.
 
-### The "Sony Computer Entertainment" wordmark stage: not implemented, on purpose
+### The "Sony Computer Entertainment" wordmark stage (added, default on; `XMB_BOOT_WORDMARK=0` turns it off)
 
-It appears only in the older-firmware recording M2 (11.6-14.6 s, wordmark x 720-1082, y 358 of 720, over a ribbon that brightens
-from dark brown to terracotta), where it replaces the PS3 logo and there is no notice. The 4.93 firmware here ships `tex_scelogo`
-(1024x64, ink 497x34), but it reads "Sony Interactive Entertainment" in a different typeface, and `anim_coldboot2` holds it at alpha
-0 (PIPELINE.md "Cold boot"); no "Sony Computer" string exists in dev_flash. The newer recording R, the same firmware generation as
-ours, shows no wordmark at all. Adding it would move our boot away from the 4.93 reference, so it is left out (no
-`XMB_BOOT_EXTRAS` switch was needed).
+The first pass left it out because the 4.93 reference (R) has none. The owner asked for it following the older recording m2, so
+it is now a stage of our cold boot. Measured on the m2 frames (1280x720, 200 ms, 11.0-19.5 s; no frame is committed):
+
+| Item | m2 measurement |
+|---|---|
+| Ribbon first visible | about 11.1 s (peak grey 3 at 11.2 s, 16 at 11.6 s, then about +50 grey levels per second) |
+| Text first visible / full | 11.67 s / 12.39 s, linear (mean grey of 79 stable ink pixels 41, 101, 162, 203 at 11.8 .. 12.4 s, flat after) |
+| Hold, then out | full until 14.12 s; linear out to 14.84 s (98 %, 88 %, 63 %, 37 %, 6 % at 14.0 .. 14.8 s, measured against the ribbon behind) |
+| Background | black until about 11.75 s, then a near-linear ramp of the corner mean (3,0,1) at 11.8 s, (42,19,11) at 13.0 s, (94,55,37) at 14.8 s, (125,74,53) from 17.0 s on (time of day 09:38 on the XMB clock) |
+| XMB | icons appear at about 18.9 s (frame difference drops to 0.3 at 18.8 s, jumps at 19.0 s); there is no PS3 logo and no notice |
+| Ink extent | x 721..1082, y 350..369 of 1280x720: Sony 721-779, Computer 784-904, Entertainment 911-1082 (50 % threshold, matches); cap top 350, x-height top 355, baseline 366, descenders to 369 |
+| Design space (x 1.5) | words at x 1081.5 / 1176 / 1366.5, ink widths 88.5 / 181.5 / 258, baseline 549, cap height 24, x-height about 16.5 |
+| Look | wide humanist/geometric sans, regular-medium weight (stems about 2 px at 720p), very tight word gaps (about 4-6 px), no shadow; ink over black reads 233/212/209 at full opacity |
+
+Asset catalogue: `tex_scelogo` in `custom_render_plugin` is "Sony Interactive Entertainment", 497x34 ink, held at alpha 0 by
+`anim_coldboot2`; plain-text search of dev_flash for "Sony Computer" finds only the PS1 BIOS image and the OSS notice, no UI string
+(the RCO text and texture tables were not searched by decoding every container; the texture was not re-rendered in this pass, it
+rests on the previous finding). Its text and typeface do not match the recording, so it is not reused: the three words are drawn
+with Verdana (closest installed wide sans, tried against Tahoma, Segoe UI, Bahnschrift, Arial, Trebuchet, Candara, Corbel,
+Franklin Gothic) when installed, else the firmware UI font. Each word is stretched horizontally to its measured ink width, which
+fixes the tracking and word gaps. Code: `src/boot_wordmark.h` (curves, schedule, placement, switch), `Coldboot::renderWordmark`.
+
+Placement in our sequence: m2 has the wordmark where 4.93 has the PS3 logo (the logo sits in the same right-of-centre spot), and
+the two cannot both stand there. The rule: every existing stage keeps its time (logo from about 1.5 s with its light, first visible
+about 2.1 s, ShowGUI 5.5 s, notice 6.15-11.35 s, background and ribbon untouched), and the wordmark takes the time before the
+logo: start 0.2 s, linear in 0.72 s, hold 0.46 s, linear out 0.72 s, gone at 2.1 s. The two fades are the measured ones; only the
+hold (1.73 s on m2) gives way. Skip, `--no-intro`, `--script`, `--background-clock`, kiosk and safe mode never create the intro, so
+they and every gate that does not boot are unchanged.
+
+Side-by-side sheets (reference left, ours right, both at 960x540, paired at equal wordmark opacity: m2 11.8 / 12.2 / 13.0 / 14.4 /
+14.8 s against ours 0.34 / 0.73 / 1.20 / 1.66 / 2.05 s): `C:\dev\out\sce-wordmark\sbs-wordmark-full.png` and
+`sbs-wordmark-crop.png` (text band, 2.5x).
+
+Differences that remain (not fixed):
+
+- Background and ribbon under the wordmark. m2 has already started its brown ramp and its ribbon is faint and brown; ours is black
+  until about 2.1 s (the 4.93 `anim_coldboot2` timeline, traced to R) with a grey ribbon, and our ribbon also flashes bright in the
+  first 0.3 s. This is the largest visible gap. Moving the background ramp earlier would change an existing stage, so it was not done.
+- The hold is 0.46 s against 1.73 s (the stage is 1.9 s long instead of 3.17 s).
+- Glyph shapes are Verdana's; the original wordmark's letterforms (a wider, rounder face) differ, most visibly the `y` and `C`.
+- Verdana is a Windows font; another machine falls back to the firmware UI font and will look different.
+- Our captures are at 960x540 (windowed run), the reference is 1280x720 JPEG-compressed video; ink edges are compared at 960x540.
+- Ours grabs pass the stage time as the intro clock, which runs from the first presented frame; m2's origin was placed by the
+  text's own appearance, not by an independent boot origin.
 
 ### Remaining differences (not fixed)
 

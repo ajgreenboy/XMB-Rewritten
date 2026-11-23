@@ -367,6 +367,7 @@ where the row says only `1` is accepted.
 | `XMB_FRAME_TRACE=<file>` | Write a bounded frame trace on orderly shutdown; summarize with `bun work/frame-report.ts <file>`. |
 | `XMB_DUMP_ENTRIES=<prefix>` | Write the harness's structural dumps: `<prefix>`, and `<prefix>.folder.json`, `.dl.json`, `.store.json`, `.options.json`, `.settings-<page>.json`, `.settings-choices.json`. This is the named-state oracle. |
 | `XMB_INTRO_GRAB=<dir>@<seconds,...>` | Save the frame as drawn the first time the intro clock passes each listed time, as `<dir>\intro_<seconds>.png`. |
+| `XMB_BOOT_WORDMARK=0` | Turn off the "Sony Computer Entertainment" wordmark that the cold boot shows in its first two seconds (on by default; see `audit/BOOT-AND-BACKDROP-2026-11-22.md`). |
 | `XMB_BG_SCENE=<png>` | Save the composed background scene once. |
 | `XMB_MOTION_LOG=1` | Log the focused column's and the depth's eased positions each frame while they move. |
 | `XMB_NOTIFY_LOG=1` | Log the notification composite's own curve each frame while it runs. |
