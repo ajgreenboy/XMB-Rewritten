@@ -16,6 +16,7 @@
 #include "settings_menu.h"
 #include "musicvis.h"
 #include "raf_render.h"
+#include "osk_composition.h"
 #include "osk_paste.h"
 #include <QClipboard>
 #include <QGuiApplication>
@@ -6918,6 +6919,20 @@ void View::drawOsk(QPainter& p,double panelAlpha,double scale,double dimFactor) 
     // The recording's I-beam is 22 px tall at 720p (y 231..252), 4 px serifs, 1-2 px shaft: 33 / 7 / 2 here. (The 2026-10-27
     // 1080p console capture put it at 27; the recording is the target of the 1:1 pass, so the draw uses the recording's.)
     static constexpr double oskCaretHeight=33.,oskCaretSerif=7.,oskCaretShaft=2.;
+    // The composition underline (recording, audit/OSK-RECORDED-SPEC-2026-11-22.md 2): the word being typed - the run of word
+    // characters that ends at the caret - is underlined 2 px (3 here) at y 251..252 of a field that starts at 225, in a solid
+    // (145,145,145), from the word's first pen position to its last (recorded "hi": x 341..355, "h": 341..353). It is there from the
+    // first letter until a space (or any non-word character) is typed. A masked field shows bullets and no underline. The
+    // console draws it while the prediction list has candidates; this build has no dictionary (OSK-FIRMWARE 8.2), so it is
+    // drawn for every composition word, which is what the recording shows for the words it types.
+    if(!osk_.masked) {
+        const auto word=oskCompositionRange(composed,osk_.cursor);
+        if(word.second>word.first) {
+            const double x0=textX-scroll+advance(composed.left(word.first));
+            const double x1=textX-scroll+advance(composed.left(word.second));
+            p.fillRect(QRectF(x0,double(l.bands.field.top())+39.,x1-x0,3.),QColor(145,145,145));
+        }
+    }
     if(osk_.caretLit) {
         const double x=textX+before-scroll;
         const double y=l.bands.field.top()+9;

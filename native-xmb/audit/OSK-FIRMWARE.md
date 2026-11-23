@@ -606,7 +606,7 @@ listed as an open question rather than as a layout rule.
    from the RCO's objects and the module's tables; the native app has no paf. The layout can be
    reproduced, the *mechanism* cannot, so any statement that the native OSK "is" the firmware's
    has to be scoped to geometry, colours and behaviour.
-2. **Prediction.** The candidate list is filled by the console's IME/dictionary
+2. **Prediction.** (Dictionary search result: 8.2.1.) The candidate list is filled by the console's IME/dictionary
    (`ime.prx`, `ime_atok.prx`, `ime_zi.prx` are present in `dev_flash/vsh/module`); English
    candidates came from the system dictionary. A PC build has no equivalent dictionary, and
    fabricating one would be a different feature. The list box, counter and selection
@@ -1340,7 +1340,7 @@ only exists on an authenticated library page, and no Jellyfin server was contact
   measured ink centres are +80 (Backspace) and +100 (Space) from the key's left edge on a 144 px key, i.e. a
   9 px and a 28 px residual. No single rule fits both, so the draw uses the centred one and the residual is
   listed rather than fitted.
-- **Prediction is empty.** The console's candidates come from `ime.prx`'s dictionary (8.2), so the list, its
+- **Prediction is empty.** The console's candidates come from `ime.prx`'s dictionary (8.2, 8.2.1), so the list, its
   header and the counter are drawn but never filled; the reference `s12` shows `zz`.
 - **The palette frame's x is the committed layout's** (15.6).
 - **The arrow keys' glyph is drawn text, not the `LABEL_UP` mask.** That image is a 19x12 white triangle at
@@ -1465,3 +1465,31 @@ data-model-only phase and was not touched.
 
 A script token `osk=<title>[|<initial text>]` opens the keyboard directly (no calling dialog) so a capture can reach it:
 `--script "size=1280x720,wait,osk=Comment,wait,wait,type=hi,grab=<png>,quit"`.
+
+## 8.2.1 Is there a readable English dictionary in the firmware? (2026-11-22)
+
+Searched the extracted `dev_flash` (the configured path, read only) for dictionary and IME resources. Found, by path only:
+
+* `data/dic/Zi8DatENAM.z8d` (86 120 B), `Zi8DatENUK.z8d` (95 012 B) and 18 other `Zi8Dat*.z8d` language files, `Zi8URLOEM.dat`:
+  the Zi eZiText predictive-text dictionaries by name (not confirmed from the module), presumably read by `vsh/module/ime_zi.sprx` (decrypted copy in the repo-external
+  `fw493/vsh_module/ime_zi.prx`).
+* `data/dic/atokp.dic` and `apotp.dic` (Japanese ATOK/Apotp prediction), `*.aad` lists: for `ime_atok.sprx` by name; Japanese, not English.
+* `vsh/module/ime.sprx`, `ime_atok.sprx`, `ime_zi.sprx`, `sys/external/libsysutil_imejp.sprx`, `libsysutil_oskdialog_ext.sprx`,
+  `libkey2char.sprx`; `vsh/resource/osk_plugin.rco`, `oskpanel_plugin.rco`, `oskfullkeypanel_plugin.rco` (captions and artwork only,
+  no word data).
+
+So an English dictionary exists (the recording's candidate order, hi / his / him / himself / hi-fi / hibernate..., is a ranked
+completion list of the kind eZiText produces). Its format is not plain text: the header is a table of offsets, followed by a
+character table (`eairntsolcdupmbhgfkvwyzjqx.-'` plus accents and digits, in frequency order) and a tree stored in a packed
+binary encoding. A probe for the letter indices of "hibernat" and "himself" under 8-, 7-, 6- and 5-bit masks found no match, so the
+words are not stored as one code per letter. Reading it needs the decoder in `ime_zi.sprx` (the node, rank and offset encoding),
+which this pass did not reverse. Without the decoder, prefix completion and the console's ranking cannot be reproduced, and
+inventing either would be fabrication, so:
+
+* no word list, dictionary or firmware-derived data is added to the repository, and nothing is bundled;
+* the candidate list and the counter stay as drawn (empty, 0);
+* the composition underline (the part that does not need candidates) is implemented: `src/osk_composition.h`.
+
+Follow-up if wanted: reverse `ime_zi.prx`'s `.z8d` reader (rea/Ghidra), then load `data/dic/Zi8DatENAM.z8d` lazily from `--dev-flash`
+at runtime like the other firmware assets, decode on demand, never copy it. No pad binding for choosing a candidate is added:
+the recording shows no candidate being selected (no highlight in any frame), so there is no evidence to implement it from.

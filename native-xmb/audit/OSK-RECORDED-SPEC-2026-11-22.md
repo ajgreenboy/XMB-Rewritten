@@ -33,7 +33,7 @@ captures) stands.
 | I-beam caret | bright green (130,249,12), shaft 1-2 px at x 341, 22 px tall (y 231..252), 4 px wide serifs top and bottom (33 / 7 / 2 px at 1080p; OSK-FIRMWARE 4.5 had 27) |
 | Cursor marker | hollow grey (190) triangle pointing left, apex x 344, base x 351, y 236..246 (8 x 11 px, 1 px stroke); present whether or not the I-beam is lit |
 | Blink | period ~936 ms, lit ~470 ms (OSK-FIRMWARE 13.1); the 100 ms frames agree (the caret is lit in some frames and dark in others) but cannot refine it |
-| Composition underline | after typing "h" and "hi" a 1 px white line sits under the typed word (y 252, x 341..355) while the prediction list shows candidates; it is gone in the frames without candidates. UNKNOWN: when it commits |
+| Composition underline | measured on the 100 ms frames: a solid grey (145,145,145) bar 2 px thick at y 251..252 (720p; 3 px at field top + 39 in 1080p), spanning the typed word's advance ("h": x 341..353, "hi": x 341..355), below the baseline of the text. It appears in the first frame after "h" is typed (37.3 s) and stays through "hi" (to 39.4 s); the frame after Space is typed (39.5 s) has no underline and the caret has moved right of the space. So it marks the run of word characters ending at the caret (the composition word) and ends at a space. UNKNOWN: whether digits and punctuation compose, and what Enter/Left/Right do to it. Native: `osk_composition.h` (`oskCompositionRange`: letters, digits, and an apostrophe or hyphen between two of them, ending at the caret), drawn for every non-masked composition word whether or not candidates exist |
 
 ## 3. Key grid
 
@@ -92,8 +92,11 @@ Focused key (the highlight is a white fill on the face plus a soft white halo ab
 | Copy | not drawn | there is no copy key in any frame; UNKNOWN whether it appears with a selection |
 
 Candidate content seen: after "h": h, here, had, have, has, ha, hack, habit; after "hi": hi, his, him, himself, hi-fi,
-hibernate, hibernates, hibernation (eight lines, no selection highlight). The dictionary is the console IME's; the native
-build has none and does not fabricate candidates (OSK-FIRMWARE 8.2).
+hibernate, hibernates, hibernation (eight lines, no selection highlight). The dictionary is the console IME's. The firmware does
+ship English dictionaries (`dev_flash/data/dic/Zi8DatENAM.z8d` and `Zi8DatENUK.z8d`, the Zi eZiText format used by
+`vsh/module/ime_zi.sprx`), but they are stored compressed and this pass could not read them (OSK-FIRMWARE 8.2.1), so the native
+list stays empty and no candidates, counter values or word list are fabricated. The "a 0" counter reads 0 in the recording
+with eight candidates showing, so an empty native list does not change the counter.
 
 ## 5. Dim behind the window
 
@@ -146,7 +149,8 @@ callers and draws no such pair.
 | Symbol key caption | `@#:` | `*%#` | `*%#` |
 | Caret | 27 px, 12 px serifs | 22 px (33), 4 px serifs (7) | recording's |
 | Palette key icon | 4 x 3 squares | 3 x 3 flat cells | 3 x 3 |
-| Prediction column | copy 62 px + paste 62 px | one wide Paste, list y 271..424 | one wide Paste |
+| Prediction column | copy 62 px + paste 62 px | one wide Paste, list y 271..424 | one wide Paste; candidates still absent (no readable dictionary) |
+| Composition underline | not recorded | 2 px grey bar under the typed word, ends at a space | drawn (`oskCompositionRange`) |
 | Function captions | centred | right-aligned | right-aligned |
 | Title text | 27 px at x 520 | 23 px at x 531 | 23 px at x 531 |
 | Open/close | alpha only | alpha and scale 1.10 -> 1.00, dim eased separately | both |
