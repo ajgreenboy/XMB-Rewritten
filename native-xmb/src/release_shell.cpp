@@ -1,5 +1,6 @@
 #include "shell.h"
 #include "pending_installers.h"
+#include "installer_panel.h"
 #include "archive_extract.h"
 #include "rawg_artwork.h"
 #include "diagnostics.h"
@@ -17,7 +18,10 @@
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
+#include <QElapsedTimer>
+#include <QPointer>
 #include <QProcess>
+#include <QTimer>
 #include <QRegularExpression>
 #include <QSaveFile>
 #include <QtConcurrent/QtConcurrentRun>
@@ -87,6 +91,27 @@ QString processCreationTime(qint64 pid) {
 #endif
 }
 
+// The visible installer run (the Installing panel). Everything the panel shows comes from this record, and every field is
+// either observed (process state, log, folder size) or unset.
+struct Shell::InstallerRun {
+    QString id,title,installer,destination,libraryRoot,logPath;
+    QPointer<QProcess> process;
+    qint64 pid=0; quint64 startTime=0;
+    QElapsedTimer clock;
+    qint64 elapsedAtExitMs=0;
+    QTimer timer;
+    installerpanel::InnoLogTracker tracker;
+    qint64 logOffset=0; bool logAvailable=false;
+    installerpanel::CloseEscalation escalation;
+    bool askPending=false,confirmShown=false;
+    QString confirmText;
+    qint64 bytes=-1; bool bytesLower=false; bool scanning=false; qint64 lastScanMs=-1000000;
+    bool exited=false,crashed=false; int exitCode=0;
+    installerpanel::Outcome outcome=installerpanel::Outcome::Succeeded;
+    QString resultText,closeNote;
+};
+bool Shell::installerRunning() const { return installerRun_ && !installerRun_->exited; }
+
 void Shell::openPendingInstallers() {
     const QString registryPath=QDir(dataDirectory_).filePath(QStringLiteral("pending-installers.json"));
     QVector<PendingInstaller> entries; QString error;
@@ -127,7 +152,7 @@ void Shell::openPendingInstallers() {
     Page page; page.title=tr("Pending Installers");
     for(const auto& pending:entries) {
         Entry row=pendingRow(QStringLiteral("pending:")+pending.id,pending.title,Action::PendingInstaller,pending.id);
-        row.detail=pending.status==QStringLiteral("pending")?tr("Not installed"):pending.status;
+        row.detail=pending.status==QStringLiteral("pending")?tr("Not installed"):(installerRun_ && !installerRun_->exited && installerRun_->id==pending.id)?tr("Installing"):pending.status;
         row.setting=QDir::toNativeSeparators(pending.installerPath)+QStringLiteral("\n")+
             tr("Select to inspect the exact installer and destination before installing.");
         page.entries.append(std::move(row));
@@ -141,16 +166,22 @@ void Shell::openPendingInstaller(const QString& id) {
     if(!PendingInstallerRegistry::load(QDir(dataDirectory_).filePath(QStringLiteral("pending-installers.json")),entries,error)) { showMessage(tr("Pending Installers"),error,MessageKind::Page); emit changed(); return; }
     const auto it=std::find_if(entries.cbegin(),entries.cend(),[&](const auto& e){return e.id==id;});
     if(it==entries.cend())return;
+    if(installerRun_ && installerRun_->id==id && !installerRun_->exited){openInstallerPanel();return;}
     Page page; page.title=it->title;
     Entry status=pendingRow(QStringLiteral("pending:")+id+QStringLiteral(":status"),tr("Installer"),Action::Unavailable);
     status.detail=tr("Exact executable: %1").arg(QDir::toNativeSeparators(it->installerPath));
     status.setting=tr("SHA-256: %1\nDestination must be confirmed before launch.").arg(it->sha256);
+    if(!it->error.isEmpty())status.setting+=QStringLiteral("\n")+it->error;
     page.entries.append(std::move(status));
     page.entries.append(pendingRow(QStringLiteral("pending:")+id+QStringLiteral(":folder"),tr("Open Download Folder"),Action::Unavailable));
     page.entries.append(pendingRow(QStringLiteral("pending:")+id+QStringLiteral(":verify"),tr("Verify Installation"),Action::VerifyPendingInstaller,id));
     for(const auto& root:gameLibraryRoots()) {
         const QString destination=QDir(root.second).filePath(QStringLiteral("XMB Games/")+pendingDestinationName(it->title));
-        Entry install=pendingRow(QStringLiteral("pending:")+id+QStringLiteral(":install:")+root.second,tr("Install in %1").arg(QDir::toNativeSeparators(destination)),Action::InstallPendingInstaller,id+QLatin1Char('|')+destination);
+        // The installer's own window, tracked, with the Installing panel (the default); then the unattended helper path.
+        Entry visible=pendingRow(QStringLiteral("pending:")+id+QStringLiteral(":install-visible:")+root.second,tr("Install (show installer) in %1").arg(QDir::toNativeSeparators(destination)),Action::InstallPendingInstallerVisible,id+QLatin1Char('|')+destination);
+        visible.setting=tr("Opens the real installer window so you can use it, and shows an Installing panel here with its progress and a Close option.");
+        page.entries.append(std::move(visible));
+        Entry install=pendingRow(QStringLiteral("pending:")+id+QStringLiteral(":install:")+root.second,tr("Install (silent) in %1").arg(QDir::toNativeSeparators(destination)),Action::InstallPendingInstaller,id+QLatin1Char('|')+destination);
         page.entries.append(std::move(install));
     }
     pages_.push_back(std::move(page)); emit changed();
@@ -258,6 +289,320 @@ void Shell::installPendingInstaller(const QString& id,const QString& destination
         }
     });
 }
+// ---- Visible installer: the real installer as a tracked window plus the Installing panel -----------------------------
+// The installer is started directly (never through repack-install.ps1 and never with /VERYSILENT), so its own window is
+// on screen and usable. /LOG gives the XMB a file to read. Nothing here launches by itself: the entry point is a row,
+// and the confirm box names the exact executable, its SHA-256 and the destination.
+void Shell::installPendingInstallerVisible(const QString& id,const QString& destination) {
+    if(installerRunning()) {
+        showMessage(tr("Install"),tr("An installer is already running. Wait for it to finish or close it first."),MessageKind::Page);
+        emit changed();
+        return;
+    }
+    if(activePendingInstallerIds_.contains(id)) {
+        showMessage(tr("Install"),tr("This installer is already running; use Verify Installation after it exits."),MessageKind::Page);
+        emit changed();
+        return;
+    }
+    QVector<PendingInstaller> entries; QString error;
+    const QString registry=QDir(dataDirectory_).filePath(QStringLiteral("pending-installers.json"));
+    if(!PendingInstallerRegistry::load(registry,entries,error)){showMessage(tr("Pending Installers"),error,MessageKind::Page);emit changed();return;}
+    const auto it=std::find_if(entries.begin(),entries.end(),[&](const auto& e){return e.id==id;});
+    if(it==entries.end())return;
+    if(it->status==QStringLiteral("launching") || it->status==QStringLiteral("process-still-running") || it->status==QStringLiteral("timeout") || it->status==QStringLiteral("manual-review")) {
+        showMessage(tr("Install"),tr("This installer is already recorded as running; use Verify Installation after confirming its destination."),MessageKind::Page);
+        emit changed();
+        return;
+    }
+    QString hash; QString validation;
+    if(!sha256File(it->installerPath,&hash,&validation) || hash.compare(it->sha256,Qt::CaseInsensitive)!=0) {
+        showMessage(tr("Install"),tr("The installer changed since it was downloaded. It will not be launched."),MessageKind::Page);emit changed();return;
+    }
+    const QString canonical=QFileInfo(it->installerPath).canonicalFilePath();
+    if(canonical.isEmpty() || !QDir::isAbsolutePath(destination) || QFileInfo(destination).isSymLink()) {
+        showMessage(tr("Install"),tr("The installer or destination could not be verified."),MessageKind::Page);emit changed();return;
+    }
+    if(QFileInfo::exists(destination)) {
+        // Never reused and never deleted: a folder here may be a finished or a half-finished install.
+        showMessage(tr("Install"),tr("The destination already exists:\n%1\n\nIt is never deleted or reused. If it is a half-finished install, remove or rename it yourself, then try again.").arg(QDir::toNativeSeparators(destination)),MessageKind::Page);
+        emit changed();
+        return;
+    }
+    // The box wraps at spaces and elides long unbroken tokens, so the full hash is shown in groups of eight.
+    QString groupedHash; for(int i=0;i<it->sha256.size();i+=8){if(i)groupedHash+=QLatin1Char(' ');groupedHash+=it->sha256.mid(i,8);}
+    showConfirm(tr("Install %1?").arg(it->title),
+        tr("Executable:\n%1\n\nSHA-256:\n%2\n\nDestination:\n%3\n\nThe installer's own window opens. You can use it, or close it from here.")
+            .arg(QDir::toNativeSeparators(canonical),groupedHash,QDir::toNativeSeparators(destination)),
+        [this,id,canonical,destination]{
+        // Re-read and revalidate after the confirmation: the source may have been replaced while the owner was deciding.
+        const QString registry=QDir(dataDirectory_).filePath(QStringLiteral("pending-installers.json"));
+        QVector<PendingInstaller> latest; QString validationError;
+        if(!PendingInstallerRegistry::load(registry,latest,validationError)) { showMessage(tr("Install"),validationError,MessageKind::Page); emit changed(); return; }
+        const auto current=std::find_if(latest.begin(),latest.end(),[&](const auto& e){return e.id==id;});
+        QString currentHash;
+        const QString currentCanonical=current==latest.end()?QString{}:QFileInfo(current->installerPath).canonicalFilePath();
+        const QString libraryRoot=current==latest.end()?QString{}:current->libraryRoot;
+        if(current==latest.end() || currentCanonical!=canonical ||
+           canonicalInstallDestination(libraryRoot,destination,&validationError).isEmpty() || QFileInfo(destination).exists() ||
+           !sha256File(currentCanonical,&currentHash,&validationError) || currentHash.compare(current->sha256,Qt::CaseInsensitive)!=0) {
+            showMessage(tr("Install"),tr("The installer or destination changed after confirmation. Nothing was launched."),MessageKind::Page); emit changed(); return;
+        }
+        startVisibleInstaller(id,canonical,destination);
+    });
+}
+
+void Shell::startVisibleInstaller(const QString& id,const QString& canonical,const QString& destination) {
+    const QString registry=QDir(dataDirectory_).filePath(QStringLiteral("pending-installers.json"));
+    QVector<PendingInstaller> entries; QString error;
+    if(!PendingInstallerRegistry::load(registry,entries,error)){showMessage(tr("Install"),error,MessageKind::Page);emit changed();return;}
+    const auto current=std::find_if(entries.begin(),entries.end(),[&](const auto& e){return e.id==id;});
+    if(current==entries.end())return;
+    const QString logDir=QDir(dataDirectory_).filePath(QStringLiteral("installer-logs"));
+    QDir().mkpath(logDir);
+    QString safeId=id; safeId.replace(QRegularExpression(QStringLiteral("[^A-Za-z0-9._-]")),QStringLiteral("_"));
+    const QString logPath=QDir(logDir).filePath(safeId.left(60)+QLatin1Char('-')+QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd-HHmmss"))+QStringLiteral(".log"));
+
+    auto run=std::make_shared<InstallerRun>();
+    run->id=id; run->title=current->title; run->installer=canonical; run->destination=destination; run->libraryRoot=current->libraryRoot; run->logPath=logPath;
+    auto* process=new QProcess(this);
+    run->process=process;
+    process->setProgram(canonical);
+    process->setWorkingDirectory(QFileInfo(canonical).absolutePath());
+    process->setProcessChannelMode(QProcess::ForwardedChannels);
+    // Inno parses /DIR="..." itself, so the command line is given verbatim (Qt's argument quoting would escape the quotes).
+    // No /VERYSILENT and no /SUPPRESSMSGBOXES: the installer's wizard and message boxes are meant to be seen.
+#ifdef Q_OS_WIN
+    process->setNativeArguments(QStringLiteral("/DIR=\"%1\" /LANG=en /NORESTART /SP- /LOG=\"%2\"").arg(QDir::toNativeSeparators(destination),QDir::toNativeSeparators(logPath)));
+#else
+    process->setArguments({QStringLiteral("/DIR=")+destination,QStringLiteral("/LANG=en"),QStringLiteral("/NORESTART"),QStringLiteral("/SP-"),QStringLiteral("/LOG=")+logPath});
+#endif
+    connect(process,qOverload<int,QProcess::ExitStatus>(&QProcess::finished),this,[this,process,weak=std::weak_ptr<InstallerRun>(run)](int code,QProcess::ExitStatus status){
+        const auto finished=weak.lock();
+        process->deleteLater();
+        if(finished && finished==installerRun_ && !finished->exited)installerFinished(code,status==QProcess::CrashExit);
+    });
+    process->start();
+    if(!process->waitForStarted(4000)) {
+        current->destination=destination; current->status=QStringLiteral("launch-failed"); current->error=process->errorString();
+        QString saveError; PendingInstallerRegistry::upsert(registry,*current,saveError);
+        showMessage(tr("Install"),tr("The installer could not be started.\n%1").arg(process->errorString()),MessageKind::Page);
+        process->deleteLater(); emit changed(); return;
+    }
+    run->pid=process->processId();
+    const QString creation=processCreationTime(run->pid);
+    run->startTime=creation.toULongLong();
+    current->destination=destination; current->status=QStringLiteral("launching"); current->error.clear();
+    current->helperPid=run->pid; current->helperCreationTime=creation; current->retainedProcessIds.clear(); current->retainedProcessCreationTimes.clear();
+    QString saveError;
+    if(run->pid<=0 || creation.isEmpty() || !PendingInstallerRegistry::upsert(registry,*current,saveError)) {
+        process->kill();
+        showMessage(tr("Install"),tr("The installer started but its durable process identity could not be recorded."),MessageKind::Page); emit changed(); return;
+    }
+    run->clock.start();
+    installerRun_=run;
+    activePendingInstallerIds_.insert(id);
+    activity_.start();
+    run->timer.setInterval(500);
+    connect(&run->timer,&QTimer::timeout,this,[this]{installerTick();});
+    run->timer.start();
+    qInfo().noquote()<<"installer: started"<<canonical<<"pid="+QString::number(run->pid)<<"destination="+destination<<"log="+logPath<<"(visible, tracked)";
+    openInstallerPanel();
+}
+
+void Shell::openInstallerPanel() {
+    if(!installerRun_)return;
+    for(const auto& page:pages_)if(page.installer){refreshInstallerPanel(true);return;}
+    if(pages_.size()>=32)return;
+    Page page; page.title=tr("Installing %1").arg(installerRun_->title); page.installer=true; page.identity=++pageIdentityCounter_;
+    pages_.push_back(std::move(page));
+    refreshInstallerPanel(true);
+}
+
+void Shell::pollInstallerLog() {
+    const auto run=installerRun_;
+    if(!run)return;
+    QFile file(run->logPath);
+    if(!file.open(QIODevice::ReadOnly))return;
+    run->logAvailable=true;
+    if(file.size()<run->logOffset){run->tracker.reset();run->logOffset=0;}
+    if(!file.seek(run->logOffset))return;
+    const QByteArray bytes=file.read(512*1024);
+    run->logOffset+=bytes.size();
+    run->tracker.feed(bytes);
+}
+
+void Shell::refreshInstallerPanel(bool rebuild) {
+    const auto run=installerRun_;
+    if(!run)return;
+    Page* page=nullptr;
+    for(auto& candidate:pages_)if(candidate.installer){page=&candidate;break;}
+    if(!page)return;
+    using namespace installerpanel;
+    QVector<Entry> rows;
+    const auto row=[&](const QString& key,const QString& title,const QString& detail,Action action=Action::Unavailable,const QString& value={},const QString& setting={}) {
+        Entry entry=pendingRow(QStringLiteral("installer:")+key,title,action,value);
+        entry.detail=detail; entry.setting=setting; rows.append(std::move(entry));
+    };
+    const auto info=[&](const QString& key,const QString& label,const QString& value) {
+        Entry entry=pendingRow(QStringLiteral("installer:")+key,label+QStringLiteral(": ")+value,Action::Unavailable);
+        rows.append(std::move(entry));
+    };
+    const QString destination=QDir::toNativeSeparators(run->destination);
+    const QString logPath=QDir::toNativeSeparators(run->logPath);
+    if(!run->exited) {
+        StatusInputs in;
+        in.running=true; in.elapsedMs=run->clock.elapsed(); in.bytesWritten=run->bytes; in.bytesLowerBound=run->bytesLower;
+        in.logAvailable=run->logAvailable; in.log=run->tracker.state();
+        in.closeRequested=run->escalation.closeRequested();
+        in.awaitingForceConfirm=run->escalation.stage()==CloseEscalation::Stage::AwaitingConfirm;
+        in.terminating=run->escalation.stage()==CloseEscalation::Stage::Terminating;
+        const StatusView view=deriveStatus(in);
+        page->title=tr("Installing %1").arg(run->title);
+        row(QStringLiteral("close"),tr("Close Installer"),tr("Asks it to close; you are asked before it is forced"),Action::InstallerClose);
+        info(QStringLiteral("status"),tr("Status"),view.headline);
+        for(const auto& line:view.lines)info(QStringLiteral("line:")+line.label,line.label,line.value);
+        info(QStringLiteral("destination"),tr("Destination"),destination);
+        info(QStringLiteral("log"),tr("Log file"),logPath);
+        if(!run->closeNote.isEmpty())info(QStringLiteral("note"),tr("Close"),run->closeNote);
+        if(run->escalation.stage()==CloseEscalation::Stage::TerminateFailed)
+            info(QStringLiteral("stuck"),tr("Still running"),tr("The installer did not end after it was force closed. Nothing else was done."));
+    } else {
+        page->title=run->title;
+        QString headline;
+        switch(run->outcome) {
+        case Outcome::Succeeded:headline=tr("Installer finished");break;
+        case Outcome::ExitedUnverified:headline=tr("Installer finished, not verified");break;
+        case Outcome::Failed:headline=tr("Installer failed (exit code %1)").arg(run->exitCode);break;
+        case Outcome::Crashed:headline=tr("Installer crashed");break;
+        case Outcome::Cancelled:headline=tr("Installer closed");break;
+        }
+        if(run->outcome==Outcome::Succeeded || run->outcome==Outcome::ExitedUnverified)
+            row(QStringLiteral("register"),tr("Register Installed Game"),tr("Looks for the game executable in the destination"),Action::VerifyPendingInstaller,run->id+QLatin1Char('|'));
+        row(QStringLiteral("result"),tr("Result: %1").arg(headline),run->resultText);
+        info(QStringLiteral("elapsed"),tr("Elapsed"),formatElapsed(run->elapsedAtExitMs));
+        if(run->bytes>=0)info(QStringLiteral("written"),tr("Written to destination"),(run->bytesLower?tr("at least "):QString())+formatBytes(run->bytes));
+        info(QStringLiteral("destination"),tr("Destination"),destination);
+        info(QStringLiteral("log"),tr("Log file"),run->logAvailable?logPath:tr("%1 (not written)").arg(logPath));
+    }
+    const bool shapeChanged=rows.size()!=page->entries.size() || rebuild;
+    page->entries=rows;
+    if(shapeChanged)page->selection=qBound(0,page->selection,qMax(0,int(rows.size())-1));
+    if(!pages_.isEmpty() && pages_.last().installer)emit changed();
+}
+
+void Shell::installerTick() {
+    const auto run=installerRun_;
+    if(!run || run->exited)return;
+    pollInstallerLog();
+    const bool alive=run->process && run->process->state()!=QProcess::NotRunning;
+    const qint64 now=run->clock.elapsed();
+    // The destination's size, measured off the UI thread, one scan at a time; an unreadable folder stays unknown.
+    if(!run->scanning && now-run->lastScanMs>=2000) {
+        run->scanning=true; run->lastScanMs=now;
+        auto* watcher=new QFutureWatcher<QPair<qint64,bool>>(this);
+        connect(watcher,&QFutureWatcher<QPair<qint64,bool>>::finished,this,[watcher,weak=std::weak_ptr<InstallerRun>(run)]{
+            const auto result=watcher->result();
+            watcher->deleteLater();
+            if(const auto live=weak.lock()){live->scanning=false;live->bytes=result.first;live->bytesLower=result.second;}
+        });
+        const QString dest=run->destination;
+        watcher->setFuture(QtConcurrent::run([dest]{bool lower=false;const qint64 bytes=installerpanel::directoryBytes(dest,300000,&lower);return QPair<qint64,bool>(bytes,lower);}));
+    }
+    const auto action=run->escalation.tick(now,alive);
+    if(action==installerpanel::CloseEscalation::Action::AskForce)run->askPending=true;
+    // The force-close question was dismissed without Yes: nothing was done, the installer simply keeps running.
+    if(run->escalation.stage()==installerpanel::CloseEscalation::Stage::AwaitingConfirm && run->confirmShown && message_!=run->confirmText) {
+        run->escalation.declineForce(); run->confirmShown=false; run->askPending=false;
+        run->closeNote=tr("Force close declined; the installer is still running.");
+    }
+    if(run->askPending && message_.isEmpty()) {
+        run->askPending=false; run->confirmShown=true;
+        showConfirm(tr("Force close the installer?"),
+            tr("The installer did not close when asked.\n\nForce closing it may leave a half-finished install in:\n%1\n\nThat folder is not deleted.").arg(QDir::toNativeSeparators(run->destination)),
+            [this]{installerForceConfirmed();});
+        run->confirmText=message_;
+    }
+    refreshInstallerPanel(false);
+}
+
+void Shell::installerClosePressed() {
+    const auto run=installerRun_;
+    if(!run || run->exited)return;
+    using Action=installerpanel::CloseEscalation::Action;
+    const auto action=run->escalation.requestClose(run->clock.elapsed());
+    if(action==Action::SendClose) {
+        const auto tree=installerpanel::installerTree(steamquit::snapshotProcesses(),quint32(run->pid),run->startTime);
+        const int posted=steamquit::postCloseToProcesses(tree,false);
+        run->closeNote=posted>0?tr("Asked the installer to close; waiting for its answer."):tr("The installer has no window to close yet; waiting.");
+        qInfo().noquote()<<"installer: polite close"<<"processes="+QString::number(tree.size())<<"windows="+QString::number(posted);
+    } else if(action==Action::AskForce)run->askPending=true;
+    refreshInstallerPanel(true);
+}
+
+void Shell::installerForceConfirmed() {
+    const auto run=installerRun_;
+    if(!run || run->exited)return;
+    if(run->escalation.confirmForce(run->clock.elapsed())!=installerpanel::CloseEscalation::Action::Terminate)return;
+    run->confirmShown=false;
+    const auto tree=installerpanel::installerTree(steamquit::snapshotProcesses(),quint32(run->pid),run->startTime);
+    const int ended=steamquit::terminateProcesses(tree);
+    run->closeNote=tr("Force closing the installer. Files already written are left in place.");
+    qInfo().noquote()<<"installer: force close confirmed"<<"processes="+QString::number(tree.size())<<"terminated="+QString::number(ended);
+    refreshInstallerPanel(true);
+}
+
+void Shell::installerFinished(int code,bool crashed) {
+    const auto run=installerRun_;
+    if(!run || run->exited)return;
+    using namespace installerpanel;
+    pollInstallerLog();
+    run->elapsedAtExitMs=run->clock.elapsed();
+    run->timer.stop();
+    run->exited=true; run->exitCode=code; run->crashed=crashed;
+    run->escalation.processExited();
+    if(!message_.isEmpty() && message_==run->confirmText)clearMessage();
+    bool lower=false;
+    run->bytes=directoryBytes(run->destination,300000,&lower); run->bytesLower=lower;
+    ExitInputs in;
+    in.exitCode=code; in.crashed=crashed; in.destinationHasFiles=directoryHasFiles(run->destination);
+    in.closeRequested=run->escalation.closeRequested(); in.forced=run->escalation.forced();
+    in.logAvailable=run->logAvailable; in.log=run->tracker.state();
+    run->outcome=classifyExit(in);
+    run->resultText=outcomeText(run->outcome,in,QDir::toNativeSeparators(run->destination),QDir::toNativeSeparators(run->logPath),run->bytes);
+    qInfo().noquote()<<"installer: exited code="+QString::number(code)<<(crashed?"crashed":"normal")<<"outcome="+QString::number(int(run->outcome))
+        <<"files="+QString::number(in.destinationHasFiles?1:0)<<"closeRequested="+QString::number(in.closeRequested?1:0)<<"forced="+QString::number(in.forced?1:0);
+    // The registry mirrors what was observed. A cancelled run returns the row to pending; nothing is deleted.
+    const QString registry=QDir(dataDirectory_).filePath(QStringLiteral("pending-installers.json"));
+    QVector<PendingInstaller> entries; QString registryError;
+    if(PendingInstallerRegistry::load(registry,entries,registryError)) {
+        const auto found=std::find_if(entries.begin(),entries.end(),[&](const auto& e){return e.id==run->id;});
+        if(found!=entries.end()) {
+            found->helperPid=0; found->helperCreationTime.clear(); found->retainedProcessIds.clear(); found->retainedProcessCreationTimes.clear();
+            switch(run->outcome) {
+            case Outcome::Succeeded:
+            case Outcome::ExitedUnverified:
+                found->status=QStringLiteral("helper-exited-needs-verification"); found->error=run->resultText.left(1024); break;
+            case Outcome::Failed:
+            case Outcome::Crashed:
+                found->status=QStringLiteral("nonzero"); found->error=run->resultText.left(1024); break;
+            case Outcome::Cancelled:
+                found->status=QStringLiteral("pending"); found->error.clear(); found->destination.clear(); break;
+            }
+            PendingInstallerRegistry::upsert(registry,*found,registryError);
+        }
+    }
+    activePendingInstallerIds_.remove(run->id);
+    activity_.start();
+    const QString headline=run->outcome==Outcome::Succeeded?tr("Installer finished"):run->outcome==Outcome::Cancelled?tr("Installer closed"):
+        run->outcome==Outcome::ExitedUnverified?tr("Installer finished, not verified"):tr("Installer failed");
+    notify(tr("Pending Installers"),headline+QStringLiteral(": ")+run->title);
+    refreshInstallerPanel(true);
+    for(auto& page:pages_)if(page.installer){page.selection=0;break;}
+    // The result as a page, once, if the owner is looking at the panel and nothing else is on screen; otherwise the notice stands.
+    if(!pages_.isEmpty() && pages_.last().installer && message_.isEmpty())showMessage(tr("Installer"),run->resultText,MessageKind::Page);
+    emit changed();
+}
+
 namespace {
 QString releaseId(const QString& source,const QString& title) {
     return QStringLiteral("release:item:")+source+QLatin1Char(':')+

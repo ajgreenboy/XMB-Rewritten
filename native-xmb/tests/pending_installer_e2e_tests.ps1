@@ -67,12 +67,12 @@ public static class SyntheticInstaller {
     $env:XMB_GAME_LIBRARY_ROOT = $library
     $env:XMB_LOG = Join-Path $root 'app.log'
 
-    # Navigate: Game column -> pending row -> detail -> Install in -> confirm Yes -> launch helper.
-    $nav = 'full,pause=4000,' + ('DOWN,pause=200,' * 18) + 'ENTER,pause=2000,ENTER,pause=2000,' + ('DOWN,pause=300,' * 3) + 'ENTER,pause=2000,RIGHT,pause=1000,ENTER,pause=12000'
+    # Navigate: Game column -> pending row -> detail -> Install (silent) in [4th row; the 3rd is Install (show installer)] -> confirm Yes -> launch helper.
+    $nav = 'full,pause=4000,' + ('DOWN,pause=200,' * 18) + 'ENTER,pause=2000,ENTER,pause=2000,' + ('DOWN,pause=300,' * 4) + 'ENTER,pause=2000,RIGHT,pause=1000,ENTER,pause=12000'
     if ($Mode -eq 'chooser') {
         # Helper exited; Verify finds two candidates. From the detail page go up to
         # Verify Installation, open the chooser, pick the second candidate.
-        $nav += ',UP,pause=500,ENTER,pause=1500,DOWN,pause=500,ENTER,pause=3000'
+        $nav += ',UP,pause=500,UP,pause=500,ENTER,pause=1500,DOWN,pause=500,ENTER,pause=3000'
     }
     $tokens = $nav + ',quit'
 

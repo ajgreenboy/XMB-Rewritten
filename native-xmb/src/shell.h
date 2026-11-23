@@ -169,7 +169,7 @@ enum class Action { Unavailable, SettingsPage, SettingChoices, SetSetting, EditN
     // Game > Download Games: the folded hub that lists Browse, Import Source and the imported source folders.
     DownloadHub,
     // Game > Manage: the folded hub that lists Refresh Game Library and Import Games and Apps.
-    ManageHub, PendingInstallers, PendingInstaller, InstallPendingInstaller, VerifyPendingInstaller, Seerr, ReleaseGameJob,
+    ManageHub, PendingInstallers, PendingInstaller, InstallPendingInstaller, VerifyPendingInstaller, InstallPendingInstallerVisible, InstallerClose, Seerr, ReleaseGameJob,
     // Game > Manage > Add a Game (add_game_shell.cpp, audit/LOCAL-GAME-ADD.md): the controller-driven local-game
     // add flow. AddGame opens the page; AddGameChooseExe / AddGameChooseArtwork open the in-XMB file browser in
     // .exe / image mode; AddGameField is a field row (Entry::value names it: "title", "artwork"); AddGameSave
@@ -873,6 +873,23 @@ private:
     void openPendingInstaller(const QString& id);
     void installPendingInstaller(const QString& id,const QString& destination);
     void verifyPendingInstaller(const QString& id,const QString& executable={});
+    // Visible installer run (release_shell.cpp, the Installing panel): the real installer as a tracked child window plus an
+    // XMB panel fed only by observable facts (process state, the /LOG file, the destination folder's size).
+    struct InstallerRun;
+    std::shared_ptr<InstallerRun> installerRun_;
+    void installPendingInstallerVisible(const QString& id,const QString& destination);
+    void startVisibleInstaller(const QString& id,const QString& canonical,const QString& destination);
+    void openInstallerPanel();
+    void pollInstallerLog();
+    void refreshInstallerPanel(bool rebuild);
+    void installerTick();
+    void installerClosePressed();
+    void installerForceConfirmed();
+    void installerFinished(int code,bool crashed);
+public:
+    // True while a visible installer runs: the idle auto-close and the display idle must not act behind it.
+    bool installerRunning() const;
+private:
     // Add a Game (add_game_shell.cpp): the page rows, the in-place rebuild, the activation dispatch and close.
     QVector<Entry> addGameRows() const;
     void refreshAddGamePage();
@@ -1406,7 +1423,7 @@ private:
     int columnSink_=0;
     // `grouped` is a page the item menu's Group Content level rebuilt into letter folders: `groupedSource` keeps
     // the ungrouped rows so All can put them back without a rescan, and the folders' rows are the same entries.
-    struct Page { QString title; QVector<Entry> entries; int selection=0; quint64 identity=0; QString directory; bool jellyfin=false,jellyfinViews=false,jellyfinSearch=false; QString jellyfinParent; QString jellyfinMusic,jellyfinLibrary; QString jellyfinHome; int jellyfinStart=0; bool downloads=false; QString steamCmd,seerr; bool continuePage=false; bool signIn=false; bool jfSetup=false; bool steamAccounts=false; bool grouped=false; QString groupKey; QVector<Entry> groupedSource; bool sysconfPlugin=false; QString playlistsType,playlistId; QString spotify,spotifyContext; QString dlna; int dlnaServer=-1; QString tailscale; QString wol,ha; bool weather=false; bool systemCheck=false; QString userInfo; int userInfoStep=0; bool browse=false; QString browsePath; QString browseFiles; bool libraryRoot=false; QVector<GameResult> downloadResults; bool gameDetails=false; RawgGameDetails gameDetailsData; int hydraRetryKind=0; QString hydraRetryUrl,hydraRetryName,hydraRetryQuery; quint64 hydraRequest=0; bool downloadHub=false; bool addGame=false; };
+    struct Page { QString title; QVector<Entry> entries; int selection=0; quint64 identity=0; QString directory; bool jellyfin=false,jellyfinViews=false,jellyfinSearch=false; QString jellyfinParent; QString jellyfinMusic,jellyfinLibrary; QString jellyfinHome; int jellyfinStart=0; bool downloads=false; QString steamCmd,seerr; bool continuePage=false; bool signIn=false; bool jfSetup=false; bool steamAccounts=false; bool grouped=false; QString groupKey; QVector<Entry> groupedSource; bool sysconfPlugin=false; QString playlistsType,playlistId; QString spotify,spotifyContext; QString dlna; int dlnaServer=-1; QString tailscale; QString wol,ha; bool weather=false; bool systemCheck=false; QString userInfo; int userInfoStep=0; bool browse=false; QString browsePath; QString browseFiles; bool libraryRoot=false; QVector<GameResult> downloadResults; bool gameDetails=false; RawgGameDetails gameDetailsData; int hydraRetryKind=0; QString hydraRetryUrl,hydraRetryName,hydraRetryQuery; quint64 hydraRequest=0; bool downloadHub=false; bool addGame=false; bool installer=false; };
     QVector<Page> pages_;
     bool psMenu_=false;              // the PS-button system menu is showing
     bool desktopMode_=false;         // the XMB window is hidden for Desktop Mode (main.cpp DesktopMode)

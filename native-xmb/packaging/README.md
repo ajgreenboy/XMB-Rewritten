@@ -234,3 +234,54 @@ truthfully promised across repack variants.
 
 The install flow is verified against a synthetic installer fixture only; it has not been driven against
 a real FitGirl/DODI repack, so real-repack behaviour is unverified.
+
+#### Install (show installer) and the Installing panel
+
+The Pending Installers detail page offers two install rows per library drive. **Install (show installer) in ...** is the
+first one; **Install (silent) in ...** is the unattended `repack-install.ps1` path described above and is unchanged.
+
+Show installer starts the real installer directly (no helper, no `/VERYSILENT`, no `/SUPPRESSMSGBOXES`) as a tracked child
+process, so its own window is on screen and can be used. It passes `/DIR="<destination>"`, `/LANG=en`, `/NORESTART`, `/SP-`
+and `/LOG="<data dir>\installer-logs\<id>-<time>.log"`. It is never started by a download finishing or by the XMB starting:
+only the row, then a confirm box that names the exact executable, its SHA-256 and the destination (the hash is re-checked
+after the confirmation, and a destination that already exists is refused, never reused and never deleted). Only one visible
+installer runs at a time, and while it runs the idle auto-close and display idle do not act.
+
+An **Installing** panel opens at once (and reopens from the same Pending Installers row while the installer runs). Every
+value on it comes from something observable, and a value that is not known is not shown:
+
+- elapsed time and whether the process is running, close was requested, or force closing is in progress;
+- the step and current file from the tail of the installer's `/LOG` file (Inno lines such as `Starting the installation
+  process.`, `-- File entry --`, `Dest filename:`, `Installation process succeeded.`, `Exception message:`), the count of
+  file records, and a percentage only if a log line about extraction/progress/installing carries one (never estimated);
+- "Written to destination": the destination folder's size, measured off the UI thread every 2 s ("at least" when the scan
+  hit its entry cap); an unreadable or missing folder shows no size.
+
+**Close Installer** (the first row, selected by default) sends `WM_CLOSE` to the visible top-level windows of the installer
+process and its descendants. Inno usually answers with its own "Exit Setup?" box, which is then yours to answer in the
+installer window. If it is still running after 5 s the XMB asks "Force close the installer?" and says a half-finished
+install may be left in the destination; only Yes terminates the process tree (identified by pid plus creation time, so a
+recycled pid is never touched). No leaves the installer running and Close can be used again. The destination folder is
+never deleted. Closing the installer (polite or forced) returns the row to **pending** with no destination recorded.
+
+When the installer exits, the panel classifies what it saw: exit code 0 **and** files in the destination **and** no failure
+in the log is "Installer finished" and offers **Register Installed Game** (the same Verify Installation path, which looks for
+exactly one game executable; nothing is registered automatically). Exit code 0 with an empty destination, or with a failure
+in the log, is "finished, not verified" and is never claimed as installed. A non-zero exit shows the code and the log path
+and records `nonzero`. A crash is reported as a crash. There is no retry and no automatic kill, timeout or cleanup.
+
+Quitting the XMB while a visible installer runs ends the installer with it (the child is parented to the XMB, as for any
+tracked title); the half-finished destination is left in place and the pending row stays recorded as launching until the
+next Pending Installers visit finds the process gone and marks it launch-failed.
+
+Tests: `xmb-installer-panel-tests` (option `XMB_INSTALLER_PANEL_BUILD_TESTS`) covers the log parser, status derivation,
+exit classification, the close escalation state machine and the process-tree selection as pure logic, then runs them against
+`xmb-installer-standin`, a synthetic Inno-like installer (window, `/LOG` file, files written to `/DIR`, modes success / fail /
+nofiles / stubborn). `work/installer-panel-e2e.ts` drives the real XMB through the whole flow against that stand-in. No real
+repack or game installer is ever downloaded or run by these.
+
+Unverified: the behaviour of real DODI / FitGirl installers. In particular not observed: whether their `/LOG` carries
+extraction progress (Inno itself logs no percentage, so the Progress line may simply never appear), whether their custom
+decompression screen reacts to `WM_CLOSE` and how, whether a setup that requests elevation can be started this way (a
+start refused for lack of elevation is reported as "could not be started"), and whether the log stays readable while the
+installer writes it (it does for the stand-in, which opens it with read sharing).

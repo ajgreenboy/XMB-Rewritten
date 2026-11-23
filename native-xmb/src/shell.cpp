@@ -2402,11 +2402,11 @@ Shell::Shell(QString dataDirectory,Assets& assets,QObject* parent):QObject(paren
         // title reaches its end, and holding on that would keep the display awake until Back. A photo slideshow
         // does not hold it, since the XMB is expected to dim over photos.
         const bool playing=mediaOpen_ && !photoOpen() && player_->playbackState()!=QMediaPlayer::StoppedState;
-        const bool active=playing || gameRunning();
+        const bool active=playing || gameRunning() || installerRunning();
         if(active!=sessionHold_)sessionHold_=host::holdDisplayAwake(active);
         const int minutes=preferences_.value("power/idleMinutes").toInt();
         // Never close the XMB while a title it launched is still running.
-        if(minutes && !desktopMode_ && !mediaOpen_ && !gameRunning() && !QApplication::activeModalWidget() && activity_.elapsed()>=qint64(minutes)*60000)emit requestQuit();
+        if(minutes && !desktopMode_ && !mediaOpen_ && !gameRunning() && !installerRunning() && !QApplication::activeModalWidget() && activity_.elapsed()>=qint64(minutes)*60000)emit requestQuit();
     });
     xmb::bootprof::mark("Shell player+connects");
     activity_.start();idle_.start(1000);applyPreferences();
@@ -2991,6 +2991,8 @@ void Shell::activate() {
     case Action::PendingInstaller:openPendingInstaller(entry.value);break;
     case Action::InstallPendingInstaller:{ const auto parts=entry.value.split(QLatin1Char('|')); if(parts.size()==2)installPendingInstaller(parts[0],parts[1]); break; }
     case Action::VerifyPendingInstaller:{const auto parts=entry.value.split(QLatin1Char('|'));verifyPendingInstaller(parts.value(0),parts.value(1));break;}
+    case Action::InstallPendingInstallerVisible:{ const auto parts=entry.value.split(QLatin1Char('|')); if(parts.size()==2)installPendingInstallerVisible(parts[0],parts[1]); break; }
+    case Action::InstallerClose:installerClosePressed();break;
     case Action::SearchGames:openGameSearch(entry.value);break;
     case Action::GameSearchResult:pickGameResult(entry.value.toInt());break;
     case Action::GameDetailsDownload:
@@ -6342,7 +6344,7 @@ void Shell::touch(){
     idleTimeOverride_=-1;activity_.restart();host::noteUserActivity();
 }
 QString Shell::appRegistryPath()const{return QDir(dataDirectory_).filePath("apps.json");}
-bool Shell::idleDisplayAllowed()const{return !mediaOpen_ && !gameRunning() && message_.isEmpty() && !QApplication::activeModalWidget();}
+bool Shell::idleDisplayAllowed()const{return !mediaOpen_ && !gameRunning() && !installerRunning() && message_.isEmpty() && !QApplication::activeModalWidget();}
 bool Shell::mediaPaused()const{return photoOpen()?!slideshow_.isActive():player_->playbackState()!=QMediaPlayer::PlayingState;}
 bool Shell::videoOpen()const{return mediaOpen_ && player_->hasVideo();}
 bool Shell::videoPending()const{

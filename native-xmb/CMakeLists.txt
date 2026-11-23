@@ -59,7 +59,7 @@ qt_add_executable(re-ps3-native
     src/text_renderer.cpp src/text_renderer.h
     src/font_raster.cpp src/font_raster.h
     src/profiles.cpp src/profiles.h
-    src/steam_library.cpp src/steam_library.h src/steam_vdf.cpp src/steam_vdf.h src/steam_quit.cpp src/steam_quit.h src/steam_hidden.cpp src/steam_hidden.h src/steamcmd.cpp src/steamcmd.h src/steamcmd_shell.cpp
+    src/steam_library.cpp src/steam_library.h src/steam_vdf.cpp src/steam_vdf.h src/steam_quit.cpp src/steam_quit.h src/installer_panel.cpp src/installer_panel.h src/steam_hidden.cpp src/steam_hidden.h src/steamcmd.cpp src/steamcmd.h src/steamcmd_shell.cpp
     src/steam_downloads.cpp src/steam_downloads.h src/steam_accounts.cpp src/steam_accounts.h src/steam_switch.cpp src/steam_switch.h src/steam_friends.cpp src/steam_friends.h
     src/steam_artwork.cpp src/steam_artwork.h src/steam_store.cpp src/steam_store.h src/steam_owned.cpp src/steam_owned.h src/steam_collections.cpp src/steam_collections.h src/steam_overrides.cpp src/steam_overrides.h src/steam_family.cpp src/steam_family.h
     src/content_registry.cpp src/content_registry.h src/web_launch.cpp src/web_launch.h src/app_editor.cpp src/app_editor.h
@@ -392,6 +392,22 @@ if(XMB_STEAM_QUIT_BUILD_TESTS)
             target_compile_options(xmb-steam-quit-tests PRIVATE /W4 /permissive- /utf-8)
         endif()
         add_dependencies(xmb-steam-quit-tests xmb-steam-quit-standin)
+    endif()
+endif()
+option(XMB_INSTALLER_PANEL_BUILD_TESTS "Build the Installing panel tests (installer log parser, truthful status, exit classification, close escalation, process tree) and the synthetic installer stand-in they start" OFF)
+if(XMB_INSTALLER_PANEL_BUILD_TESTS)
+    qt_add_executable(xmb-installer-panel-tests tests/installer_panel_tests.cpp src/installer_panel.cpp src/installer_panel.h src/steam_quit.cpp src/steam_quit.h)
+    target_include_directories(xmb-installer-panel-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(xmb-installer-panel-tests PRIVATE Qt6::Core)
+    if(WIN32)
+        target_link_libraries(xmb-installer-panel-tests PRIVATE user32)
+        add_executable(xmb-installer-standin WIN32 tests/installer_standin.cpp)
+        target_link_libraries(xmb-installer-standin PRIVATE user32 shell32)
+        if(MSVC)
+            target_compile_options(xmb-installer-standin PRIVATE /W4 /permissive- /utf-8)
+            target_compile_options(xmb-installer-panel-tests PRIVATE /W4 /permissive- /utf-8)
+        endif()
+        add_dependencies(xmb-installer-panel-tests xmb-installer-standin)
     endif()
 endif()
 option(XMB_STEAM_HIDE_BUILD_TESTS "Build the Steam background-mode tests (switch set, readiness, window rules) and the stand-in steam.exe they start" OFF)
