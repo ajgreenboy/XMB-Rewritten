@@ -1871,6 +1871,9 @@ int main(int argc,char** argv) {
                 QKeyEvent press(QEvent::KeyPress,Qt::Key_V,Qt::ControlModifier,QStringLiteral("\x16"));QCoreApplication::sendEvent(view,&press);
             } else if(token=="SHIFTINSERT" && qEnvironmentVariable("XMB_TEST_CLIPBOARD")==QLatin1String("1")) {
                 QKeyEvent press(QEvent::KeyPress,Qt::Key_Insert,Qt::ShiftModifier);QCoreApplication::sendEvent(view,&press);
+            } else if(token.startsWith("osk=")) {
+                const auto parts=token.mid(4).split(QLatin1Char('|'));
+                view->scriptOpenOsk(parts.value(0),parts.value(1));
             } else if(token.startsWith("type=")) {
                 for(const QChar c:token.mid(5)){QKeyEvent event(QEvent::KeyPress,0,Qt::NoModifier,QString(c));QCoreApplication::sendEvent(view,&event);}
             } else if(token=="OSKENTER") {

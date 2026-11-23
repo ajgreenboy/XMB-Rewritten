@@ -43,6 +43,8 @@ class View final:public QOpenGLWidget,protected QOpenGLFunctions_3_3_Core {
 public:
     View(Shell& shell,Assets& assets,QWidget* parent=nullptr);
     ~View() override;
+    // Test hook for the script token osk=<title>[|<initial text>]: opens the on-screen keyboard directly (no caller needed).
+    void scriptOpenOsk(const QString& title,const QString& initial) { openOsk(title,initial,[](QString){}); }
     static double dayLight(double hour);
     // The XMB's moves are paf animations: 200 ms in accel mode 5 (vsh.elf PhXmBar focus moves FUN_003ad3bc /
     // FUN_003ad728; paf animation setup FUN_003981ec and evaluator FUN_00398748). Mode 5 closes a fixed fraction
@@ -773,7 +775,11 @@ private:
     OskLayout oskLayout_;
     OskLayout oskPanelLayout_;   // the phone-style tenkey keypad (oskpanel_plugin); shown only under XMB_OSK_TENKEY
     void openOsk(const QString& title,const QString& initial,std::function<void(QString)> done,bool masked=false);
-    void drawOsk(QPainter& p);
+    void drawOsk(QPainter& p,double panelAlpha=1.,double scale=1.,double dimFactor=1.);
+    // The focus highlight cross-fades (audit/OSK-RECORDED-SPEC-2026-11-22.md 6): the key that just lost focus fades out while the new one fades in.
+    int oskFocusRow_=-1,oskFocusColumn_=-1,oskPrevRow_=-1,oskPrevColumn_=-1;
+    qint64 oskFocusAt_=0;
+    double oskFocusAmount(int row,int column,qint64 now) const;
     void oskMove(int dx,int dy);
     void oskPress();                 // the focused key
     void oskPaletteMove(int dx,int dy);

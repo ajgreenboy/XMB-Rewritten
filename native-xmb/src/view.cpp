@@ -1,5 +1,6 @@
 #include "view.h"
 #include "artwork_backdrop.h"
+#include <QPainterPath>
 #include "psn_pages.h"
 #include "logo_tiles.h"
 #include "game_badge.h"
@@ -1519,6 +1520,14 @@ void View::paintGL() {
     const qint64 blinkMs=secondsOverride_>=0?qint64(secondsOverride_*1000.):clock_.elapsed();
     const OskLayout& oskL=osk_.tenkey?oskPanelLayout_:oskLayout_;
     if(osk_.open)osk_.caretLit=((blinkMs/qMax(1,oskL.caret.blinkMilliseconds))%2)==0;
+    if(osk_.open) {
+        const int focusRow=osk_.onPaste?-2:osk_.row,focusColumn=osk_.onPaste?-2:osk_.column;
+        if(focusRow!=oskFocusRow_ || focusColumn!=oskFocusColumn_) {
+            // The first focus after the panel opens has no key to fade out of.
+            oskPrevRow_=oskFocusRow_;oskPrevColumn_=oskFocusColumn_;
+            oskFocusRow_=focusRow;oskFocusColumn_=focusColumn;oskFocusAt_=clock_.elapsed();
+        }
+    } else {oskFocusRow_=oskFocusColumn_=oskPrevRow_=oskPrevColumn_=-1;}
     QString signature=QString::asprintf("%.4f %.4f %.4f %d %d %d ",categoryPosition_,depthPosition_,categoryFade_,shell_.category(),shell_.depth(),uiRevision_);
     // The bar layer runs its own (traced) depth ease; it is part of the signature only while the two disagree,
     // so the canonical rest frame's signature string is byte-identical to before the split.
@@ -1570,9 +1579,14 @@ void View::paintGL() {
     // part of the signature, or the cached layer would freeze on the first frame of the ramp.
     if(osk_.open && !oskFadeDone(now-oskFadeAt_,true))
         signature+=QString::asprintf(" oskfade %d",int(oskFadeAlpha(now-oskFadeAt_,true)*256.));
-    else if(oskClosing_.open)
-        signature+=QString::asprintf(" oskclose %d %d %d %d",int(oskFadeAlpha(now-oskClosingAt_,false)*256.),oskClosing_.row,
-            oskClosing_.column,oskClosing_.page);
+    // The dim ramps for about a second after the panel opens, and the focus highlight cross-fades for 200 ms.
+    if(osk_.open) {
+        signature+=QString::asprintf(" oskdim %d",int(oskDimFactor(now-oskFadeAt_,true)*256.));
+        signature+=QString::asprintf(" oskfocus %d %d",int(oskFocusAmount(oskFocusRow_,oskFocusColumn_,now)*64.),
+            int(oskFocusAmount(oskPrevRow_,oskPrevColumn_,now)*64.));
+    } else if(oskClosing_.open)
+        signature+=QString::asprintf(" oskclose %d %d %d %d %d",int(oskFadeAlpha(now-oskClosingAt_,false)*256.),oskClosing_.row,
+            oskClosing_.column,oskClosing_.page,int(oskDimFactor(now-oskClosingAt_,false)*256.));
     // The notification composite animates outside a shell change (slide/fade), so its amount and content are
     // part of the signature: quantised by 1/256, which is finer than the 2x layer can show.
     // The operation guide fades on the focus clock alone, so its amount is part of the drawn state.
@@ -3990,13 +4004,16 @@ void View::drawScene(QPainter& p) {
     if(userCreate_.open){if(userCreate_.psn)drawPsnSignInPage(p);else drawUserCreatePage(p);}
     if(plEdit_.open)drawPlaylistEditor(p);
     if(osk_.open) {
-        p.save();p.setOpacity(p.opacity()*oskFadeAlpha(clock_.elapsed()-oskFadeAt_,true));drawOsk(p);p.restore();
+        const qint64 opened=clock_.elapsed()-oskFadeAt_;
+        const double alpha=oskFadeAlpha(opened,true);
+        p.save();drawOsk(p,alpha,oskPanelScale(alpha,true),oskDimFactor(opened,true));p.restore();
     } else if(oskClosing_.open) {
         const qint64 closed=clock_.elapsed()-oskClosingAt_;
-        if(oskFadeDone(closed,false))oskClosing_=Osk{};
+        if(oskClosingDone(closed))oskClosing_=Osk{};
         else {
             Osk live=std::move(osk_);osk_=oskClosing_;   // drawOsk reads osk_; the live one is empty here
-            p.save();p.setOpacity(p.opacity()*oskFadeAlpha(closed,false));drawOsk(p);p.restore();
+            const double alpha=oskFadeAlpha(closed,false);
+            p.save();drawOsk(p,alpha,oskPanelScale(alpha,false),oskDimFactor(closed,false));p.restore();
             osk_=std::move(live);
         }
     }
@@ -6543,6 +6560,32 @@ OskFace oskFace(const QString& role) {
 // puts its glyph centre 53.5 px right of the cell's left edge (measured on all four character rows), while the
 // function-row captions are centred on the key. Both are measured, not fitted (audit 4.6).
 constexpr double oskCharacterCaptionCentre=53.5;
+// The recorded caption ink per key role, the darkest pixel of each caption in the 36.5 s frame (JPEG, so within a few levels).
+QColor oskInk(const QString& role,bool character) {
+    if(character)return QColor(40,42,41);
+    if(role==QStringLiteral("olive"))return QColor(62,64,50);
+    if(role==QStringLiteral("blue"))return QColor(6,48,84);
+    if(role==QStringLiteral("arrow"))return QColor(0,42,78);
+    if(role==QStringLiteral("mint"))return QColor(14,48,46);
+    return QColor(40,42,41);
+}
+// The focused face's own gradient (not the rest face brightened): the recording's letter key and the blue Space key,
+// sampled down a column clear of the glyph while focused. The mint key is the focused Enter at 39.5 s. The olive keys were never focused in the recording, so
+// their stops are the rest face mixed halfway to white (UNKNOWN: measured values).
+QVector<QPair<double,QColor>> oskFocusFill(const QString& role) {
+    if(role==QStringLiteral("blue") || role==QStringLiteral("arrow"))
+        return {{0.,QColor(150,190,200)},{.2,QColor(122,177,198)},{.5,QColor(140,205,228)},{.75,QColor(180,222,236)},{1.,QColor(194,208,212)}};
+    if(role==QStringLiteral("mint"))   // the focused Enter key at 39.5 s, down a column clear of the caption
+        return {{0.,QColor(150,190,180)},{.1,QColor(138,210,190)},{.3,QColor(148,221,199)},{.6,QColor(176,226,214)},{.85,QColor(186,216,209)},{1.,QColor(195,199,198)}};
+    if(role==QStringLiteral("olive")) {
+        const OskFace rest=oskFace(role);
+        const auto mixed=[](const QColor& c){return QColor(c.red()+(255-c.red())/2,c.green()+(255-c.green())/2,c.blue()+(255-c.blue())/2);};
+        return {{0.,mixed(rest.at0)},{.4,mixed(rest.at40)},{.75,mixed(rest.at75)},{1.,mixed(rest.at100)}};
+    }
+    return {{0.,QColor(200,203,202)},{.2,QColor(190,190,190)},{.6,QColor(236,238,237)},{.8,QColor(232,234,233)},{1.,QColor(214,216,215)}};
+}
+// The badge pill artwork is drawn this much larger than the 20 px the first draw used (recorded pill 26x15 vs 18x9 here).
+constexpr double oskBadgeScale=1.45;
 }
 QString View::oskCharacter(int row,int column) const {
     // One source for a key's character: the resolved page, never a table in this file.
@@ -6565,6 +6608,13 @@ void View::openOsk(const QString& title,const QString& initial,std::function<voi
     osk_.row=L.defaultFocusRow;
     osk_.column=L.defaultFocusColumn;
     update();
+}
+double View::oskFocusAmount(int row,int column,qint64 now) const {
+    if((row==-1 && column==-1) || oskFocusRow_==-1)return 0.;
+    const qint64 since=now-oskFocusAt_;
+    if(row==oskFocusRow_ && column==oskFocusColumn_)return oskFocusFade((oskPrevRow_==-1 && oskPrevColumn_==-1)?since-oskOpenFadeMilliseconds:since,true);
+    if(row==oskPrevRow_ && column==oskPrevColumn_)return oskFocusFade(since,false);
+    return 0.;
 }
 void View::oskClose(bool accept) {
     auto done=std::move(osk_.done);
@@ -6731,7 +6781,7 @@ void View::oskPadAction(OskAction action) {
     }
     update();
 }
-void View::drawOsk(QPainter& p) {
+void View::drawOsk(QPainter& p,double panelAlpha,double scale,double dimFactor) {
     const OskLayout& l=osk_.tenkey?oskPanelLayout_:oskLayout_;
     const OskPage* page=l.page(osk_.page);
     if(!page)return;
@@ -6777,13 +6827,22 @@ void View::drawOsk(QPainter& p) {
     };
     p.save();
     // The dim behind the panel: black at the measured 0.70, not the 120/255 the free-hand keyboard used (4.1).
-    QColor dim=l.bands.dim;dim.setAlphaF(l.bands.dimAlpha);
+    // The dim eases up over about a second after the panel opens and is held through the close fade (oskDimFactor);
+    // the panel itself fades and scales about the screen centre, which is the panel's centre (493+934/2, 290+500/2).
+    QColor dim=l.bands.dim;dim.setAlphaF(l.bands.dimAlpha*std::clamp(dimFactor,0.,1.));
     p.fillRect(QRectF(0,0,1920,1080),dim);
+    p.setOpacity(p.opacity()*std::clamp(panelAlpha,0.,1.));
+    p.translate(960,540);p.scale(scale,scale);p.translate(-960,-540);
+    const qint64 nowMs=clock_.elapsed();
     // The panel plate: the middle band's own measured colour first (157,154,157 - the plate and key-seam colour the
     // capture shows), then the RCO's nine-slice (oskpanel_base1x0..3x2) over it. The slice's right-hand pieces are a
     // 34%-alpha shadow (tbase1x2/tbase2x3 sample black at alpha 87), so drawing them straight onto the page made the
     // panel's right edge dark instead of a shaded plate - over the fill they shade it, as the capture shows.
     const QRectF panelRect(l.bands.panel);
+    // The recorded window has a drop shadow to its right and below (x 951..954 darken 128 -> 102 -> 61 -> 40 at 720p,
+    // nothing on the left or top edge): a few offset, growing black layers.
+    p.setPen(Qt::NoPen);p.setBrush(QColor(0,0,0,20));
+    for(int spread=6;spread>=1;--spread)p.drawRoundedRect(panelRect.translated(3,4).adjusted(-spread+1,-spread+1,spread,spread),6,6);
     p.fillRect(panelRect,QColor(157,154,157));
     if(!slice9(l.slices.value(QStringLiteral("panel/1x0")),l.slices.value(QStringLiteral("panel/1x1")),
                l.slices.value(QStringLiteral("panel/1x2")),l.slices.value(QStringLiteral("panel/2x0")),
@@ -6798,9 +6857,25 @@ void View::drawOsk(QPainter& p) {
     QLinearGradient title(0,l.bands.titleBar.top(),0,l.bands.titleBar.bottom());
     title.setColorAt(0,l.bands.titleTop);title.setColorAt(1,l.bands.titleBottom);
     p.fillRect(QRectF(l.bands.titleBar),title);
-    label(QRectF(l.bands.titleIcon.left()-6,l.bands.titleBar.top()+2,24,34),QString(QChar(0x270e)),22,l.bands.titleTextColour);
-    label(QRectF(double(l.bands.titleText.left()),double(l.bands.titleBar.top()),double(l.bands.titleText.width()),
-                 double(l.bands.titleBar.height())),osk_.title,27,l.bands.titleTextColour,Qt::AlignLeft|Qt::AlignVCenter);
+    // The title pen is a solid white pen tilted to the right (recording: x 336..349, y 198..215 at 720p = 504..523 x
+    // 297..322 here). The firmware's osk_plugin carries an "osk_icon" image; it is used when it decodes, else the drawn pen.
+    {
+        const QImage& pen=assets_.image(QStringLiteral("osk_plugin"),QStringLiteral("osk_icon"));
+        const QRectF penRect(498,292,28,36);
+        if(!pen.isNull())p.drawImage(penRect,pen);
+        else {
+            p.save();p.setRenderHint(QPainter::Antialiasing);p.translate(514,310);p.rotate(35);
+            p.setPen(Qt::NoPen);p.setBrush(QColor(250,250,250));p.drawRoundedRect(QRectF(-5,-12,10,24),4.5,4.5);
+            p.setBrush(l.bands.titleTop);p.drawEllipse(QPointF(-1.5,8),2.5,2.5);
+            p.restore();
+        }
+    }
+    {
+        // The recorded title text starts at x 354 (720p) = 531 here and carries a soft one-pixel drop shadow.
+        const QRectF titleRect(531.,double(l.bands.titleBar.top()),double(l.bands.titleText.width()),double(l.bands.titleBar.height()));
+        label(titleRect.translated(1,2),osk_.title,23,QColor(0,0,0,70),Qt::AlignLeft|Qt::AlignVCenter);
+        label(titleRect,osk_.title,23,l.bands.titleTextColour,Qt::AlignLeft|Qt::AlignVCenter);
+    }
     // Entry field: the measured 86 -> 62 -> 47 vertical gradient, one line, clipped at its own edges (4.1, 5.1).
     QLinearGradient field(0,l.bands.field.top(),0,l.bands.field.bottom());
     field.setColorAt(0,l.bands.fieldTop);field.setColorAt(.5,l.bands.fieldMid);field.setColorAt(1,l.bands.fieldBottom);
@@ -6812,13 +6887,13 @@ void View::drawOsk(QPainter& p) {
     const auto advance=[&](const QString& text) {
         return textRenderer_.ready()?textRenderer_.measure(fieldFont,text):QFontMetricsF(fieldFont).horizontalAdvance(text);
     };
-    const double inset=20.;                                  // 5.1: text origin x 494+20
+    const double inset=18.;                                  // recording: text origin x 341 at 720p (the caret shaft's x) = 494+18
     const double textX=l.bands.field.left()+inset;
     const double textWidth=l.bands.field.width()-2*inset;
     const double before=advance(composed.left(osk_.cursor));
     const double scroll=std::max(0.,before-(textWidth-4.));
     p.save();
-    p.setClipRect(QRectF(textX,double(l.bands.field.top()),textWidth,double(l.bands.field.height())),Qt::IntersectClip);
+    p.setClipRect(QRectF(textX-6.,double(l.bands.field.top()),textWidth+6.,double(l.bands.field.height())),Qt::IntersectClip);   // 6 px of slack: the I-beam's left serif at the origin
     label({textX-scroll,double(l.bands.field.top()),std::max(textWidth,advance(composed)+4.),
            double(l.bands.field.height())},composed,22,l.bands.fieldTextColour,Qt::AlignLeft|Qt::AlignVCenter);
     // The caret is two marks, not one (5.2): a 2 px I-beam with 12 px serifs at the pen advance, in the measured
@@ -6838,15 +6913,18 @@ void View::drawOsk(QPainter& p) {
     // is also what keeps a pinned capture (which lands on one blink phase) from losing the marker entirely.]
     static constexpr double oskMarkerInk=215.;      // TRACED: the console frames' marker ink, 215,215,215
     static constexpr double oskMarkerInset=4.;      // TRACED: apex x = caret x + 4 (582 against 578)
-    static constexpr double oskMarkerWidth=13.;     // TRACED: x 582..594
-    static constexpr double oskMarkerHeight=17.;    // TRACED: y 353..369
+    static constexpr double oskMarkerWidth=12.;     // TRACED: x 582..594
+    static constexpr double oskMarkerHeight=16.;    // TRACED: y 353..369
+    // The recording's I-beam is 22 px tall at 720p (y 231..252), 4 px serifs, 1-2 px shaft: 33 / 7 / 2 here. (The 2026-10-27
+    // 1080p console capture put it at 27; the recording is the target of the 1:1 pass, so the draw uses the recording's.)
+    static constexpr double oskCaretHeight=33.,oskCaretSerif=7.,oskCaretShaft=2.;
     if(osk_.caretLit) {
         const double x=textX+before-scroll;
         const double y=l.bands.field.top()+9;
-        p.fillRect(QRectF(x,y,l.caret.shaftWidth,l.caret.height),l.caret.colour);
-        const double serifX=x-(l.caret.serifWidth-l.caret.shaftWidth)/2.;
-        p.fillRect(QRectF(serifX,y,l.caret.serifWidth,2),l.caret.colour);
-        p.fillRect(QRectF(serifX,y+l.caret.height-2,l.caret.serifWidth,2),l.caret.colour);
+        p.fillRect(QRectF(x,y,oskCaretShaft,oskCaretHeight),l.caret.colour);
+        const double serifX=x-(oskCaretSerif-oskCaretShaft)/2.;
+        p.fillRect(QRectF(serifX,y,oskCaretSerif,2),l.caret.colour);
+        p.fillRect(QRectF(serifX,y+oskCaretHeight-2,oskCaretSerif,2),l.caret.colour);
     }
     {
         // The marker sits on the field's vertical centre, which the frame puts 7 px below the I-beam's own top
@@ -6854,10 +6932,10 @@ void View::drawOsk(QPainter& p) {
         // height centres on the same axis. It is drawn whether or not the I-beam is lit.
         const double x=textX+before-scroll+oskMarkerInset;
         const double y=l.bands.field.top()+9;
-        const double top=y+(l.caret.height-oskMarkerHeight)/2.;
+        const double top=y+(oskCaretHeight-oskMarkerHeight)/2.;
         const double apexY=top+oskMarkerHeight/2.;
         p.save();
-        p.setPen(QPen(QColor(int(oskMarkerInk),int(oskMarkerInk),int(oskMarkerInk)),2));
+        p.setPen(QPen(QColor(int(oskMarkerInk),int(oskMarkerInk),int(oskMarkerInk)),1.5));
         p.setBrush(Qt::NoBrush);
         p.drawLine(QPointF(x+oskMarkerWidth,top),QPointF(x+oskMarkerWidth,top+oskMarkerHeight)); // the base, on the right
         p.drawLine(QPointF(x+oskMarkerWidth,top),QPointF(x,apexY));                              // upper stroke to the apex
@@ -6874,30 +6952,45 @@ void View::drawOsk(QPainter& p) {
                               double(key.span*l.cell.width()-2*l.faceInset.x()),
                               double(l.cell.height()-2*l.faceInset.y()));
             const bool focused=!osk_.onPaste && osk_.row==row.row && osk_.column>=key.column && osk_.column<key.column+key.span;
-            // The focused face brightens instead of changing colour: measured on s3/f0020-0078.png the focused a/A
-            // reads 152,159,140 / 206,219,140 / 210,220,183 against 157,163,124 / 172,178,139 / 162,165,138 at rest.
-            const auto lit=[&](const QColor& colour) {
-                if(!focused)return colour;
-                const auto mix=[&](int channel){return int(channel+(255-channel)*.35);};
-                return QColor(mix(colour.red()),mix(colour.green()),mix(colour.blue()));
-            };
+            // The highlight cross-fades (oskFocusFade): the gaining key rises, the key that just lost focus falls. The first
+            // focus after the panel opens (no previous key) is lit at once, and a move inside one wide key does not restart it.
+            const bool previous=oskPrevRow_==row.row && oskPrevColumn_>=key.column && oskPrevColumn_<key.column+key.span;
+            double focusAmt=0.;
+            // The very first focus rises only after the panel is in (recording: no highlight on g at 36.4 s, the ring at 36.5, the
+            // full fill at 36.7), so it waits out the open fade.
+            if(focused) {
+                if(previous || oskFocusRow_==-1)focusAmt=1.;
+                else if(oskPrevRow_==-1 && oskPrevColumn_==-1)focusAmt=oskFocusFade(nowMs-oskFocusAt_-oskOpenFadeMilliseconds,true);
+                else focusAmt=oskFocusFade(nowMs-oskFocusAt_,true);
+            }
+            else if(previous && oskFocusRow_!=-1)focusAmt=oskFocusFade(nowMs-oskFocusAt_,false);
             // The palette opener in the function row is drawn on a mint plate in the capture (measured
             // 116,157,141 at 784,676, the same as the blank key beside it), while the layout's inferred role for it
             // reads "blue"; the capture wins.
-            const OskFace colours=oskFace(key.icon==QStringLiteral("grid")?QStringLiteral("mint"):key.face);
+            const QString role=key.icon==QStringLiteral("grid")?QStringLiteral("mint"):key.face;
+            const OskFace colours=oskFace(role);
             QLinearGradient gradient(face.topLeft(),face.bottomLeft());
-            gradient.setColorAt(0,lit(colours.at0));gradient.setColorAt(.4,lit(colours.at40));
-            gradient.setColorAt(.75,lit(colours.at75));gradient.setColorAt(1,lit(colours.at100));
+            gradient.setColorAt(0,colours.at0);gradient.setColorAt(.4,colours.at40);
+            gradient.setColorAt(.75,colours.at75);gradient.setColorAt(1,colours.at100);
             p.setPen(Qt::NoPen);p.setBrush(gradient);
             p.drawRoundedRect(face,l.keyCornerRadius,l.keyCornerRadius);
+            if(focusAmt>.002) {
+                QLinearGradient fill(face.topLeft(),face.bottomLeft());
+                for(const auto& stop:oskFocusFill(role))fill.setColorAt(stop.first,stop.second);
+                p.save();p.setOpacity(p.opacity()*focusAmt);p.setBrush(fill);
+                p.drawRoundedRect(face,l.keyCornerRadius,l.keyCornerRadius);p.restore();
+            }
             // The button badge: the module's LABEL_* pill, drawn at the measured 20 px height its 74x28 artwork
             // carries (the pill itself fills the left 44 px of it). LABEL_UP/DOWN/LEFT/RIGHT are the arrow keys' whole
             // face art, so those keys draw their glyph caption instead of a pill.
             const QImage& badge=texture(key.badgeTexture);
             const bool hasBadge=!badge.isNull();
             if(hasBadge) {
-                const double badgeWidth=badge.width()*(20./badge.height());
-                p.drawImage(QRectF(face.left()+2,face.top()-3,badgeWidth,20),badge);
+                // The recorded pill is 17x10 px at 720p (26x15 here) against the 18x9 this drew at 20 px: the artwork is drawn
+                // 1.45x larger about the pill's centre (face.left+17.7, face.top+7).
+                const double scaleUp=oskBadgeScale*20./badge.height();
+                const double badgeWidth=badge.width()*scaleUp,badgeHeight=badge.height()*scaleUp;
+                p.drawImage(QRectF(face.left()+17.7-22.*scaleUp,face.top()+7.-14.*scaleUp,badgeWidth,badgeHeight),badge);
             } else if(!key.badge.isEmpty()) {
                 QFont badgeFont(shell_.fontFamily());badgeFont.setPixelSize(13);
                 const double badgeWidth=std::max(18.,QFontMetricsF(badgeFont).horizontalAdvance(key.badge)+12.);
@@ -6910,27 +7003,46 @@ void View::drawOsk(QPainter& p) {
             // at 24 px; a function-row caption is centred on the key, 6 px below the face centre (the badge shares the
             // top of the face) and is drawn at 19 px, which is what the capture's 93 px "Backspace" and 53 px "Space"
             // inks give. Sizes are measured, not fitted (audit 4.6: cap 19 and 18).
+            // The recorded function-row captions are right-aligned with a 9-10 px margin (Backspace ink ends 7 px inside its key at
+            // 720p, Space 8, Input Mode 5, Enter 7, a/a-grave 6, a/A 5), not centred; the arrows are drawn triangles.
             const bool character=row.row<4;
+            const bool arrowKey=key.face==QStringLiteral("arrow") && key.label.size()==1 && key.label.at(0).unicode()>=0x25b2 && key.label.at(0).unicode()<=0x25c0;
             const QRectF caption=character
                 ?QRectF(double(l.gridOrigin.x()+key.column*l.cell.width())+oskCharacterCaptionCentre-59.,face.top()+4.,120.,face.height())
-                :face.adjusted(0,12,0,0);
-            label(caption,key.label,character?24:19,QColor(30,40,50));
+                :face.adjusted(0,12,key.span>1?-10:-9,0);
+            const QColor ink=oskInk(role,character);
+            // The symbol key reads "*%#" in the recording; the module's own table says "@#:".
+            const QString text=key.label==QStringLiteral("@#:")?QStringLiteral("*%#"):key.label;
+            if(arrowKey) {
+                const ushort code=key.label.at(0).unicode();
+                const QPointF centre(face.center().x()+14.,face.center().y()+8.);
+                QPainterPath triangle;
+                if(code==0x25b2){triangle.moveTo(centre.x(),centre.y()-5.);triangle.lineTo(centre.x()+9,centre.y()+5.);triangle.lineTo(centre.x()-9,centre.y()+5.);}
+                else if(code==0x25bc){triangle.moveTo(centre.x(),centre.y()+5.);triangle.lineTo(centre.x()+9,centre.y()-5.);triangle.lineTo(centre.x()-9,centre.y()-5.);}
+                else if(code==0x25c0){triangle.moveTo(centre.x()-6.,centre.y());triangle.lineTo(centre.x()+6,centre.y()-9.);triangle.lineTo(centre.x()+6,centre.y()+9.);}
+                else {triangle.moveTo(centre.x()+6.,centre.y());triangle.lineTo(centre.x()-6,centre.y()-9.);triangle.lineTo(centre.x()-6,centre.y()+9.);}
+                triangle.closeSubpath();
+                p.save();p.setRenderHint(QPainter::Antialiasing);p.setPen(Qt::NoPen);p.setBrush(ink);p.drawPath(triangle);p.restore();
+            } else label(caption,text,character?24:18,ink,character?int(Qt::AlignCenter):int(Qt::AlignRight|Qt::AlignVCenter));
             // The palette opener carries a drawn glyph, not a caption: four columns by three rows of 5 px squares on a
             // 7 px pitch (a 26x19 block), centred on the face like the capture's.
             if(key.icon==QStringLiteral("grid")) {
-                p.setPen(Qt::NoPen);p.setBrush(QColor(30,40,50));
-                for(int line=0;line<3;++line)for(int square=0;square<4;++square)
-                    p.drawRect(QRectF(face.center().x()-12.5+square*7.,face.center().y()-10.5+line*7.,5.,5.));
+                // The recording shows three columns by three rows of flat teal cells (about 7x5 on a 10x7.5 pitch = 27x20 here).
+                p.setPen(Qt::NoPen);p.setBrush(QColor(2,46,45));
+                for(int line=0;line<3;++line)for(int square=0;square<3;++square)
+                    p.drawRect(QRectF(face.center().x()-13.5+square*10.,face.center().y()-10.+line*7.5,7.,5.));
             }
             // The focus ring is the firmware's own: SBTN_FOCUS 84x66, or LBTN_FOCUS 166x66 for a wide key, centred on
             // the face (66+18 by 50+16, i.e. 9/8 px of ring outside it - 4.5).
-            if(focused) {
+            if(focusAmt>.002) {
                 const QImage& ring=texture(key.span>1?QStringLiteral("LBTN_FOCUS"):QStringLiteral("SBTN_FOCUS"));
+                p.save();p.setOpacity(p.opacity()*focusAmt);
                 if(!ring.isNull())
                     p.drawImage(QRectF(face.center().x()-ring.width()/2.,face.center().y()-ring.height()/2.,
                                        ring.width(),ring.height()),ring);
                 else {p.setPen(QPen(QColor(255,255,255,190),2));p.setBrush(Qt::NoBrush);
                       p.drawRoundedRect(face.adjusted(-6,-6,6,6),7,7);}
+                p.restore();
             }
         }
     }
@@ -6939,75 +7051,50 @@ void View::drawOsk(QPainter& p) {
     // PC build does not have, and fabricating them would be a different feature (8.2).
     // The list's own nine-slice is pre-composite artwork (CANDIDATE_WINDOW0x0 reads 129,130,129 where the frame
     // measures 110,110,110), so the measured plate is drawn: fill 110 with the slice's light top and dark bottom edge.
-    p.setPen(Qt::NoPen);p.setBrush(QColor(110,110,110));
-    p.drawRoundedRect(QRectF(l.bands.candidateList),3,3);
-    p.fillRect(QRectF(double(l.bands.candidateList.left())+3,double(l.bands.candidateList.top()),
-                      double(l.bands.candidateList.width())-6,1),QColor(151,151,151));
-    p.fillRect(QRectF(double(l.bands.candidateList.left())+3,double(l.bands.candidateList.bottom()-1),
-                      double(l.bands.candidateList.width())-6,1),QColor(100,100,100));
-    // Header: the measured 92 -> 80 gradient with a light line along its bottom edge.
-    QLinearGradient header(0,l.bands.predictionHeader.top(),0,l.bands.predictionHeader.bottom());
-    header.setColorAt(0,QColor(92,92,92));header.setColorAt(1,QColor(80,80,80));
-    p.fillRect(QRectF(l.bands.predictionHeader),header);
-    p.fillRect(QRectF(double(l.bands.predictionHeader.left()),double(l.bands.predictionHeader.bottom()-1),
-                      double(l.bands.predictionHeader.width()),1),QColor(120,124,125));
-    label(QRectF(l.bands.predictionHeader.left()+14.,double(l.bands.predictionHeader.top()),
-                 double(l.bands.predictionHeader.width())-46.,double(l.bands.predictionHeader.height())),
+    // Recorded geometry (720p x1.5): the list 812..940 plus a 9 px scroll strip, y 271..424; the header 426..446; the single wide
+    // Paste key 812..948 x 447..482. There is no copy key (it only appears with a selection, which this keyboard has none of).
+    const QRectF listRect(1218,406,206,231),headerRect(1218,640,206,30);
+    p.setPen(Qt::NoPen);p.setBrush(QColor(114,112,113));
+    p.drawRect(listRect);
+    {   // the scroll strip: lighter, with a short lighter knob at the top (recorded x 940..949, 121,115,115 -> 141,137,138)
+        QLinearGradient strip(listRect.right()-13,0,listRect.right(),0);
+        strip.setColorAt(0,QColor(121,115,115));strip.setColorAt(1,QColor(141,137,138));
+        p.setBrush(strip);p.drawRect(QRectF(listRect.right()-13,listRect.top(),13,listRect.height()));
+    }
+    // Header: the recorded bar is (89,89,87) at the top easing to (82,80,81), darker toward its middle-right.
+    QLinearGradient header(0,headerRect.top(),0,headerRect.bottom());
+    header.setColorAt(0,QColor(92,91,89));header.setColorAt(1,QColor(80,79,79));
+    p.fillRect(headerRect,header);
+    p.fillRect(QRectF(headerRect.left(),headerRect.bottom()-1,headerRect.width(),1),QColor(120,124,125));
+    label(QRectF(headerRect.left()+14.,headerRect.top(),headerRect.width()-46.,headerRect.height()),
           l.captions.prediction,16,QColor(235,235,235),Qt::AlignLeft|Qt::AlignVCenter);
-    // The mode and count cells are their own darker wells (85,85,85) inside the header strip.
-    p.fillRect(QRectF(l.bands.modeCell),QColor(85,85,85));
-    p.fillRect(QRectF(l.bands.countCell),QColor(85,85,85));
-    label(QRectF(l.bands.modeCell),page->modeCaption,18,QColor(237,237,237));
-    label(QRectF(l.bands.countCell),QStringLiteral("0"),18,QColor(237,237,237));
-    for(const OskPredictionButton& button:l.predictionButtons) {
-        const QRectF rect(button.rect);
+    // The mode and count cells are lighter wells (130,130,128) with white text, not darker ones (recording 908..945 at 720p).
+    const QRectF modeWell(double(l.bands.modeCell.left()),headerRect.top()+2,double(l.bands.modeCell.width()),headerRect.height()-4);
+    const QRectF countWell(double(l.bands.countCell.left()),headerRect.top()+2,double(l.bands.countCell.width()),headerRect.height()-4);
+    QLinearGradient well(0,modeWell.top(),0,modeWell.bottom());
+    well.setColorAt(0,QColor(134,134,132));well.setColorAt(1,QColor(118,118,117));
+    p.fillRect(modeWell,well);p.fillRect(countWell,well);
+    label(modeWell,page->modeCaption,18,QColor(234,232,233));
+    label(countWell,QStringLiteral("0"),18,QColor(234,232,233));
+    {
+        // The wide Paste key (recorded 812..948 x 447..482 at 720p): the blue key face, "Paste" right-aligned at the bottom, drawn
+        // faded while nothing is on the clipboard (the captured state) and dark blue once a paste has found text.
+        const QRectF rect(1218,670,204,53);
+        const bool buttonEnabled=osk_.pasteReady;
+        const bool buttonFocused=osk_.onPaste;
+        const OskFace blue=oskFace(QStringLiteral("blue"));
         QLinearGradient gradient(rect.topLeft(),rect.bottomLeft());
-        gradient.setColorAt(0,QColor(137,169,175));gradient.setColorAt(1,QColor(112,145,151));
+        gradient.setColorAt(0,blue.at0);gradient.setColorAt(.4,blue.at40);gradient.setColorAt(.75,blue.at75);gradient.setColorAt(1,blue.at100);
         p.setPen(Qt::NoPen);p.setBrush(gradient);p.drawRoundedRect(rect,l.keyCornerRadius,l.keyCornerRadius);
-        // Paste is drawn disabled, as captured, until a paste finds text on the clipboard (the clipboard is never polled).
-        const bool buttonEnabled=button.enabled || (button.action==OskAction::Paste && osk_.pasteReady);
-        const bool buttonFocused=button.action==OskAction::Paste && osk_.onPaste;
-        if(buttonFocused) {   // the focused face brightens, as a key's does
-            QLinearGradient lit(rect.topLeft(),rect.bottomLeft());
-            lit.setColorAt(0,QColor(179,199,203));lit.setColorAt(1,QColor(164,189,193));
-            p.setBrush(lit);p.drawRoundedRect(rect,l.keyCornerRadius,l.keyCornerRadius);
-            const QImage& ring=texture(QStringLiteral("SBTN_FOCUS"));   // the same firmware ring a key gets
+        if(buttonFocused) {
+            QLinearGradient fill(rect.topLeft(),rect.bottomLeft());
+            for(const auto& stop:oskFocusFill(QStringLiteral("blue")))fill.setColorAt(stop.first,stop.second);
+            p.setBrush(fill);p.drawRoundedRect(rect,l.keyCornerRadius,l.keyCornerRadius);
+            const QImage& ring=texture(QStringLiteral("LBTN_FOCUS"));   // the same firmware ring a wide key gets
             if(!ring.isNull())p.drawImage(QRectF(rect.center().x()-ring.width()/2.,rect.center().y()-ring.height()/2.,ring.width(),ring.height()),ring);
             else {p.setPen(QPen(QColor(255,255,255,190),2));p.setBrush(Qt::NoBrush);p.drawRoundedRect(rect.adjusted(-6,-6,6,6),7,7);}
         }
-        // KEYTOP_COPY / KEYTOP_PASTE carry the glyph as a white mask (24x24 of ink inside a 72x54 transparent card) for
-        // paf's icon material, so painting them raw draws a white block on the light key. The mask is tinted to the
-        // measured ink colour and cached per texture; the card is drawn at the button's own size, which puts the glyph
-        // where the card has it.
-        static QHash<QString,QImage> tintedCards;
-        const auto card=[&](const QString& name,const QColor& ink)->const QImage& {
-            static const QImage none;
-            const QImage& source=texture(name);
-            if(source.isNull())return none;
-            const QString key=name+QChar('/')+ink.name();
-            if(const auto it=tintedCards.constFind(key);it!=tintedCards.constEnd())return it.value();
-            QImage tinted=source.convertToFormat(QImage::Format_ARGB32);
-            for(int y=0;y<tinted.height();++y) {
-                auto* line=reinterpret_cast<QRgb*>(tinted.scanLine(y));
-                for(int x=0;x<tinted.width();++x)line[x]=qRgba(ink.red(),ink.green(),ink.blue(),qAlpha(line[x]));
-            }
-            return tintedCards.insert(key,tinted).value();
-        };
-        const QImage& glyph=card(button.texture,QColor(30,50,60,buttonEnabled?255:120));
-        if(!glyph.isNull()) {
-            p.save();p.setOpacity(buttonEnabled?1.:.55);p.drawImage(rect,glyph);p.restore();continue;
-        }
-        // The fallback shapes, for a run without the RCO: two offset plates for copy, a clipboard for paste.
-        p.setPen(QPen(QColor(30,50,60,buttonEnabled?255:120),2));
-        p.setBrush(QColor(30,50,60,buttonEnabled?255:120));
-        if(button.action==OskAction::Copy) {
-            p.drawRect(QRectF(rect.left()+19,rect.top()+16,17,17));
-            p.drawRect(QRectF(rect.left()+26,rect.top()+23,17,17));
-        } else {
-            p.setBrush(Qt::NoBrush);
-            p.drawRect(QRectF(rect.left()+21,rect.top()+20,20,24));
-            p.drawRect(QRectF(rect.left()+27,rect.top()+15,8,6));
-        }
+        label(rect.adjusted(0,12,-9,0),QStringLiteral("Paste"),18,buttonEnabled?QColor(6,48,84):QColor(98,128,152),Qt::AlignRight|Qt::AlignVCenter);
     }
     // Footer: (70,70,70) with the capture's 2 px light top edge and its own bottom line (4.1).
     p.fillRect(QRectF(l.bands.footer),QColor(70,70,70));

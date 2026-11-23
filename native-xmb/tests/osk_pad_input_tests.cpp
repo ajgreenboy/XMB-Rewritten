@@ -123,6 +123,29 @@ int main(int argc,char** argv) {
     check(!oskFadeDone(oskCloseFadeMilliseconds-1,false) && oskFadeDone(oskCloseFadeMilliseconds,false),"close fade finishes at its duration");
     check(oskOpenFadeMilliseconds>=66 && oskOpenFadeMilliseconds<=96 && oskCloseFadeMilliseconds==104,"durations sit inside the audited ranges");
 
-    std::printf("%d checks, %d failed\n",checks,failures);
+    // The recorded scale: 1.10 -> 1.00 on open, 1.00 -> 1.10 on close, about the centre.
+    check(oskPanelScale(0.,true)>1.099 && oskPanelScale(0.,true)<1.101,"open scale starts at 1.10 (alpha 0)");
+    check(oskPanelScale(1.,true)==1. && oskPanelScale(1.,false)==1.,"a fully opaque panel is at scale 1");
+    check(oskPanelScale(.5,true)>1.049 && oskPanelScale(.5,true)<1.051,"half alpha reads the recording's 1.05 first-frame scale");
+    check(oskPanelScale(0.,false)>1.099,"the last close frame is at 1.10");
+    // The dim: eases up like the recorded background samples, held through the close fade, then released.
+    check(oskDimFactor(0,true)==0. && oskDimFactor(-20,true)==0.,"the dim starts at 0");
+    check(oskDimFactor(100,true)>.25 && oskDimFactor(100,true)<.27,"100 ms in, the dim has 26% of its target (recorded 36.4 -> 36.5 s step)");
+    check(oskDimFactor(300,true)>.59 && oskDimFactor(300,true)<.61,"300 ms in, the dim is at 60%");
+    check(oskDimFactor(1000,true)>.95 && oskDimFactor(5000,true)<1.,"the dim approaches 1 and never overshoots");
+    bool monotone=true;double last=-1.;
+    for(int t=0;t<1500;t+=10){const double v=oskDimFactor(t,true);monotone=monotone && v>=last;last=v;}
+    check(monotone,"the opening dim is monotone");
+    check(oskDimFactor(0,false)==1. && oskDimFactor(oskCloseFadeMilliseconds,false)==1.,"the dim is held through the close fade");
+    check(oskDimFactor(oskCloseFadeMilliseconds+oskDimReleaseMilliseconds/2,false)>.49 && oskDimFactor(oskCloseFadeMilliseconds+oskDimReleaseMilliseconds/2,false)<.51,"the dim releases linearly");
+    check(oskDimFactor(oskCloseFadeMilliseconds+oskDimReleaseMilliseconds,false)==0.,"the dim is gone after the release");
+    check(!oskClosingDone(oskCloseFadeMilliseconds) && oskClosingDone(oskCloseFadeMilliseconds+oskDimReleaseMilliseconds),"the closing copy lives until the dim is released");
+    // The focus cross-fade.
+    check(oskFocusFade(0,true)==0. && oskFocusFade(oskFocusInMilliseconds,true)==1. && oskFocusFade(-30,true)==0.,"the gaining key's highlight rises over its span");
+    check(oskFocusFade(0,false)==1. && oskFocusFade(oskFocusOutMilliseconds,false)==0.,"the losing key's highlight falls over its span");
+    check(oskFocusFade(oskFocusInMilliseconds/2,true)>.49 && oskFocusFade(oskFocusInMilliseconds/2,true)<.51,"the rise is linear");
+    check(oskFocusOutMilliseconds>oskFocusInMilliseconds,"the highlight leaves slower than it arrives (recorded 150 / 200 ms)");
+
+        std::printf("%d checks, %d failed\n",checks,failures);
     return failures?1:0;
 }

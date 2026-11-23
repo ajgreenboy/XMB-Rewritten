@@ -1442,3 +1442,26 @@ Both touch `view.cpp` (`drawOsk`, `openOsk`, `oskMove`) - a write-fenced hot fil
 deferred until that file is free. The data-model part (`osk_layout.cpp`, adding the tenkey loader) can land first.
 
 Frames: `C:\dev\out\rpcs3-cap\u4.png` (full-key), `grid1.png` (tenkey), `sym5.png` (symbol). Local only.
+
+## 16. 1:1 pass against the real-console recording (2026-11-22)
+
+The measured spec is `OSK-RECORDED-SPEC-2026-11-22.md` (66 frames at 100 ms of the real-console recording, 720p). This pass
+changed the native draw to match it: the symbol key caption (`*%#`), the caret (33/7/2 px), the title pen (the firmware's
+`osk_plugin.rco` `osk_icon`) and text (23 px at x 531, soft shadow), right-aligned function-row captions in the recorded ink
+colours, solid arrow triangles, the 3x3 palette-key icon, 1.45x larger button badges, the recorded focus fills (own gradient per
+face role, cross-faded in 150 ms and out 200 ms), one wide Paste key (the copy key is no longer drawn), the lighter prediction
+wells and scroll strip, the window drop shadow, the open/close scale 1.10 <-> 1.00 and the separately eased dim
+(`0.70 * (1 - 0.74^(t/100 ms))`, held through the close fade). Pure timing logic is in `src/osk_pad_input.h`
+(`oskPanelScale`, `oskDimFactor`, `oskClosingDone`, `oskFocusFade`) with 15 new checks in `tests/osk_pad_input_tests.cpp`.
+Supersedes the corresponding statements in 4.2, 4.4, 4.5, 5.2, 7 and 15.8 (see the table in the new spec's section 10).
+
+Still different after this pass (honest list): the prediction candidates and the composition underline (no dictionary, no IME);
+the dialog text showing through the title bar and the keys during the fades (the keyboard is opened by many callers, there is no
+single dialog behind it); the per-key stagger of caption fade-in on open (one frame, UNKNOWN); focus fills of the olive, arrow
+and grid keys (never focused in the frames); the caps, accent, palette and tenkey pages (not in the recording; unchanged); font
+hinting (our glyph pipeline vs the console's, 1-2 px of ink); the scale/alpha curve of the open and close (100 ms sampling).
+In this build the test-only tenkey panel (`XMB_OSK_TENKEY=1`) shows its key grid overlapping the function rows (not compared with the pre-change build); that panel was a
+data-model-only phase and was not touched.
+
+A script token `osk=<title>[|<initial text>]` opens the keyboard directly (no calling dialog) so a capture can reach it:
+`--script "size=1280x720,wait,osk=Comment,wait,wait,type=hi,grab=<png>,quit"`.

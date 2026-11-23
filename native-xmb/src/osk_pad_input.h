@@ -8,6 +8,7 @@
 
 #include <QVector>
 #include <algorithm>
+#include <cmath>
 
 namespace xmb {
 
@@ -98,6 +99,44 @@ inline double oskFadeAlpha(qint64 elapsed, bool opening) {
 }
 inline bool oskFadeDone(qint64 elapsed, bool opening) {
     return elapsed >= (opening ? oskOpenFadeMilliseconds : oskCloseFadeMilliseconds);
+}
+
+// The recorded panel also scales (audit/OSK-RECORDED-SPEC-2026-11-22.md 7): the first open frame is the 622 px window at
+// 1.05 scale (654 px) and the last close frame is at 1.106, both about the screen centre, so the scale runs 1.10 -> 1.00
+// while the alpha runs 0 -> 1 (and the reverse on close). The 100 ms frame step cannot separate the scale curve from the
+// alpha curve, so one linear parameter drives both: a FIT.
+constexpr double oskPanelScaleSpread = 0.10;
+inline double oskPanelScale(double alpha, bool opening) {
+    (void)opening;
+    return 1. + oskPanelScaleSpread * (1. - std::clamp(alpha, 0., 1.));
+}
+
+// The darkening behind the panel is not part of the fade. In the recording it eases up over about a second after the
+// panel opens (background samples 131 -> 124 -> 102 -> 86 -> 73 -> 65 -> 59 -> 55 -> 50 -> 48 -> 46 -> 43 -> 42 at
+// 100 ms steps: the remaining fraction shrinks by about 0.74 per 100 ms, the paf accel curve's per-frame step at 60 Hz)
+// and it is held through the panel's close fade, then released within the next 100 ms (it belongs to the calling
+// dialog, which is bright again one frame after the panel is gone). Returns the share (0..1) of the measured 0.70 dim.
+constexpr double oskDimRemainPer100ms = 0.74;
+constexpr int oskDimReleaseMilliseconds = 80;
+inline double oskDimFactor(qint64 elapsed, bool opening) {
+    if (opening) return 1. - std::pow(oskDimRemainPer100ms, std::max<qint64>(0, elapsed) / 100.);
+    const double since = double(elapsed - oskCloseFadeMilliseconds);
+    return since <= 0. ? 1. : 1. - std::clamp(since / oskDimReleaseMilliseconds, 0., 1.);
+}
+// The closing copy of the panel is drawn until the dim has been released too.
+inline bool oskClosingDone(qint64 elapsed) {
+    return elapsed >= oskCloseFadeMilliseconds + oskDimReleaseMilliseconds;
+}
+
+// The focus highlight cross-fades: a key fades its highlight in over ~150 ms when it gains focus and out over ~200 ms
+// when it loses it (key 'k' in the recording rises 189 -> 213 -> 221 over 37.5-37.7 s and falls 212 -> 195 -> 188 over
+// 37.8-38.0 s; 'i' rises 195 -> 209 -> 215 and later falls 202 -> 189). Linear; the curve is a fit.
+constexpr int oskFocusInMilliseconds = 150;
+constexpr int oskFocusOutMilliseconds = 200;
+inline double oskFocusFade(qint64 sinceChange, bool gaining) {
+    const double span = gaining ? oskFocusInMilliseconds : oskFocusOutMilliseconds;
+    const double t = std::clamp(double(std::max<qint64>(0, sinceChange)) / span, 0., 1.);
+    return gaining ? t : 1. - t;
 }
 
 } // namespace xmb

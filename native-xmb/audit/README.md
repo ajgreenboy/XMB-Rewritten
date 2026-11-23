@@ -86,6 +86,7 @@ native diff.
 | [ITEM-MENU-INFO-FIRMWARE.md](ITEM-MENU-INFO-FIRMWARE.md) | Item menu and information panel |
 | [MEDIA-PANELS-FIRMWARE.md](MEDIA-PANELS-FIRMWARE.md) | Media playback panels and the volume display |
 | [OSK-FIRMWARE.md](OSK-FIRMWARE.md) | The on-screen keyboard |
+| [OSK-RECORDED-SPEC-2026-11-22.md](OSK-RECORDED-SPEC-2026-11-22.md) | The on-screen keyboard as recorded on the real console: measured geometry, colours, focus, dim, open/close timing |
 | [SETTINGS-FIRMWARE.md](SETTINGS-FIRMWARE.md) | Settings screens |
 | [GEOMETRY-ROOT.md](GEOMETRY-ROOT.md) | The root category column and an open page |
 | [RCO-OBJECT-MODEL.md](RCO-OBJECT-MODEL.md) | The runtime RCO object model and materials |
