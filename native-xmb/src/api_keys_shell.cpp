@@ -75,7 +75,8 @@ void Shell::refreshApiKeyPages() {
                     QLatin1String(info.help), Action::ApiKeyPage, QLatin1String(info.slug), apikeys::statusText(statusFor(info, dataDirectory_))));
             }
         } else if (const Info* info = apikeys::infoForSlug(page.apiKey)) {
-            const QString prefix = QStringLiteral("apikey:") + page.apiKey + QLatin1Char(':');
+            const QString rowIdBase = QStringLiteral("apikey");   // row ids read "apikey:<slug>:<row>"
+            const QString prefix = rowIdBase + QLatin1Char(':') + page.apiKey + QLatin1Char(':');
             const auto status = statusFor(*info, dataDirectory_);
             QString explanation;
             if (status.source == apikeys::Source::Environment)
