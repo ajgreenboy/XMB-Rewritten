@@ -4,6 +4,13 @@ import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 
+// An empty per-capture folder for XMB_API_KEY_DIR, so the app never finds a real key file (see the capture env).
+function scratchKeyDir(base: string): string {
+  const dir = join(base, 'no-api-keys');
+  mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
 // Per-layer fidelity harness for the native XMB. Scores a fixed set of named
 // regions of a native 1920x1080 frame against the stored RPCS3 reference and
 // gates each layer against the thresholds file (baseline minus a small delta
@@ -573,7 +580,10 @@ async function captureFrame(t: Thresholds, opts: ReturnType<typeof parseArgs>) {
   const proc = Bun.spawn([exe, ...args], {
     stdout: 'ignore',
     stderr: 'pipe',
-    env: { ...process.env, XMB_STEAM_ROOT: steamRoot },
+    // No real API key may reach a capture: a key in this machine's AppData made the Steam owned list (and so the
+    // frame) depend on the live account. An empty scratch key folder and blank key variables keep every run offline.
+    env: { ...process.env, XMB_STEAM_ROOT: steamRoot, XMB_API_KEY_DIR: scratchKeyDir(captureDir),
+           STEAM_WEB_API_KEY: '', RAWG_API_KEY: '', SPOTIFY_CLIENT_ID: '' },
   });
   const stderrText = new Response(proc.stderr).text();
   let timedOut = false;
@@ -724,6 +734,11 @@ async function runStateProcess(t: Thresholds, opts: ReturnType<typeof parseArgs>
     // XMB_LOG. Recipe log assertions read that file; the grep is unambiguous because
     // every capture gets its own directory.
     XMB_LOG: messagePath,
+    // No real API key may reach a capture (see the first capture path): scratch key folder, blank key variables.
+    XMB_API_KEY_DIR: scratchKeyDir(dirname(dumpPath)),
+    STEAM_WEB_API_KEY: '',
+    RAWG_API_KEY: '',
+    SPOTIFY_CLIENT_ID: '',
   } as Record<string, string | undefined>;
   for (const [key, value] of Object.entries(recipe.env ?? {})) env[key] = value.replaceAll('${repo}', repo);
   if (opts.steamRoot) env.XMB_STEAM_ROOT = opts.steamRoot;
