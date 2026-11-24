@@ -1,0 +1,186 @@
+#pragma once
+// PS3 BD Remote Control (Sony, Bluetooth HID, 054C:0306): the pure half. Header-only and free of Qt, Windows and the
+// pad reader, so tests/bd_remote_tests.cpp covers it with synthetic reports and no device (audit/BD-REMOTE.md).
+//
+// Report layout, as Windows returns an input report (byte 0 = report id). Facts from the Linux kernel's hid-sony.c
+// PS3 BD remote descriptor and key tables (read for facts only; nothing is copied) - see the audit doc:
+//   [0]      report id 0x01 (the descriptor Linux substitutes calls this byte a constant)
+//   [1..3]   24 joypad-style bits: bit n-1 of the little-endian 24-bit value is button usage n (Select, L3, R3, Start,
+//            Up, Right, Down, Left, L2, R2, L1, R1, Triangle, Circle, Cross, Square, PS, ..., Enter at usage 20)
+//   [4]      remote key code (array); 0xFF = no remote key held
+//   [5..10]  constant, 0xFF in bytes 5-9; byte 10 marks a press
+//   [11]     battery strength 0-5
+// Real-device behaviour is UNVERIFIED on this machine (no remote was available); the audit doc lists what to check.
+#include <cstddef>
+#include <cstdint>
+
+namespace xmb::bd {
+
+constexpr unsigned short kVendorId=0x054c;
+constexpr unsigned short kProductId=0x0306;
+constexpr std::size_t kReportSize=12;
+constexpr std::uint8_t kReportId=0x01;
+constexpr std::uint8_t kNoKey=0xff;
+
+// Joypad usage numbers (1-based) of the 24-bit field.
+enum Joypad : unsigned {
+    JpSelect=1,JpL3=2,JpR3=3,JpStart=4,JpUp=5,JpRight=6,JpDown=7,JpLeft=8,JpL2=9,JpR2=10,JpL1=11,JpR1=12,
+    JpTriangle=13,JpCircle=14,JpCross=15,JpSquare=16,JpPs=17,JpEnter=20
+};
+constexpr std::uint32_t joypadBit(unsigned usage){return std::uint32_t(1)<<(usage-1);}
+
+// Remote key codes in byte 4 (hid-sony's remote table), named the way the PS3 BD remote is labelled.
+enum class Key : std::uint8_t {
+    None,
+    Num1,Num2,Num3,Num4,Num5,Num6,Num7,Num8,Num9,Num0,
+    Return,Clear,Eject,TopMenu,Time,Prev,Next,Play,ScanBack,ScanForward,Stop,Pause,PopUpMenu,
+    StepBack,StepForward,Subtitle,Audio,Angle,Display,Blue,Red,Green,Yellow,
+    Unknown   // a code no table entry names: held like any key, does nothing
+};
+
+inline Key keyForCode(std::uint8_t code) {
+    if(code==kNoKey)return Key::None;
+    if(code<=0x08)return Key(unsigned(Key::Num1)+code);   // codes 0x00-0x08 are the keys 1-9
+    switch(code) {
+    case 0x09:return Key::Num0;
+    case 0x0e:return Key::Return;
+    case 0x0f:return Key::Clear;
+    case 0x16:return Key::Eject;
+    case 0x1a:return Key::TopMenu;
+    case 0x28:return Key::Time;
+    case 0x30:return Key::Prev;
+    case 0x31:return Key::Next;
+    case 0x32:return Key::Play;
+    case 0x33:return Key::ScanBack;
+    case 0x34:return Key::ScanForward;
+    case 0x38:return Key::Stop;
+    case 0x39:return Key::Pause;
+    case 0x40:return Key::PopUpMenu;
+    case 0x60:return Key::StepBack;
+    case 0x61:return Key::StepForward;
+    case 0x63:return Key::Subtitle;
+    case 0x64:return Key::Audio;
+    case 0x65:return Key::Angle;
+    case 0x70:return Key::Display;
+    case 0x80:return Key::Blue;
+    case 0x81:return Key::Red;
+    case 0x82:return Key::Green;
+    case 0x83:return Key::Yellow;
+    default:return Key::Unknown;
+    }
+}
+
+inline const char* keyName(Key key) {
+    static const char* const numbers[]={"1","2","3","4","5","6","7","8","9","0"};
+    if(key>=Key::Num1 && key<=Key::Num0)return numbers[unsigned(key)-unsigned(Key::Num1)];
+    switch(key) {
+    case Key::Return:return "Return";
+    case Key::Clear:return "Clear";
+    case Key::Eject:return "Eject";
+    case Key::TopMenu:return "Top Menu";
+    case Key::Time:return "Time";
+    case Key::Prev:return "Prev";
+    case Key::Next:return "Next";
+    case Key::Play:return "Play";
+    case Key::ScanBack:return "Scan Back";
+    case Key::ScanForward:return "Scan Forward";
+    case Key::Stop:return "Stop";
+    case Key::Pause:return "Pause";
+    case Key::PopUpMenu:return "Pop Up/Menu";
+    case Key::StepBack:return "Step Back";
+    case Key::StepForward:return "Step Forward";
+    case Key::Subtitle:return "Subtitle";
+    case Key::Audio:return "Audio";
+    case Key::Angle:return "Angle";
+    case Key::Display:return "Display";
+    case Key::Blue:return "Blue";
+    case Key::Red:return "Red";
+    case Key::Green:return "Green";
+    case Key::Yellow:return "Yellow";
+    case Key::Unknown:return "unknown";
+    default:return "none";
+    }
+}
+
+struct Report {
+    std::uint32_t joypad=0;     // 24 bits, bit n-1 = usage n
+    std::uint8_t code=kNoKey;   // raw byte 4
+    Key key=Key::None;
+    int battery=-1;             // 0-5, or -1 when byte 11 is outside that range
+};
+
+// One input report in, with the report id in byte 0. Rejects what is not the 12-byte report 0x01: a short report
+// (nothing past its end is ever read), a different report id, or no data.
+inline bool parse(const std::uint8_t* data,std::size_t size,Report& out) {
+    out=Report();
+    if(!data || size<kReportSize || data[0]!=kReportId)return false;
+    out.joypad=std::uint32_t(data[1])|(std::uint32_t(data[2])<<8)|(std::uint32_t(data[3])<<16);
+    out.code=data[4];
+    out.key=keyForCode(data[4]);
+    out.battery=data[11]<=5?int(data[11]):-1;
+    return true;
+}
+
+// What the shell sees as held: XInput's wButtons layout (the pad's own, see pad.h), so the XMB, its panels and the
+// pad's key-repeat treat the remote exactly like a controller. Enter is Cross and the Return key is Circle; the
+// remote's own Triangle/Square/Circle/Cross keys are those buttons. L2/R2 are digital here, so they read 1.0.
+struct PadBits { std::uint16_t buttons=0; bool l2=false,r2=false; };
+inline PadBits padBits(const Report& r) {
+    struct Map { unsigned usage; std::uint16_t bit; };
+    static const Map map[]={
+        {JpUp,0x0001},{JpDown,0x0002},{JpLeft,0x0004},{JpRight,0x0008},{JpStart,0x0010},{JpSelect,0x0020},
+        {JpL3,0x0040},{JpR3,0x0080},{JpL1,0x0100},{JpR1,0x0200},{JpPs,0x0400},
+        {JpCross,0x1000},{JpEnter,0x1000},{JpCircle,0x2000},{JpSquare,0x4000},{JpTriangle,0x8000}};
+    PadBits out;
+    for(const Map& m:map)if(r.joypad&joypadBit(m.usage))out.buttons|=m.bit;
+    if(r.key==Key::Return)out.buttons|=0x2000;
+    out.l2=(r.joypad&joypadBit(JpL2))!=0;
+    out.r2=(r.joypad&joypadBit(JpR2))!=0;
+    return out;
+}
+
+// The player commands the remote's media keys stand for. One per press (see Tracker); the shell decides whether the
+// open surface takes it, exactly as it does for a Windows media key.
+enum class Action : std::uint8_t {
+    None,Play,Pause,Stop,Next,Previous,ScanForward,ScanBack,Options,Display,Subtitle,Audio
+};
+inline Action actionFor(Key key) {
+    switch(key) {
+    case Key::Play:return Action::Play;
+    case Key::Pause:return Action::Pause;
+    case Key::Stop:return Action::Stop;
+    case Key::Next:return Action::Next;
+    case Key::Prev:return Action::Previous;
+    case Key::ScanForward:return Action::ScanForward;
+    case Key::ScanBack:return Action::ScanBack;
+    case Key::PopUpMenu:return Action::Options;   // the options panel, the pad's Triangle
+    case Key::Display:case Key::Time:return Action::Display;
+    case Key::Subtitle:return Action::Subtitle;
+    case Key::Audio:return Action::Audio;
+    default:return Action::None;   // numbers, Clear, Eject, Top Menu, Angle, Step, colours: the app has no command
+    }
+}
+inline const char* actionName(Action a) {
+    switch(a) {
+    case Action::Play:return "play";case Action::Pause:return "pause";case Action::Stop:return "stop";
+    case Action::Next:return "next";case Action::Previous:return "previous";
+    case Action::ScanForward:return "scan-forward";case Action::ScanBack:return "scan-back";
+    case Action::Options:return "options";case Action::Display:return "display";
+    case Action::Subtitle:return "subtitle";case Action::Audio:return "audio";
+    default:return "none";
+    }
+}
+
+// Press detection for the remote's key byte: the action fires when a key appears or changes, never while it is
+// held (the remote repeats its report while a key is down), and the release (0xFF) re-arms it. One Tracker per
+// device.
+struct Tracker {
+    std::uint8_t held=kNoKey;
+    Action press(const Report& r) {
+        if(r.code==held)return Action::None;
+        held=r.code;
+        return r.code==kNoKey?Action::None:actionFor(r.key);
+    }
+};
+
+}   // namespace xmb::bd

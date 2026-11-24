@@ -19,6 +19,7 @@
 #include "zi8_dictionary.h"
 #include "rco_objects.h"
 #include "media_keys.h"
+#include "bd_remote.h"
 #include "game_capture.h"
 #include "ingame_backdrop.h"
 #include "game_tap.h"
@@ -147,6 +148,11 @@ public:
     // Remote and media keys (PHASES H10, audit/INPUT.md): one entry for WM_APPCOMMAND, VK_MEDIA_*, Qt::Key_Media*
     // and the MCE shortcuts. False = not taken (the message keeps its normal Windows routing).
     bool remoteKeyAction(RemoteKey key,const QString& source);
+    // PS3 BD Remote Control (bd_remote.h, audit/BD-REMOTE.md). A live remote's media keys arrive from the pad reader and
+    // go through bdRemoteAction(); this replays one synthetic input report (report id in byte 0) through the same
+    // parser and mapper for scripted runs (the BDREMOTE=<hex> token), where the live pad is gated. False = the report
+    // was not the 12-byte report 0x01.
+    bool replayBdReport(const QByteArray& report);
 protected:
     void initializeGL() override;
     void paintGL() override;
@@ -466,6 +472,9 @@ private:
     void volumeApply(int percent,const QString& source);   // set, read back, log, show the HUD
     void pollTriggerSeek(float down,float up);             // L2/R2 seek in the player, called from pollController
     std::unique_ptr<QAbstractNativeEventFilter> remoteKeys_; // MediaKeyFilter (media_keys.h)
+    void bdRemoteAction(bd::Action action,const QString& source);   // a BD remote media key -> remoteKeyAction
+    bd::Tracker bdScriptTracker_;                            // press detection for replayBdReport
+    quint16 bdScriptHeld_=0;                                 // the pad bits the last scripted report held
     RemoteKey remoteDeclined_=RemoteKey::None;               // the last native remote message declined, and when:
     qint64 remoteDeclinedAt_=-1000;                          // Qt's key-event echo of it is passed on unjudged
     bool triangleAction(const QString& source);            // the pad's Triangle, per surface; false = nothing took it

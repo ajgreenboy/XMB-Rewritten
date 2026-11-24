@@ -1,7 +1,10 @@
 #pragma once
 #include <QString>
+#include <QStringList>
 #include <QVector>
 #include <QtGlobal>
+#include <vector>
+#include "bd_remote.h"
 
 namespace xmb {
 // PlayStation controllers read straight over HID: DualShock 3 (USB), DualShock 4 and DualSense (USB or Bluetooth),
@@ -14,7 +17,7 @@ namespace pad {
 // Cross 0x1000, Circle 0x2000, Square 0x4000, Triangle 0x8000.
 struct State { quint16 buttons=0; float lx=0,ly=0,rx=0,ry=0,l2=0,r2=0; };
 // What is attached, how, and its battery as the report carries it (Phase 4.3, audit/SESSION-POWER.md).
-enum class Kind { None, Ds3, Ds4, DualSense };
+enum class Kind { None, Ds3, Ds4, DualSense, BdRemote };
 // The input report's own id names the transport, so it is read from the report rather than guessed from a device
 // path: a DualSense sends 0x01 over USB and 0x31 over Bluetooth, a DualShock 4 sends 0x01 and 0x11. A DualShock 3
 // in this build is USB only.
@@ -46,6 +49,14 @@ quint64 ignoredEvents();
 // The identity, transport and battery of the controller behind latest(), on the same 300 ms freshness window.
 // False when no controller reported recently; out is left untouched then.
 bool info(Info& out);
+// The PS3 BD Remote Control (Bluetooth HID 054C:0306, audit/BD-REMOTE.md). Its joypad-style keys and Return reach the
+// shell as ordinary pad buttons through latest(); its media keys are one-shot player commands taken here, once per
+// press, newest last. Commands older than 500 ms are dropped (the XMB was not listening), and while the scripted-run
+// gate is on nothing is delivered: the commands are discarded and counted in ignoredEvents().
+std::vector<bd::Action> takeRemoteActions();
+// Every supported controller Windows currently lists as a HID device, by kind name, whether or not it has sent a
+// report: a BD remote is silent until a key is pressed, so --pad-report uses this to say it is paired and visible.
+QStringList presentDevices();
 // One input report through the same parser the watcher uses (report id in byte 0, as Windows returns it). The
 // battery byte is read only when the report is long enough for the layout's own offset, so a short or unknown
 // report is rejected instead of reading past its end. Local verification runs documented synthetic reports here.
@@ -81,7 +92,7 @@ enum OskPadBit : quint32 {
 };
 quint32 oskPadActions(quint16 buttons, float l2, float r2);
 
-QString kindName(Kind kind);          // "DualShock 3", "DualShock 4", "DualSense", "None"
+QString kindName(Kind kind);          // "DualShock 3", "DualShock 4", "DualSense", "BD Remote", "None"
 QString transportName(Transport kind); // "USB", "Bluetooth", "Unknown"
 }
 }

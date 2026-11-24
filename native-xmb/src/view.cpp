@@ -4480,6 +4480,27 @@ bool View::remoteKeyAction(RemoteKey key,const QString& source) {
         what=QString("seek %1 10 s from %2 ms").arg(key==RemoteKey::FastForward?"+":"-").arg(before);
         break;
     }
+    case RemoteKey::Display:
+        shell_.toggleMediaDisplay();what="display toggled";break;
+    case RemoteKey::Subtitle: {
+        // Next sidecar/embedded track, then Off, then the first again (the panel's own order).
+        if(!shell_.videoOpen())return decide(false,"declined (subtitles are for video)");
+        const int count=shell_.subtitleTracks().size();
+        if(count<=0)return decide(true,"ignored (this video has no subtitle track)");
+        const int next=shell_.subtitleTrackIndex()+1>=count?-1:shell_.subtitleTrackIndex()+1;
+        shell_.chooseSubtitleTrack(next);
+        what=next<0?QString("subtitles off"):QString("subtitle track %1 of %2").arg(next+1).arg(count);
+        break;
+    }
+    case RemoteKey::Audio: {
+        if(!shell_.videoOpen())return decide(false,"declined (audio tracks are for video)");
+        const int count=shell_.audioTracks().size();
+        if(count<2)return decide(true,"ignored (this video has no second audio track)");
+        const int next=(std::max(shell_.activeAudioTrack(),0)+1)%count;
+        shell_.chooseAudioTrack(next);
+        what=QString("audio track %1 of %2").arg(next+1).arg(count);
+        break;
+    }
     default:return false;
     }
     update();
@@ -4488,6 +4509,54 @@ bool View::remoteKeyAction(RemoteKey key,const QString& source) {
         qInfo().noquote()<<QString("remote: after %1 mediaOpen %2 paused %3 position %4 ms title \"%5\"")
             .arg(name).arg(shell_.mediaOpen()?1:0).arg(shell_.mediaPaused()?1:0).arg(shell_.mediaPosition()).arg(shell_.mediaTitle());
     });
+    return true;
+}
+// The PS3 BD remote's media keys stand for the same commands a Windows media key or an MCE remote does, so they land
+// on remoteKeyAction (one log line per decision, declined when the open surface has no use for them).
+void View::bdRemoteAction(bd::Action action,const QString& source) {
+    RemoteKey key=RemoteKey::None;
+    switch(action) {
+    case bd::Action::Play:key=RemoteKey::Play;break;
+    case bd::Action::Pause:key=RemoteKey::Pause;break;
+    case bd::Action::Stop:key=RemoteKey::Stop;break;
+    case bd::Action::Next:key=RemoteKey::Next;break;
+    case bd::Action::Previous:key=RemoteKey::Previous;break;
+    case bd::Action::ScanForward:key=RemoteKey::FastForward;break;
+    case bd::Action::ScanBack:key=RemoteKey::Rewind;break;
+    case bd::Action::Options:key=RemoteKey::Info;break;
+    case bd::Action::Display:key=RemoteKey::Display;break;
+    case bd::Action::Subtitle:key=RemoteKey::Subtitle;break;
+    case bd::Action::Audio:key=RemoteKey::Audio;break;
+    case bd::Action::None:return;
+    }
+    remoteKeyAction(key,source);
+}
+bool View::replayBdReport(const QByteArray& report) {
+    bd::Report parsed;
+    if(!bd::parse(reinterpret_cast<const quint8*>(report.constData()),size_t(report.size()),parsed)) {
+        qWarning().noquote()<<QString("bd-remote: scripted report rejected (%1 bytes, id 0x%2; the report is 12 bytes with id 0x01)")
+            .arg(report.size()).arg(report.isEmpty()?0:quint8(report[0]),2,16,QChar('0'));
+        return false;
+    }
+    const bd::PadBits bits=bd::padBits(parsed);
+    const bd::Action action=bdScriptTracker_.press(parsed);
+    qInfo().noquote()<<QString("bd-remote: scripted report joypad 0x%1 key %2 (0x%3) pad bits 0x%4 l2 %5 r2 %6 -> action %7")
+        .arg(parsed.joypad,6,16,QChar('0')).arg(QLatin1String(bd::keyName(parsed.key))).arg(parsed.code,2,16,QChar('0'))
+        .arg(bits.buttons,4,16,QChar('0')).arg(bits.l2?1:0).arg(bits.r2?1:0).arg(QLatin1String(bd::actionName(action)));
+    // A pad bit acts on the press edge, as the live path's edge detection does; the XMB's own key-repeat is the
+    // live path's job and is not replayed here.
+    const quint16 edge=quint16(bits.buttons&~bdScriptHeld_);
+    bdScriptHeld_=bits.buttons;
+    const bool media=shell_.mediaOpen();
+    const struct { quint16 bit; int key; } keys[]={
+        {0x0001,Qt::Key_Up},{0x0002,Qt::Key_Down},{0x0004,Qt::Key_Left},{0x0008,Qt::Key_Right},
+        {0x1000,Qt::Key_Return},{0x2000,Qt::Key_Escape},{0x8000,Qt::Key_T},{0x4000,Qt::Key_Delete},
+        {0x0010,Qt::Key_S},{0x0020,Qt::Key_I},
+        {0x0100,media?int(Qt::Key_BracketLeft):int(Qt::Key_PageUp)},{0x0200,media?int(Qt::Key_BracketRight):int(Qt::Key_PageDown)}};
+    for(const auto& entry:keys)if(edge&entry.bit)replayKeyTap(entry.key);
+    if(edge&0x0400)replayPsTap();
+    if((bits.l2 || bits.r2) && shell_.mediaSeekable())shell_.seekMedia(bits.r2?10000:-10000);
+    if(action!=bd::Action::None)bdRemoteAction(action,QStringLiteral("bd-remote (scripted report)"));
     return true;
 }
 // The pad's Triangle on each surface (pollController's Y branches), for a remote's Info / More-info key.
@@ -6445,6 +6514,9 @@ void View::focusOutEvent(QFocusEvent* e) {
 }
 void View::pollController() {
 #ifdef Q_OS_WIN
+    // The BD remote's media-key presses are taken every tick so a press made while the XMB was not in front is dropped
+    // here rather than fired later; the scripted gate empties them in the pad reader.
+    const auto bdActions=pad::takeRemoteActions();
     if(!xmbOwnsForeground() || QApplication::activeModalWidget()){buttons_=keyHeld_=keyPressed_=0;triggerHeld_=false;return;}
     // A --script run is the script's own input: every scripted key goes through replayKeyTap, which dispatches the
     // same handlers the pad drives. A physical controller is therefore not read at all, so a capture cannot depend
@@ -6466,6 +6538,7 @@ void View::pollController() {
     const float triggerDown=std::max(xinput?xstate.l2:0.f,playstation?hid.l2:0.f);
     const float triggerUp=std::max(xinput?xstate.r2:0.f,playstation?hid.r2:0.f);
     pollTriggerSeek(triggerDown,triggerUp);
+    if(!scriptedInput)for(const bd::Action action:bdActions)bdRemoteAction(action,QStringLiteral("bd-remote"));
     if(shell_.psMenuOpen()) {
         const auto edgePs=quint16((buttons&~buttons_)|keyPressed_);keyPressed_=0;buttons_=buttons;
         if(edgePs&XINPUT_GAMEPAD_DPAD_UP)shell_.psMenuMove(-1);

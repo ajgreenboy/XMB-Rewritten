@@ -6,6 +6,8 @@
 #include <cmath>
 #include <atomic>
 #include <chrono>
+#include <deque>
+#include <optional>
 #include <mutex>
 #include <set>
 #include <string>
@@ -139,6 +141,16 @@ std::mutex mutex;
 State newest;
 Info newestInfo;
 std::chrono::steady_clock::time_point newestAt{};
+// How long the newest report counts as current. 300 ms for the controllers, which stream reports; the BD remote
+// only sends while a key is down, and how often it repeats is unverified, so its window is wider (audit/BD-REMOTE.md).
+std::chrono::milliseconds newestFresh{300};
+constexpr std::chrono::milliseconds kBdRemoteFresh{500};
+// BD remote media-key presses waiting for the shell (guarded by `mutex`), bounded so a window that is not polling
+// cannot grow it.
+struct QueuedAction { bd::Action action; std::chrono::steady_clock::time_point at; };
+std::deque<QueuedAction> remoteQueue;
+constexpr size_t kRemoteQueueMax=32;
+constexpr std::chrono::milliseconds kRemoteActionMaxAge{500};
 
 float stick(quint8 v){return std::clamp((float(v)-128.f)/127.f,-1.f,1.f);}
 quint16 hat(quint8 v) {
@@ -205,6 +217,16 @@ bool parse(Kind kind,const std::vector<quint8>& r,State& s,Info& info) {
         }
         return true;
     }
+    case Kind::BdRemote: { // Bluetooth only; the layout and the key table live in bd_remote.h
+        bd::Report report;
+        if(!bd::parse(r.data(),r.size(),report))return false;
+        info.transport=Transport::Bluetooth;
+        const bd::PadBits bits=bd::padBits(report);
+        s.buttons=bits.buttons;s.l2=bits.l2?1.f:0.f;s.r2=bits.r2?1.f:0.f;
+        // 0-5 strength bars; the report carries no charging state. 20 % per bar is this build's reading of it.
+        if(report.battery>=0){info.batteryPercent=report.battery*20;info.charging=QStringLiteral("unknown");}
+        return true;
+    }
     case Kind::None:break;
     }
     return false;
@@ -214,6 +236,7 @@ bool parse(Kind kind,const std::vector<quint8>& r,State& s,Info& info) {
 bool kindOf(USHORT vendor,USHORT product,Kind& kind) {
     if(vendor!=0x054c)return false;
     switch(product) {
+    case bd::kProductId:kind=Kind::BdRemote;return true;
     case 0x0268:kind=Kind::Ds3;return true;
     case 0x05c4:case 0x09cc:case 0x0ba0:kind=Kind::Ds4;return true;
     case 0x0ce6:case 0x0df2:kind=Kind::DualSense;return true;
@@ -329,8 +352,16 @@ XInputState xinputRead() {
     return merged;
 }
 void read(std::wstring path,Kind kind,std::mutex* openMutex,std::set<std::wstring>* open) {
-    const HANDLE handle=CreateFileW(path.c_str(),GENERIC_READ|GENERIC_WRITE,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,OPEN_EXISTING,0,nullptr);
+    // The BD remote is only ever read, so it is opened read-only and shared with every other reader and writer: no
+    // exclusive access, and Windows' own handle on the device keeps working. The controllers keep read+write.
+    const HANDLE handle=CreateFileW(path.c_str(),kind==Kind::BdRemote?GENERIC_READ:(GENERIC_READ|GENERIC_WRITE),
+        FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,OPEN_EXISTING,0,nullptr);
+    if(handle==INVALID_HANDLE_VALUE && kind==Kind::BdRemote)
+        qWarning().noquote()<<QString("pad: BD Remote found but Windows refused read access (error %1); it will be retried every 2 s")
+            .arg(GetLastError());
     if(handle!=INVALID_HANDLE_VALUE) {
+        bd::Tracker tracker;   // press detection for this device's media keys
+        bool reportedFirst=false;
         size_t length=64;
         PHIDP_PREPARSED_DATA preparsed=nullptr;
         if(HidD_GetPreparsedData(handle,&preparsed)) {
@@ -341,7 +372,7 @@ void read(std::wstring path,Kind kind,std::mutex* openMutex,std::set<std::wstrin
         if(kind==Kind::Ds3) { // reading feature report 0xF2 starts the input reports (0xF4 on some setups)
             quint8 feature[64]{0xf2};HidD_GetFeature(handle,feature,18);
             quint8 enable[5]{0xf4,0x42,0x0c,0x00,0x00};HidD_SetFeature(handle,enable,sizeof(enable));
-        } else { // over Bluetooth, reading the calibration report switches to the full report
+        } else if(kind!=Kind::BdRemote) { // over Bluetooth, reading the calibration report switches to the full report
             quint8 calibration[80]{0x05};HidD_GetFeature(handle,calibration,41);
             quint8 version[80]{0x02};HidD_GetFeature(handle,version,37);
         }
@@ -351,7 +382,25 @@ void read(std::wstring path,Kind kind,std::mutex* openMutex,std::set<std::wstrin
             if(!ReadFile(handle,report.data(),DWORD(report.size()),&got,nullptr) || got==0)break;
             State s;
             Info info;
-            if(!parse(kind,std::vector<quint8>(report.begin(),report.begin()+got),s,info))continue;
+            if(!parse(kind,std::vector<quint8>(report.begin(),report.begin()+got),s,info)) {
+                // The remote answers on report ids 1-6 (Fedora's descriptor dump); only 0x01 carries the keys. A
+                // report of another id or a short one is dropped, but said once so a device that reads and never
+                // parses is not silent.
+                if(kind==Kind::BdRemote && !reportedFirst) {
+                    reportedFirst=true;
+                    qInfo().noquote()<<QString("pad: BD Remote report not understood (id 0x%1, %2 bytes); only 12-byte report 0x01 is read")
+                        .arg(report.empty()?0:report[0],2,16,QChar('0')).arg(got);
+                }
+                continue;
+            }
+            std::optional<bd::Action> pressed;
+            if(kind==Kind::BdRemote) {
+                bd::Report parsed;
+                if(bd::parse(report.data(),got,parsed)) {
+                    const bd::Action action=tracker.press(parsed);
+                    if(action!=bd::Action::None)pressed=action;
+                }
+            }
             // One line when the attached pad's own report changes what the status page shows, so a physical
             // controller proves its kind, transport and battery in the log without polling. The newest report
             // wins, exactly as latest() already behaves with more than one controller attached.
@@ -365,6 +414,11 @@ void read(std::wstring path,Kind kind,std::mutex* openMutex,std::set<std::wstrin
                     line=QString("pad: %1 over %2, battery %3").arg(kindName(info.kind),transportName(info.transport),battery);
                 }
                 newest=s;newestInfo=info;newestAt=std::chrono::steady_clock::now();
+                newestFresh=kind==Kind::BdRemote?kBdRemoteFresh:std::chrono::milliseconds(300);
+                if(pressed) {
+                    if(remoteQueue.size()>=kRemoteQueueMax)remoteQueue.pop_front();
+                    remoteQueue.push_back({*pressed,newestAt});
+                }
             }
             if(!line.isEmpty())qInfo().noquote()<<line;
         }
@@ -411,7 +465,7 @@ bool latest(State& out) {
     else if(fake.active && !guide)return false;
     else {
         const bool fresh=newestAt!=std::chrono::steady_clock::time_point{} &&
-            std::chrono::steady_clock::now()-newestAt<=std::chrono::milliseconds(300);
+            std::chrono::steady_clock::now()-newestAt<=newestFresh;
         if(!fresh && !guide)return false;
         if(fresh)sample=newest;
     }
@@ -469,9 +523,39 @@ QVector<XInputPad> xinputPads() {
     return pads;
 }
 quint64 ignoredEvents() { return ignoredPadEvents.load(); }
+QStringList presentDevices() {
+    QStringList names;
+#ifdef Q_OS_WIN
+    for(const auto& [path,kind]:enumerate()) {
+        Q_UNUSED(path);
+        names<<kindName(kind);
+    }
+#endif
+    return names;
+}
+std::vector<bd::Action> takeRemoteActions() {
+    std::vector<bd::Action> out;
+    const std::lock_guard lock(mutex);
+    const auto now=std::chrono::steady_clock::now();
+    const bool gated=scriptOnlyMode.load();
+    for(const QueuedAction& queued:remoteQueue) {
+        if(now-queued.at>kRemoteActionMaxAge)continue;
+        if(gated) {
+            const quint64 count=ignoredPadEvents.fetch_add(1)+1;
+            if(inputTrace())qInfo().noquote()<<QString("input: trace source=pad action=bd-%1 accepted=0 ignored=%2 (scripted run)")
+                .arg(QLatin1String(bd::actionName(queued.action))).arg(count);
+        } else {
+            if(inputTrace())qInfo().noquote()<<QString("input: trace source=pad action=bd-%1 accepted=1")
+                .arg(QLatin1String(bd::actionName(queued.action)));
+            out.push_back(queued.action);
+        }
+    }
+    remoteQueue.clear();
+    return out;
+}
 bool info(Info& out) {
     const std::lock_guard lock(mutex);
-    if(newestAt==std::chrono::steady_clock::time_point{} || std::chrono::steady_clock::now()-newestAt>std::chrono::milliseconds(300))return false;
+    if(newestAt==std::chrono::steady_clock::time_point{} || std::chrono::steady_clock::now()-newestAt>newestFresh)return false;
     out=newestInfo;return true;
 }
 bool parseReport(Kind kind,const QVector<quint8>& report,Info& out) {
@@ -497,6 +581,7 @@ QString kindName(Kind kind) {
     case Kind::Ds3:return QStringLiteral("DualShock 3");
     case Kind::Ds4:return QStringLiteral("DualShock 4");
     case Kind::DualSense:return QStringLiteral("DualSense");
+    case Kind::BdRemote:return QStringLiteral("BD Remote");
     case Kind::None:break;
     }
     return QStringLiteral("None");

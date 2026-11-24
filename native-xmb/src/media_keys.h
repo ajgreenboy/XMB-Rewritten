@@ -21,6 +21,9 @@ enum class RemoteKey {
     Info,         // = Triangle (MCE "More info", the keyboard Menu key)
     ChannelUp,    // = PageUp: ten rows up
     ChannelDown,  // = PageDown: ten rows down
+    Display,      // = SELECT in the player: pin/unpin its display (the PS3 BD remote's Display and Time keys)
+    Subtitle,     // steps the subtitle track (next, then Off) of the open video
+    Audio,        // steps the audio track of the open video
 };
 const char* remoteKeyName(RemoteKey key);
 // Qt key events: the Qt::Key_* a remote or media keyboard produces, plus the Media Center keyboard shortcuts.

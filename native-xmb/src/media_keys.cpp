@@ -21,6 +21,9 @@ const char* remoteKeyName(RemoteKey key) {
     case RemoteKey::Info:return "info";
     case RemoteKey::ChannelUp:return "channel-up";
     case RemoteKey::ChannelDown:return "channel-down";
+    case RemoteKey::Display:return "display";
+    case RemoteKey::Subtitle:return "subtitle";
+    case RemoteKey::Audio:return "audio";
     case RemoteKey::None:break;
     }
     return "none";

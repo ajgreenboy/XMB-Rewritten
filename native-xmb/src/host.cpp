@@ -2384,10 +2384,10 @@ QString rowDetail(const QString& pageId,const QString& rowId) {
                 QStringLiteral("does not let an application switch another application's vibration off.")});
         if(rowId==QLatin1String("pd_bdremote_reg"))
             return lines({QStringLiteral("Register BD Remote Control"),
-                QStringLiteral("Registered: none"),
+                QStringLiteral("Windows lists a BD Remote: ")+(pad::presentDevices().contains(QStringLiteral("BD Remote"))?QStringLiteral("yes"):QStringLiteral("no")),
                 QString{},
-                QStringLiteral("A BD remote pairs over Bluetooth as a HID device; this build enumerates HID pads"),
-                QStringLiteral("only and has no pairing flow. Windows Settings owns Bluetooth pairing.")});
+                QStringLiteral("Pair the remote in Windows Settings (Bluetooth & devices); this build has no pairing"),
+                QStringLiteral("flow of its own. Once Windows lists it, its keys work here.")});
         if(rowId==QLatin1String("pd_bt_utility"))
             return lines({QStringLiteral("Manage Bluetooth Devices"),
                 QStringLiteral("Attached: ")+padText(state),

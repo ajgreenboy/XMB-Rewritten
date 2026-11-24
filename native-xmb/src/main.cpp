@@ -440,7 +440,7 @@ int main(int argc,char** argv) {
     parser.addOption({"kiosk","Appliance mode: frameless fullscreen on the chosen display, straight to the XMB (no cold-boot intro)"});
     parser.addOption({"display","Screen index for --kiosk (0 = first screen; default: the primary screen)","index"});
     parser.addOption({"start-windowed","Start in a window even when the stored preference is fullscreen (local testing)"});
-    parser.addOption({"pad-report","Write the attached PlayStation controller's kind, connection and battery as JSON, then exit","json-file"});
+    parser.addOption({"pad-report","Write the attached PlayStation controller's (or PS3 BD Remote's) kind, connection and battery as JSON, then exit","json-file"});
     parser.addOption({"check-update","Check GitHub for a newer release without downloading or installing"});
     parser.addOption({"firmware-check","Check Sony's current PS3 firmware version without downloading it"});
     parser.addOption({"firmware-extract","Extract local PS3 firmware (PS3UPDAT.PUP@dev_flash-directory)","spec"});
@@ -730,7 +730,10 @@ int main(int argc,char** argv) {
             {QStringLiteral("dualsense-bluetooth"),xmb::pad::Kind::DualSense,report(78,0x31,{{2+52,0x20}})}, // level 0, full
             {QStringLiteral("dualshock4-usb"),xmb::pad::Kind::Ds4,report(64,0x01,{{1+29,0x17}})},            // level 7 + cable
             {QStringLiteral("dualshock4-bluetooth"),xmb::pad::Kind::Ds4,report(78,0x11,{{3+29,0x06}})},      // level 6, discharging
-            {QStringLiteral("dualsense-truncated"),xmb::pad::Kind::DualSense,report(40,0x01,{})}};
+            {QStringLiteral("dualsense-truncated"),xmb::pad::Kind::DualSense,report(40,0x01,{})},
+            // PS3 BD Remote (bd_remote.h): the 12-byte report 0x01, battery at byte 11 (0-5 bars); a short one is rejected.
+            {QStringLiteral("bd-remote-battery-3"),xmb::pad::Kind::BdRemote,report(12,0x01,{{4,0xff},{11,0x03}})},
+            {QStringLiteral("bd-remote-truncated"),xmb::pad::Kind::BdRemote,report(8,0x01,{})}};
         QJsonArray results;
         for(const auto& entry:cases) {
             xmb::pad::Info info;const bool parsed=xmb::pad::parseReport(entry.kind,entry.report,info);
@@ -758,7 +761,11 @@ int main(int argc,char** argv) {
             QJsonObject out{{"source","hid"},{"verifiedHardware",attached},{"attached",attached},
                 {"kind",xmb::pad::kindName(info.kind)},{"connection",xmb::pad::transportName(info.transport)},
                 {"batteryPercent",info.batteryPercent},{"charging",info.charging}};
-            if(!attached)out.insert("note","no PlayStation controller reported in 2.5 s");
+            const QStringList present=xmb::pad::presentDevices();
+            out.insert("present",QJsonArray::fromStringList(present));
+            if(!attached)out.insert("note",present.contains(QStringLiteral("BD Remote"))
+                ?"a BD Remote is visible to Windows but sent no report in 2.5 s; it reports only while a key is held, so press one during the run"
+                :"no PlayStation controller reported in 2.5 s");
             QFile file(parser.value("pad-report"));
             const auto bytes=QJsonDocument(out).toJson();
             if(!file.open(QIODevice::WriteOnly) || file.write(bytes)!=bytes.size()){qCritical()<<file.errorString();app.exit(2);return;}
@@ -1693,6 +1700,13 @@ int main(int argc,char** argv) {
             }
             else if(token=="ps")view->replayPsTap();       // PS button tap: controller indicator
             else if(token=="pshold")view->replayPsHold();   // PS button hold: system menu
+            else if(token.startsWith("BDREMOTE=")) {
+                // BDREMOTE=<hex> injects one synthetic PS3 BD Remote input report (12 bytes, report id 01 first; spaces
+                // or colons between bytes are allowed in the token's hex, e.g. BDREMOTE=01000000ffffffffffff0005) through the
+                // remote's own parser, mapper and command dispatch (audit/BD-REMOTE.md). A release is code ff.
+                const QByteArray report=QByteArray::fromHex(token.mid(9).remove(':').remove('-').toLatin1());
+                if(!view->replayBdReport(report))qWarning()<<"script: invalid BDREMOTE token (24 hex digits, report id 01 first)";
+            }
             else if(token.startsWith("NOTIFY=")) {
                 // NOTIFY=<title>[|<detail>[|<icon>]] raises a notification through the same path a real event
                 // uses, so a capture can pin it: the icon is a tex_notification_<name> suffix (default info)
