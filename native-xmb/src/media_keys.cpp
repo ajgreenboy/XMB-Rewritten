@@ -24,6 +24,8 @@ const char* remoteKeyName(RemoteKey key) {
     case RemoteKey::Display:return "display";
     case RemoteKey::Subtitle:return "subtitle";
     case RemoteKey::Audio:return "audio";
+    case RemoteKey::JumpBack:return "jump-back";
+    case RemoteKey::JumpForward:return "jump-forward";
     case RemoteKey::None:break;
     }
     return "none";

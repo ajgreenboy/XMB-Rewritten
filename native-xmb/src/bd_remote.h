@@ -13,6 +13,10 @@
 // Real-device behaviour is UNVERIFIED on this machine (no remote was available); the audit doc lists what to check.
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
+#include <optional>
+#include <string>
+#include <string_view>
 
 namespace xmb::bd {
 
@@ -35,11 +39,23 @@ enum class Key : std::uint8_t {
     Num1,Num2,Num3,Num4,Num5,Num6,Num7,Num8,Num9,Num0,
     Return,Clear,Eject,TopMenu,Time,Prev,Next,Play,ScanBack,ScanForward,Stop,Pause,PopUpMenu,
     StepBack,StepForward,Subtitle,Audio,Angle,Display,Blue,Red,Green,Yellow,
+    InstantBack,InstantForward,   // CECH-ZRC1 only; their codes are not known yet (kInstantCodes below)
     Unknown   // a code no table entry names: held like any key, does nothing
 };
 
-inline Key keyForCode(std::uint8_t code) {
+// ---- CECH-ZRC1 Instant Back / Instant Forward: THE ONE PLACE TO FILL IN THE CAPTURED CODES ----
+// The 2011 Media/Blu-ray Disc Remote (CECH-ZRC1) has two Bluetooth keys the original remote lacks. Sony's manual says
+// they jump back/forward 15 seconds; no public source gives their key codes. They are UNKNOWN: both slots are empty
+// (std::nullopt), so the slots are disabled and the keys report as "unknown key code 0xNN" in the diagnostic log.
+// After capturing them on the real remote (audit/BD-REMOTE.md, "Capturing the ZRC1"), replace std::nullopt with the
+// code, e.g. std::optional<std::uint8_t>{0x42}. Nothing else needs to change.
+struct InstantCodes { std::optional<std::uint8_t> back,forward; };
+constexpr InstantCodes kInstantCodes{std::nullopt,std::nullopt};
+
+inline Key keyForCode(std::uint8_t code,const InstantCodes& instant=kInstantCodes) {
     if(code==kNoKey)return Key::None;
+    if(instant.back && code==*instant.back)return Key::InstantBack;
+    if(instant.forward && code==*instant.forward)return Key::InstantForward;
     if(code<=0x08)return Key(unsigned(Key::Num1)+code);   // codes 0x00-0x08 are the keys 1-9
     switch(code) {
     case 0x09:return Key::Num0;
@@ -97,6 +113,8 @@ inline const char* keyName(Key key) {
     case Key::Red:return "Red";
     case Key::Green:return "Green";
     case Key::Yellow:return "Yellow";
+    case Key::InstantBack:return "Instant Back";
+    case Key::InstantForward:return "Instant Forward";
     case Key::Unknown:return "unknown";
     default:return "none";
     }
@@ -111,12 +129,12 @@ struct Report {
 
 // One input report in, with the report id in byte 0. Rejects what is not the 12-byte report 0x01: a short report
 // (nothing past its end is ever read), a different report id, or no data.
-inline bool parse(const std::uint8_t* data,std::size_t size,Report& out) {
+inline bool parse(const std::uint8_t* data,std::size_t size,Report& out,const InstantCodes& instant=kInstantCodes) {
     out=Report();
     if(!data || size<kReportSize || data[0]!=kReportId)return false;
     out.joypad=std::uint32_t(data[1])|(std::uint32_t(data[2])<<8)|(std::uint32_t(data[3])<<16);
     out.code=data[4];
-    out.key=keyForCode(data[4]);
+    out.key=keyForCode(data[4],instant);
     out.battery=data[11]<=5?int(data[11]):-1;
     return true;
 }
@@ -142,8 +160,10 @@ inline PadBits padBits(const Report& r) {
 // The player commands the remote's media keys stand for. One per press (see Tracker); the shell decides whether the
 // open surface takes it, exactly as it does for a Windows media key.
 enum class Action : std::uint8_t {
-    None,Play,Pause,Stop,Next,Previous,ScanForward,ScanBack,Options,Display,Subtitle,Audio
+    None,Play,Pause,Stop,Next,Previous,ScanForward,ScanBack,Options,Display,Subtitle,Audio,
+    JumpBack,JumpForward   // Instant Back / Instant Forward: seek -/+ kJumpMs in the open player
 };
+constexpr int kJumpMs=15000;   // Sony's manual: the ZRC1's Instant keys jump 15 seconds
 inline Action actionFor(Key key) {
     switch(key) {
     case Key::Play:return Action::Play;
@@ -157,6 +177,8 @@ inline Action actionFor(Key key) {
     case Key::Display:case Key::Time:return Action::Display;
     case Key::Subtitle:return Action::Subtitle;
     case Key::Audio:return Action::Audio;
+    case Key::InstantBack:return Action::JumpBack;
+    case Key::InstantForward:return Action::JumpForward;
     default:return Action::None;   // numbers, Clear, Eject, Top Menu, Angle, Step, colours: the app has no command
     }
 }
@@ -167,6 +189,7 @@ inline const char* actionName(Action a) {
     case Action::ScanForward:return "scan-forward";case Action::ScanBack:return "scan-back";
     case Action::Options:return "options";case Action::Display:return "display";
     case Action::Subtitle:return "subtitle";case Action::Audio:return "audio";
+    case Action::JumpBack:return "jump-back";case Action::JumpForward:return "jump-forward";
     default:return "none";
     }
 }
@@ -182,5 +205,85 @@ struct Tracker {
         return r.code==kNoKey?Action::None:actionFor(r.key);
     }
 };
+
+// ---- Recognising the remote (CECH-ZR1 054C:0306 and the CECH-ZRC1, whose product id is not public) ----
+// A Sony HID interface is a BD remote candidate when it is 054C:0306, or when its product string names a remote. A
+// candidate found by name is only ever TRUSTED once a real input report has the BD remote's shape (looksLikeBdReport),
+// so a DualShock or DualSense (known product ids are excluded, and their reports are 49-78 bytes) is never taken.
+inline bool isGamepadProduct(unsigned short pid) {
+    return pid==0x0268||pid==0x05c4||pid==0x09cc||pid==0x0ba0||pid==0x0ce6||pid==0x0df2;   // DS3, DS4 x3, DualSense x2
+}
+inline std::string foldAscii(std::wstring_view text) {
+    std::string out;
+    for(wchar_t c:text)out.push_back(c>=L'A'&&c<=L'Z'?char(c-L'A'+'a'):(c>0&&c<0x80?char(c):'?'));
+    return out;
+}
+// Case-insensitive: "BD Remote", "Remote Control", or "PLAYSTATION" together with "Remote".
+inline bool productStringMatches(std::wstring_view product) {
+    const std::string s=foldAscii(product);
+    const auto has=[&](const char* word){return s.find(word)!=std::string::npos;};
+    return has("bd remote")||has("remote control")||(has("playstation")&&has("remote"));
+}
+inline bool isCandidate(unsigned short vendor,unsigned short product,std::wstring_view productName) {
+    if(vendor!=kVendorId||isGamepadProduct(product))return false;
+    return product==kProductId||productStringMatches(productName);
+}
+// The shape of a BD remote input report as Windows returns it: exactly 12 bytes, report id 0x01, the five constant
+// 0xFF filler bytes 5-9, a press marker (0/1) at byte 10 and a battery level 0-5 at byte 11 (the layout above).
+inline bool looksLikeBdReport(const std::uint8_t* data,std::size_t size) {
+    if(!data||size!=kReportSize||data[0]!=kReportId)return false;
+    for(std::size_t i=5;i<=9;++i)if(data[i]!=0xff)return false;
+    return data[10]<=1&&data[11]<=5;
+}
+// An input-report length from the HID descriptor that cannot be the BD remote's (0 = unknown, so no verdict).
+inline bool lengthRulesOutBdReport(std::size_t inputReportLength) {
+    return inputReportLength!=0&&inputReportLength!=kReportSize;
+}
+
+// ---- Standard HID consumer usages (Consumer page 0x0C): a GUESS pending capture ----
+// If the ZRC1 exposes Instant Back/Forward on a separate consumer collection instead of in byte 4, they would arrive
+// as usages. Which usage is unknown; AC Back/AC Forward are the likeliest guess. Scan Previous/Next are listed but
+// disabled: Windows already turns them into the media Next/Previous keys, so mapping them here would double-act.
+constexpr unsigned short kConsumerPage=0x0c;
+struct ConsumerSlot { unsigned short usage; Action action; bool enabled; const char* name; };
+constexpr ConsumerSlot kConsumerSlots[]={
+    {0x0224,Action::JumpBack,true,"AC Back"},{0x0225,Action::JumpForward,true,"AC Forward"},
+    {0x00b6,Action::JumpBack,false,"Scan Previous Track"},{0x00b5,Action::JumpForward,false,"Scan Next Track"}};
+inline Action actionForConsumerUsage(unsigned short page,unsigned short usage) {
+    if(page!=kConsumerPage)return Action::None;
+    for(const ConsumerSlot& s:kConsumerSlots)if(s.enabled&&s.usage==usage)return s.action;
+    return Action::None;
+}
+
+// ---- Diagnostic capture lines (XMB_BD_REMOTE_LOG=1 / --bd-remote-log / "bdRemoteLog" in xmb-config.json) ----
+// Only hardware facts: ids, product string, usages, bytes. No device path (it holds the Bluetooth address).
+inline std::string hexBytes(const std::uint8_t* data,std::size_t size) {
+    std::string out;
+    char buf[4];
+    for(std::size_t i=0;data&&i<size;++i){std::snprintf(buf,sizeof(buf),"%02x",data[i]);if(i)out+=' ';out+=buf;}
+    return out;
+}
+// "unknown key code 0xNN" when the report's key byte is a code no table entry names; empty otherwise.
+inline std::string unknownKeyNote(const Report& r) {
+    if(r.key!=Key::Unknown)return {};
+    char buf[40];std::snprintf(buf,sizeof(buf),"unknown key code 0x%02x",unsigned(r.code));
+    return buf;
+}
+inline std::string describeInterface(unsigned short vid,unsigned short pid,std::wstring_view product,
+                                     unsigned short usagePage,unsigned short usage,std::size_t inputLength) {
+    char buf[160];
+    std::snprintf(buf,sizeof(buf),"vid=%04x pid=%04x usagePage=0x%04x usage=0x%04x inputReportLength=%zu product=\"",
+        unsigned(vid),unsigned(pid),unsigned(usagePage),unsigned(usage),inputLength);
+    return std::string(buf)+foldAscii(product)+"\"";
+}
+inline std::string rawReportLine(unsigned short vid,unsigned short pid,const std::uint8_t* data,std::size_t size,
+                                 const InstantCodes& instant=kInstantCodes) {
+    char buf[96];
+    std::snprintf(buf,sizeof(buf),"report vid=%04x pid=%04x len=%zu hex=",unsigned(vid),unsigned(pid),size);
+    std::string line=std::string(buf)+hexBytes(data,size);
+    Report r;
+    if(parse(data,size,r,instant)){const std::string note=unknownKeyNote(r);if(!note.empty())line+="; "+note;}
+    return line;
+}
 
 }   // namespace xmb::bd

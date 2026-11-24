@@ -4480,6 +4480,15 @@ bool View::remoteKeyAction(RemoteKey key,const QString& source) {
         what=QString("seek %1 10 s from %2 ms").arg(key==RemoteKey::FastForward?"+":"-").arg(before);
         break;
     }
+    case RemoteKey::JumpBack:case RemoteKey::JumpForward: {
+        // The CECH-ZRC1's Instant Back / Instant Forward: the same seek path as above, 15 s (bd::kJumpMs).
+        if(!shell_.mediaSeekable())return decide(false,"declined (the open media is not seekable)");
+        const qint64 before=shell_.mediaPosition();
+        const int delta=key==RemoteKey::JumpForward?bd::kJumpMs:-bd::kJumpMs;
+        shell_.seekMedia(delta);
+        what=QString("jump %1 %2 s from %3 ms").arg(delta>0?"+":"-").arg(bd::kJumpMs/1000).arg(before);
+        break;
+    }
     case RemoteKey::Display:
         shell_.toggleMediaDisplay();what="display toggled";break;
     case RemoteKey::Subtitle: {
@@ -4527,6 +4536,8 @@ void View::bdRemoteAction(bd::Action action,const QString& source) {
     case bd::Action::Display:key=RemoteKey::Display;break;
     case bd::Action::Subtitle:key=RemoteKey::Subtitle;break;
     case bd::Action::Audio:key=RemoteKey::Audio;break;
+    case bd::Action::JumpBack:key=RemoteKey::JumpBack;break;
+    case bd::Action::JumpForward:key=RemoteKey::JumpForward;break;
     case bd::Action::None:return;
     }
     remoteKeyAction(key,source);

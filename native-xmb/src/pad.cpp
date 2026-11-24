@@ -243,8 +243,15 @@ bool kindOf(USHORT vendor,USHORT product,Kind& kind) {
     default:return false;
     }
 }
-std::vector<std::pair<std::wstring,Kind>> enumerate() {
-    std::vector<std::pair<std::wstring,Kind>> out;
+// What the HID stack says about one interface (a Windows device path is one top-level collection). The device path is
+// kept out of every log line: it carries the Bluetooth address.
+struct Device { std::wstring path; Kind kind=Kind::None; USHORT vid=0,pid=0,usagePage=0,usage=0; size_t inputLength=0; std::wstring product; };
+std::string describe(const Device& d) {return bd::describeInterface(d.vid,d.pid,d.product,d.usagePage,d.usage,d.inputLength);}
+// Every Sony (054C) HID interface Windows lists, recognised or not (kind None = not a supported controller). A BD
+// remote is recognised by 054C:0306, or by a product string naming a remote (bd_remote.h); a name match is trusted
+// only once a report has the remote's shape (read()).
+std::vector<Device> enumerateSony() {
+    std::vector<Device> out;
     GUID guid;HidD_GetHidGuid(&guid);
     const HDEVINFO set=SetupDiGetClassDevsW(&guid,nullptr,nullptr,DIGCF_PRESENT|DIGCF_DEVICEINTERFACE);
     if(set==INVALID_HANDLE_VALUE)return out;
@@ -259,12 +266,39 @@ std::vector<std::pair<std::wstring,Kind>> enumerate() {
         const HANDLE handle=CreateFileW(detail->DevicePath,0,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,OPEN_EXISTING,0,nullptr);
         if(handle==INVALID_HANDLE_VALUE)continue;
         HIDD_ATTRIBUTES attributes{};attributes.Size=sizeof(attributes);
-        Kind kind;
-        if(HidD_GetAttributes(handle,&attributes) && kindOf(attributes.VendorID,attributes.ProductID,kind))out.emplace_back(detail->DevicePath,kind);
+        if(HidD_GetAttributes(handle,&attributes) && attributes.VendorID==0x054c) {
+            Device device;
+            device.path=detail->DevicePath;device.vid=attributes.VendorID;device.pid=attributes.ProductID;
+            wchar_t product[128]{};
+            if(HidD_GetProductString(handle,product,sizeof(product)-sizeof(wchar_t)))device.product=product;
+            PHIDP_PREPARSED_DATA preparsed=nullptr;
+            if(HidD_GetPreparsedData(handle,&preparsed)) {
+                HIDP_CAPS caps{};
+                if(HidP_GetCaps(preparsed,&caps)==HIDP_STATUS_SUCCESS){device.usagePage=caps.UsagePage;device.usage=caps.Usage;device.inputLength=caps.InputReportByteLength;}
+                HidD_FreePreparsedData(preparsed);
+            }
+            if(!kindOf(device.vid,device.pid,device.kind) && bd::isCandidate(device.vid,device.pid,device.product))device.kind=Kind::BdRemote;
+            out.push_back(std::move(device));
+        }
         CloseHandle(handle);
     }
     SetupDiDestroyDeviceInfoList(set);
     return out;
+}
+std::vector<Device> enumerate() {
+    std::vector<Device> out;
+    for(Device& d:enumerateSony())if(d.kind!=Kind::None)out.push_back(std::move(d));
+    return out;
+}
+// ---- BD remote capture log (XMB_BD_REMOTE_LOG=1, --bd-remote-log, xmb-config.json "bdRemoteLog") ----
+std::atomic_bool bdLogFlag{false};
+std::mutex captureMutex;
+std::vector<QString> captured;   // the raw-report lines so far (capped), for --pad-report
+void bdLog(const std::string& line) {
+    const QString text=QString::fromStdString(line);
+    qInfo().noquote()<<"bd-remote:"<<text;
+    const std::lock_guard lock(captureMutex);
+    if(captured.size()<64)captured.push_back(text);
 }
 
 // ---- XInput, slots 0-3 (pad.h) ----
@@ -351,7 +385,29 @@ XInputState xinputRead() {
     xinputCache.merged=merged;
     return merged;
 }
-void read(std::wstring path,Kind kind,std::mutex* openMutex,std::set<std::wstring>* open) {
+void read(Device device,std::mutex* openMutex,std::set<std::wstring>* open) {
+    const std::wstring path=device.path;
+    const Kind kind=device.kind;
+    // 054C:0306 (the CECH-ZR1) is the one remote id known for certain; any other candidate was found by product name
+    // and is trusted only for reports that have the BD remote's shape.
+    const bool trusted=kind==Kind::BdRemote && device.pid==bd::kProductId;
+    const bool consumer=kind==Kind::BdRemote && device.usagePage==bd::kConsumerPage;   // a separate consumer-control collection
+    const bool logging=kind==Kind::BdRemote && bdLogFlag.load();
+    static std::mutex onceMutex;static std::set<std::wstring> announced,declined;   // each path is said / declined once
+    bool firstSight=false;
+    if(kind==Kind::BdRemote) {
+        bool skip=false;
+        {const std::lock_guard lock(onceMutex);skip=declined.count(path)!=0;firstSight=!skip && announced.insert(path).second;}
+        if(skip){const std::lock_guard lock(*openMutex);open->erase(path);return;}
+    }
+    if(firstSight)
+        qInfo().noquote()<<QString("pad: BD Remote candidate (%1) %2").arg(trusted?QStringLiteral("known product id"):QStringLiteral("matched by product name"),
+            QString::fromStdString(describe(device)));
+    if(kind==Kind::BdRemote && !trusted && !consumer && bd::lengthRulesOutBdReport(device.inputLength) && !logging) {
+        if(firstSight)qInfo().noquote()<<QString("pad: that interface is not read: its input report is %1 bytes, the BD remote's is 12").arg(device.inputLength);
+        {const std::lock_guard lock(onceMutex);declined.insert(path);}
+        const std::lock_guard lock(*openMutex);open->erase(path);return;
+    }
     // The BD remote is only ever read, so it is opened read-only and shared with every other reader and writer: no
     // exclusive access, and Windows' own handle on the device keeps working. The controllers keep read+write.
     const HANDLE handle=CreateFileW(path.c_str(),kind==Kind::BdRemote?GENERIC_READ:(GENERIC_READ|GENERIC_WRITE),
@@ -367,8 +423,10 @@ void read(std::wstring path,Kind kind,std::mutex* openMutex,std::set<std::wstrin
         if(HidD_GetPreparsedData(handle,&preparsed)) {
             HIDP_CAPS caps{};
             if(HidP_GetCaps(preparsed,&caps)==HIDP_STATUS_SUCCESS && caps.InputReportByteLength>0)length=caps.InputReportByteLength;
-            HidD_FreePreparsedData(preparsed);
+            if(!consumer){HidD_FreePreparsedData(preparsed);preparsed=nullptr;}   // a consumer collection keeps it for HidP_GetUsages
         }
+        std::set<USHORT> heldConsumer;   // consumer usages down in the previous report
+        bool reportedShape=false;
         if(kind==Kind::Ds3) { // reading feature report 0xF2 starts the input reports (0xF4 on some setups)
             quint8 feature[64]{0xf2};HidD_GetFeature(handle,feature,18);
             quint8 enable[5]{0xf4,0x42,0x0c,0x00,0x00};HidD_SetFeature(handle,enable,sizeof(enable));
@@ -380,6 +438,42 @@ void read(std::wstring path,Kind kind,std::mutex* openMutex,std::set<std::wstrin
         for(;;) {
             DWORD got=0;
             if(!ReadFile(handle,report.data(),DWORD(report.size()),&got,nullptr) || got==0)break;
+            if(kind==Kind::BdRemote) {
+                // Diagnostic capture: every raw report of a candidate (plus "unknown key code 0xNN" where the key
+                // byte is in no table entry), whether or not it has the remote's shape.
+                if(logging)bdLog(bd::rawReportLine(device.vid,device.pid,report.data(),got));
+                if(consumer) {
+                    // A separate consumer-control collection: standard usages, read through the HID parser rather
+                    // than by byte position. A GUESS pending capture (bd_remote.h kConsumerSlots): AC Back / AC
+                    // Forward stand for Instant Back / Instant Forward.
+                    std::set<USHORT> nowDown;
+                    if(preparsed) {
+                        USAGE usages[32];ULONG count=32;
+                        if(HidP_GetUsages(HidP_Input,bd::kConsumerPage,0,usages,&count,preparsed,reinterpret_cast<PCHAR>(report.data()),got)==HIDP_STATUS_SUCCESS)
+                            for(ULONG i=0;i<count;++i)if(usages[i])nowDown.insert(usages[i]);
+                    }
+                    for(const USHORT usage:nowDown) {
+                        if(heldConsumer.count(usage))continue;
+                        const bd::Action action=bd::actionForConsumerUsage(bd::kConsumerPage,usage);
+                        if(logging)bdLog(QString("consumer usage 0x%1 down -> %2").arg(usage,4,16,QChar('0')).arg(QLatin1String(bd::actionName(action))).toStdString());
+                        if(action!=bd::Action::None) {
+                            const std::lock_guard lock(mutex);
+                            if(remoteQueue.size()>=kRemoteQueueMax)remoteQueue.pop_front();
+                            remoteQueue.push_back({action,std::chrono::steady_clock::now()});
+                        }
+                    }
+                    heldConsumer=std::move(nowDown);
+                    continue;
+                }
+                if(!trusted && !bd::looksLikeBdReport(report.data(),got)) {
+                    if(!reportedShape){
+                        reportedShape=true;
+                        qInfo().noquote()<<QString("pad: a candidate's report (id 0x%1, %2 bytes) does not have the BD remote's shape (12 bytes, id 01, ff filler); ignored")
+                            .arg(report[0],2,16,QChar('0')).arg(got);
+                    }
+                    continue;
+                }
+            }
             State s;
             Info info;
             if(!parse(kind,std::vector<quint8>(report.begin(),report.begin()+got),s,info)) {
@@ -422,6 +516,7 @@ void read(std::wstring path,Kind kind,std::mutex* openMutex,std::set<std::wstrin
             }
             if(!line.isEmpty())qInfo().noquote()<<line;
         }
+        if(preparsed)HidD_FreePreparsedData(preparsed);
         CloseHandle(handle);
     }
     const std::lock_guard lock(*openMutex);open->erase(path);
@@ -433,12 +528,23 @@ void start() {
 #ifdef Q_OS_WIN
     static std::atomic_bool started=false;
     if(started.exchange(true))return;
+    if(qEnvironmentVariable("XMB_BD_REMOTE_LOG")==QLatin1String("1"))bdLogFlag=true;
+    if(bdLogFlag.load())qInfo().noquote()<<"bd-remote: capture log on (every raw report of a BD remote candidate and every Sony HID interface is logged)";
     std::thread([]{
         static std::mutex openMutex;static std::set<std::wstring> open;
+        std::set<std::wstring> listed;   // Sony interfaces already written to the capture log
         for(;;) {
-            for(auto& [path,kind]:enumerate()) {
-                {const std::lock_guard lock(openMutex);if(!open.insert(path).second)continue;}
-                std::thread(read,path,kind,&openMutex,&open).detach();
+            if(bdLogFlag.load()) {
+                // Every Sony HID interface Windows exposes, once each, so an unknown remote product id shows up.
+                for(const Device& d:enumerateSony()) {
+                    if(!listed.insert(d.path).second)continue;
+                    bdLog(std::string("sony hid interface ")+describe(d)+(d.kind==Kind::None?" (not a supported controller)":
+                        d.kind==Kind::BdRemote?" (BD remote candidate)":" (gamepad)"));
+                }
+            }
+            for(auto& device:enumerate()) {
+                {const std::lock_guard lock(openMutex);if(!open.insert(device.path).second)continue;}
+                std::thread(read,device,&openMutex,&open).detach();
             }
             std::this_thread::sleep_for(std::chrono::seconds(2));
         }
@@ -526,12 +632,39 @@ quint64 ignoredEvents() { return ignoredPadEvents.load(); }
 QStringList presentDevices() {
     QStringList names;
 #ifdef Q_OS_WIN
-    for(const auto& [path,kind]:enumerate()) {
-        Q_UNUSED(path);
-        names<<kindName(kind);
-    }
+    for(const Device& d:enumerate())names<<kindName(d.kind);
 #endif
     return names;
+}
+void setBdRemoteLog(bool on) {
+#ifdef Q_OS_WIN
+    bdLogFlag=on;
+#else
+    Q_UNUSED(on);
+#endif
+}
+bool bdRemoteLog() {
+#ifdef Q_OS_WIN
+    return bdLogFlag.load();
+#else
+    return false;
+#endif
+}
+QStringList sonyInterfaces() {
+    QStringList lines;
+#ifdef Q_OS_WIN
+    for(const Device& d:enumerateSony())lines<<QString::fromStdString(describe(d))+(d.kind==Kind::None?QStringLiteral(" (not a supported controller)")
+        :d.kind==Kind::BdRemote?QStringLiteral(" (BD remote candidate)"):QStringLiteral(" (gamepad)"));
+#endif
+    return lines;
+}
+QStringList bdRemoteCapture() {
+    QStringList lines;
+#ifdef Q_OS_WIN
+    const std::lock_guard lock(captureMutex);
+    for(const QString& line:captured)lines<<line;
+#endif
+    return lines;
 }
 std::vector<bd::Action> takeRemoteActions() {
     std::vector<bd::Action> out;

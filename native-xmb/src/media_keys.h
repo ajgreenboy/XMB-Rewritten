@@ -24,6 +24,8 @@ enum class RemoteKey {
     Display,      // = SELECT in the player: pin/unpin its display (the PS3 BD remote's Display and Time keys)
     Subtitle,     // steps the subtitle track (next, then Off) of the open video
     Audio,        // steps the audio track of the open video
+    JumpBack,     // seek -15 s (the CECH-ZRC1 BD remote's Instant Back)
+    JumpForward,  // seek +15 s (Instant Forward)
 };
 const char* remoteKeyName(RemoteKey key);
 // Qt key events: the Qt::Key_* a remote or media keyboard produces, plus the Media Center keyboard shortcuts.

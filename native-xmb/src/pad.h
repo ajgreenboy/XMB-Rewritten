@@ -57,6 +57,18 @@ std::vector<bd::Action> takeRemoteActions();
 // Every supported controller Windows currently lists as a HID device, by kind name, whether or not it has sent a
 // report: a BD remote is silent until a key is pressed, so --pad-report uses this to say it is paired and visible.
 QStringList presentDevices();
+// ---- BD remote capture log (audit/BD-REMOTE.md, "Capturing the ZRC1") ----
+// On when XMB_BD_REMOTE_LOG=1, when main.cpp calls setBdRemoteLog(true) (--bd-remote-log, or "bdRemoteLog": true in
+// xmb-config.json) or when --pad-report runs. While on, every raw input report of a BD remote candidate is logged as
+// hex ("bd-remote: report vid=... hex=..."), with "unknown key code 0xNN" for a key byte no table entry names, and every
+// Sony (054C) HID interface Windows exposes is listed once. Only ids, the product string, usages and report bytes;
+// never the device path (it holds the Bluetooth address). Set it before start().
+void setBdRemoteLog(bool on);
+bool bdRemoteLog();
+// One line per Sony HID interface (vid, pid, product string, usage page/usage, input report length), recognised or not.
+QStringList sonyInterfaces();
+// The raw-report and interface lines logged so far (first 64), for --pad-report.
+QStringList bdRemoteCapture();
 // One input report through the same parser the watcher uses (report id in byte 0, as Windows returns it). The
 // battery byte is read only when the report is long enough for the layout's own offset, so a short or unknown
 // report is rejected instead of reading past its end. Local verification runs documented synthetic reports here.

@@ -440,6 +440,7 @@ int main(int argc,char** argv) {
     parser.addOption({"kiosk","Appliance mode: frameless fullscreen on the chosen display, straight to the XMB (no cold-boot intro)"});
     parser.addOption({"display","Screen index for --kiosk (0 = first screen; default: the primary screen)","index"});
     parser.addOption({"start-windowed","Start in a window even when the stored preference is fullscreen (local testing)"});
+    parser.addOption({"bd-remote-log","Log every raw PS3 BD Remote report as hex, 'unknown key code 0xNN' for unlisted keys, and every Sony HID interface, to the app log (also XMB_BD_REMOTE_LOG=1 or \"bdRemoteLog\": true in xmb-config.json)"});
     parser.addOption({"pad-report","Write the attached PlayStation controller's (or PS3 BD Remote's) kind, connection and battery as JSON, then exit","json-file"});
     parser.addOption({"check-update","Check GitHub for a newer release without downloading or installing"});
     parser.addOption({"firmware-check","Check Sony's current PS3 firmware version without downloading it"});
@@ -755,6 +756,7 @@ int main(int argc,char** argv) {
     if(parser.isSet("pad-report")) {
         // The physical path: the HID watcher opens the controller and the report it sends is the evidence. The
         // wait covers the watcher's 2 s enumeration plus one report interval.
+        xmb::pad::setBdRemoteLog(true);   // the report carries the capture lines, so the raw reports are recorded for it
         xmb::pad::start();
         QTimer::singleShot(2500,&app,[&app,&parser]{
             xmb::pad::Info info;const bool attached=xmb::pad::info(info);
@@ -763,6 +765,10 @@ int main(int argc,char** argv) {
                 {"batteryPercent",info.batteryPercent},{"charging",info.charging}};
             const QStringList present=xmb::pad::presentDevices();
             out.insert("present",QJsonArray::fromStringList(present));
+            // Capture for an unknown BD remote (audit/BD-REMOTE.md): every Sony HID interface and the raw reports
+            // (hex) read from BD remote candidates during the window. No device path, no serial.
+            out.insert("sonyInterfaces",QJsonArray::fromStringList(xmb::pad::sonyInterfaces()));
+            out.insert("bdRemoteCapture",QJsonArray::fromStringList(xmb::pad::bdRemoteCapture()));
             if(!attached)out.insert("note",present.contains(QStringLiteral("BD Remote"))
                 ?"a BD Remote is visible to Windows but sent no report in 2.5 s; it reports only while a key is held, so press one during the run"
                 :"no PlayStation controller reported in 2.5 s");
@@ -786,7 +792,7 @@ int main(int argc,char** argv) {
     // D8: a plain interactive launch (no report mode, no --script) reads xmb-config.json next to the exe for what the command line
     // leaves out: {"devFlash","dataDir","vshModules","display"}. The same file run-kiosk.ps1 and watchdog.ps1 read.
     static const QStringList interactiveOptions{"dev-flash","dev-hdd0","vsh-modules","data-dir","no-intro","no-health-warning","kiosk",
-        "display","start-windowed","steam-root","gallery-root","gallery-sort","show","desktop","quit","safe","first-run","after-pid"};
+        "display","bd-remote-log","start-windowed","steam-root","gallery-root","gallery-sort","show","desktop","quit","safe","first-run","after-pid"};
     bool interactiveLaunch=parser.positionalArguments().isEmpty() && qEnvironmentVariable("XMB_INPUT_SCRIPT_ONLY")!=QLatin1String("1");
     for(const QString& name:parser.optionNames())if(!interactiveOptions.contains(name))interactiveLaunch=false;
     const QJsonObject launchConfig=interactiveLaunch?xmb::setup::loadConfig(xmb::setup::configPath()):QJsonObject{};
@@ -1379,6 +1385,9 @@ int main(int argc,char** argv) {
     const bool scriptOnlyEnv=qEnvironmentVariable("XMB_INPUT_SCRIPT_ONLY")=="1";
     const bool scriptedRun=parser.isSet("script") || scriptOnlyEnv;
     xmb::pad::setScriptOnly(scriptedRun);
+    // BD remote capture log (audit/BD-REMOTE.md): the command line switch, xmb-config.json "bdRemoteLog" (read on an
+    // interactive launch, which is how the kiosk task starts), or XMB_BD_REMOTE_LOG=1 (read by pad::start()).
+    if(parser.isSet("bd-remote-log") || launchConfig.value(QStringLiteral("bdRemoteLog")).toBool())xmb::pad::setBdRemoteLog(true);
     if(inputTraceEnabled())
         qInfo().noquote()<<QString("input: trace gate scripted=%1 trigger=%2")
             .arg(scriptedRun?1:0)

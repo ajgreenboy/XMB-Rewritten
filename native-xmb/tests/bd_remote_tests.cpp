@@ -165,6 +165,81 @@ int main() {
         check(t.press(parsed(report(0x30)))==Action::Previous,"Prev fires even though Next was never released");
     }
 
+    // ---- recognising the CECH-ZRC1 (unknown product id) ----
+    check(isCandidate(0x054c,0x0306,L""),"054C:0306 is a candidate with no product string");
+    check(isCandidate(0x054c,0x1234,L"BD Remote Control"),"an unknown Sony pid named 'BD Remote Control' is a candidate");
+    check(isCandidate(0x054c,0x1234,L"Remote Control"),"'Remote Control' alone is a candidate");
+    check(isCandidate(0x054c,0x1234,L"PLAYSTATION(R)3 Remote"),"'PLAYSTATION' + 'Remote' is a candidate");
+    check(isCandidate(0x054c,0x1234,L"bd remote"),"matching is case-insensitive");
+    check(!isCandidate(0x054c,0x1234,L"PLAYSTATION(R)3 Controller"),"'PLAYSTATION' without 'Remote' is not");
+    check(!isCandidate(0x054c,0x1234,L"Wireless Controller"),"a gamepad name is not");
+    check(!isCandidate(0x054c,0x1234,L""),"an unknown pid with no name is not");
+    check(!isCandidate(0x046d,0x0306,L"BD Remote"),"another vendor is never a candidate");
+    {
+        bool gamepadsOut=true;
+        const unsigned short pids[]={0x0268,0x05c4,0x09cc,0x0ba0,0x0ce6,0x0df2};
+        for(unsigned short pid:pids)gamepadsOut&=!isCandidate(0x054c,pid,L"BD Remote Control");   // even a misleading name
+        check(gamepadsOut,"DualShock 3/4 and DualSense pids are never a BD remote, whatever the name");
+    }
+    check(productStringMatches(L"  Blu-ray Disc Remote Control  ") && !productStringMatches(L"DualSense Wireless Controller"),"product-string matching on realistic names");
+    // shape
+    check(looksLikeBdReport(report(0xff).data(),12),"an idle BD report has the BD shape");
+    check(looksLikeBdReport(report(0x32,joypadBit(JpUp)).data(),12),"a key-down BD report has the BD shape");
+    {auto r=report(0xff);r[7]=0x00;check(!looksLikeBdReport(r.data(),12),"a filler byte that is not ff breaks the shape");}
+    {auto r=report(0xff);r.push_back(0);check(!looksLikeBdReport(r.data(),r.size()),"13 bytes is not the shape");}
+    {auto r=report(0xff);r[0]=0x11;check(!looksLikeBdReport(r.data(),12),"another report id is not the shape");}
+    {auto r=report(0xff);r[11]=9;check(!looksLikeBdReport(r.data(),12),"a battery byte past 5 is not the shape");}
+    {
+        // A DualShock 3 USB input report (49 bytes, id 01) and a DualSense one (64 bytes) must never match.
+        std::vector<std::uint8_t> ds3(49,0x00);ds3[0]=0x01;
+        std::vector<std::uint8_t> ds5(64,0xff);ds5[0]=0x01;
+        check(!looksLikeBdReport(ds3.data(),ds3.size()) && !looksLikeBdReport(ds5.data(),ds5.size()),"DualShock 3 / DualSense reports are never BD-shaped");
+        check(lengthRulesOutBdReport(49) && lengthRulesOutBdReport(64) && !lengthRulesOutBdReport(12) && !lengthRulesOutBdReport(0),"descriptor input lengths: 12 and unknown stay possible");
+    }
+
+    // ---- diagnostic lines ----
+    check(hexBytes(report(0x32).data(),12)=="01 00 00 00 32 ff ff ff ff ff 01 05","raw report hex");
+    check(hexBytes(nullptr,0).empty(),"hex of nothing is empty");
+    check(unknownKeyNote(parsed(report(0x20)))=="unknown key code 0x20","an unlisted key code is reported as 'unknown key code 0xNN'");
+    check(unknownKeyNote(parsed(report(0xfe)))=="unknown key code 0xfe","0xfe is reported too");
+    check(unknownKeyNote(parsed(report(0x32))).empty() && unknownKeyNote(parsed(report(0xff))).empty(),"known keys and releases report nothing");
+    {
+        const auto r=report(0x77);
+        const std::string line=rawReportLine(0x054c,0x0306,r.data(),r.size());
+        check(line.find("vid=054c pid=0306 len=12 hex=01 00 00 00 77")!=std::string::npos && line.find("unknown key code 0x77")!=std::string::npos,"the raw line carries ids, hex and the unknown-code note");
+        const auto k=report(0x32);
+        check(rawReportLine(0x054c,0x0306,k.data(),k.size()).find("unknown")==std::string::npos,"a known key's raw line has no unknown note");
+        std::vector<std::uint8_t> other(20,0x07);
+        check(rawReportLine(0x054c,0x1234,other.data(),other.size()).find("len=20")!=std::string::npos,"a report of another shape is still logged raw");
+    }
+    check(describeInterface(0x054c,0x1234,L"BD Remote",0xff00,0x01,12)=="vid=054c pid=1234 usagePage=0xff00 usage=0x0001 inputReportLength=12 product=\"bd remote\"","interface description");
+
+    // ---- Instant Back / Instant Forward slots (codes unknown) ----
+    check(!kInstantCodes.back && !kInstantCodes.forward,"both Instant slots ship disabled: the codes are unknown");
+    check(actionFor(Key::InstantBack)==Action::JumpBack && actionFor(Key::InstantForward)==Action::JumpForward,"the Instant keys map to jump back / forward");
+    check(std::string(actionName(Action::JumpBack))=="jump-back" && std::string(actionName(Action::JumpForward))=="jump-forward" && kJumpMs==15000,"jump actions are named and 15 s");
+    check(std::string(keyName(Key::InstantBack))=="Instant Back" && std::string(keyName(Key::InstantForward))=="Instant Forward","Instant keys have labels");
+    check(parsed(report(0x42)).key==Key::Unknown,"with the slots disabled, a code is never an Instant key");
+    {
+        const InstantCodes filled{std::uint8_t(0x42),std::uint8_t(0x43)};   // what filling in the captured codes would look like
+        Report back,fwd,other;
+        const auto b=report(0x42),f=report(0x43),o=report(0x44);
+        parse(b.data(),b.size(),back,filled);parse(f.data(),f.size(),fwd,filled);parse(o.data(),o.size(),other,filled);
+        check(back.key==Key::InstantBack && fwd.key==Key::InstantForward && other.key==Key::Unknown,"a filled slot decodes its own code only");
+        check(actionFor(back.key)==Action::JumpBack && actionFor(fwd.key)==Action::JumpForward,"a filled slot gives the jump action");
+        check(unknownKeyNote(back).empty(),"a filled Instant code is no longer 'unknown'");
+        check(padBits(back).buttons==0,"an Instant key sets no pad button");
+        check(keyForCode(0x32,filled)==Key::Play && keyForCode(0xff,filled)==Key::None,"filling the slots leaves the known table alone");
+        const InstantCodes onlyBack{std::uint8_t(0x42),std::nullopt};
+        check(keyForCode(0x42,onlyBack)==Key::InstantBack && keyForCode(0x43,onlyBack)==Key::Unknown,"each slot is independent");
+        Tracker t;
+        check(t.press(back)==Action::JumpBack && t.press(back)==Action::None && t.press(parsed(report(0xff)))==Action::None && t.press(back)==Action::JumpBack,"an Instant press fires once, then again after a release");
+    }
+    // consumer usages (a guess pending capture)
+    check(actionForConsumerUsage(0x0c,0x0224)==Action::JumpBack && actionForConsumerUsage(0x0c,0x0225)==Action::JumpForward,"consumer AC Back / AC Forward are the jump slots");
+    check(actionForConsumerUsage(0x0c,0x00b5)==Action::None && actionForConsumerUsage(0x0c,0x00b6)==Action::None,"Scan Next/Previous are listed but disabled (Windows already maps them)");
+    check(actionForConsumerUsage(0x01,0x0224)==Action::None && actionForConsumerUsage(0x0c,0x00cd)==Action::None,"another page or an unrelated usage maps to nothing");
+
     std::printf("%d checks, %d failures\n",checks,failures);
     return failures?1:0;
 }
