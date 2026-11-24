@@ -35,6 +35,39 @@ QString headerUrlFor(const QString& appId) {
     if (appId.isEmpty()) return {};
     return QStringLiteral("https://cdn.cloudflare.steamstatic.com/steam/apps/%1/header.jpg").arg(appId);
 }
+// The response's game rows as the column's owned list (title order, installed flag from the local manifests).
+OwnedGameList ownedGamesFromResponse(const QJsonObject& response) {
+    QSet<QString> installedIds;
+    for (const auto& game : scanSteam().games) installedIds.insert(game.appId);
+
+    OwnedGameList games;
+    const auto rows = response.value(QLatin1String("games")).toArray();
+    games.reserve(std::min<int>(int(rows.size()), MaxGames));
+    for (const auto& value : rows) {
+        if (!value.isObject()) continue;
+        const auto row = value.toObject();
+        OwnedGame game;
+        game.appId = QString::number(row.value(QLatin1String("appid")).toInt());
+        if (game.appId.isEmpty() || game.appId == QLatin1String("0")) continue;
+        game.title = row.value(QLatin1String("name")).toString().trimmed();
+        if (game.title.isEmpty()) continue;
+        game.iconUrl = iconUrlFor(game.appId, row.value(QLatin1String("img_icon_url")).toString());
+        game.headerUrl = headerUrlFor(game.appId);
+        game.playtimeMinutes = row.value(QLatin1String("playtime_forever")).toInt();
+        game.installed = installedIds.contains(game.appId);
+        games.push_back(game);
+        if (games.size() >= MaxGames) break;
+    }
+    std::sort(games.begin(), games.end(), [](const OwnedGame& a, const OwnedGame& b) {
+        return a.title.localeAwareCompare(b.title) < 0;
+    });
+    return games;
+}
+
+// Test seam (work/ab-layers.ts): XMB_STEAM_OWNED_FILE names a JSON file in the Web API's own response shape
+// ({"response":{"games":[{"appid":..,"name":..}]}}). refresh() then answers from it, with no key and no network.
+// The file is the caller's private fixture and is never part of the repository.
+QString ownedFixturePath() { return qEnvironmentVariable("XMB_STEAM_OWNED_FILE").trimmed(); }
 } // namespace
 
 SteamOwned::SteamOwned(QObject* parent) : QObject(parent), network_(new QNetworkAccessManager(this)) {
@@ -60,7 +93,7 @@ QString SteamOwned::apiKey() {
     return (newline > 0 ? text.left(newline) : text).trimmed();
 }
 
-bool SteamOwned::hasApiKey() { return !apiKey().isEmpty(); }
+bool SteamOwned::hasApiKey() { return !apiKey().isEmpty() || !ownedFixturePath().isEmpty(); }
 
 void SteamOwned::cancel() {
     ++generation_;
@@ -87,6 +120,18 @@ void SteamOwned::refresh(QString steamId64) {
     requestedId_ = steamId64;
     if (steamId64.isEmpty()) {
         emit loaded({}, tr("No Steam account was found. Set XMB_STEAM_ID or sign in to Steam."), false);
+        return;
+    }
+    if (const QString fixture = ownedFixturePath(); !fixture.isEmpty()) {
+        QFile file(fixture);
+        const auto document = file.size() <= MaxResponseBytes && file.open(QIODevice::ReadOnly)
+            ? QJsonDocument::fromJson(file.readAll()) : QJsonDocument();
+        const quint64 generation = ++generation_;
+        const auto games = ownedGamesFromResponse(document.object().value(QLatin1String("response")).toObject());
+        QTimer::singleShot(0, this, [this, generation, games, ok = document.isObject()] {
+            if (generation != generation_) return;
+            emit loaded(games, ok ? QString() : tr("The owned-games fixture could not be read."), false);
+        });
         return;
     }
     const QString key = apiKey();
@@ -166,30 +211,7 @@ void SteamOwned::refresh(QString steamId64) {
             return;
         }
 
-        QSet<QString> installedIds;
-        for (const auto& game : scanSteam().games) installedIds.insert(game.appId);
-
-        OwnedGameList games;
-        const auto rows = response.value(QLatin1String("games")).toArray();
-        games.reserve(std::min<int>(int(rows.size()), MaxGames));
-        for (const auto& value : rows) {
-            if (!value.isObject()) continue;
-            const auto row = value.toObject();
-            OwnedGame game;
-            game.appId = QString::number(row.value(QLatin1String("appid")).toInt());
-            if (game.appId.isEmpty() || game.appId == QLatin1String("0")) continue;
-            game.title = row.value(QLatin1String("name")).toString().trimmed();
-            if (game.title.isEmpty()) continue;
-            game.iconUrl = iconUrlFor(game.appId, row.value(QLatin1String("img_icon_url")).toString());
-            game.headerUrl = headerUrlFor(game.appId);
-            game.playtimeMinutes = row.value(QLatin1String("playtime_forever")).toInt();
-            game.installed = installedIds.contains(game.appId);
-            games.push_back(game);
-            if (games.size() >= MaxGames) break;
-        }
-        std::sort(games.begin(), games.end(), [](const OwnedGame& a, const OwnedGame& b) {
-            return a.title.localeAwareCompare(b.title) < 0;
-        });
+        const OwnedGameList games = ownedGamesFromResponse(response);
         if (generation != generation_) return;
         finish(generation);
         emit loaded(games, {}, false);

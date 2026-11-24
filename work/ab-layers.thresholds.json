@@ -98,6 +98,7 @@
   "states": [
     {
       "name": "steam-game-root",
+      "env": { "XMB_STEAM_OWNED_FILE": "${repo}/out/native-reference/store/ui3-data/owned-games.json" },
       "description": "Game column root: the installed Steam titles first, inline as ICON0 tiles like installed PKGs (user direction 2026-11-02), then Steam Store, one All Games folder (detail = distinct Steam titles) and the dev_flash utilities. No top-level Not Installed row.",
       "reference": "out/native-reference/layers/steam-game-root.png",
       "dataSeed": "out/native-reference/store/ui3-data",
@@ -141,6 +142,7 @@
     },
     {
       "name": "steam-all-games",
+      "env": { "XMB_STEAM_OWNED_FILE": "${repo}/out/native-reference/store/ui3-data/owned-games.json" },
       "description": "All Games page: All Titles, then one folder per non-empty Steam collection (collection-name order), then Not Installed and Family Shared. Only the 14 folder rows are asserted, not the title lists inside them.",
       "reference": "out/native-reference/layers/steam-all-games.png",
       "dataSeed": "out/native-reference/store/ui3-data",
@@ -203,6 +205,7 @@
     },
     {
       "name": "steam-not-installed",
+      "env": { "XMB_STEAM_OWNED_FILE": "${repo}/out/native-reference/store/ui3-data/owned-games.json" },
       "description": "Not Installed folder opened through All Games: owned-but-not-installed rows plus the seeded family-shared titles. Only the visible first rows are scored; the folder dump bounds the row count.",
       "reference": "out/native-reference/layers/steam-not-installed.png",
       "dataSeed": "out/native-reference/store/ui3-data",
