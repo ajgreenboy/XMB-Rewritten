@@ -205,12 +205,12 @@ function isScore(value: unknown): value is Baseline {
 }
 
 // Every --script token the native build accepts (src/main.cpp). A recipe may also
-// use the payload forms (NOTIFY=, VOLSET=, VOLKEY=, BDREMOTE=, type=, idle=, burst=).
+// use the payload forms (NOTIFY=, VOLSET=, VOLKEY=, BDREMOTE=, BDLIVE=, type=, idle=, burst=).
 const scriptKeys = new Set(['full', 'wait', 'LEFT', 'RIGHT', 'UP', 'DOWN', 'ENTER', 'ESC', 'PGUP', 'PGDN',
   'BACKSPACE', 'PREV', 'NEXT', 'SHUFFLE', 'REPEAT', 'ZOOMIN', 'ZOOMOUT', 'RESETVIEW', 'ROTATELEFT', 'ROTATERIGHT',
   'REFRESH', 'TRIANGLE', 'ps', 'pshold', 'VOLUP', 'VOLDOWN', 'MUTE', 'VOLRESTORE']);
 function isScriptToken(token: string) {
-  return scriptKeys.has(token) || /^size=\d+x\d+$/.test(token) || /^(NOTIFY|VOLSET|VOLKEY|BDREMOTE|type|idle|burst|pause)=/.test(token);
+  return scriptKeys.has(token) || /^size=\d+x\d+$/.test(token) || /^(NOTIFY|VOLSET|VOLKEY|BDREMOTE|BDLIVE|type|idle|burst|pause)=/.test(token);
 }
 function isSidecarTest(value: unknown): value is SidecarTest {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;

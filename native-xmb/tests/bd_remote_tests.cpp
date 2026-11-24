@@ -245,6 +245,87 @@ int main() {
     check(actionForConsumerUsage(0x0c,0x00b5)==Action::None && actionForConsumerUsage(0x0c,0x00b6)==Action::None,"Scan Next/Previous are listed but disabled (Windows already maps them)");
     check(actionForConsumerUsage(0x01,0x0224)==Action::None && actionForConsumerUsage(0x0c,0x00cd)==Action::None,"another page or an unrelated usage maps to nothing");
 
+    // ---- press edges that survive a fast tap (PadLatch) ----
+    {
+        const auto up=report(0x54,joypadBit(JpUp)),release=report(0xff);
+        PadLatch l;
+        check(l.report(parsed(up),1000) && l.report(parsed(release),1001),"press and release reports are both accepted");
+        PadEdges e=l.take(1002);
+        check(e.pressed==0x0001 && e.held.buttons==0,"a press+release between two takes is one Up press and nothing held");
+        check(l.take(1003).pressed==0,"an edge is delivered once");
+        check((l.visible(1010).buttons&0x0001)!=0,"another reader still sees the tap inside the linger window");
+        check(l.visible(1000+kLingerMs+5).buttons==0,"and not after it");
+        check(l.visible(1001).buttons==0x0001,"the linger shows down before up for a poll that comes later");
+    }
+    {
+        PadLatch l;   // held: no repeat reports, so down = press seen and no release yet
+        l.report(parsed(report(0x55,joypadBit(JpRight))),0);
+        PadEdges e=l.take(5);
+        check(e.pressed==0x0008 && e.held.buttons==0x0008,"a press is an edge and held");
+        e=l.take(2000);
+        check(l.take(10000).held.buttons==0x0008 && l.visible(20000).buttons==0x0008,"a hold with no further reports stays held for 10 s and more (no report-age timeout)");
+        check(e.pressed==0 && e.held.buttons==0x0008,"still held 2 s later with no further report, no second edge");
+        check(l.visible(5000).buttons==0x0008,"visible while held");
+        l.report(parsed(report(0xff)),5100);
+        check(l.take(5101).held.buttons==0 && l.visible(5300).buttons==0,"the release clears it");
+        l.report(parsed(report(0x55,joypadBit(JpRight))),9000);
+        check(l.take(9000+kMaxHeldMs+1).held.buttons==0,"a release lost to a Bluetooth drop is forgotten after kMaxHeldMs");
+        l.report(parsed(report(0x55,joypadBit(JpRight))),20000);l.releaseAll();
+        check(l.take(20001).held.buttons==0,"a device that went away is released");
+    }
+    {
+        PadLatch l;   // two quick presses of the same key between two takes: one edge (the shell sees one down), then a new one later
+        l.report(parsed(report(0x54,joypadBit(JpUp))),0);l.report(parsed(report(0xff)),20);
+        l.report(parsed(report(0x54,joypadBit(JpUp))),80);l.report(parsed(report(0xff)),100);
+        check(l.take(110).pressed==0x0001,"two taps between takes still give the press bit");
+        l.report(parsed(report(0x54,joypadBit(JpUp))),200);
+        check(l.take(216).pressed==0x0001,"the next tap after a take is a new edge");
+    }
+    {
+        PadLatch l;   // Enter (Cross), Return (Circle by key code), shapes, L2/R2 and PS all edge
+        l.report(parsed(report(0x0b,joypadBit(JpEnter))),0);l.report(parsed(report(0xff)),1);
+        l.report(parsed(report(0x0e)),2);l.report(parsed(report(0xff)),3);
+        l.report(parsed(report(0x5c,joypadBit(JpTriangle))),4);l.report(parsed(report(0xff)),5);
+        l.report(parsed(report(0x43,joypadBit(JpPs))),6);l.report(parsed(report(0xff)),7);
+        const PadEdges e=l.take(8);
+        check(e.pressed==(0x1000|0x2000|0x8000|0x0400),"Enter, Return, Triangle and PS taps all become edges");
+        PadLatch t;
+        t.report(parsed(report(0xff,0)),0);
+        Report r=parsed(report(0x00,joypadBit(JpL2)|joypadBit(JpR2)));
+        t.report(r,1);t.report(parsed(report(0xff)),2);
+        const PadEdges te=t.take(3);
+        check(te.l2Pressed && te.r2Pressed && !te.held.l2 && !te.held.r2,"an L2/R2 tap is an edge and not held");
+    }
+    {
+        // the captured transient: Up and Left bits, key byte 0xff, between two Up presses
+        const auto artefact=report(0xff,joypadBit(JpUp)|joypadBit(JpLeft));
+        check(isRolloverArtefact(parsed(artefact)) && !isRolloverArtefact(parsed(report(0xff))) && !isRolloverArtefact(parsed(report(0x54,joypadBit(JpUp)))),"bits with no key code are the roll-over artefact; a release and a real press are not");
+        PadLatch l;
+        l.report(parsed(report(0x54,joypadBit(JpUp))),0);l.report(parsed(report(0xff)),10);
+        l.take(11);
+        check(!l.report(parsed(artefact),20),"the artefact report is ignored");
+        PadEdges e=l.take(21);
+        check(e.pressed==0 && e.held.buttons==0 && l.visible(500).buttons==0,"it gives no phantom Left press and holds nothing");
+        l.report(parsed(report(0x54,joypadBit(JpUp))),30);
+        check(l.take(31).pressed==0x0001,"the next real Up press is still delivered");
+        PadLatch h;   // an artefact in the middle of a held key leaves it held
+        h.report(parsed(report(0x54,joypadBit(JpUp))),0);h.report(parsed(artefact),5);
+        check(h.take(6).held.buttons==0x0001,"an artefact does not release a held key");
+    }
+    {
+        // a streaming pad's state is a separate thing: merging is an OR, so it cannot erase the remote's bits
+        PadLatch l;l.report(parsed(report(0x54,joypadBit(JpUp))),0);
+        std::uint16_t streaming=0;   // a DualSense reporting "nothing pressed" every 4 ms
+        for(int i=0;i<100;++i)streaming=0;
+        check(std::uint16_t(streaming|l.visible(10).buttons)==0x0001,"another pad reporting no buttons cannot clear the remote's held key");
+        check(l.take(10).held.buttons==0x0001,"nor the shell's own view of it");
+    }
+    {
+        PadLatch l;   // media keys (no pad bit) make no pad edge; Tracker still sees them once
+        l.report(parsed(report(0x32)),0);
+        check(!l.take(1).any(),"Play has no joypad bit and makes no pad edge");
+    }
+
     std::printf("%d checks, %d failures\n",checks,failures);
     return failures?1:0;
 }

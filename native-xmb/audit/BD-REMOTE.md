@@ -147,6 +147,32 @@ media keys use.
 
 An unlisted code is held like any key and does nothing; `0xFE` is not a release.
 
+## Presses: quick taps, held keys, other pads (v0.3.34)
+
+Owner report: "it doesn't pick up all my inputs". Root cause (code): the shell sampled the newest pad STATE each frame
+(`pad::latest()`) and derived presses from 0->1 changes; the remote's release report overwrote its press report in the
+single shared `newest` before the shell looked (a quick tap lost), and any streaming pad overwrote the remote's state
+(`newest` is shared, newest report wins). Media keys were unaffected (their own queue). A second report: a held arrow
+stopped repeating after about a second, because the state expired 500 ms after the last report and the remote sends no
+repeat.
+
+Design (`bd::PadLatch`, `src/bd_remote.h`; `pad.cpp`; `View::pollController`):
+- The remote has its own state and never writes `newest`. `pad::latest()` ORs it in for PsWatcher, setup and the desktop
+  pad (each press stays visible for `bd::kLingerMs` = 60 ms, so a 20 ms poller still sees down then up).
+- The main shell does not read the remote through `latest()` (`latest(hid,false)`). It calls `pad::takeRemotePad()`:
+  the held bits plus every 0->1 edge since the last tick. The edges go into `keyPressed_` (the keyboard-tap latch the
+  edge detection already ORs in), the held bits join `buttons`, so a tap shorter than one poll is exactly one press,
+  and the held-key repeat (300 ms, then 67 ms) runs from the held bits. PS stays PsWatcher's. L2/R2 (digital, seek)
+  count a tap as a full pull for one poll.
+- Roll-over artefact: a report with key byte 0xFF and non-zero bits (`01 90 00 00 ff ...`, captured between two Up
+  presses; Up and Left bits, no key code) is ignored whole (`isRolloverArtefact`): no edge, no change of the held state.
+  Choice: nothing in the layout lets a key be down without a code, and the Left bit was never pressed; treating it as
+  held would repeat a phantom Left. If a real key ever turns out to report bits with 0xFF, the capture log shows it.
+- Scripted runs: `BDREMOTE=<hex>` is unchanged (replay path, its own edge detection). New `BDLIVE=<hex>[+<hex>...]`
+  feeds the live latch (through a second, script-only latch, since the physical remote stays gated), reports joined by
+  `+` land in one tick. `work/bd-presses-e2e.ts` uses both. A streaming DualSense cannot be injected in a scripted run
+  (every physical pad is gated); independence from `newest` is structural and unit-tested as an OR.
+
 ## Behaviour notes
 
 - Windows reconnects re-enumerate: the watcher scans every 2 s and opens each supported HID interface; a reader
@@ -154,8 +180,12 @@ An unlisted code is held like any key and does nothing; `0xFE` is not a release.
 - The remote is opened **read-only** and shared with all readers and writers (no exclusive access). The controllers
   keep read+write. If Windows refuses access the log says so: `pad: BD Remote found but Windows refused read access
   (error N)`; a report of another id is logged once.
-- Freshness: the remote reports only while a key is down. Held keys are valid for 500 ms (controllers: 300 ms), so
-  a remote that repeats less often than that would not give held-arrow repeat. UNVERIFIED.
+- Held keys: the remote reports once on key-down and once on key-up (CAPTURED), never while a key is held. A joypad bit is
+  therefore held from its press report until its release report (code 0xFF, bit cleared), whatever the age of the last
+  report; the 500 ms / 300 ms freshness window applies to the streaming pads only. Safety releases for a lost release
+  report: the reader thread ends (handle closed, read failed, disconnect or sleep; the 2 s re-enumeration then opens it
+  afresh) and a cap of 30 s since the last report (`bd::kMaxHeldMs`; far past any real hold, short enough that a key is
+  never stuck). A hold of more than 30 s therefore stops repeating: a deliberate trade for never sticking.
 - Scripted runs: the live remote is gated like every pad (`pad::scriptOnly`); its media commands are discarded and
   counted in `ignoredEvents()`.
 - Battery: bars 0-5 shown as 20 % steps (`--pad-report`); charging is reported as "unknown" because the report has

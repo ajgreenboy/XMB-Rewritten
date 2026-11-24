@@ -6528,6 +6528,11 @@ void View::pollController() {
     // The BD remote's media-key presses are taken every tick so a press made while the XMB was not in front is dropped
     // here rather than fired later; the scripted gate empties them in the pad reader.
     const auto bdActions=pad::takeRemoteActions();
+    // The remote's joypad-style keys are taken every tick too (state + press edges, pad.h takeRemotePad), before the
+    // foreground gate: a press made while the XMB was not in front is dropped here, never replayed later. A scripted run
+    // takes only what BDLIVE= fed; the physical remote is gated in pad.cpp.
+    static const bool scriptedRun=QCoreApplication::arguments().contains(QStringLiteral("--script"));
+    pad::RemotePad remotePad;const bool remote=pad::takeRemotePad(remotePad,scriptedRun);
     if(!xmbOwnsForeground() || QApplication::activeModalWidget()){buttons_=keyHeld_=keyPressed_=0;triggerHeld_=false;return;}
     // A --script run is the script's own input: every scripted key goes through replayKeyTap, which dispatches the
     // same handlers the pad drives. A physical controller is therefore not read at all, so a capture cannot depend
@@ -6536,8 +6541,13 @@ void View::pollController() {
     // XInput slots 0-3 (pad::xinputLatest, merged) and any PlayStation controller over HID (pad.cpp), merged;
     // the left stick doubles as the D-pad.
     pad::XInputState xstate;const bool xinput=!scriptedInput && pad::xinputLatest(xstate);
-    pad::State hid;const bool playstation=!scriptedInput && pad::latest(hid);
-    quint16 buttons=quint16((xinput?xstate.buttons:0)|(playstation?hid.buttons:0)|keyHeld_);
+    // The remote is left out of latest() here: its taps arrive as edges below, so one that began and ended between two
+    // polls still moves the XMB, and a streaming pad cannot overwrite it.
+    pad::State hid;const bool playstation=!scriptedInput && pad::latest(hid,false);
+    // A remote key down is held like a keyboard arrow (no repeat report is sent while it is down); an edge is a press
+    // even when its release has already come. PS is PsWatcher's (it reads latest() with the remote included).
+    if(remote)keyPressed_|=quint16(remotePad.pressed&~0x400);
+    quint16 buttons=quint16((xinput?xstate.buttons:0)|(playstation?hid.buttons:0)|(remote?remotePad.held:0)|keyHeld_);
     // PS is consumed by the global watcher (ps_watcher.cpp), which also covers a focused game; it must
     // never reach the XMB navigation bits below.
     buttons=quint16(buttons&~0x400);
@@ -6546,8 +6556,10 @@ void View::pollController() {
     // so a held trigger cannot move the XMB, cannot press Cross, and cannot disturb repeatAt_. Both the pad's
     // own report (pad.cpp l2/r2) and an XInput pad's triggers feed the same ramp; whichever is pressed harder
     // wins when both controllers are attached.
-    const float triggerDown=std::max(xinput?xstate.l2:0.f,playstation?hid.l2:0.f);
-    const float triggerUp=std::max(xinput?xstate.r2:0.f,playstation?hid.r2:0.f);
+    // The remote's L2/R2 are digital: down, or pressed since the last poll (a tap), reads as a full pull for this poll.
+    const float remoteDown=remote&&(remotePad.l2Held||remotePad.l2Pressed)?1.f:0.f,remoteUp=remote&&(remotePad.r2Held||remotePad.r2Pressed)?1.f:0.f;
+    const float triggerDown=std::max({xinput?xstate.l2:0.f,playstation?hid.l2:0.f,remoteDown});
+    const float triggerUp=std::max({xinput?xstate.r2:0.f,playstation?hid.r2:0.f,remoteUp});
     pollTriggerSeek(triggerDown,triggerUp);
     if(!scriptedInput)for(const bd::Action action:bdActions)bdRemoteAction(action,QStringLiteral("bd-remote"));
     if(shell_.psMenuOpen()) {

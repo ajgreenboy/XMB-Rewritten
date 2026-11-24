@@ -1,4 +1,5 @@
 #pragma once
+#include <QByteArray>
 #include <QString>
 #include <QStringList>
 #include <QVector>
@@ -29,7 +30,19 @@ struct Info { Kind kind=Kind::None; Transport transport=Transport::Unknown; int 
 // Starts the watcher once (Windows only; elsewhere a no-op).
 void start();
 // The newest reading from any PlayStation controller, if one reported in the last 300 ms.
-bool latest(State& out);
+// includeRemote=false leaves the BD remote's buttons out: the main shell takes them as held state plus press edges
+// (takeRemotePad) so a tap shorter than one poll is not lost. Every other reader keeps the default.
+bool latest(State& out,bool includeRemote=true);
+// The BD remote's joypad-style buttons for the main shell (audit/BD-REMOTE.md, "Presses"): `held` is what the remote
+// reports down now (it sends no repeat while a key is held, so down = press seen and no release yet; a release lost to
+// a Bluetooth drop is forgotten after 30 s), and `pressed` every 0->1 transition since the last call, even one whose
+// release arrived before the shell looked. Bits are XInput's wButtons layout; the triggers are flags (the remote's L2/R2
+// are digital). Returns false when there is nothing held and nothing pressed, and always false (edges drained and
+// counted in ignoredEvents()) while the scripted-run gate is on, unless `scripted` asks for the BDLIVE= latch instead.
+struct RemotePad { quint16 held=0,pressed=0; bool l2Held=false,r2Held=false,l2Pressed=false,r2Pressed=false; };
+bool takeRemotePad(RemotePad& out,bool scripted=false);
+// A synthetic remote report (12 bytes, id 01 first) into the scripted latch above: the script token BDLIVE=<hex>.
+bool injectScriptedBdReport(const QByteArray& report);
 // ---- Scripted-run input gate (audit/PS-BUTTON.md) ----
 // A scripted capture must be deterministic: the script drives and a live controller must not. A run is scripted
 // when --script is present or XMB_INPUT_SCRIPT_ONLY=1; main.cpp calls setScriptOnly() once, before the View (and

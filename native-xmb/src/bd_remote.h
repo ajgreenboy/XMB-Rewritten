@@ -209,6 +209,75 @@ struct Tracker {
     }
 };
 
+// ---- Joypad-bit presses that survive a fast tap (audit/BD-REMOTE.md, "Why a quick tap used to be lost") ----
+// The remote sends ONE report on key-down and ONE release report (code 0xff, no bits) on key-up, so a tap whose two
+// reports both land between two polls of the shell is a press the shell never saw as a state. This latch keeps the
+// remote's own button state apart from the streaming pads' (a DualSense's reports cannot overwrite it) and records
+// every 0->1 transition of a pad bit as an EDGE the shell takes once, whatever happened to the state since.
+//
+// Roll-over artefact: a report whose key byte is 0xFF (no key) but whose joypad bits are not zero was captured
+// between two Up presses (`01 90 00 00 ff ...`: Up and Left bits, no code). Nothing in the layout says a key is down
+// without a key code, and the Left bit was never pressed, so such a report is ignored whole: no edge, no change of
+// the held state (isRolloverArtefact).
+inline bool isRolloverArtefact(const Report& r) { return r.code==kNoKey && r.joypad!=0; }
+
+// The remote's joypad-style buttons as the shell consumes them: held state, plus the edges not yet taken.
+struct PadEdges {
+    PadBits held;                                      // down now (L2/R2 as flags: they are analog triggers elsewhere)
+    std::uint16_t pressed=0; bool l2Pressed=false,r2Pressed=false;   // went down since the last take
+    bool any() const { return held.buttons||held.l2||held.r2||pressed||l2Pressed||r2Pressed; }
+};
+// How long the shell may be silent before a key still reported held is taken as released (a release report lost to a
+// Bluetooth drop would otherwise hold the key for ever). The remote sends nothing while a key is held, so this is the
+// longest hold that keeps repeating (30 s: far past any real hold, short enough that a lost release does not leave a key stuck).
+constexpr long long kMaxHeldMs=30000;
+// Other readers of the state (PsWatcher at 20 ms, setup, the desktop pad) see a press for at least this long even when
+// the release report follows at once, so a poll that is not the main shell's still sees a down and then an up.
+constexpr long long kLingerMs=60;
+
+struct PadLatch {
+    PadBits held;
+    std::uint16_t pending=0; bool pendingL2=false,pendingR2=false;
+    std::uint16_t linger=0; bool lingerL2=false,lingerR2=false; long long lingerUntil=0;
+    long long heldSince=0;
+
+    // One report (parsed); nowMs is any monotonic clock. Returns false when the report was ignored as an artefact.
+    bool report(const Report& r,long long nowMs) {
+        if(isRolloverArtefact(r))return false;
+        const PadBits now=padBits(r);
+        const std::uint16_t up=std::uint16_t(now.buttons&~held.buttons);
+        const bool l2=now.l2&&!held.l2,r2=now.r2&&!held.r2;
+        if(up||l2||r2) {
+            pending|=up;pendingL2=pendingL2||l2;pendingR2=pendingR2||r2;
+            if(nowMs>=lingerUntil){linger=0;lingerL2=lingerR2=false;}   // an old window is over: start a new one
+            linger|=up;lingerL2=lingerL2||l2;lingerR2=lingerR2||r2;lingerUntil=nowMs+kLingerMs;
+        }
+        held=now;
+        if(now.buttons||now.l2||now.r2)heldSince=nowMs;
+        return true;
+    }
+    void expire(long long nowMs) {
+        if((held.buttons||held.l2||held.r2) && nowMs-heldSince>kMaxHeldMs)held=PadBits();
+    }
+    // For the main shell: what is held and every edge since the last take (the edges are cleared).
+    PadEdges take(long long nowMs) {
+        expire(nowMs);
+        PadEdges out;
+        out.held=held;out.pressed=pending;out.l2Pressed=pendingL2;out.r2Pressed=pendingR2;
+        pending=0;pendingL2=pendingR2=false;
+        return out;
+    }
+    // For every other reader: held, or pressed within kLingerMs (never consumes an edge).
+    PadBits visible(long long nowMs) {
+        expire(nowMs);
+        PadBits out=held;
+        if(nowMs<lingerUntil){out.buttons=std::uint16_t(out.buttons|linger);out.l2=out.l2||lingerL2;out.r2=out.r2||lingerR2;}
+        return out;
+    }
+    // The device went away: nothing is held any more (a press already owed is still delivered).
+    void releaseAll() { held=PadBits(); }
+};
+
 // ---- Recognising the remote (CECH-ZR1 054C:0306 and the CECH-ZRC1, whose product id is not public) ----
 // A Sony HID interface is a BD remote candidate when it is 054C:0306, or when its product string names a remote. A
 // candidate found by name is only ever TRUSTED once a real input report has the BD remote's shape (looksLikeBdReport),

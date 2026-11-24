@@ -145,6 +145,22 @@ std::chrono::steady_clock::time_point newestAt{};
 // only sends while a key is down, and how often it repeats is unverified, so its window is wider (audit/BD-REMOTE.md).
 std::chrono::milliseconds newestFresh{300};
 constexpr std::chrono::milliseconds kBdRemoteFresh{500};
+// What info() answers from: the identity/battery of the newest report of any device, on its own window. Separate from
+// `newest` because the BD remote no longer writes the pad state (see remoteLatch).
+std::chrono::steady_clock::time_point infoAt{};
+std::chrono::milliseconds infoFresh{300};
+// The BD remote's own button state and unconsumed press edges (guarded by `mutex`; bd_remote.h PadLatch). latest()
+// ORs its visible state into the pad state; the main shell takes the edges through takeRemotePad(). `scriptLatch` is
+// the same thing fed only by the BDLIVE= script token, so a scripted run can exercise the live path while the physical
+// pads stay gated.
+bd::PadLatch remoteLatch,scriptLatch;
+long long msOf(std::chrono::steady_clock::time_point at) {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(at.time_since_epoch()).count();
+}
+// A streaming pad (DualShock/DualSense) reported within its freshness window. Needs `mutex`.
+bool streamingFresh(std::chrono::steady_clock::time_point now) {
+    return newestAt!=std::chrono::steady_clock::time_point{} && now-newestAt<=newestFresh;
+}
 // BD remote media-key presses waiting for the shell (guarded by `mutex`), bounded so a window that is not polling
 // cannot grow it.
 struct QueuedAction { bd::Action action; std::chrono::steady_clock::time_point at; };
@@ -488,9 +504,11 @@ void read(Device device,std::mutex* openMutex,std::set<std::wstring>* open) {
                 continue;
             }
             std::optional<bd::Action> pressed;
+            std::optional<bd::Report> remoteReport;
             if(kind==Kind::BdRemote) {
                 bd::Report parsed;
                 if(bd::parse(report.data(),got,parsed)) {
+                    remoteReport=parsed;
                     const bd::Action action=tracker.press(parsed);
                     if(action!=bd::Action::None)pressed=action;
                 }
@@ -507,14 +525,28 @@ void read(Device device,std::mutex* openMutex,std::set<std::wstring>* open) {
                         :QString::number(info.batteryPercent)+"%"+(info.charging.isEmpty()?QString():QString(" (")+info.charging+")");
                     line=QString("pad: %1 over %2, battery %3").arg(kindName(info.kind),transportName(info.transport),battery);
                 }
-                newest=s;newestInfo=info;newestAt=std::chrono::steady_clock::now();
-                newestFresh=kind==Kind::BdRemote?kBdRemoteFresh:std::chrono::milliseconds(300);
-                if(pressed) {
-                    if(remoteQueue.size()>=kRemoteQueueMax)remoteQueue.pop_front();
-                    remoteQueue.push_back({*pressed,newestAt});
+                const auto stamp=std::chrono::steady_clock::now();
+                if(kind==Kind::BdRemote) {
+                    // The remote has its own state and edge queue (remoteLatch): it never writes `newest`, so a
+                    // streaming pad cannot erase a remote press and the remote cannot blank a pad. Its identity and
+                    // battery are shown only while no streaming pad is current (the log line would flip-flop).
+                    if(remoteReport)remoteLatch.report(*remoteReport,msOf(stamp));
+                    if(!streamingFresh(stamp)){newestInfo=info;infoAt=stamp;infoFresh=kBdRemoteFresh;}
+                    else line.clear();
+                    if(pressed) {
+                        if(remoteQueue.size()>=kRemoteQueueMax)remoteQueue.pop_front();
+                        remoteQueue.push_back({*pressed,stamp});
+                    }
+                } else {
+                    newest=s;newestInfo=info;newestAt=stamp;newestFresh=std::chrono::milliseconds(300);
+                    infoAt=stamp;infoFresh=newestFresh;
                 }
             }
             if(!line.isEmpty())qInfo().noquote()<<line;
+        }
+        {   // the device went away: a key it still reported as held is released (an owed press is still delivered)
+            const std::lock_guard lock(mutex);
+            if(kind==Kind::BdRemote)remoteLatch.releaseAll();
         }
         if(preparsed)HidD_FreePreparsedData(preparsed);
         CloseHandle(handle);
@@ -551,7 +583,7 @@ void start() {
     }).detach();
 #endif
 }
-bool latest(State& out) {
+bool latest(State& out,bool includeRemote) {
     // An XInput pad's Guide button is the PS button (pad.h): merged here so PsWatcher, the one consumer of the
     // PS bit, sees it with no change of its own. The XInput read takes its own lock, before this one.
 #ifdef Q_OS_WIN
@@ -564,16 +596,25 @@ bool latest(State& out) {
     // hardware movement. It is a diagnostic: unset in every normal run.
     const Fake& fake=fakeState();
     State sample;
+    // The BD remote's state, apart from the streaming pads': held, or pressed within bd::kLingerMs (so a reader polling
+    // every 20 ms still sees a tap whose release followed at once). Not merged for the main shell, which takes the
+    // remote's presses as edges (takeRemotePad).
+    const bd::PadBits remote=includeRemote?remoteLatch.visible(msOf(std::chrono::steady_clock::now())):bd::PadBits();
+    const bool remoteDown=remote.buttons||remote.l2||remote.r2;
     static const auto fakeEpoch=std::chrono::steady_clock::now();
     const qint64 fakeAge=std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now()-fakeEpoch).count();
     const bool fakeNow=fake.active && (fake.fromMs<0 || fakeAge>=fake.fromMs) && (fake.forMs<0 || fakeAge<std::max<qint64>(fake.fromMs,0)+fake.forMs);
     if(fakeNow)sample=fake.state;
-    else if(fake.active && !guide)return false;
-    else {
-        const bool fresh=newestAt!=std::chrono::steady_clock::time_point{} &&
-            std::chrono::steady_clock::now()-newestAt<=newestFresh;
-        if(!fresh && !guide)return false;
+    else if(fake.active && !guide && !remoteDown)return false;
+    else if(!fake.active) {
+        const bool fresh=streamingFresh(std::chrono::steady_clock::now());
+        if(!fresh && !guide && !remoteDown)return false;
         if(fresh)sample=newest;
+    }
+    if(remoteDown) {
+        sample.buttons=quint16(sample.buttons|remote.buttons);
+        if(remote.l2)sample.l2=1.f;
+        if(remote.r2)sample.r2=1.f;
     }
     if(guide)sample.buttons|=ps;
     const QString action=padAction(sample);
@@ -688,8 +729,39 @@ std::vector<bd::Action> takeRemoteActions() {
 }
 bool info(Info& out) {
     const std::lock_guard lock(mutex);
-    if(newestAt==std::chrono::steady_clock::time_point{} || std::chrono::steady_clock::now()-newestAt>newestFresh)return false;
+    if(infoAt==std::chrono::steady_clock::time_point{} || std::chrono::steady_clock::now()-infoAt>infoFresh)return false;
     out=newestInfo;return true;
+}
+bool takeRemotePad(RemotePad& out,bool scripted) {
+    const std::lock_guard lock(mutex);
+    const long long now=msOf(std::chrono::steady_clock::now());
+    // The scripted-run gate: the live remote is read and its edges drained, but nothing is delivered; the scripted
+    // latch (fed only by BDLIVE=) is the one input a scripted run takes.
+    const bool gated=scriptOnlyMode.load();
+    const bd::PadEdges live=remoteLatch.take(now);
+    const bd::PadEdges fed=scriptLatch.take(now);
+    const bd::PadEdges& use=scripted?fed:live;
+    if(gated && !scripted) {
+        if(live.pressed||live.l2Pressed||live.r2Pressed) {
+            const quint64 count=ignoredPadEvents.fetch_add(1)+1;
+            if(inputTrace())qInfo().noquote()<<QString("input: trace source=pad action=bd-pad-edge accepted=0 ignored=%1 (scripted run)").arg(count);
+        }
+        return false;
+    }
+    if(!use.any())return false;
+    out.held=use.held.buttons;out.l2Held=use.held.l2;out.r2Held=use.held.r2;
+    out.pressed=use.pressed;out.l2Pressed=use.l2Pressed;out.r2Pressed=use.r2Pressed;
+    if(inputTrace() && (use.pressed||use.l2Pressed||use.r2Pressed))
+        qInfo().noquote()<<QString("input: trace source=pad action=bd-pad-edge accepted=1 pressed=0x%1 held=0x%2")
+            .arg(use.pressed,4,16,QChar('0')).arg(use.held.buttons,4,16,QChar('0'));
+    return true;
+}
+bool injectScriptedBdReport(const QByteArray& report) {
+    bd::Report parsed;
+    if(!bd::parse(reinterpret_cast<const quint8*>(report.constData()),size_t(report.size()),parsed))return false;
+    const std::lock_guard lock(mutex);
+    scriptLatch.report(parsed,msOf(std::chrono::steady_clock::now()));
+    return true;
 }
 bool parseReport(Kind kind,const QVector<quint8>& report,Info& out) {
     State state;

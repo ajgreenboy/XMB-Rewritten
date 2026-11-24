@@ -1716,6 +1716,18 @@ int main(int argc,char** argv) {
                 const QByteArray report=QByteArray::fromHex(token.mid(9).remove(':').remove('-').toLatin1());
                 if(!view->replayBdReport(report))qWarning()<<"script: invalid BDREMOTE token (24 hex digits, report id 01 first)";
             }
+            else if(token.startsWith("BDLIVE=")) {
+                // BDLIVE=<hex> feeds one synthetic report into the LIVE press path (pad.cpp's remote latch, the one a
+                // real remote's reader thread feeds) instead of View::replayBdReport's own edge detection. Two tokens
+                // with no wait between (press, release) land between two 16 ms polls: the quick tap that used to be lost.
+                // Only this token reaches the shell in a scripted run; the physical pads stay gated.
+                // Several reports joined with '+' (BDLIVE=<press>+<release>) are fed in one go, so a tap is exactly as quick
+                // as the script can make it whatever the --script cadence.
+                for(const QString& one:token.mid(7).split('+',Qt::SkipEmptyParts)) {
+                    const QByteArray report=QByteArray::fromHex(one.trimmed().remove(':').remove('-').toLatin1());
+                    if(!xmb::pad::injectScriptedBdReport(report))qWarning()<<"script: invalid BDLIVE token (24 hex digits, report id 01 first)";
+                }
+            }
             else if(token.startsWith("NOTIFY=")) {
                 // NOTIFY=<title>[|<detail>[|<icon>]] raises a notification through the same path a real event
                 // uses, so a capture can pin it: the icon is a tex_notification_<name> suffix (default info)
