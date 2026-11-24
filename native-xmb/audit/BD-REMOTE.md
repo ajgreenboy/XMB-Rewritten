@@ -27,10 +27,30 @@ translated its keys.
 
 | | CECH-ZR1 (2008) | CECH-ZRC1 (2011 "Media/Blu-ray Disc Remote") |
 |---|---|---|
-| HID id | 054C:0306 (public: hid-sony, Fedora wiki) | **unknown** (no public source) |
-| Bluetooth keys | the 12-byte report above | the same set is ASSUMED; plus Instant Back / Instant Forward |
+| HID id | 054C:0306 (public: hid-sony, Fedora wiki) | **054C:0306, CAPTURED** (Windows product string "BD Remote Control", usage page 0x01 usage 0x05, 12-byte input report) |
+| Bluetooth keys | the 12-byte report above | the same layout, CAPTURED; plus Instant Back / Instant Forward |
 | Also has | | infrared keys for the TV (power, input, volume, channel, mute): they go to the TV and never reach the PC |
-| Instant Back / Forward | none | jump back / forward 15 s (Sony's manual); key codes **unknown** |
+| Instant Back / Forward | none | jump back / forward 15 s (Sony's manual); key codes **0x76 / 0x75, CAPTURED** |
+
+### Capture on a real CECH-ZRC1 (2026-11-23, HTPC, v0.3.32 capture log)
+
+Every key pressed once in a fixed order; each press is one report and each release one `0xff` report (byte 10 is
+1 on a press, 0 on the release; byte 11 read 5 throughout). Confirmed against the table and bit layout:
+
+| Key | Joypad bits (bytes 1-3) | Key code (byte 4) |
+|---|---|---|
+| Instant Back / Instant Forward | none | 0x76 / 0x75 |
+| Up / Right / Down / Left | 0x10 / 0x20 / 0x40 / 0x80 in byte 1 (usages 5-8) | 0x54 / 0x55 / 0x56 / 0x57 |
+| Enter | 0x08 in byte 3 (usage 20) | 0x0b |
+| Return | none | 0x0e |
+| Triangle / Circle / Cross / Square | 0x10 / 0x20 / 0x40 / 0x80 in byte 2 (usages 13-16) | 0x5c / 0x5d / 0x5e / 0x5f |
+| PS | 0x01 in byte 3 (usage 17) | 0x43 |
+| Play, Pause, Stop, Prev, Next, Scan Back, Scan Forward | none | 0x32, 0x39, 0x38, 0x30, 0x31, 0x33, 0x34 |
+| Display, Subtitle, Audio, Pop Up/Menu, Top Menu | none | 0x70, 0x63, 0x64, 0x40, 0x1a |
+
+The key codes sent alongside a joypad bit (arrows, Enter, shapes, PS) are named `Key::ButtonCode`: the bit acts, the
+code does nothing and is no longer logged as unknown. One transient report (`01 90 00 00 ff ...`) appeared between two
+Up presses with two arrow bits and no code; it carries no new key and is handled as plain bits.
 
 What is unknown for the ZRC1, and what the code does about it:
 
@@ -122,7 +142,7 @@ media keys use.
 | Pop Up/Menu | 0x40 | options / Triangle on the current surface |
 | Subtitle | 0x63 | next subtitle track, then Off (video only) |
 | Audio | 0x64 | next audio track (video with 2+ tracks) |
-| Instant Back / Instant Forward | code UNKNOWN (`bd::kInstantCodes`); or consumer AC Back/Forward (guess) | seek -15 s / +15 s (disabled until the code is filled in) |
+| Instant Back / Instant Forward | 0x76 / 0x75 (captured on a CECH-ZRC1, `bd::kInstantCodes`) | seek -15 s / +15 s |
 | Top Menu 0x1A, Angle 0x65, Step Back/Forward 0x60/0x61, Eject 0x16, Clear 0x0F, 0-9 (0x00-0x09), Blue/Red/Green/Yellow 0x80-0x83 | | ignored: the app has no such command |
 
 An unlisted code is held like any key and does nothing; `0xFE` is not a release.

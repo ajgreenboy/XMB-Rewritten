@@ -39,18 +39,17 @@ enum class Key : std::uint8_t {
     Num1,Num2,Num3,Num4,Num5,Num6,Num7,Num8,Num9,Num0,
     Return,Clear,Eject,TopMenu,Time,Prev,Next,Play,ScanBack,ScanForward,Stop,Pause,PopUpMenu,
     StepBack,StepForward,Subtitle,Audio,Angle,Display,Blue,Red,Green,Yellow,
-    InstantBack,InstantForward,   // CECH-ZRC1 only; their codes are not known yet (kInstantCodes below)
+    InstantBack,InstantForward,   // CECH-ZRC1 only (kInstantCodes below)
+    ButtonCode,   // the code the remote sends alongside a joypad button bit (arrows, Enter, shapes, PS): the bit acts, not this
     Unknown   // a code no table entry names: held like any key, does nothing
 };
 
 // ---- CECH-ZRC1 Instant Back / Instant Forward: THE ONE PLACE TO FILL IN THE CAPTURED CODES ----
 // The 2011 Media/Blu-ray Disc Remote (CECH-ZRC1) has two Bluetooth keys the original remote lacks. Sony's manual says
-// they jump back/forward 15 seconds; no public source gives their key codes. They are UNKNOWN: both slots are empty
-// (std::nullopt), so the slots are disabled and the keys report as "unknown key code 0xNN" in the diagnostic log.
-// After capturing them on the real remote (audit/BD-REMOTE.md, "Capturing the ZRC1"), replace std::nullopt with the
-// code, e.g. std::optional<std::uint8_t>{0x42}. Nothing else needs to change.
+// they jump back/forward 15 seconds. CAPTURED on a real CECH-ZRC1 (2026-11-23, audit/BD-REMOTE.md): Instant Back sends
+// key code 0x76 and Instant Forward 0x75, with no joypad bits, released with 0xff like every other key.
 struct InstantCodes { std::optional<std::uint8_t> back,forward; };
-constexpr InstantCodes kInstantCodes{std::nullopt,std::nullopt};
+constexpr InstantCodes kInstantCodes{std::optional<std::uint8_t>{0x76},std::optional<std::uint8_t>{0x75}};
 
 inline Key keyForCode(std::uint8_t code,const InstantCodes& instant=kInstantCodes) {
     if(code==kNoKey)return Key::None;
@@ -59,6 +58,9 @@ inline Key keyForCode(std::uint8_t code,const InstantCodes& instant=kInstantCode
     if(code<=0x08)return Key(unsigned(Key::Num1)+code);   // codes 0x00-0x08 are the keys 1-9
     switch(code) {
     case 0x09:return Key::Num0;
+    // Captured on a real CECH-ZRC1: these codes arrive together with a joypad button bit (Enter 0x0b, PS 0x43,
+    // Up/Right/Down/Left 0x54-0x57, Triangle/Circle/Cross/Square 0x5c-0x5f). The bit drives the action.
+    case 0x0b:case 0x43:case 0x54:case 0x55:case 0x56:case 0x57:case 0x5c:case 0x5d:case 0x5e:case 0x5f:return Key::ButtonCode;
     case 0x0e:return Key::Return;
     case 0x0f:return Key::Clear;
     case 0x16:return Key::Eject;
@@ -115,6 +117,7 @@ inline const char* keyName(Key key) {
     case Key::Yellow:return "Yellow";
     case Key::InstantBack:return "Instant Back";
     case Key::InstantForward:return "Instant Forward";
+    case Key::ButtonCode:return "button";
     case Key::Unknown:return "unknown";
     default:return "none";
     }

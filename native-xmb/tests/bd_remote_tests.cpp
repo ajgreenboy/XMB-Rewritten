@@ -215,7 +215,12 @@ int main() {
     check(describeInterface(0x054c,0x1234,L"BD Remote",0xff00,0x01,12)=="vid=054c pid=1234 usagePage=0xff00 usage=0x0001 inputReportLength=12 product=\"bd remote\"","interface description");
 
     // ---- Instant Back / Instant Forward slots (codes unknown) ----
-    check(!kInstantCodes.back && !kInstantCodes.forward,"both Instant slots ship disabled: the codes are unknown");
+    check(kInstantCodes.back==std::uint8_t(0x76) && kInstantCodes.forward==std::uint8_t(0x75),"the Instant slots carry the codes captured on a real CECH-ZRC1");
+    check(parsed(report(0x76)).key==Key::InstantBack && parsed(report(0x75)).key==Key::InstantForward,"captured 0x76 / 0x75 decode as Instant Back / Forward");
+    for(const unsigned c:{0x0bu,0x43u,0x54u,0x55u,0x56u,0x57u,0x5cu,0x5du,0x5eu,0x5fu}) {
+        const Report r=parsed(report(std::uint8_t(c)));
+        check(r.key==Key::ButtonCode && actionFor(r.key)==Action::None && unknownKeyNote(r).empty(),"a captured button-echo code is known, acts through its bit only, and is not 'unknown'");
+    }
     check(actionFor(Key::InstantBack)==Action::JumpBack && actionFor(Key::InstantForward)==Action::JumpForward,"the Instant keys map to jump back / forward");
     check(std::string(actionName(Action::JumpBack))=="jump-back" && std::string(actionName(Action::JumpForward))=="jump-forward" && kJumpMs==15000,"jump actions are named and 15 s");
     check(std::string(keyName(Key::InstantBack))=="Instant Back" && std::string(keyName(Key::InstantForward))=="Instant Forward","Instant keys have labels");
@@ -231,7 +236,7 @@ int main() {
         check(padBits(back).buttons==0,"an Instant key sets no pad button");
         check(keyForCode(0x32,filled)==Key::Play && keyForCode(0xff,filled)==Key::None,"filling the slots leaves the known table alone");
         const InstantCodes onlyBack{std::uint8_t(0x42),std::nullopt};
-        check(keyForCode(0x42,onlyBack)==Key::InstantBack && keyForCode(0x43,onlyBack)==Key::Unknown,"each slot is independent");
+        check(keyForCode(0x42,onlyBack)==Key::InstantBack && keyForCode(0x44,onlyBack)==Key::Unknown,"each slot is independent");
         Tracker t;
         check(t.press(back)==Action::JumpBack && t.press(back)==Action::None && t.press(parsed(report(0xff)))==Action::None && t.press(back)==Action::JumpBack,"an Instant press fires once, then again after a release");
     }
