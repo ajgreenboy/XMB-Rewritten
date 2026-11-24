@@ -169,9 +169,7 @@ Steam background mode is active** (the sweep does not run with `XMB_STEAM_HIDE=0
 off). There is deliberately no permanent watcher: a plain account change inside Steam long after those windows is not
 noticed until the library is refreshed some other way (restart, Retry Artwork, a content refresh).
 
-**Not refreshed.** Collections only come from the owned-games handler (they need an API key, as before); without a key the
-collection list stays empty for either account. The Family Shared list is read from the XMB's own `family-shared.json`,
-which is not per account.
+**Not refreshed (superseded 2026-11-23, see the last section).** Collections, the family list and a permanent watcher were added afterwards.
 
 ### Verification of the refresh
 
@@ -218,3 +216,98 @@ control still pass. When the switch ends in any outcome in which Steam is runnin
 main window the restarted client shows is hidden; a signed-out client (the "sign-in window" result) is never hidden and
 its window is brought forward. See [STEAM-HIDDEN.md](STEAM-HIDDEN.md) for the switches, sources and rules. Unverified
 against a real client, like the rest of the switch.
+
+## Full account switch and the library without a key (2026-11-23)
+
+Owner requests: (A) after a switch, whether made in the XMB or inside the Steam client, nothing account-specific may be
+left over from the previous account; (B) with no Steam Web API key the Game column must show the signed-in account's own
+library, not just the PC's installed games. This section supersedes the "Not refreshed" paragraph above (collections and
+the family list are now handled) and the "no permanent watcher" remark (there is one now).
+
+### Which account is "the signed-in account" (`scanSteam()`)
+
+Order, first hit wins (`steamSelectAccountFromLoginUsers` for steps 2 to 5, tested in `tests/steam_account_tests.cpp`):
+
+1. The registry's `HKCU\Software\Valve\Steam\ActiveProcess\ActiveUser`, only when `SteamPath` names this root (or the
+   `XMB_STEAM_REGISTRY_KEY` scratch key is in use). `0` means nobody is signed in and falls through.
+2. `MostRecent=1` in `config/loginusers.vdf` (older clients; newest timestamp among several).
+3. The account whose `AccountName` equals the registry's `AutoLoginUser` (case-insensitive; same trust rule as step 1).
+4. The newest `timestamp` / `Timestamp` (a tie goes to the higher SteamID64).
+5. The only remembered account.
+
+`AllowAutoLogin` and `AutoLogin` are no longer read. Current clients set `AllowAutoLogin=1` on every remembered account,
+so the old rule treated all of them as "most recent" and picked the highest SteamID64, which was the wrong account on a
+PC with two. Real data on the HTPC: neither account has `MostRecent` or `AllowAutoLogin`; both have `RememberPassword=1`
+and a lower-case `Timestamp`; ActiveUser is set while Steam runs.
+
+### Account-specific state inventory and how each part resets
+
+Everything is gathered by one worker-thread read (`loadSteamAccountSnapshot`, `steam_account_state.h`) and adopted as one
+unit by `Shell::applySteamAccountSnapshot`; an account change first runs `Shell::resetSteamAccountState`.
+
+| State | Source | Reset / reload |
+| --- | --- | --- |
+| `steamId_`, persona (`steamPersona_`) | `scanSteam()`, loginusers.vdf `PersonaName` | replaced from the snapshot every rescan |
+| Owned list `ownedGames_`, `ownedSignature_`, `ownedFromKeyless_` | Valve (key) or keyless library | cleared on a change; the keyless list (or Valve's, once it arrives) is adopted |
+| In-flight owned request, `ownedInFlight_` | `SteamOwned` | `cancel()`; a response for another account is dropped (`ownedResponseIsStale`) |
+| Collections `collections_` and the row labels | `userdata/<id>/config/cloudstorage` | cleared, re-read keyless from the snapshot (they never needed a key) |
+| Play records `steamActivity_` and the installed-row order | `userdata/<id>/config/localconfig.vdf` | cleared, re-read; the column is re-sorted by the new account |
+| Steam Families `family_` | localconfig.vdf `FamilyGroup` | cleared, re-read |
+| Family-shared titles `familyGames_` | `<data>/family-shared-<accountid>.json`, else `<data>/family-shared.json` unless it carries an `"account"` naming another account | cleared, re-read scoped to the account |
+| Artwork overrides | `userdata/<id>/config/grid` (looked up by `artworkFor` with the scan's account) | the rescan re-resolves them for the new id |
+| Keyless library cache | per account id, validated by size and mtime of every input file | other accounts' entries are separate; stale entries cannot be served |
+| Remembered-account list and the open Steam Account page | loginusers.vdf, registry | `steamAccounts_` replaced; an open page re-marks its rows (`refreshSteamAccountsPage`) |
+| Open Steam folder, collection and hub pages | rows of the previous account | closed (`closeSteamLibraryPages`) with the options panel |
+| Friends | not part of the shell (the headless `--steam-friends` command reads fresh each run) | nothing to reset |
+| Account-independent, deliberately kept | store/CDN header and logo caches (keyed by app id), the PC's installed games (manifests belong to the PC, not an account), RAWG art | none |
+
+### How a change is noticed
+
+- The XMB's own switch: `steamSwitchFinished` calls `steamLibraryAccountChanged` (unchanged).
+- A switch made inside the Steam client, or a sign-in finishing later: a 3 s registry poll (`Shell::pollSteamActiveUser`,
+  one registry value, read-only, no kiosk or armed sweep needed; `XMB_STEAM_ACCOUNT_POLL=0` turns it off) feeds
+  `steamPollAccountChange`, which refreshes once per account change (the account a refresh was started for is not
+  restarted every poll). The old sweep path still works and now shares the same reset.
+- A restart or any rescan that finds a different account than the one on screen: `applySteamAccountSnapshot` compares ids
+  and resets before adopting.
+
+### Library without a key (`steam_keyless.h`)
+
+When `SteamOwned::apiKey()` is empty (or while Valve's list has not arrived after a change), the owned list is built from
+the signed-in account's own local data only, off the UI thread, bounded to 5000 titles and cached per account id:
+
+| Source | Format (observed 2026-11-23 on a real client) | Used for |
+| --- | --- | --- |
+| `userdata/<accountid>/config/localconfig.vdf` | KeyValues; `apps > <appid> > LastPlayed / Playtime` | apps with playtime or a last-played time; a stub with neither is noise and ignored |
+| `userdata/<accountid>/config/cloudstorage/cloud-storage-namespace-1.json` | array of `[key, {key, value}]`; `user-collections.*` values are JSON strings with `added` app ids | static collection members; dynamic collections have no member list and add nothing |
+| `userdata/<accountid>/config/librarycache/<appid>.json` | array of `[section, {version, data}]` (achievements, descriptions, ...); the file name is the app id, there is no title inside | "this app is in this account's library" |
+| `appcache/appinfo.vdf` | binary, version 29 on the real client (27 and 28 also read); layout documented in `steam_appinfo.h`; `appinfo > common > name/type` | the authoritative title and type |
+| `steamapps/appmanifest_*.acf` | installed titles | names an app the account's data already lists when appinfo has no entry; sets the `installed` flag. Never adds an app by itself |
+
+Only type `Game` (any case; the real file spells it both `Game` and `game`) is kept; tools, redistributables, dedicated
+servers, DLC, music and videos are dropped. **Demos are dropped too** (they are not purchases and Valve's own list is where
+a real one would appear); say so if the owner wants them. An app that appinfo has no entry for is kept only when an
+installed manifest names it. The row line shows no playtime or last-played date (owner direction); the order of installed
+rows still follows the play records.
+
+The source is stated where the library count is shown: the Game column's Steam row reads "N from this PC's Steam data"
+instead of "N owned", and the hub's All Games row detail reads "From this PC's Steam data for <persona>: games you have
+played or collected. Add a Steam Web API key in Settings for the full list." Valve's list replaces the keyless one as soon
+as it loads, and wins whenever a key exists. `XMB_STEAM_ACTIVITY=0` (the deterministic-capture switch) turns the keyless
+library off together with the play records.
+
+### Verification
+
+- `tests/steam_account_tests.cpp` (`xmb-steam-account-tests`, run in CI with a scratch directory argument): the selection rule
+  incl. the HTPC case and the old AllowAutoLogin bug, registry-first order against a scratch registry key, hand-built
+  v27/v28/v29 appinfo files and damaged variants, the keyless library of two synthetic accounts (no cross-account row,
+  noise, tools, demos, installed fallback, cache hit and invalidation, the 5000 cap), the per-account snapshot and
+  family-shared scoping, and the refresh decisions.
+- `work/steam-accounts-e2e.ts`: real app, synthetic root with two accounts, no key (the child gets a scratch `APPDATA` and
+  `XMB_API_KEY_DIR`): A's keyless list only; a registry-only ActiveUser change (the stand-in for a switch inside Steam)
+  swaps owned list, collections, play-record ordering, family titles and persona with no stale row; switching back
+  restores A; a restart with a signed-out client selects the `AutoLoginUser` account.
+- `work/steam-switch-refresh-e2e.ts` still passes (its two play-time checks were already stale after the owner removed
+  play time from the row line and now assert that it is absent).
+- Checked read-only against a real Steam install: the appinfo reader parsed a 6.9 MB v29 file and named real titles, and
+  the keyless scan produced a plausible library for the account with the large library. Not verified on the HTPC itself.

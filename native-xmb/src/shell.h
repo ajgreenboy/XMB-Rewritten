@@ -31,6 +31,7 @@
 #include "steam_refresh.h"
 #include "steam_collections.h"
 #include "steam_family.h"
+#include "steam_account_state.h"
 #include "steam_store.h"
 #include "steam_library.h"
 #include "steam_quit.h"
@@ -1324,6 +1325,19 @@ private:
     bool apiKeyAwaitOwned_=false;   // a Steam key was just saved: the next owned-list result is reported on the key page
     QString apiKeyResult_;          // that result, in words (never the key)
     QString steamRefreshNotice_;    // persona for the "Library refreshed for ..." notice
+    // ---- What follows the signed-in Steam account (steam_account_shell.cpp; audit/STEAM-ACCOUNT-SWITCH.md lists it all) ----
+    QString steamPersona_;          // persona name of steamId_ (loginusers.vdf); empty when unknown
+    bool ownedFromKeyless_=false;   // ownedGames_ is this account's keyless local list, not Valve's owned list
+    QTimer steamAccountPoll_;       // reads the registry's ActiveUser: a switch made inside the Steam client
+    bool steamAccountPollStarted_=false;
+    QString steamPollTriggered_;    // the account a poll-started refresh is already for
+    void applySteamAccountSnapshot(SteamAccountSnapshot snapshot);   // the new account's data replaces the old, as one unit
+    void resetSteamAccountState();        // drops every account-specific list, the in-flight owned request and stale pages
+    void pollSteamActiveUser();
+    void closeSteamLibraryPages();        // Steam folder/hub pages hold rows of the previous account
+    QString steamLibrarySourceText() const;   // the keyless source sentence, empty when Valve's list is shown
+    Entry steamAccountRow(const SteamAccount& account,bool anyActive) const;
+    void refreshSteamAccountsPage();      // an open Steam Account page re-marks its rows after an external switch
     ActiveUserWatch steamAccountWatch_;   // fed by the sweep: Steam reported a different ActiveUser
     QString ownedSignature_;        // app ids + installed flags + collection ids, to skip unchanged rebuilds
     std::unique_ptr<SteamArtwork> steamArtwork_;

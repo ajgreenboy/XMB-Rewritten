@@ -1035,11 +1035,7 @@ void Shell::refreshOwnedGames() {
 // the owned list and collections come from Valve: the end of that pass calls refreshOwnedGames with the new steamId_).
 void Shell::steamLibraryAccountChanged(const QString& name) {
     qInfo().noquote()<<QStringLiteral("steam: account changed (%1); refreshing the library").arg(name);
-    steamOwned_.cancel();   // an in-flight request for the previous account can no longer arrive
-    ownedInFlight_=false;
-    ownedGames_.clear();
-    ownedSignature_.clear();
-    collections_.clear();
+    resetSteamAccountState();   // owned list, collections, play records, family, in-flight request, open library pages
     steamRefreshNotice_=name;
     refreshContent();
 }
@@ -1487,7 +1483,7 @@ void Shell::reloadSteamDownloads() {
 void Shell::refreshContent() {
     if(contentScanning_){contentRefreshPending_=true;return;}
     contentScanning_=true;
-    struct Result { SteamInstallation steam; QVector<ContentApp> apps; QHash<QString,QImage> art; QHash<QString,QString> rawgPaths; QHash<QString,QString> importedPaths; QHash<QString,QString> importedHeroPaths; QSet<QString> fetchable; QSet<QString> logoIds; QStringList logoWanted; QString error; };
+    struct Result { SteamInstallation steam; QVector<ContentApp> apps; QHash<QString,QImage> art; QHash<QString,QString> rawgPaths; QHash<QString,QString> importedPaths; QHash<QString,QString> importedHeroPaths; QSet<QString> fetchable; QSet<QString> logoIds; QStringList logoWanted; QString error; SteamAccountSnapshot account; };
     auto* watcher=new QFutureWatcher<Result>(this);
     connect(watcher,&QFutureWatcher<Result>::finished,this,[this,watcher]{
         auto result=watcher->result();watcher->deleteLater();contentScanning_=false;
@@ -1496,11 +1492,9 @@ void Shell::refreshContent() {
         if(steamBackgroundStartPending_)QTimer::singleShot(0,this,[this]{startSteamClientInBackground();});
         rawgArtworkPaths_=result.rawgPaths;
         importedArtPaths_=result.importedPaths;importedHeroPaths_=result.importedHeroPaths;fetchableApps_=result.fetchable;
-        family_=scanSteamFamily(steamInstalled_.steamId);
-        { QString familyError; familyGames_=scanFamilySharedGames(dataDirectory_,&familyError);
-          if(!familyError.isEmpty())qWarning().noquote()<<"steam family:"<<familyError; }
-        steamId_=result.steam.steamId;
-        steamActivity_=scanSteamActivity(steamRoot_,steamId_);
+        // Everything that follows the signed-in account (play records, family, collections, the keyless library,
+        // steamId_ itself) is replaced as one unit; an account change drops the previous account's lists first.
+        applySteamAccountSnapshot(std::move(result.account));
         if(!result.error.isEmpty()){showMessage("App Library",result.error,MessageKind::Page);result.apps=contentApps_;}
         contentApps_=result.apps;
         for(int c=0;c<categories_.size();++c) {
@@ -1554,7 +1548,7 @@ void Shell::refreshContent() {
                     auto e=item("steam-hub",QObject::tr("Steam"),"item_tex_plain_folder","explore_plugin_full",
                         Action::SteamHub,QString());
                     const int steamTitles=steamTitleCount();
-                    e.detail=steamTitles>0?QObject::tr("%1 owned").arg(steamTitles):QObject::tr("Store and library");
+                    e.detail=steamTitles>0?(ownedFromKeyless_?QObject::tr("%1 from this PC's Steam data").arg(steamTitles):QObject::tr("%1 owned").arg(steamTitles)):QObject::tr("Store and library");
                     e.artwork=serviceIcons::steam(steamRoot_);e.iconSized=true;steam.push_back(std::move(e));
                 }
             }
@@ -1692,6 +1686,12 @@ void Shell::refreshContent() {
             QFile file(qEnvironmentVariable("XMB_DUMP_ENTRIES"));
             const auto bytes=QJsonDocument(QJsonObject{{"categories",categories},{"owned",ownedGames_.size()},
                 {"collections",collections_.size()},{"installedSteam",result.steam.games.size()},
+                {"steamId",steamId_},{"steamPersona",steamPersona_},{"ownedSource",ownedGames_.isEmpty()?QStringLiteral("none"):ownedFromKeyless_?QStringLiteral("keyless"):QStringLiteral("valve")},
+                {"ownedIds",[this]{QJsonArray ids;for(const auto& game:ownedGames_)ids.push_back(game.appId);return ids;}()},
+                {"allTitles",[this]{QJsonArray rows;for(const auto& row:steamFolderEntries(QStringLiteral("all-titles")))rows.push_back(QJsonObject{{"id",row.id},{"title",row.title},{"detail",row.detail}});return rows;}()},
+                {"collectionNames",[this]{QJsonArray names;for(const auto& c:collections_)names.push_back(c.name);return names;}()},
+                {"activityIds",[this]{QStringList ids=steamActivity_.keys();ids.sort();return QJsonArray::fromStringList(ids);}()},
+                {"familyIds",[this]{QJsonArray ids;for(const auto& game:familyGames_)ids.push_back(game.appId);return ids;}()},
                 {"importedApps",contentApps_.size()}}).toJson();
             if(file.open(QIODevice::WriteOnly))file.write(bytes);
         }
@@ -1712,6 +1712,7 @@ void Shell::refreshContent() {
     for(const auto& game:ownedGames_)ownedIds.push_back(game.appId);
     watcher->setFuture(QtConcurrent::run([data,ownedIds]{
         Result result;result.steam=scanSteam();
+        result.account=loadSteamAccountSnapshot(result.steam,data);
         ContentRegistry::load(QDir(data).filePath("apps.json"),result.apps,result.error);
         const auto read=[&](const QString& key,const QString& path){
             if(path.isEmpty() || result.art.size()>=128 || result.art.contains(key))return;
@@ -2051,6 +2052,7 @@ Shell::Shell(QString dataDirectory,Assets& assets,QObject* parent):QObject(paren
         if(signature==ownedSignature_)return; // nothing changed: keep the current column
         ownedSignature_=signature;
         ownedGames_=games;
+        ownedFromKeyless_=false;   // Valve's list replaces the account's local stand-in
         collections_=collections;
         qInfo()<<"steam owned:"<<games.size()<<"games in"<<collections.size()<<"collections";
         refreshContent();
@@ -3066,6 +3068,8 @@ void Shell::activate() {
             auto e=item("steam-folder-all-games",QObject::tr("All Games"),"item_tex_plain_folder",
                 "explore_plugin_full",Action::SteamFolder,"all");
             e.detail=QString::number(steamTitles);e.artwork=serviceIcons::steam(steamRoot_);e.iconSized=true;
+            // The keyless list is smaller than the account's purchases: say where it comes from (steam_keyless.h).
+            if(const QString source=steamLibrarySourceText();!source.isEmpty())e.detail=source;
             page.entries.push_back(std::move(e));
         }
         pages_.push_back(std::move(page));
@@ -6740,6 +6744,24 @@ bool Shell::steamAccountsOpen() const {
     for(const auto& page:pages_)if(page.steamAccounts)return true;
     return false;
 }
+// One row of the Steam Account page; also used to re-mark an open page after the active account changed.
+Entry Shell::steamAccountRow(const SteamAccount& account,bool anyActive) const {
+    auto e=item("steam-account:"+account.steamId64,
+        account.personaName.isEmpty()?account.accountName:account.personaName,
+        "item_tex_account","explore_category_psn",Action::SteamAccountSwitch,account.steamId64);
+    // The current account is marked where every row shows its value: Steam's own active record is the
+    // dot the Users column already uses; when the client is signed out, the account its own auto-login
+    // marker names is named in words instead, because nothing is signed in to mark.
+    if(account.active)e.fieldValue=QString(QChar(0x25cf));
+    else if(account.autoLogin && !anyActive)e.fieldValue=QObject::tr("Auto sign-in");
+    QString detail=account.accountName;
+    if(account.lastLoginUnix>0)
+        detail+=" "+QObject::tr("Last used %1").arg(QDateTime::fromSecsSinceEpoch(account.lastLoginUnix).toString("yyyy/MM/dd"));
+    else detail+=" "+QObject::tr("No recorded sign-in");
+    if(account.active)detail+=" - "+QObject::tr("signed in");
+    e.detail=detail;
+    return e;
+}
 void Shell::openSteamAccounts() {
     steamAccountsError_.clear();
     steamAccounts_=scanSteamAccounts(steamRoot_,&steamAccountsError_);
@@ -6754,23 +6776,7 @@ void Shell::openSteamAccounts() {
     }
     const bool anyActive=std::any_of(steamAccounts_.cbegin(),steamAccounts_.cend(),[](const SteamAccount& a){return a.active;});
     Page page;page.title=title;page.steamAccounts=true;
-    for(const auto& account:steamAccounts_) {
-        auto e=item("steam-account:"+account.steamId64,
-            account.personaName.isEmpty()?account.accountName:account.personaName,
-            "item_tex_account","explore_category_psn",Action::SteamAccountSwitch,account.steamId64);
-        // The current account is marked where every row shows its value: Steam's own active record is the
-        // dot the Users column already uses; when the client is signed out, the account its own auto-login
-        // marker names is named in words instead, because nothing is signed in to mark.
-        if(account.active)e.fieldValue=QString(QChar(0x25cf));
-        else if(account.autoLogin && !anyActive)e.fieldValue=QObject::tr("Auto sign-in");
-        QString detail=account.accountName;
-        if(account.lastLoginUnix>0)
-            detail+=" "+QObject::tr("Last used %1").arg(QDateTime::fromSecsSinceEpoch(account.lastLoginUnix).toString("yyyy/MM/dd"));
-        else detail+=" "+QObject::tr("No recorded sign-in");
-        if(account.active)detail+=" - "+QObject::tr("signed in");
-        e.detail=detail;
-        page.entries.push_back(std::move(e));
-    }
+    for(const auto& account:steamAccounts_)page.entries.push_back(steamAccountRow(account,anyActive));
     {
         // SteamCMD's settings page (audit/STEAMCMD.md): installs without the Steam window, signed in on this keyboard.
         auto e=item("steamcmd:open",QObject::tr("SteamCMD"),"item_tex_plain_folder","explore_plugin_full",Action::SteamCmd,QStringLiteral("open"));

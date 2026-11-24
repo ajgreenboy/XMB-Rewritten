@@ -178,9 +178,7 @@ console.log("before:", rb.map((r) => `${r.id} ${r.title} | ${r.detail} | rgb ${r
 console.log("after: ", ra.map((r) => `${r.id} ${r.title} | ${r.detail} | rgb ${r.artworkRgb}`));
 expect(rb.map((r) => r.id).join() === "steam:1002,steam:1001,steam:1003", "before: account A order Bravo, Alpha, Charlie");
 expect(ra.map((r) => r.id).join() === "steam:1003,steam:1001,steam:1002", "after: account B order Charlie, Alpha, Bravo");
-expect(String(rb[0]?.detail).includes("2 h 5 min played") && String(rb[1]?.detail).includes("1 h played"), "before: A's playtimes in the detail text");
-expect(String(ra[0]?.detail).includes("5 h played") && String(ra[1]?.detail).includes("15 min played"), "after: B's playtimes in the detail text");
-expect(!/Last played/.test(String(rb[2]?.detail)) && !/Last played/.test(String(ra[2]?.detail)), "never-played rows carry no last-played text");
+expect(![...rb, ...ra].some((r) => /played/i.test(String(r.detail))), "no row carries play time or a last-played date (owner direction 2026-11-23; the order still follows the play records)");
 expect(rb.every((r) => r.artworkReady) && ra.every((r) => r.artworkReady), "artwork loaded on every row, both times");
 const [rr, , rbl] = String(rb[0]?.artworkRgb).split(",").map(Number);
 const [ar, , abl] = String(ra[0]?.artworkRgb).split(",").map(Number);

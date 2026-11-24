@@ -40,6 +40,23 @@ inline QString steamRefreshName(const QString& reported, const QString& activePe
     return QStringLiteral("Steam");
 }
 
+// The account Steam reports as signed in (registry ActiveUser) differs from the one the library shows: the shell polls
+// the registry, so a switch made inside the Steam client is noticed without any XMB window or sweep being armed.
+// `lastTriggered` is the id a refresh was already started for, so a slow rescan is not restarted every poll.
+// Returns the SteamID64 to refresh for, or empty.
+inline QString steamPollAccountChange(const QString& registryId, const QString& libraryId, const QString& lastTriggered) {
+    if (registryId.isEmpty() || registryId == libraryId || registryId == lastTriggered) return {};
+    return registryId;
+}
+
+// Whether the keyless library (steam_keyless.h) becomes the Game column's owned list. Valve's list wins whenever a key
+// exists and that list is what is on screen; with no key, or while the key's list has not arrived yet (right after an
+// account change), the account's own local data stands in. A Valve list from a key that has since been removed is
+// replaced as well.
+inline bool steamKeylessReplacesOwned(bool hasApiKey, bool ownedIsFromValve) {
+    return !(hasApiKey && ownedIsFromValve);
+}
+
 // Watches the ActiveUser the sweep reads from Steam's registry record. The first observation only primes it; after
 // that a change to a non-zero account is reported once (0 is "signed out" and is remembered, not reported), so a
 // registry value that stays put never refreshes twice.

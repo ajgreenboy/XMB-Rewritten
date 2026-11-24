@@ -17,6 +17,8 @@ struct SteamFamily {
 };
 
 SteamFamily scanSteamFamily(const QString& steamId64 = {});
+// The same read against one named Steam installation (no scanSteam() call): what the keyless worker uses.
+SteamFamily scanSteamFamilyIn(const QString& steamRoot, const QString& steamId64);
 
 // Family-shared titles are licensed to another member, so IPlayerService/GetOwnedGames
 // does not return them, and Valve's IFamilyGroupsService requires an OAuth access token
@@ -31,6 +33,10 @@ struct FamilyGame {
     QString title;
 };
 
-QVector<FamilyGame> scanFamilySharedGames(const QString& dataDirectory, QString* error = nullptr);
+// With `steamId64` the list is account-scoped: <data>/family-shared-<accountid>.json is preferred, and the shared
+// family-shared.json is ignored when it carries an "account" naming a different account (so switching accounts never
+// shows the previous account's family titles). Without it the behaviour is unchanged.
+QVector<FamilyGame> scanFamilySharedGames(const QString& dataDirectory, QString* error = nullptr,
+                                          const QString& steamId64 = {});
 
 } // namespace xmb

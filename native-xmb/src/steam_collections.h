@@ -27,6 +27,10 @@ using SteamCollectionList = QVector<SteamCollection>;
 // Games" bucket is the caller's own filter over the owned-games list.
 SteamCollectionList scanSteamCollections(const QString& steamId64 = {}, QString* error = nullptr);
 
+// The same read against one named Steam installation (no scanSteam() call, nothing else consulted). `steamId64` must
+// be given. Used by the keyless library and its worker thread, which already know both.
+SteamCollectionList scanSteamCollectionsIn(const QString& steamRoot, const QString& steamId64, QString* error = nullptr);
+
 // SteamID64 -> the 32-bit account id used in userdata/ directory names.
 bool steamAccountId(const QString& steamId64, QString* accountId);
 

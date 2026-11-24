@@ -46,13 +46,14 @@ QString valueFor(const QString& block, const QString& key) {
 }
 } // namespace
 
-SteamFamily scanSteamFamily(const QString& steamId64) {
+SteamFamily scanSteamFamilyIn(const QString& steamRoot, const QString& steamId64) {
     SteamFamily family;
     QString account;
     if (!steamAccountId(steamId64.isEmpty() ? scanSteam().steamId : steamId64, &account)) return family;
 
-    const QStringList roots{scanSteam().root, QStringLiteral("C:/Program Files (x86)/Steam"),
-                            QStringLiteral("C:/Program Files/Steam")};
+    const QStringList roots = !steamRoot.trimmed().isEmpty()
+        ? QStringList{steamRoot}
+        : QStringList{scanSteam().root, QStringLiteral("C:/Program Files (x86)/Steam"), QStringLiteral("C:/Program Files/Steam")};
     for (const QString& root : roots) {
         if (root.isEmpty()) continue;
         QFile file(QDir(root).filePath(QStringLiteral("userdata/%1/config/localconfig.vdf").arg(account)));
@@ -76,11 +77,24 @@ SteamFamily scanSteamFamily(const QString& steamId64) {
     return family;
 }
 
-QVector<FamilyGame> scanFamilySharedGames(const QString& dataDirectory, QString* error) {
+SteamFamily scanSteamFamily(const QString& steamId64) {
+    return scanSteamFamilyIn({}, steamId64);
+}
+
+QVector<FamilyGame> scanFamilySharedGames(const QString& dataDirectory, QString* error, const QString& steamId64) {
     if (error) error->clear();
     QVector<FamilyGame> games;
     if (dataDirectory.isEmpty()) return games;
-    QFile file(QDir(dataDirectory).filePath(QStringLiteral("family-shared.json")));
+    // The list is typed in by the owner and Steam keeps no local copy, so it can belong to only one account. A
+    // per-account file wins; the shared file is used unless it names a different account.
+    QString account;
+    const bool haveAccount = !steamId64.trimmed().isEmpty() && steamAccountId(steamId64, &account);
+    QString fileName = QStringLiteral("family-shared.json");
+    if (haveAccount) {
+        const QString perAccount = QStringLiteral("family-shared-%1.json").arg(account);
+        if (QFile::exists(QDir(dataDirectory).filePath(perAccount))) fileName = perAccount;
+    }
+    QFile file(QDir(dataDirectory).filePath(fileName));
     if (!file.exists()) return games;  // optional list; its absence is not an error
     if (file.size() > MaxFamilyListBytes) {
         if (error) *error = QStringLiteral("family-shared.json is larger than expected.");
@@ -96,6 +110,11 @@ QVector<FamilyGame> scanFamilySharedGames(const QString& dataDirectory, QString*
     if (parseError.error != QJsonParseError::NoError || !document.isObject()) {
         if (error) *error = QStringLiteral("family-shared.json was not valid JSON.");
         return games;
+    }
+    if (haveAccount && fileName == QLatin1String("family-shared.json")) {
+        // An optional "account" (SteamID64 or 32-bit account id) pins the shared file to the account it was written for.
+        const QString named = document.object().value(QLatin1String("account")).toVariant().toString().trimmed();
+        if (!named.isEmpty() && named != account && named != steamId64.trimmed()) return games;
     }
     const auto rows = document.object().value(QLatin1String("apps")).toArray();
     games.reserve(std::min<int>(int(rows.size()), MaxFamilyGames));

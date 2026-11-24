@@ -26,6 +26,22 @@ struct SteamInstallation {
 // performs no network access and makes no changes to Steam files.
 SteamInstallation scanSteam(const QString& explicitRoot = {});
 
+// Which remembered account is current, from <steam>/config/loginusers.vdf alone (the registry's live ActiveUser,
+// which scanSteam() consults first, is not involved). Rule, in order: MostRecent=1 (older clients; newest timestamp
+// among several), the account whose AccountName equals `autoLoginUser` (HKCU\Software\Valve\Steam\AutoLoginUser,
+// case-insensitive; pass empty to skip), the newest timestamp ("timestamp" or "Timestamp"; a tie goes to the higher
+// SteamID64), and finally the only remembered account. AllowAutoLogin and AutoLogin are NOT consulted: current
+// clients set AllowAutoLogin=1 on every remembered account, so they cannot tell the accounts apart. Returns the
+// SteamID64, or empty when nothing decides. `rule` (optional) names the step that decided, for logs and tests.
+QString steamSelectAccountFromLoginUsers(const QByteArray& loginUsers, const QString& autoLoginUser,
+                                         QString* rule = nullptr);
+
+// The SteamID64 the running client reports as signed in (HKCU\Software\Valve\Steam\ActiveProcess\ActiveUser),
+// accepted only when the registry's SteamPath is `steamRoot` (or the XMB_STEAM_REGISTRY_KEY test seam is set).
+// Empty when nobody is signed in or the registry describes another installation. Read-only and cheap: this is
+// what the shell polls to notice an account switch made inside the Steam client.
+QString steamActiveAccountFromRegistry(const QString& steamRoot);
+
 enum class SteamAppStatus {
     Unavailable, // Steam's observation could not be read or is not trustworthy.
     Stopped,     // Steam was readable and confirmed the title is not running.

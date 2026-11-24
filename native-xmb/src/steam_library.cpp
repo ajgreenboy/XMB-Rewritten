@@ -250,83 +250,68 @@ bool steamIdForAccountKey(const QString& key, qulonglong* steamId) {
     return true;
 }
 
-QString activeRegistrySteamId(const QString& steamRoot) {
-#ifdef Q_OS_WIN
-    QSettings steamRegistry(QStringLiteral("HKEY_CURRENT_USER\\Software\\Valve\\Steam"), QSettings::NativeFormat);
-    const QString registryPath = steamRegistry.value(QStringLiteral("SteamPath")).toString().trimmed();
-    const QString canonicalRegistryPath = canonicalDirectory(registryPath);
-    const QString canonicalSteamRoot = canonicalDirectory(steamRoot);
-    if (canonicalRegistryPath.isEmpty() || canonicalSteamRoot.isEmpty() ||
-        canonicalRegistryPath.compare(canonicalSteamRoot, Qt::CaseInsensitive) != 0) return {};
+// The registry key the client writes its live state to. XMB_STEAM_REGISTRY_KEY may name a scratch key under
+// HKEY_CURRENT_USER\Software\XmbTest\ (the test seam shared with steam_accounts.cpp and steamAppState below); a
+// value that is set but not acceptable reads a dead scratch key, never the real one. Read only.
+QString registryBase(bool* seam) {
+    const QString real = QStringLiteral("HKEY_CURRENT_USER\\Software\\Valve\\Steam");
+    const QString requested = qEnvironmentVariable("XMB_STEAM_REGISTRY_KEY").trimmed();
+    const QString allowed = QStringLiteral("HKEY_CURRENT_USER\\Software\\XmbTest\\");
+    if (seam) *seam = !requested.isEmpty();
+    if (requested.isEmpty()) return real;
+    if (requested.size() > allowed.size() && requested.startsWith(allowed, Qt::CaseInsensitive) &&
+        !requested.contains(QStringLiteral("..")) && !requested.contains(QLatin1Char('/')))
+        return requested;
+    return allowed + QStringLiteral("RejectedOverride");
+}
 
-    QSettings activeProcess(QStringLiteral("HKEY_CURRENT_USER\\Software\\Valve\\Steam\\ActiveProcess"),
-                            QSettings::NativeFormat);
+struct RegistryView {
+    bool trusted = false;       // the registry describes this Steam root (SteamPath matches, or a test key)
+    qulonglong activeUser = 0;  // ActiveProcess\ActiveUser, 0 = nobody signed in or unknown
+    QString autoLoginUser;      // HKCU\Software\Valve\Steam\AutoLoginUser (a login name)
+};
+
+// allowReal is false when the caller named the root explicitly (XMB_STEAM_ROOT, --steam-root, a test): the real
+// registry then says nothing about that root, but a scratch test key still does.
+RegistryView readRegistryView(const QString& steamRoot, bool allowReal) {
+    RegistryView view;
+#ifdef Q_OS_WIN
+    bool seam = false;
+    const QString base = registryBase(&seam);
+    if (!seam && !allowReal) return view;
+    const QSettings steamRegistry(base, QSettings::NativeFormat);
+    if (!seam) {
+        const QString registryPath = steamRegistry.value(QStringLiteral("SteamPath")).toString().trimmed();
+        const QString canonicalRegistryPath = canonicalDirectory(registryPath);
+        const QString canonicalSteamRoot = canonicalDirectory(steamRoot);
+        if (canonicalRegistryPath.isEmpty() || canonicalSteamRoot.isEmpty() ||
+            canonicalRegistryPath.compare(canonicalSteamRoot, Qt::CaseInsensitive) != 0) return view;
+    }
+    view.trusted = true;
+    view.autoLoginUser = steamRegistry.value(QStringLiteral("AutoLoginUser")).toString().trimmed();
+    const QSettings activeProcess(base + QStringLiteral("\\ActiveProcess"), QSettings::NativeFormat);
     bool valid = false;
     const qulonglong accountId = activeProcess.value(QStringLiteral("ActiveUser")).toULongLong(&valid);
-    if (!valid || accountId == 0 || accountId > MaximumAccountId) return {};
-    return QString::number(SteamIdBase + accountId);
+    if (valid && accountId != 0 && accountId <= MaximumAccountId) view.activeUser = accountId;
 #else
-    Q_UNUSED(steamRoot);
-    return {};
+    Q_UNUSED(steamRoot); Q_UNUSED(allowReal);
 #endif
+    return view;
+}
+
+QString activeRegistrySteamId(const QString& steamRoot, bool allowReal) {
+    const RegistryView view = readRegistryView(steamRoot, allowReal);
+    return view.activeUser ? QString::number(SteamIdBase + view.activeUser) : QString{};
 }
 
 QString selectedSteamId(const QString& steamRoot, bool allowActiveRegistry) {
-    if (allowActiveRegistry) {
-        const QString active = activeRegistrySteamId(steamRoot);
-        if (!active.isEmpty()) return active;
-    }
+    const RegistryView registry = readRegistryView(steamRoot, allowActiveRegistry);
+    if (registry.activeUser) return QString::number(SteamIdBase + registry.activeUser);
 
     const QString path = QDir(steamRoot).filePath(QStringLiteral("config/loginusers.vdf"));
     QByteArray bytes;
     if (!readBounded(path, MaximumConfigBytes, &bytes)) return {};
-    const auto document = parseKeyValues(bytes);
-    if (!document.error.isEmpty()) return {};
-    const auto* users = findEntry(document.entries, QStringLiteral("users"));
-    if (!users || !users->block) return {};
-
-    struct Account {
-        qulonglong steamId = 0;
-        bool mostRecent = false;
-        bool hasTimestamp = false;
-        qulonglong timestamp = 0;
-    };
-    QVector<Account> accounts;
-    for (const auto& user : users->children) {
-        qulonglong steamId = 0;
-        if (!user.block || !steamIdForAccountKey(user.key, &steamId)) continue;
-        Account account;
-        account.steamId = steamId;
-        // The client writes lower-case "timestamp" today and has dropped MostRecent; accept the older
-        // spellings so a different Steam version still resolves the active account.
-        account.mostRecent = stringValue(user.children, QStringLiteral("MostRecent")) == QStringLiteral("1") ||
-                             stringValue(user.children, QStringLiteral("AutoLogin")) == QStringLiteral("1") ||
-                             stringValue(user.children, QStringLiteral("AllowAutoLogin")) == QStringLiteral("1");
-        bool timestampValid = false;
-        QString stamp = stringValue(user.children, QStringLiteral("timestamp"));
-        if (stamp.isEmpty()) stamp = stringValue(user.children, QStringLiteral("Timestamp"));
-        account.timestamp = stamp.toULongLong(&timestampValid);
-        account.hasTimestamp = timestampValid;
-        accounts.append(account);
-    }
-
-    for (const auto& account : accounts) {
-        if (!account.mostRecent) continue;
-        qulonglong selected = account.steamId;
-        for (const auto& candidate : accounts)
-            if (candidate.mostRecent && candidate.steamId > selected) selected = candidate.steamId;
-        return QString::number(selected);
-    }
-    if (accounts.size() == 1) return QString::number(accounts.constFirst().steamId);
-
-    const Account* selected = nullptr;
-    for (const auto& account : accounts) {
-        if (!account.hasTimestamp) continue;
-        if (!selected || account.timestamp > selected->timestamp ||
-            (account.timestamp == selected->timestamp && account.steamId > selected->steamId))
-            selected = &account;
-    }
-    return selected ? QString::number(selected->steamId) : QString{};
+    return steamSelectAccountFromLoginUsers(bytes, registry.trusted ? registry.autoLoginUser : QString{});
 }
 
 QStringList rootsToTry(const QString& explicitRoot) {
@@ -496,6 +481,80 @@ void scanLibrary(const QString& steamRoot, const QString& steamId, const QString
 }
 
 } // namespace
+
+// The account-selection rule over loginusers.vdf alone (the registry's ActiveUser, which outranks all of this, is
+// the caller's). Measured on a real client: current Steam writes lower-case "timestamp", has dropped MostRecent, and
+// sets AllowAutoLogin on EVERY remembered account, so AllowAutoLogin/AutoLogin say nothing about which account is
+// current and are not consulted. Order: MostRecent=1 (older clients), then the account whose AccountName equals the
+// client's AutoLoginUser registry value, then the newest timestamp, then the only remembered account.
+QString steamSelectAccountFromLoginUsers(const QByteArray& loginUsers, const QString& autoLoginUser, QString* rule) {
+    if (rule) rule->clear();
+    const auto document = parseKeyValues(loginUsers);
+    if (!document.error.isEmpty()) return {};
+    const auto* users = findEntry(document.entries, QStringLiteral("users"));
+    if (!users || !users->block) return {};
+
+    struct Account {
+        qulonglong steamId = 0;
+        QString accountName;
+        bool mostRecent = false;
+        bool hasTimestamp = false;
+        qulonglong timestamp = 0;
+    };
+    QVector<Account> accounts;
+    for (const auto& user : users->children) {
+        qulonglong steamId = 0;
+        if (!user.block || !steamIdForAccountKey(user.key, &steamId)) continue;
+        Account account;
+        account.steamId = steamId;
+        account.accountName = stringValue(user.children, QStringLiteral("AccountName")).trimmed();
+        account.mostRecent = stringValue(user.children, QStringLiteral("MostRecent")) == QStringLiteral("1");
+        QString stamp = stringValue(user.children, QStringLiteral("timestamp"));
+        if (stamp.isEmpty()) stamp = stringValue(user.children, QStringLiteral("Timestamp"));
+        bool timestampValid = false;
+        account.timestamp = stamp.toULongLong(&timestampValid);
+        account.hasTimestamp = timestampValid;
+        accounts.append(account);
+    }
+    if (accounts.isEmpty()) return {};
+
+    // Newest timestamp first, then the higher SteamID64, so every tie resolves the same way on every run.
+    const auto better = [](const Account* candidate, const Account* current) {
+        if (!current) return true;
+        if (candidate->hasTimestamp != current->hasTimestamp) return candidate->hasTimestamp;
+        if (candidate->timestamp != current->timestamp) return candidate->timestamp > current->timestamp;
+        return candidate->steamId > current->steamId;
+    };
+    const auto answer = [&](const Account* account, const char* why) {
+        if (rule) *rule = QLatin1String(why);
+        return QString::number(account->steamId);
+    };
+
+    const Account* chosen = nullptr;
+    for (const auto& account : accounts)
+        if (account.mostRecent && better(&account, chosen)) chosen = &account;
+    if (chosen) return answer(chosen, "MostRecent");
+
+    const QString wanted = autoLoginUser.trimmed();
+    if (!wanted.isEmpty()) {
+        for (const auto& account : accounts)
+            if (!account.accountName.isEmpty() && account.accountName.compare(wanted, Qt::CaseInsensitive) == 0 &&
+                better(&account, chosen)) chosen = &account;
+        if (chosen) return answer(chosen, "AutoLoginUser");
+    }
+
+    for (const auto& account : accounts)
+        if (account.hasTimestamp && better(&account, chosen)) chosen = &account;
+    if (chosen) return answer(chosen, "timestamp");
+
+    if (accounts.size() == 1) return answer(&accounts.constFirst(), "sole account");
+    return {};
+}
+
+QString steamActiveAccountFromRegistry(const QString& steamRoot) {
+    const QString root = canonicalDirectory(steamRoot);
+    return activeRegistrySteamId(root.isEmpty() ? steamRoot : root, true);
+}
 
 SteamInstallation scanSteam(const QString& explicitRoot) {
     SteamInstallation result;

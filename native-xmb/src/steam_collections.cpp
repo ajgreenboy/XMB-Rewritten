@@ -29,7 +29,7 @@ bool steamAccountId(const QString& steamId64, QString* accountId) {
     return true;
 }
 
-SteamCollectionList scanSteamCollections(const QString& steamId64, QString* error) {
+SteamCollectionList scanSteamCollectionsIn(const QString& steamRoot, const QString& steamId64, QString* error) {
     if (error) error->clear();
     QString id = steamId64.trimmed();
     if (id.isEmpty()) id = scanSteam().steamId;
@@ -41,11 +41,11 @@ SteamCollectionList scanSteamCollections(const QString& steamId64, QString* erro
 
     // Steam is installed where the library scan found it; fall back to the
     // conventional location so a collections-only read still works.
-    const QStringList roots{
-        scanSteam().root,
-        QStringLiteral("C:/Program Files (x86)/Steam"),
-        QStringLiteral("C:/Program Files/Steam"),
-    };
+    // An explicit root (the keyless library names the installation it already resolved) is the only place read;
+    // without one, the library scan's root and the conventional locations are tried, as before.
+    const QStringList roots = !steamRoot.trimmed().isEmpty()
+        ? QStringList{steamRoot}
+        : QStringList{scanSteam().root, QStringLiteral("C:/Program Files (x86)/Steam"), QStringLiteral("C:/Program Files/Steam")};
     for (const QString& root : roots) {
         if (root.isEmpty()) continue;
         const QDir dir(QDir(root).filePath(QStringLiteral("userdata/%1/config/cloudstorage").arg(account)));
@@ -109,6 +109,10 @@ SteamCollectionList scanSteamCollections(const QString& steamId64, QString* erro
     }
     if (error) *error = QStringLiteral("Steam's userdata folder was not found for this account.");
     return {};
+}
+
+SteamCollectionList scanSteamCollections(const QString& steamId64, QString* error) {
+    return scanSteamCollectionsIn({}, steamId64, error);
 }
 
 } // namespace xmb

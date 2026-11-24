@@ -778,6 +778,9 @@ int main(int argc, char** argv) {
 
     // The fixtures must not be vacuous: the plain documents resolve completely, and the table is varied.
     check(byName.value(QStringLiteral("login/plain")).startsWith(QStringLiteral("a=2 ae=0")), "plain loginusers.vdf yields two accounts");
+    // The fixture marks account A (MostRecent=1, the newer timestamp) and sets AllowAutoLogin=1 on BOTH accounts, as current clients do:
+    // the selected account must be A (suffix 01), not the highest SteamID64 (the pre-2026-11-23 bug recorded "02" here).
+    check(byName.value(QStringLiteral("login/plain")).contains(QStringLiteral(" s=01 ")), "scanSteam selects the MostRecent account, not the highest id");
     check(byName.value(QStringLiteral("manifest/plain")).contains(QStringLiteral("g=3")), "plain manifest yields all three games");
     check(byName.value(QStringLiteral("folders/plain")).contains(QStringLiteral("g=3 w=0")), "plain libraryfolders.vdf yields three libraries");
 
