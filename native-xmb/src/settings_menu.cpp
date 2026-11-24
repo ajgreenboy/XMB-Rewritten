@@ -2429,6 +2429,12 @@ void Shell::openSettings(const QString& id) {
         };
         auto data=pageRows(id,assets_,dateTimeInfo());
         if(data.entries.isEmpty())return; // an id with no page: the caller's row opens nothing
+        if(id=="network") {
+            // This build's own row, after the console's: keys the owner supplies for online features (api_keys_shell.cpp).
+            auto keys=option("api_keys","API Keys","Add the API keys some online features need, such as the Steam Web API key for your owned-games list.",{},Action::ApiKeyPage);
+            keys.settingsPage=id;
+            data.entries.push_back(std::move(keys));
+        }
         // Opening the Date and Time page reports the time zone row's current row once per stored value
         // (markCurrentRow): a stored firmware token is one of the band's 110 items, an IANA id is none of
         // them and is not guessed into a row. The band reads the same list, so this is the same verdict,

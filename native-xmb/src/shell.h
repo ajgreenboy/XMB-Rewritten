@@ -163,7 +163,7 @@ enum class Action { Unavailable, SettingsPage, SettingChoices, SetSetting, EditN
     // Entry::value is the command ("next", "fw:use|<path>", ...); the page it sits on is told apart by its first row id "setup:<step>...".
     Setup,
     // Game > Saved Data / Memory Card Utility: presentation only, no console save-data backend.
-    SaveData, ImportSource, ReleaseFolder, ReleaseDownload, DownloadManager, DebridToken, FlareSolverrUrl,
+    SaveData, ImportSource, ReleaseFolder, ReleaseDownload, DownloadManager, DebridToken, FlareSolverrUrl, ApiKeyPage, ApiKeyEnter, ApiKeyClear,
     BrowseGames, BrowseGenres, SearchGames, GameSearchResult, GameGenrePick, GameDetailsDownload, GameSourcePick, GameRetry, GameDownloadDrive, GameDownloadConfirm,
     // Game > Steam: the folded hub that lists Steam Store and All Games behind one column folder.
     SteamHub,
@@ -872,6 +872,15 @@ private:
     void requestReleaseArt(const Entry& entry,const IndexedRelease& release,const QUrl& sourceUrl);
     void openDownloadManager();
     void editDebridToken();
+    // Settings > Network Settings > API Keys (api_keys_shell.cpp). The key itself never reaches a row, a message, a log or a dump.
+    void openApiKeys();
+    void openApiKey(const QString& slug);
+    void refreshApiKeyPages();
+    void editApiKey(const QString& slug);
+    void setApiKeyFromField(const QString& slug,const QString& value);
+    void confirmClearApiKey(const QString& slug);
+    void afterApiKeyChanged(const QString& slug,bool saved);
+    void noteApiKeyOwnedResult(qsizetype gameCount,const QString& error);
     void saveDebridToken(const QString& token);
     void editFlareSolverrUrl();
     void saveFlareSolverrUrl(const QString& url);
@@ -1312,6 +1321,8 @@ private:
     QElapsedTimer steamWatchAge_;    // since the handoff (or last update tick), for the start timeout
     SteamTrackState steamTrack_;      // the pure lifecycle reducer's state (seenRunning/consecutiveStopped)
     bool ownedInFlight_=false;
+    bool apiKeyAwaitOwned_=false;   // a Steam key was just saved: the next owned-list result is reported on the key page
+    QString apiKeyResult_;          // that result, in words (never the key)
     QString steamRefreshNotice_;    // persona for the "Library refreshed for ..." notice
     ActiveUserWatch steamAccountWatch_;   // fed by the sweep: Steam reported a different ActiveUser
     QString ownedSignature_;        // app ids + installed flags + collection ids, to skip unchanged rebuilds
@@ -1440,7 +1451,7 @@ private:
     int columnSink_=0;
     // `grouped` is a page the item menu's Group Content level rebuilt into letter folders: `groupedSource` keeps
     // the ungrouped rows so All can put them back without a rescan, and the folders' rows are the same entries.
-    struct Page { QString title; QVector<Entry> entries; int selection=0; quint64 identity=0; QString directory; bool jellyfin=false,jellyfinViews=false,jellyfinSearch=false; QString jellyfinParent; QString jellyfinMusic,jellyfinLibrary; QString jellyfinHome; int jellyfinStart=0; bool downloads=false; QString steamCmd,seerr; bool continuePage=false; bool signIn=false; bool jfSetup=false; bool steamAccounts=false; bool grouped=false; QString groupKey; QVector<Entry> groupedSource; bool sysconfPlugin=false; QString playlistsType,playlistId; QString spotify,spotifyContext; QString dlna; int dlnaServer=-1; QString tailscale; QString wol,ha; bool weather=false; bool systemCheck=false; QString userInfo; int userInfoStep=0; bool browse=false; QString browsePath; QString browseFiles; bool libraryRoot=false; QVector<GameResult> downloadResults; bool gameDetails=false; RawgGameDetails gameDetailsData; int hydraRetryKind=0; QString hydraRetryUrl,hydraRetryName,hydraRetryQuery; quint64 hydraRequest=0; bool downloadHub=false; bool addGame=false; bool installer=false; };
+    struct Page { QString title; QVector<Entry> entries; int selection=0; quint64 identity=0; QString directory; bool jellyfin=false,jellyfinViews=false,jellyfinSearch=false; QString jellyfinParent; QString jellyfinMusic,jellyfinLibrary; QString jellyfinHome; int jellyfinStart=0; bool downloads=false; QString steamCmd,seerr; bool continuePage=false; bool signIn=false; bool jfSetup=false; bool steamAccounts=false; bool grouped=false; QString groupKey; QVector<Entry> groupedSource; bool sysconfPlugin=false; QString playlistsType,playlistId; QString spotify,spotifyContext; QString dlna; int dlnaServer=-1; QString tailscale; QString wol,ha; bool weather=false; bool systemCheck=false; QString userInfo; int userInfoStep=0; bool browse=false; QString browsePath; QString browseFiles; bool libraryRoot=false; QVector<GameResult> downloadResults; bool gameDetails=false; RawgGameDetails gameDetailsData; int hydraRetryKind=0; QString hydraRetryUrl,hydraRetryName,hydraRetryQuery; quint64 hydraRequest=0; bool downloadHub=false; bool addGame=false; bool installer=false; QString apiKey; };
     QVector<Page> pages_;
     bool psMenu_=false;              // the PS-button system menu is showing
     bool desktopMode_=false;         // the XMB window is hidden for Desktop Mode (main.cpp DesktopMode)

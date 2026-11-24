@@ -8,6 +8,7 @@
 #endif
 
 #include "self_check.h"
+#include "api_keys.h"
 
 #include <QCoreApplication>
 #include <QDir>
@@ -607,10 +608,7 @@ CheckResult checkRawg(const SelfCheckInputs& in) {
     if (keyPattern.match(QString::fromUtf8(qgetenv("RAWG_API_KEY"))).hasMatch())
         return result(id, title, Level::Ok, QStringLiteral("API key set (environment)"));
     QString path = in.rawgKeyFile;
-    if (path.isEmpty()) {
-        const QString appData = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
-        if (!appData.isEmpty()) path = QDir(appData).filePath(QStringLiteral("rawg_api_key"));
-    }
+    if (path.isEmpty()) path = apikeys::keyFilePath(apikeys::Id::Rawg);
     QFile file(path);
     if (path.isEmpty() || !file.exists())
         return result(id, title, Level::Ok, QStringLiteral("No API key; missing game artwork is not fetched"),

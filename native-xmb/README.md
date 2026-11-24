@@ -191,7 +191,11 @@ The *owned* list itself is Valve's `IPlayerService/GetOwnedGames`, which Valve r
 one of these ways (optionally with `XMB_STEAM_ID`):
 
 - `STEAM_WEB_API_KEY` in the launch environment, or
-- a one-line file at `%APPDATA%\re-ps3-native\steam_api_key` (user-only, outside the repository and git-ignored).
+- a one-line file at `%APPDATA%\re-ps3-native\steam_api_key` (user-only, outside the repository and git-ignored), or
+- Settings > Network Settings > API Keys > Steam Web API Key > Enter Key, which writes that file (user-only ACL, atomic) and
+  reloads the library at once. The same page holds the RAWG API key and the Spotify Client ID (which goes into
+  `spotify.json` in the data folder); each row says Not set, Set, or Set by environment variable and never shows the key.
+  Tests and scripted runs can redirect the key folder with `XMB_API_KEY_DIR` (Steam and RAWG files only).
 
 Without a key the column keeps the installed titles and the XMB states that a key is needed instead of inventing a
 library. The key is never written to preferences, reports, manifests or logs.

@@ -1,6 +1,7 @@
 #include "steam_owned.h"
 
 #include "steam_library.h"
+#include "api_keys.h"
 
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -44,9 +45,7 @@ SteamOwned::SteamOwned(QObject* parent) : QObject(parent), network_(new QNetwork
 SteamOwned::~SteamOwned() { cancel(); }
 
 QString SteamOwned::apiKeyFilePath() {
-    const QString dir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
-    if (dir.isEmpty()) return {};
-    return QDir(dir).filePath(QStringLiteral("steam_api_key"));
+    return apikeys::keyFilePath(apikeys::Id::SteamWeb);  // XMB_API_KEY_DIR (tests only) or the application data folder
 }
 
 QString SteamOwned::apiKey() {

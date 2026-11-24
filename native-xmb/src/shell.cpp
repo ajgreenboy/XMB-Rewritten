@@ -2041,6 +2041,7 @@ Shell::Shell(QString dataDirectory,Assets& assets,QObject* parent):QObject(paren
             refreshOwnedGames();
             return;
         }
+        noteApiKeyOwnedResult(games.size(),error);   // reports a just-saved key's outcome on the API Keys page
         if(!error.isEmpty()){if(needsKey)qInfo()<<"steam owned: no API key configured";else qWarning().noquote()<<"steam owned:"<<error;return;}
         QString signature;
         for(const auto& game:games)signature+=game.appId+(game.installed?QStringLiteral("+") :QStringLiteral("-"));
@@ -3008,6 +3009,9 @@ void Shell::activate() {
     case Action::ReleaseDownload:activateRelease(entry);break;
     case Action::DownloadManager:openDownloadManager();break;
     case Action::DebridToken:editDebridToken();break;
+    case Action::ApiKeyPage:if(entry.value.isEmpty())openApiKeys();else openApiKey(entry.value);break;
+    case Action::ApiKeyEnter:editApiKey(entry.value);break;
+    case Action::ApiKeyClear:confirmClearApiKey(entry.value);break;
     case Action::FlareSolverrUrl:editFlareSolverrUrl();break;
     case Action::BrowseGames:openBrowseGames();break;
     case Action::BrowseGenres:openBrowseGenres();break;
@@ -7434,6 +7438,7 @@ void Shell::setJellyfinSignInField(const QString& field,const QString& value) {
     if(field.startsWith(QStringLiteral("seerr:"))){seerrField(field,value);return;}
     if(field.startsWith(QStringLiteral("steamcmd:"))){steamCmdField(field,value);return;}   // the password and the Steam Guard code go straight to a zeroed Secret
     if(field==QStringLiteral("jfsetup:address")){setJellyfinSetupAddress(value);return;}
+    if(field.startsWith(QStringLiteral("apikey:"))){setApiKeyFromField(field.mid(7),value);return;}   // masked: handled without logging or echoing the value
     if(field==QStringLiteral("debrid:token")){saveDebridToken(value);return;}
     if(field==QStringLiteral("flaresolverr:url")){saveFlareSolverrUrl(value);return;}
     if(field.startsWith(QStringLiteral("game:search:"))){runGameSearch(value,field.mid(12));return;}

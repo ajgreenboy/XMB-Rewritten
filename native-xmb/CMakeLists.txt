@@ -68,6 +68,7 @@ qt_add_executable(re-ps3-native
     src/imported_art_match.cpp src/imported_art_match.h src/imported_art.cpp src/imported_art.h
     src/logo_tiles.cpp src/logo_tiles.h src/game_badge.h
     src/artwork_settings.cpp src/artwork_settings.h
+    src/api_keys.cpp src/api_keys.h src/api_keys_shell.cpp
     src/media_controls.cpp src/media_controls.h
     src/media_keys.cpp src/media_keys.h
     src/subtitles.cpp src/subtitles.h
@@ -322,6 +323,18 @@ if(XMB_GAME_BADGE_BUILD_TESTS)
         target_compile_options(xmb-game-badge-tests PRIVATE /W4 /permissive- /utf-8)
     endif()
 endif()
+option(XMB_API_KEYS_BUILD_TESTS "Build the API Keys tests (key format validation, status derivation, atomic write/clear helpers)" OFF)
+if(XMB_API_KEYS_BUILD_TESTS)
+    qt_add_executable(xmb-api-keys-tests tests/api_keys_tests.cpp src/api_keys.cpp src/api_keys.h)
+    target_include_directories(xmb-api-keys-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(xmb-api-keys-tests PRIVATE Qt6::Core)
+    if(WIN32)
+        target_link_libraries(xmb-api-keys-tests PRIVATE advapi32)
+    endif()
+    if(MSVC)
+        target_compile_options(xmb-api-keys-tests PRIVATE /W4 /permissive- /utf-8)
+    endif()
+endif()
 option(XMB_PSN_PAGES_BUILD_TESTS "Build the PlayStation Network column page tests (sign-in form logic, Account Management tree, truthful wording)" OFF)
 if(XMB_PSN_PAGES_BUILD_TESTS)
     qt_add_executable(xmb-psn-pages-tests tests/psn_pages_tests.cpp src/psn_pages.h)
@@ -506,7 +519,7 @@ endif()
 qt_add_executable(xmb-reference-frames src/reference_frames.cpp)
 target_link_libraries(xmb-reference-frames PRIVATE Qt6::Gui Qt6::Multimedia)
 if(WIN32)
-    target_link_libraries(re-ps3-native PRIVATE xinput9_1_0 hid setupapi ole32 iphlpapi ws2_32 shell32)
+    target_link_libraries(re-ps3-native PRIVATE xinput9_1_0 hid setupapi ole32 iphlpapi ws2_32 shell32 advapi32)
 endif()
 if(MSVC)
     target_compile_options(re-ps3-native PRIVATE /W4 /permissive- /utf-8 /Zi)

@@ -1,4 +1,5 @@
 #include "rawg_client.h"
+#include "api_keys.h"
 
 #include <QBuffer>
 #include <QCryptographicHash>
@@ -291,9 +292,7 @@ RawgClient::RawgClient(QString cacheDirectory, QObject* parent, QNetworkAccessMa
 RawgClient::~RawgClient() { cancel(); }
 
 QString RawgClient::apiKeyFilePath() {
-    const QString appData = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
-    if (appData.isEmpty()) return {};
-    return QDir(appData).filePath(QStringLiteral("rawg_api_key"));
+    return apikeys::keyFilePath(apikeys::Id::Rawg);  // XMB_API_KEY_DIR (tests only) or the application data folder
 }
 
 bool RawgClient::hasApiKey() { return !configuredApiKey().isEmpty(); }

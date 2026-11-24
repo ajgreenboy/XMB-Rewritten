@@ -1,6 +1,7 @@
 #include "steam_friends.h"
 
 #include "steam_owned.h"
+#include "api_keys.h"
 #include <QSettings>
 #include <QBuffer>
 #include <QCoreApplication>
@@ -42,10 +43,7 @@ bool validSteamId(const QString& value) {
     return ok && numeric!=0;
 }
 
-bool validApiKey(const QString& value) {
-    static const QRegularExpression keyPattern(QStringLiteral("^[A-Fa-f0-9]{32}$"));
-    return keyPattern.match(value).hasMatch();
-}
+bool validApiKey(const QString& value) { return apikeys::validSteamWebKey(value); }
 
 int sortBucket(const SteamFriend& friendInfo) {
     if(!friendInfo.game.isEmpty())return 0;
