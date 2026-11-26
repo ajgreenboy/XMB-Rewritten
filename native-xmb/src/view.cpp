@@ -3597,9 +3597,11 @@ void View::drawScene(QPainter& p) {
                         p.fillRect(friendsui::optionsBandRect(iconX,y),QColor(70,24,10,92));p.restore();
                     }
                     // The resting plate of the newer recording stays off (friends_ui.h kRestingPlate).
-                    if(friendsui::kRestingPlate && focus>.5) {
-                        p.save();p.setOpacity(columnAlpha*focus);p.setPen(QPen(QColor(255,255,255,120),1.5));p.setBrush(QColor(255,255,255,70));
-                        p.drawRoundedRect(friendsui::plateRect(iconX,y),friendsui::kPlateRadius,friendsui::kPlateRadius);p.restore();
+                    if constexpr(friendsui::kRestingPlate) {
+                        if(focus>.5) {
+                            p.save();p.setOpacity(columnAlpha*focus);p.setPen(QPen(QColor(255,255,255,120),1.5));p.setBrush(QColor(255,255,255,70));
+                            p.drawRoundedRect(friendsui::plateRect(iconX,y),friendsui::kPlateRadius,friendsui::kPlateRadius);p.restore();
+                        }
                     }
                 }
                 if(entry.friendRow && !entry.artwork.isNull() && behind<.001) {
