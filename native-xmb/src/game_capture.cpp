@@ -1,5 +1,5 @@
 // See game_capture.h. WinRT headers must precede Qt's (macro hygiene).
-#ifdef Q_OS_WIN
+#ifdef _WIN32
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif

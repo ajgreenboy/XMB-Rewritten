@@ -1,4 +1,5 @@
 // See game_tap.h. WinRT headers must precede Qt's (macro hygiene).
+#ifdef _WIN32
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
@@ -330,3 +331,24 @@ bool GameFrameTap::grabLastGood(QImage* image, QString* detail) {
 }
 
 }  // namespace xmb
+#else
+#include "game_tap.h"
+
+namespace xmb {
+struct GameFrameTap::Impl {};
+GameFrameTap::GameFrameTap() : impl_(std::make_unique<Impl>()) {}
+GameFrameTap::~GameFrameTap() = default;
+bool GameFrameTap::start(quintptr, QString* error) {
+    if (error) *error = QStringLiteral("Windows.Graphics.Capture is Windows-only");
+    return false;
+}
+void GameFrameTap::stop() {}
+bool GameFrameTap::running() const { return false; }
+quintptr GameFrameTap::hwnd() const { return 0; }
+GameTapStats GameFrameTap::stats() { return {}; }
+bool GameFrameTap::grabLastGood(QImage*, QString* detail) {
+    if (detail) *detail = QStringLiteral("Windows.Graphics.Capture is Windows-only");
+    return false;
+}
+}  // namespace xmb
+#endif
