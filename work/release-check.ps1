@@ -277,13 +277,13 @@ try {
 
     $keyValue = $null
     $keyFile = Join-Path $env:APPDATA 're-ps3-native\steam_api_key'
-    if (Test-Path -LiteralPath $keyFile) {
-        try {
-            $candidate = (Get-Content -LiteralPath $keyFile -Raw).Trim()
+    try {
+        if (Test-Path -LiteralPath $keyFile -ErrorAction Stop) {
+            $candidate = (Get-Content -LiteralPath $keyFile -Raw -ErrorAction Stop).Trim()
             if ($candidate.Length -ge 8) { $keyValue = $candidate }
-        } catch {
-            $keyValue = $null
         }
+    } catch {
+        $keyValue = $null
     }
 
     $keyFindings = [System.Collections.Generic.List[string]]::new()
@@ -372,10 +372,13 @@ try {
     # --- 6. documentation links ----------------------------------------------
     $docs = @(
         'README.md',
+        'AGENT-HANDOFF.md',
         'native-xmb/README.md',
         'native-xmb/audit/README.md',
         'native-xmb/archive/README.md',
         'native-xmb/HANDOFF-2026-11-09.md',
+        'native-xmb/HANDOFF-2026-11-17.md',
+        'native-xmb/HANDOFF-2026-11-25.md',
         'native-xmb/INSTALL.md',
         'native-xmb/ISA.md',
         'native-xmb/audit/PHASES-2026-11-07.md',

@@ -145,7 +145,7 @@ Version **0.3.29**. It builds cleanly and its own checks pass. Real-hardware tes
 | `run-native-xmb.ps1` | The launcher for a development build |
 | `out/`, `dist/` | Local build and capture output (not tracked) |
 
-More documentation: the [application README](native-xmb/README.md), the [handoff](native-xmb/HANDOFF-2026-11-17.md), the [audit index](native-xmb/audit/README.md), the [HTPC run guide](native-xmb/audit/HTPC-RUN-GUIDE.md) and the [third-party notices](native-xmb/THIRD-PARTY.md).
+More documentation: the [application README](native-xmb/README.md), the [handoff](native-xmb/HANDOFF-2026-11-25.md), the [audit index](native-xmb/audit/README.md), the [HTPC run guide](native-xmb/audit/HTPC-RUN-GUIDE.md) and the [third-party notices](native-xmb/THIRD-PARTY.md).
 
 ## Legal and firmware
 

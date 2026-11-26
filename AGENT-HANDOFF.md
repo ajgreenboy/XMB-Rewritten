@@ -14,16 +14,21 @@ from-scratch native renderer and services, not an emulator.
 
 ## 2. Start here, in this order
 
-1. `native-xmb/HANDOFF-2026-11-17.md` - current state, what landed 11-13 to 11-17, open work, branch
-   status. This is the newest handoff and takes precedence over everything else. For build/run/verify
-   mechanics and gotchas, read `native-xmb/HANDOFF-2026-11-13.md` (still accurate).
-2. `native-xmb/audit/PHASES-2026-11-07.md` - the plan of record: done work, ranked backlog (Tier 1
-   HTPC product, Tier 2 product gaps, Tier 3 fidelity), parallel workstreams and their write fences.
-3. `native-xmb/ISA.md` - the completion checklist. An unchecked box stays open until the behaviour
+1. [HANDOFF-2026-11-25.md](native-xmb/HANDOFF-2026-11-25.md) - current state (`v0.3.34`+), what landed
+   11-17 to 11-25, open work, branch and worktree status. This is the newest handoff and takes
+   precedence over everything else. See [HANDOFF-2026-11-17.md](native-xmb/HANDOFF-2026-11-17.md) for
+   11-13 to 11-17 history and [HANDOFF-2026-11-13.md](native-xmb/HANDOFF-2026-11-13.md) for
+   build/run/verify mechanics and gotchas.
+2. [PHASES-2026-11-07.md](native-xmb/audit/PHASES-2026-11-07.md) - the plan of record: done work, ranked
+   backlog (Tier 1 HTPC product, Tier 2 product gaps, Tier 3 fidelity), parallel workstreams and their
+   write fences.
+3. [ISA.md](native-xmb/ISA.md) - the completion checklist. An unchecked box stays open until the behaviour
    has actually been observed; a checked box has runtime evidence.
-4. `native-xmb/README.md` - build, run, controls, architecture boundaries and every service's setup.
-5. `native-xmb/audit/README.md` - the audit index; `native-xmb/audit/FIDELITY-SURFACES-MAP.md` and
-   `native-xmb/audit/FIDELITY-VERDICT.md` for the per-surface fidelity picture.
+4. [native-xmb/README.md](native-xmb/README.md) - build, run, controls, architecture boundaries and every
+   service's setup.
+5. [audit/README.md](native-xmb/audit/README.md) - the audit index;
+   [FIDELITY-SURFACES-MAP.md](native-xmb/audit/FIDELITY-SURFACES-MAP.md) and
+   [FIDELITY-VERDICT.md](native-xmb/audit/FIDELITY-VERDICT.md) for the per-surface fidelity picture.
 
 ## 3. Build and run
 
@@ -81,8 +86,8 @@ visualizer, info-bar avatar slot).
 
 ## 6. When you finish a phase
 
-1. Update `native-xmb/HANDOFF-2026-11-09.md` (or the newest handoff) and `native-xmb/ISA.md` with what
-   was observed and what remains open.
+1. Update [HANDOFF-2026-11-25.md](native-xmb/HANDOFF-2026-11-25.md) (or create a newer dated handoff) and
+   [ISA.md](native-xmb/ISA.md) with what was observed and what remains open.
 2. Commit only your own files, with author `-c user.name=Al -c user.email=<author email>`.
    No AI attribution in commits, PRs or files.
 3. Keep this file's section 2 pointing at the newest handoff.
