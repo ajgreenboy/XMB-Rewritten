@@ -1,6 +1,6 @@
 # Rust hardening design: the untrusted edge
 
-Status: **proposal** (no code written). Owner decision required before any Rust lands.
+Status: **Phase 1 implemented** (`native-xmb/rust-edge/firmware-crypto` + `native-xmb/rust-edge/firmware-extract`, opt-in via `-DXMB_RUST_FIRMWARE_CRYPTO=ON` and `-DXMB_USE_RUST_FIRMWARE=ON`; Phases 2–5 remain proposals).
 
 ## 1. What this is and what it is not
 
@@ -167,5 +167,11 @@ Proof of the FFI pattern on P1 de-risks P2–P5.
 
 ---
 
-No action is taken until the owner signs off on §7 and the phase order. This document is the proposal;
-it becomes the plan only after that.
+## 9. Phase 1 implementation record (2026-11-25)
+
+Choices settled for Phase 1:
+
+1. **Link mode:** `staticlib` (`firmware_extract` re-exports `firmware_crypto` so a single Rust `staticlib` supplies both `fw_hmac_sha1`/`fw_aes_*` and `fw_extract_pup`/`fw_pup_version` with no duplicate Rust `std` symbols on MSVC or GNU ld).
+2. **Crypto & decompression:** `RustCrypto` (`aes` 0.9, `hmac` 0.13, `sha1` 0.11) for FIPS-197 AES-128/256 and RFC 2104 HMAC-SHA1; `flate2` (`rust_backend` / `miniz_oxide`, pure Rust) for SCE zlib/gzip decompression bounded at 1 GiB.
+3. **Crate layout:** `native-xmb/rust-edge/firmware-crypto/` and `native-xmb/rust-edge/firmware-extract/`.
+4. **C++ shims & CMake options:** `src/firmware_crypto_rust.{h,cpp}` and `src/firmware_extract_rust.{h,cpp}` in `native-xmb/src/`. `-DXMB_RUST_FIRMWARE_CRYPTO=ON` builds the Rust staticlib on both Windows MSVC and Linux and enables `xmb-firmware-rust-parity-tests`; `-DXMB_USE_RUST_FIRMWARE=ON` routes live `xmb::firmware::*`, `xmb::extractPup`, and `xmb::pupVersion` calls through the Rust staticlib.

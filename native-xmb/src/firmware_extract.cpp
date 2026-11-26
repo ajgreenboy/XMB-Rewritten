@@ -1,5 +1,8 @@
 #include "firmware_extract.h"
 #include "firmware_crypto.h"
+#ifdef XMB_USE_RUST_FIRMWARE
+#include "firmware_extract_rust.h"
+#endif
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
@@ -22,6 +25,7 @@
 #endif
 
 namespace xmb {
+#ifndef XMB_USE_RUST_FIRMWARE
 namespace {
 #if !defined(XMB_FIRMWARE_NO_EMBEDDED_KEYS) && __has_include("firmware_keys.inc")
 #include "firmware_keys.inc"
@@ -161,7 +165,11 @@ bool decrypt(const QByteArray& sce,const Keys& k,QByteArray& output,QString* err
     return true;
 }
 }
+#endif
 bool extractPup(const QString& pupPath,const QString& destDir,QString* error) {
+#ifdef XMB_USE_RUST_FIRMWARE
+    return xmb::firmware_rust::extractPup(pupPath,destDir,error);
+#else
     if(error)error->clear();Keys k;if(!keys(k,error))return false;
     QFile file(pupPath);
     if(!file.open(QIODevice::ReadOnly))return fail(error,QStringLiteral("Cannot open PUP: %1").arg(file.errorString()));
@@ -220,10 +228,14 @@ bool extractPup(const QString& pupPath,const QString& destDir,QString* error) {
     std::fprintf(stdout,"Firmware extracted: %llu entries verified, %llu dev_flash packages, %llu bytes written\nDestination: %s\n",
                  static_cast<unsigned long long>(count),static_cast<unsigned long long>(packages),static_cast<unsigned long long>(written),root.toUtf8().constData());
     return true;
+#endif
 }
 }
 namespace xmb {
 bool pupVersion(const QString& pupPath,QString* version,QString* error) {
+#ifdef XMB_USE_RUST_FIRMWARE
+    return xmb::firmware_rust::pupVersion(pupPath,version,error);
+#else
     if(error)error->clear();if(version)version->clear();
     QFile file(pupPath);
     if(!file.open(QIODevice::ReadOnly))return fail(error,QStringLiteral("Cannot open PUP: %1").arg(file.errorString()));
@@ -244,5 +256,6 @@ bool pupVersion(const QString& pupPath,QString* version,QString* error) {
         return true;
     }
     return fail(error,QStringLiteral("PUP has no version entry (0x100)"));
+#endif
 }
 }

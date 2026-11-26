@@ -2,10 +2,14 @@
 // and Crypto/sha1.cpp (PolarSSL, Copyright 2006-2013 Brainspark B.V., GPL-2.0-or-later).
 // Compact byte-oriented implementation; SHA-1 compression is supplied by Qt.
 #include "firmware_crypto.h"
+#ifdef XMB_USE_RUST_FIRMWARE
+#include "firmware_crypto_rust.h"
+#endif
 #include <QCryptographicHash>
 #include <algorithm>
 #include <cstring>
 namespace xmb::firmware {
+#ifndef XMB_USE_RUST_FIRMWARE
 namespace {
 using Byte = unsigned char;
 Byte mul(Byte a, Byte b) {
@@ -66,14 +70,22 @@ struct Aes {
     }
 };
 }
+#endif
 QByteArray hmacSha1(QByteArray key, const QByteArray& data) {
+#ifdef XMB_USE_RUST_FIRMWARE
+    return xmb::firmware_rust::hmacSha1(std::move(key), data);
+#else
     if(key.size()>64)key=QCryptographicHash::hash(key,QCryptographicHash::Sha1);
     key.resize(64, '\0'); QByteArray inner(64,0x36),outer(64,0x5c);
     for(int i=0;i<64;++i){inner[i]=char(inner[i]^key[i]);outer[i]=char(outer[i]^key[i]);}
     QCryptographicHash hash(QCryptographicHash::Sha1); hash.addData(inner); hash.addData(data);
     outer+=hash.result(); return QCryptographicHash::hash(outer,QCryptographicHash::Sha1);
+#endif
 }
 bool aesCtr(QByteArray& data,const QByteArray& key,QByteArray iv) {
+#ifdef XMB_USE_RUST_FIRMWARE
+    return xmb::firmware_rust::aesCtr(data, key, std::move(iv));
+#else
     if(key.size()!=16||iv.size()!=16)return false;
     const Aes aes(key);
     for(qsizetype at=0;at<data.size();at+=16) {
@@ -82,8 +94,12 @@ bool aesCtr(QByteArray& data,const QByteArray& key,QByteArray iv) {
         for(int i=15;i>=0;--i){iv[i]=char(Byte(iv[i])+1);if(iv[i]!=0)break;}
     }
     return true;
+#endif
 }
 bool aesCbc(QByteArray& data,const QByteArray& key,QByteArray iv,bool encrypt) {
+#ifdef XMB_USE_RUST_FIRMWARE
+    return xmb::firmware_rust::aesCbc(data, key, std::move(iv), encrypt);
+#else
     if((key.size()!=16&&key.size()!=32)||iv.size()!=16||data.size()%16)return false;
     const Aes aes(key);
     for(qsizetype at=0;at<data.size();at+=16) {
@@ -94,5 +110,6 @@ bool aesCbc(QByteArray& data,const QByteArray& key,QByteArray iv,bool encrypt) {
         std::memcpy(data.data()+at,block,16);std::memcpy(iv.data(),encrypt?block:saved,16);
     }
     return true;
+#endif
 }
 }

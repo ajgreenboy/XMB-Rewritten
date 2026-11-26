@@ -36,46 +36,62 @@ if(NOT WIN32)
     pkg_check_modules(LIBSECRET REQUIRED IMPORTED_TARGET libsecret-1)
 endif()
 
-# Rust firmware-crypto (byte-parity reimplementation of src/firmware_crypto.cpp).
-# Off by default: the C++ crypto in src/firmware_crypto.cpp stays the shipped
-# implementation everywhere. When ON, the crate (native-xmb/rust-edge/firmware-crypto)
-# is built with a rustup-installed cargo (toolchain >= 1.89, see the crate README),
-# its staticlib is linked into the app next to a thin shim, and a parity test target
-# asserts byte-identical output against the C++ reference. This option does NOT switch
-# the app onto the Rust path.
-option(XMB_RUST_FIRMWARE_CRYPTO "Build and link the Rust firmware-crypto staticlib (byte-parity with src/firmware_crypto.cpp)" OFF)
+# Rust Phase-1 firmware edge (`firmware-crypto` + `firmware-extract`).
+# Off by default so CI runners without a Rust toolchain build unchanged.
+# When XMB_RUST_FIRMWARE_CRYPTO=ON, CMake invokes cargo on
+# `native-xmb/rust-edge/firmware-extract` (which re-exports `firmware-crypto`
+# into one collision-free staticlib), links the C++ shims, and builds
+# `xmb-firmware-rust-parity-tests`. Setting XMB_USE_RUST_FIRMWARE=ON in addition
+# routes `re-ps3-native`'s live `xmb::firmware::*`, `xmb::extractPup`, and
+# `xmb::pupVersion` calls through the Rust staticlib.
+option(XMB_RUST_FIRMWARE_CRYPTO "Build and link the Rust Phase-1 firmware-crypto + firmware-extract staticlib" OFF)
+option(XMB_USE_RUST_FIRMWARE "Route live firmware crypto and PUP extraction in re-ps3-native through Rust (requires XMB_RUST_FIRMWARE_CRYPTO=ON)" OFF)
 set(XMB_RUST_CRYPTO_SOURCES "")
+if(XMB_USE_RUST_FIRMWARE AND NOT XMB_RUST_FIRMWARE_CRYPTO)
+    message(FATAL_ERROR "XMB_USE_RUST_FIRMWARE=ON requires XMB_RUST_FIRMWARE_CRYPTO=ON")
+endif()
 if(XMB_RUST_FIRMWARE_CRYPTO)
-    find_program(CARGO_EXECUTABLE cargo HINTS "$ENV{HOME}/.cargo/bin")
+    find_program(CARGO_EXECUTABLE cargo HINTS "$ENV{USERPROFILE}/.cargo/bin" "$ENV{HOME}/.cargo/bin")
     if(NOT CARGO_EXECUTABLE)
-        message(FATAL_ERROR "XMB_RUST_FIRMWARE_CRYPTO requires a rustup-installed cargo (toolchain >= 1.89); see native-xmb/rust-edge/firmware-crypto/README.md")
+        message(FATAL_ERROR "XMB_RUST_FIRMWARE_CRYPTO requires a rustup-installed cargo (toolchain >= 1.89); see native-xmb/rust-edge/firmware-extract/README.md")
     endif()
     set(XMB_RUST_CRYPTO_CRATE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/rust-edge/firmware-crypto")
+    set(XMB_RUST_EXTRACT_CRATE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/rust-edge/firmware-extract")
     # cargo output is kept in the CMake binary dir so the source tree stays clean.
-    set(XMB_RUST_CRYPTO_TARGET_DIR "${CMAKE_BINARY_DIR}/rust-firmware-crypto")
-    set(XMB_RUST_CRYPTO_STATICLIB "${XMB_RUST_CRYPTO_TARGET_DIR}/release/libfirmware_crypto.a")
+    set(XMB_RUST_PHASE1_TARGET_DIR "${CMAKE_BINARY_DIR}/rust-firmware-phase1")
+    if(WIN32)
+        set(XMB_RUST_PHASE1_STATICLIB "${XMB_RUST_PHASE1_TARGET_DIR}/release/firmware_extract.lib")
+        set(XMB_RUST_PHASE1_SYS_LIBS "ws2_32;userenv;bcrypt;ntdll;advapi32")
+    else()
+        set(XMB_RUST_PHASE1_STATICLIB "${XMB_RUST_PHASE1_TARGET_DIR}/release/libfirmware_extract.a")
+        set(XMB_RUST_PHASE1_SYS_LIBS "pthread;dl;m")
+    endif()
     add_custom_command(
-        OUTPUT "${XMB_RUST_CRYPTO_STATICLIB}"
+        OUTPUT "${XMB_RUST_PHASE1_STATICLIB}"
         COMMAND "${CARGO_EXECUTABLE}" build --release
-                --manifest-path "${XMB_RUST_CRYPTO_CRATE_DIR}/Cargo.toml"
-                --target-dir "${XMB_RUST_CRYPTO_TARGET_DIR}"
-        WORKING_DIRECTORY "${XMB_RUST_CRYPTO_CRATE_DIR}"
+                --manifest-path "${XMB_RUST_EXTRACT_CRATE_DIR}/Cargo.toml"
+                --target-dir "${XMB_RUST_PHASE1_TARGET_DIR}"
+        WORKING_DIRECTORY "${XMB_RUST_EXTRACT_CRATE_DIR}"
         DEPENDS
             "${XMB_RUST_CRYPTO_CRATE_DIR}/Cargo.toml"
-            "${XMB_RUST_CRYPTO_CRATE_DIR}/Cargo.lock"
             "${XMB_RUST_CRYPTO_CRATE_DIR}/src/lib.rs"
             "${XMB_RUST_CRYPTO_CRATE_DIR}/src/crypto.rs"
             "${XMB_RUST_CRYPTO_CRATE_DIR}/src/ffi.rs"
-        COMMENT "Building the Rust firmware-crypto staticlib (cargo build --release)"
+            "${XMB_RUST_EXTRACT_CRATE_DIR}/Cargo.toml"
+            "${XMB_RUST_EXTRACT_CRATE_DIR}/src/lib.rs"
+            "${XMB_RUST_EXTRACT_CRATE_DIR}/src/extract.rs"
+            "${XMB_RUST_EXTRACT_CRATE_DIR}/src/ffi.rs"
+        COMMENT "Building the Rust Phase-1 firmware-crypto + firmware-extract staticlib (cargo build --release)"
         VERBATIM)
-    add_custom_target(xmb-rust-firmware-crypto DEPENDS "${XMB_RUST_CRYPTO_STATICLIB}")
-    # Imported static library: consumers link the .a and pick up the C ABI header.
+    add_custom_target(xmb-rust-firmware-crypto DEPENDS "${XMB_RUST_PHASE1_STATICLIB}")
     add_library(xmb_firmware_crypto_rust STATIC IMPORTED GLOBAL)
     set_target_properties(xmb_firmware_crypto_rust PROPERTIES
-        IMPORTED_LOCATION "${XMB_RUST_CRYPTO_STATICLIB}"
-        INTERFACE_INCLUDE_DIRECTORIES "${XMB_RUST_CRYPTO_CRATE_DIR}/include"
-        INTERFACE_LINK_LIBRARIES "pthread;dl;m")
-    set(XMB_RUST_CRYPTO_SOURCES src/firmware_crypto_rust.cpp src/firmware_crypto_rust.h)
+        IMPORTED_LOCATION "${XMB_RUST_PHASE1_STATICLIB}"
+        INTERFACE_INCLUDE_DIRECTORIES "${XMB_RUST_CRYPTO_CRATE_DIR}/include;${XMB_RUST_EXTRACT_CRATE_DIR}/include"
+        INTERFACE_LINK_LIBRARIES "${XMB_RUST_PHASE1_SYS_LIBS}")
+    set(XMB_RUST_CRYPTO_SOURCES
+        src/firmware_crypto_rust.cpp src/firmware_crypto_rust.h
+        src/firmware_extract_rust.cpp src/firmware_extract_rust.h)
 endif()
 qt_add_executable(re-ps3-native
     src/main.cpp src/assets.cpp src/assets.h src/p3t.cpp src/p3t.h src/qrc.cpp src/qrc.h src/catalog.cpp src/catalog.h
@@ -113,7 +129,7 @@ qt_add_executable(re-ps3-native
     src/self_check.cpp src/self_check.h src/system_check_shell.cpp
     src/updater.cpp src/updater.h src/updater_shell.cpp
     src/firmware_fetcher.cpp src/firmware_fetcher.h src/firmware_install.cpp src/firmware_install.h
-    src/firmware_extract.cpp src/firmware_extract.h src/firmware_crypto.cpp src/firmware_crypto.h ${XMB_RUST_CRYPTO_SOURCES}
+    src/firmware_extract.cpp src/firmware_extract.h src/firmware_crypto.cpp src/firmware_crypto.h ${XMB_RUST_CRYPTO_SOURCES} ${XMB_RUST_CRYPTO_SOURCES}
     src/wifi_client.cpp src/wifi_client.h src/wifi_shell.cpp
     src/bluetooth_client.cpp src/bluetooth_client.h src/bluetooth_shell.cpp
     src/wol_client.cpp src/wol_client.h src/homeassistant_client.cpp src/homeassistant_client.h src/home_shell.cpp
@@ -154,6 +170,9 @@ target_link_libraries(re-ps3-native PRIVATE ${XMB_ZLIB})
 if(XMB_RUST_FIRMWARE_CRYPTO)
     target_link_libraries(re-ps3-native PRIVATE xmb_firmware_crypto_rust)
     add_dependencies(re-ps3-native xmb-rust-firmware-crypto)
+    if(XMB_USE_RUST_FIRMWARE)
+        target_compile_definitions(re-ps3-native PRIVATE XMB_USE_RUST_FIRMWARE)
+    endif()
 endif()
 qt_add_resources(re-ps3-native seerr_icon PREFIX "/service-icons" BASE "src" FILES "src/seerr.png" "src/seerr-icon-LICENSE.txt")
 # The app reports this version to the updater; set it only in project(VERSION ...) above.
@@ -184,13 +203,18 @@ if(XMB_FIRMWARE_BUILD_TESTS)
     target_link_libraries(xmb-firmware-tests PRIVATE Qt6::Core ${XMB_ZLIB})
 endif()
 
-# Rust firmware-crypto byte-parity gate (needs a Rust toolchain; see XMB_RUST_FIRMWARE_CRYPTO).
+# Rust Phase-1 firmware-crypto + firmware-extract parity gate (needs a Rust toolchain; see XMB_RUST_FIRMWARE_CRYPTO).
 if(XMB_RUST_FIRMWARE_CRYPTO)
     qt_add_executable(xmb-firmware-rust-parity-tests tests/firmware_crypto_rust_parity_tests.cpp
-        src/firmware_crypto.cpp src/firmware_crypto_rust.cpp)
+        src/firmware_crypto.cpp src/firmware_crypto_rust.cpp
+        src/firmware_extract.cpp src/firmware_extract_rust.cpp)
     target_include_directories(xmb-firmware-rust-parity-tests PRIVATE src)
-    target_link_libraries(xmb-firmware-rust-parity-tests PRIVATE Qt6::Core xmb_firmware_crypto_rust)
+    target_compile_definitions(xmb-firmware-rust-parity-tests PRIVATE XMB_FIRMWARE_NO_EMBEDDED_KEYS)
+    target_link_libraries(xmb-firmware-rust-parity-tests PRIVATE Qt6::Core ${XMB_ZLIB} xmb_firmware_crypto_rust)
     add_dependencies(xmb-firmware-rust-parity-tests xmb-rust-firmware-crypto)
+    if(MSVC)
+        target_compile_options(xmb-firmware-rust-parity-tests PRIVATE /W4 /permissive- /utf-8)
+    endif()
 endif()
 qt_add_executable(xmb-updater updater/updater_main.cpp src/updater.cpp src/updater.h)
 target_include_directories(xmb-updater PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
