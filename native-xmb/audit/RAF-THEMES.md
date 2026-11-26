@@ -1,10 +1,13 @@
 # RAF-THEMES - animated (RAF) theme support, F6 remainder
 
-Status 2026-11-16: **a dynamic theme's scene is drawn as ONE STILL FRAME (initial pose, script not run); nothing is
-animated.** On any failure, and with `XMB_RAF_THEMES=0`, the theme's still background (`bgimage` hd/sd) is shown exactly
-as before. Air Paint, the theme the request named, turned out to be a **static** theme (section 1.1), so it is unchanged
-by all of this. No real dynamic theme exists on this machine, so the still-frame path is proven only on a local
-fixture that wraps the firmware's coldboot.raf in a theme (section 4).
+Status 2026-11-25: **a dynamic theme's embedded RAF scene is evaluated through `vsmx_eval` and drawn per frame on `View`'s
+OpenGL 3.3 context via `RafScenePlayer` (`XMB_RAF_ANIMATE=0` reverts to the `t=0` still pose; `XMB_RAF_THEMES=0` skips the
+scene altogether).** On any decode/shader failure, the theme's still background (`bgimage` hd/sd) is shown cleanly.
+`renderRafStill` (`--raf-render file.raf@out.png`, pinned by gate state `raf-static-scene`) remains deterministic at
+`t=0` with script evaluation off, while `--raf-render file.raf@<seconds>@out.png` (`renderRafFrame`) renders an evaluated
+frame at `t=<seconds>`. Air Paint (`01.p3t`) turned out to be a **static** theme (section 1.1), so it is unchanged. No
+third-party dynamic `.p3t` exists on this machine, so animated playback is proven on synthetic VSMX fixtures (`xmb-raf-tests`)
+and on `coldboot.raf` at multiple timestamps.
 
 Evidence tags: TRACED (firmware module, by string or address), M (measured on a local file this pass), INFERRED,
 UNPROVABLE (cannot be settled with what is on this machine).
@@ -100,14 +103,18 @@ not shader code (INFERRED). **Which effect name sets which digit is not traced**
 | 2 | VSMX disassembler (`disassembleVsmx`) + usage sweep (`vsmxUsage`: constructors, methods, calls, runtime globals, properties read/written, unknown opcodes, function literals) in the report's `script.usage`; the evaluator's `notEvaluated` list in `script.evaluator` | `src/vsmx_eval.*` | M (coldboot), unit tests |
 | 3 | GTF decode: B8, A8R8G8B8 (linear and Morton-swizzled), DXT1/3/5; level 0 only | `src/gtf_decode.*` | M (coldboot B8), unit tests for the others |
 | 4 | Edge decode: one segment, compressed index stream, the plane.edge vertex descriptor set only (float3 / X11Y11Z10 / half2); everything else refused | `src/edge_decode.*` | M (coldboot), unit tests |
-| 4 | Still frame behind the XMB: `renderRafStill` (offscreen GL 3.3, generic GLSL lit/unlit/edge-lit, initial pose, no script) when a theme with a scene is selected in wallpaper mode; `XMB_RAF_THEMES=0` kill switch; still bgimage on any failure | `src/raf_render.*`, `View::loadWallpaper` | M on fixtures (section 4) |
-| 5 | Interpreter subset + `Track` reuse + firmware effect programs + animation | - | **not done** |
+| 4 | Still frame (`renderRafStill`): offscreen GL 3.3, generic GLSL lit/unlit/edge-lit, initial pose, no script (`--raf-render file.raf@out.png`, pinned by `raf-static-scene`, and `XMB_RAF_ANIMATE=0` fallback) | `src/raf_render.*`, `View::loadWallpaper` | M on fixtures (section 4) |
+| 5 | Per-frame animated RAF playback (`RafScenePlayer` + extended `evalVsmx`): `Date`, `Math`, `System.resolution/aspect/timer`, `IntervalTimer` looping, `OneShotTimer`, user function `CALL`, `setPosition/setRotation/setScale/setColor/setUvOffset/setUvScale/setAttenuation`, Hermite smoothstep easing, per-frame GL 3.3 background draw beneath the XMB glass icons and UI cache, clean GL release in `View::~View()` | `src/vsmx_eval.*`, `src/raf_render.*`, `src/view.*` | M (`xmb-raf-tests`, `coldboot.raf` multi-time renders) |
 
-The interpreter subset as it stands (`evalVsmx`) is the coldboot subset: `new Actor/Light/Camera("id")`,
-`OneShotTimer(delay, function)`, `setColor/setPosition/setScale(value, duration[, curve])` with **linear** easing,
-`obj.color = [...]`, arithmetic, conditionals on known values, `System.resolution` fixed to 1080. Decided from the
-only real script; a theme script would need at least `Date`, `Math`, `IntervalTimer`, `setRotation` and the actor
-animation properties (section 1.4), which cannot be prioritised without one.
+The interpreter (`evalVsmx`) now covers both the coldboot subset and the core dynamic-theme runtime globals:
+`new Actor/Light/Camera("id")`, `new Date()` (`getHours`, `getMinutes`, `getSeconds`, `getMilliseconds`, `getTime`),
+`Math` (`PI`, `E`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `abs`, `sqrt`, `floor`, `ceil`, `round`, `exp`,
+`log`, `pow`, `min`, `max`, deterministic `random`), `OneShotTimer(delay, fn)`, periodic `IntervalTimer(period, fn)`
+(unrolled across a bounded tick window with `loopPeriod` wrapping in `sample()`), user function calls, property reads/writes
+(`position`, `rotation`, `scale`, `color`, `uv_offset`, `uv_scale`, `attenuation`) with array indexing, and timed `set*`
+methods seeded from the RAF tree's `initialPose` with linear (`curve == 0`) or Hermite smoothstep (`curve != 0`) easing.
+What remains approximated is the shader layer (generic GLSL lit/unlit/edge-lit rather than untraced `_gen_ubber1` flag bits),
+single-segment Edge meshes, and skeletal `.anim` keyframes.
 
 ## 3. The honest gap (why it does not animate)
 

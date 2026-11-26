@@ -761,17 +761,18 @@ void View::syncFocusedBackground() {
 }
 void View::loadWallpaper() {
     if(shell_.backgroundMode()!=2)return;
-    // A theme scene is drawn as one STILL frame (renderRafStill: initial pose, no script); on failure, or with
-    // XMB_RAF_THEMES=0, the theme keeps its still bgimage like any other theme.
+    // A theme scene plays per frame on View's GL context via RafScenePlayer when XMB_RAF_ANIMATE!=0, or draws once
+    // as a t=0 still frame when XMB_RAF_ANIMATE=0; on failure, or with XMB_RAF_THEMES=0, the theme keeps its still bgimage.
     static const QByteArray none;
     const auto& scene=rafThemesEnabled()?shell_.themeSceneBytes():none;
     if(!scene.isEmpty() || !shell_.themeBackground().isNull()) {
+        const bool animate=!scene.isEmpty() && rafAnimationEnabled();
         const QSize pixels=(QSizeF(size())*devicePixelRatioF()).toSize();
-        if(!scene.isEmpty() && (pixels.width()<=0 || pixels.height()<=0))return;
-        const auto key=QStringLiteral("p3t:")+shell_.themePath()+(scene.isEmpty()?QString{}:QStringLiteral(":%1x%2").arg(pixels.width()).arg(pixels.height()));
+        if(!scene.isEmpty() && !animate && (pixels.width()<=0 || pixels.height()<=0))return;
+        const auto key=QStringLiteral("p3t:")+shell_.themePath()+(scene.isEmpty()?QString{}:animate?QStringLiteral(":anim"):QStringLiteral(":%1x%2").arg(pixels.width()).arg(pixels.height()));
         if(key==wallpaperPath_)return;
         wallpaperPath_=key;++wallpaperRequest_;wallpaperImage_=shell_.themeBackground();
-        if(!scene.isEmpty()) {
+        if(!scene.isEmpty() && !animate) {
             auto* previous=QOpenGLContext::currentContext();
             auto* surface=previous?previous->surface():nullptr;
             QString error;const auto rendered=renderRafStill(scene,QString{},pixels.width(),pixels.height(),&error);
@@ -803,8 +804,9 @@ void View::drawBackdrops(QPainter& p) {
         const QSizeF size=QSizeF(image.size()).scaled(window.size(),Qt::KeepAspectRatioByExpanding);
         p.save();p.setOpacity(opacity);p.drawImage(QRectF(window.center()-QPointF(size.width()/2,size.height()/2),size),image);p.restore();
     };
-    if(shell_.backgroundMode()==2 && !wallpaperImage_.isNull()) {
-        draw(wallpaperImage_,1.);p.fillRect(window,QColor(0,0,0,35));
+    if(shell_.backgroundMode()==2) {
+        if(rafScene_.ready())p.fillRect(window,QColor(0,0,0,35));
+        else if(!wallpaperImage_.isNull()){draw(wallpaperImage_,1.);p.fillRect(window,QColor(0,0,0,35));}
     }
     draw(departingBackground_,departingBackgroundOpacity_);
     draw(focusedBackground_,focusedBackgroundOpacity_);
@@ -828,7 +830,7 @@ View::~View(){
 #ifdef Q_OS_WIN
     if(volumeKeys_ && qApp)qApp->removeNativeEventFilter(volumeKeys_.get());
 #endif
-    saveTextDemand();saveFrameTrace();if(context()){makeCurrent();liveBridgeRelease();gallery_.reset();textRenderer_.release(*this);monthTexture_.reset();for(auto& texture:monthTextures_)texture.reset();ribbon_.releaseTextures();particles_.releaseTextures();bloomCache_=BloomCache{};uiMsaa_.reset();uiResolved_.reset();inGameTexture_.reset();inGameProgram_.removeAllShaders();if(vao_)glDeleteVertexArrays(1,&vao_);background_.removeAllShaders();doneCurrent();}}
+    saveTextDemand();saveFrameTrace();if(context()){makeCurrent();liveBridgeRelease();gallery_.reset();rafScene_.release(*this);textRenderer_.release(*this);monthTexture_.reset();for(auto& texture:monthTextures_)texture.reset();ribbon_.releaseTextures();particles_.releaseTextures();bloomCache_=BloomCache{};uiMsaa_.reset();uiResolved_.reset();inGameTexture_.reset();inGameProgram_.removeAllShaders();if(vao_)glDeleteVertexArrays(1,&vao_);background_.removeAllShaders();doneCurrent();}}
 void View::initializeGL() {
     xmb::bootprof::mark("before initializeGL");
     uniformcache::invalidate();
@@ -1517,7 +1519,32 @@ void View::paintGL() {
     const QSize pixels=device*uiSupersample;
     // PIC1 and wallpaper belong to the scene, below the glass icons and all UI.
     // Painting them into the UI cache would cover the separately drawn icon pass.
-    if((shell_.backgroundMode()==2 && !wallpaperImage_.isNull()) || focusedBackgroundOpacity_>0. || departingBackgroundOpacity_>0.) {
+    if(glReady_ && !shell_.inGame() && shell_.backgroundMode()==2 && rafAnimationEnabled() && !shell_.themeSceneBytes().isEmpty()) {
+        const QString wantKey=shell_.themePath();
+        if(wantKey!=rafSceneKey_) {
+            rafScene_.release(*this);rafSceneKey_=wantKey;rafSceneFailed_=false;rafSceneStartSeconds_=-1.;
+        }
+        if(!rafScene_.ready() && !rafSceneFailed_) {
+            const QDateTime when=backgroundOverride_.isValid()?backgroundOverride_:QDateTime::currentDateTime();
+            QString error;
+            if(!rafScene_.init(*this,shell_.themeSceneBytes(),when,true,&error)) {
+                rafSceneFailed_=true;
+                qInfo().noquote()<<"theme: scene render failed; using still background:"<<error;
+            } else {
+                qInfo().noquote()<<QStringLiteral("theme: animated scene active (%1 actors, %2 triangles, script=%3)")
+                    .arg(rafScene_.stats().actors).arg(rafScene_.stats().triangles).arg(rafScene_.hasScript()?1:0);
+            }
+        }
+        if(rafScene_.ready()) {
+            if(rafSceneStartSeconds_<0.)rafSceneStartSeconds_=renderSeconds;
+            const double sceneTime=secondsOverride_>=0.?secondsOverride_:std::max(0.,renderSeconds-rafSceneStartSeconds_);
+            glBindFramebuffer(GL_FRAMEBUFFER,defaultFramebufferObject());
+            rafScene_.render(*this,device.width(),device.height(),sceneTime,true);
+        }
+    } else if(rafScene_.ready() || !rafSceneKey_.isEmpty()) {
+        rafScene_.release(*this);rafSceneKey_.clear();rafSceneFailed_=false;rafSceneStartSeconds_=-1.;
+    }
+    if((shell_.backgroundMode()==2 && (rafScene_.ready() || !wallpaperImage_.isNull())) || focusedBackgroundOpacity_>0. || departingBackgroundOpacity_>0.) {
         glBindFramebuffer(GL_FRAMEBUFFER,defaultFramebufferObject());glViewport(0,0,device.width(),device.height());
         QOpenGLPaintDevice backgroundDevice(device);
         QPainter backdrop(&backgroundDevice);backdrop.setRenderHint(QPainter::SmoothPixmapTransform);

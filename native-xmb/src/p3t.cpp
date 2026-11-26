@@ -753,13 +753,14 @@ QByteArray P3t::rafReportJson() const {
         o["effectTokens"]=tokens;
         root["scene"]=o;
     }
-    // What the shell does with a scene today (audit/RAF-THEMES.md): one STILL frame at the scene's initial pose,
-    // drawn once by renderRafStill with approximate GLSL lighting (not the firmware's raf.qrc programs), the script not
-    // run, and the theme's still picture on any failure or with XMB_RAF_THEMES=0.
-    root["renderer"]=QJsonObject{{"drawn",scene_.valid?QStringLiteral("still"):QStringLiteral("no")},
-        {"scriptRun",false},{"firmwarePrograms",false},{"killSwitch","XMB_RAF_THEMES=0"},
-        {"note","A dynamic theme's scene is drawn as one still frame at its initial pose (no script, no animation, approximate "
-                 "lighting); the still bgimage is used when that render fails. See audit/RAF-THEMES.md."}};
+    // What the shell does with a scene today (audit/RAF-THEMES.md): per-frame GL 3.3 playback driven by the VSMX
+    // timeline evaluator (or a t=0 still when XMB_RAF_ANIMATE=0) with approximate GLSL lighting, falling back to the
+    // theme's still bgimage on any unsupported mesh/texture/shader error or with XMB_RAF_THEMES=0.
+    root["renderer"]=QJsonObject{{"drawn",scene_.valid?QStringLiteral("animated"):QStringLiteral("no")},
+        {"scriptRun",scene_.valid && scene_.script.vsmx},{"firmwarePrograms",false},
+        {"killSwitch","XMB_RAF_THEMES=0"},{"animateKillSwitch","XMB_RAF_ANIMATE=0"},
+        {"note","A dynamic theme's scene is evaluated through vsmx_eval and drawn per frame by RafScenePlayer (approximate "
+                 "GLSL lighting); XMB_RAF_ANIMATE=0 pins the initial still pose, and the still bgimage is used when decoding fails. See audit/RAF-THEMES.md."}};
     return QJsonDocument(root).toJson(QJsonDocument::Indented);
 }
 }

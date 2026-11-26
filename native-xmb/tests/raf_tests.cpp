@@ -1,18 +1,22 @@
 #include "edge_decode.h"
 #include "gtf_decode.h"
+#include "preferences.h"
 #include "vsmx_eval.h"
 #include <QCoreApplication>
 #include <QImage>
+#include <QTemporaryDir>
 #include <QtEndian>
 #include <bit>
 #include <cmath>
 #include <cstdio>
+#include <numbers>
 
 using namespace xmb;
 
 // The pure decoders behind dynamic-theme (RAF) scenes (audit/RAF-THEMES.md): GTF textures, Edge geometry and the VSMX
-// script disassembler/evaluator. Every fixture is SYNTHETIC, built byte by byte below from the layouts the decoders
-// document; no firmware or theme bytes. Build with -DXMB_RAF_BUILD_TESTS=ON; exit code 0 = all pass.
+// script disassembler/evaluator, plus the appearance/tvColumn preference contract. Every fixture is SYNTHETIC, built
+// byte by byte below from the layouts the decoders document; no firmware or theme bytes. Build with
+// -DXMB_RAF_BUILD_TESTS=ON; exit code 0 = all pass.
 static int failures=0;
 static void check(bool ok,const char* what) {
     std::printf("%s  %s\n",ok?"PASS":"FAIL",what);
@@ -156,11 +160,71 @@ static void vsmxTests() {
     check(!disassembleVsmx(bad,&program,&error) && error.contains(QStringLiteral("code region")),"a code region past the end is refused");
 }
 
+static void vsmxAnimatedTests() {
+    // Dynamic theme subset: Date.getHours(), Math.PI / Math.sin, Light.setAttenuation, Actor.setRotation with smooth curve,
+    // initialPose preservation, and periodic IntervalTimer looping.
+    //
+    // ring = new Actor("ring"); sun = new Light("sun"); d = new Date();
+    // h = d.getHours(); s = Math.sin(Math.PI / 2);
+    // sun.setAttenuation([1, h, s], 1, 1);
+    // new IntervalTimer(2, function(){ ring.setRotation([0, ring.rotation[1] + 1, 0], 2, 0); });
+    const QVector<Op> code{
+        /* 0  */ {0x2e,0},{0x2e,1},{0x28,0},{0x3e,1},{0x01,0},{0x22,0},               // ring = new Actor("ring");
+        /* 6  */ {0x2e,2},{0x2e,3},{0x28,1},{0x3e,1},{0x01,0},{0x22,0},               // sun = new Light("sun");
+        /* 12 */ {0x2e,4},{0x2e,5},{0x3e,0},{0x01,0},{0x22,0},                        // d = new Date();
+        /* 17 */ {0x2e,6},{0x2e,4},{0x30,0},{0x3d,0},{0x01,0},{0x22,0},               // h = d.getHours();
+        /* 23 */ {0x2e,7},{0x2e,8},{0x30,1},{0x2e,8},{0x2f,2},{0x26,2},{0x05,0},{0x3d,1},{0x01,0},{0x22,0}, // s = Math.sin(Math.PI / 2);
+        /* 33 */ {0x2e,2},{0x30,3},{0x26,1},{0x2e,6},{0x2e,7},{0x49,3},{0x26,1},{0x26,1},{0x3d,3},{0x22,0}, // sun.setAttenuation([1, h, s], 1, 1);
+        /* 43 */ {0x2e,9},{0x26,2},{0x2a,47},{0x39,63},                               // new IntervalTimer(2, function() {
+        /* 47 */ {0x2e,0},{0x30,4},{0x26,0},{0x2e,0},{0x2f,5},{0x26,1},{0x34,0},{0x26,1},{0x02,0},{0x26,0},{0x49,3},{0x26,2},{0x26,0},{0x3d,3},{0x22,0},{0x3f,0},
+        /* 63 */ {0x3e,2},{0x22,0},{0x45,0}};                                         // });
+    const QByteArray script=vsmx(
+        code,
+        {"ring","sun"},
+        {"getHours","sin","PI","setAttenuation","setRotation","rotation"},
+        {"ring","Actor","sun","Light","d","Date","h","s","Math","IntervalTimer"});
+    VsmxEvalOptions opts;
+    opts.hour=18;opts.maxIntervalTicks=4;
+    opts.initialPose[QStringLiteral("sun")][VsmxKey::Attenuation]=QVector4D(1.f,0.f,0.f,0.f);
+    opts.initialPose[QStringLiteral("ring")][VsmxKey::Rotation]=QVector4D(0.f,0.5f,0.f,0.f);
+    VsmxTimeline timeline;QString error;
+    check(evalVsmx(script,&timeline,&error,opts),"the extended evaluator runs Date, Math, Light.setAttenuation and IntervalTimer");
+    check(std::abs(timeline.constants.value(QStringLiteral("h"))-18.)<1e-6,"Date.getHours() reads the configured clock hour");
+    check(std::abs(timeline.constants.value(QStringLiteral("s"))-1.)<1e-6,"Math.sin(Math.PI / 2) evaluates to 1.0");
+    // Smooth curve (3rd arg = 1): Hermite smoothstep at u=0.25 is 0.25^2 * 2.5 = 0.15625 (linear would be 0.25).
+    const QVector4D attQuarter=sample(timeline,QStringLiteral("sun"),VsmxKey::Attenuation,0.25);
+    check(std::abs(attQuarter.x()-1.f)<1e-5f && std::abs(attQuarter.y()-float(18.*0.15625))<1e-4f && std::abs(attQuarter.z()-0.15625f)<1e-4f,
+          "setAttenuation starts from initialPose and eases with Hermite smoothstep when curve != 0");
+    check(timeline.hasMotion() && std::abs(timeline.loopPeriod-8.)<1e-6,"IntervalTimer(2) over 4 ticks records an 8 s periodic loop");
+    // Tick 1 fires at t=2 and rotates y from initialPose 0.5 -> 1.5 over [2, 4]; tick 2 rotates 1.5 -> 2.5 over [4, 6]; wraps modulo 8 s.
+    const QVector4D rotAt3=sample(timeline,QStringLiteral("ring"),VsmxKey::Rotation,3.0);
+    const QVector4D rotWrapped=sample(timeline,QStringLiteral("ring"),VsmxKey::Rotation,11.0); // 11 % 8 == 3
+    check(std::abs(rotAt3.y()-1.0f)<1e-4f,"IntervalTimer body reads actor.rotation[1] and advances setRotation");
+    check(std::abs(rotWrapped.y()-rotAt3.y())<1e-4f,"periodic IntervalTimer tracks wrap cleanly past loopPeriod");
+}
+
+static void tvColumnPreferenceTests() {
+    QTemporaryDir dir;
+    check(dir.isValid(),"scratch directory for tvColumn preference checks");
+    Preferences prefs(dir.path());
+    check(!prefs.contains(QStringLiteral("appearance/tvColumn")) && prefs.value(QStringLiteral("appearance/tvColumn"))==QVariant(true),
+          "appearance/tvColumn defaults to true (10 columns out of the box) before any write");
+    check(prefs.setValue(QStringLiteral("appearance/tvColumn"),false) && prefs.value(QStringLiteral("appearance/tvColumn"))==QVariant(false),
+          "appearance/tvColumn accepts false (console 9-column mode) and persists");
+    Preferences reloaded(dir.path());
+    check(reloaded.value(QStringLiteral("appearance/tvColumn"))==QVariant(false),
+          "appearance/tvColumn round-trips across disk reload");
+    check(!prefs.setValue(QStringLiteral("appearance/tvColumn"),1) && !prefs.setValue(QStringLiteral("appearance/tvColumn"),QStringLiteral("off")),
+          "appearance/tvColumn rejects non-boolean values");
+}
+
 int main(int argc,char** argv) {
     QCoreApplication app(argc,argv);
     gtfTests();
     edgeTests();
     vsmxTests();
+    vsmxAnimatedTests();
+    tvColumnPreferenceTests();
     std::printf("%s\n",failures?"FAILED":"all passed");
     return failures?1:0;
 }

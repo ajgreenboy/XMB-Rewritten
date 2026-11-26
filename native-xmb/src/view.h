@@ -6,6 +6,7 @@
 #include "hdr.h"
 #include "particles.h"
 #include "icons.h"
+#include "raf_render.h"
 #include "ribbon.h"
 #include "rsx_program.h"
 #include "shell.h"
@@ -582,6 +583,10 @@ private:
     QHash<int,QVector3D> monthIconTints_;
     QString wallpaperPath_;
     quint64 wallpaperRequest_=0;
+    RafScenePlayer rafScene_;
+    QString rafSceneKey_;
+    bool rafSceneFailed_=false;
+    double rafSceneStartSeconds_=-1;
     std::unique_ptr<QOpenGLTexture> monthTexture_;
     void loadWallpaper();
     struct IconMaterial { QImage image; QRect bounds; };

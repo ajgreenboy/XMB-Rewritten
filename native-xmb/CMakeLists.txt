@@ -129,7 +129,7 @@ qt_add_executable(re-ps3-native
     src/self_check.cpp src/self_check.h src/system_check_shell.cpp
     src/updater.cpp src/updater.h src/updater_shell.cpp
     src/firmware_fetcher.cpp src/firmware_fetcher.h src/firmware_install.cpp src/firmware_install.h
-    src/firmware_extract.cpp src/firmware_extract.h src/firmware_crypto.cpp src/firmware_crypto.h ${XMB_RUST_CRYPTO_SOURCES} ${XMB_RUST_CRYPTO_SOURCES}
+    src/firmware_extract.cpp src/firmware_extract.h src/firmware_crypto.cpp src/firmware_crypto.h ${XMB_RUST_CRYPTO_SOURCES}
     src/wifi_client.cpp src/wifi_client.h src/wifi_shell.cpp
     src/bluetooth_client.cpp src/bluetooth_client.h src/bluetooth_shell.cpp
     src/wol_client.cpp src/wol_client.h src/homeassistant_client.cpp src/homeassistant_client.h src/home_shell.cpp
@@ -359,9 +359,12 @@ endif()
 option(XMB_RAF_BUILD_TESTS "Build the dynamic-theme (RAF) GTF, Edge and VSMX decoder tests (synthetic fixtures)" OFF)
 if(XMB_RAF_BUILD_TESTS)
     qt_add_executable(xmb-raf-tests tests/raf_tests.cpp src/gtf_decode.cpp src/gtf_decode.h src/edge_decode.cpp src/edge_decode.h
-        src/vsmx_eval.cpp src/vsmx_eval.h)
+        src/vsmx_eval.cpp src/vsmx_eval.h src/preferences.cpp src/preferences.h src/jellyfin_player.cpp src/jellyfin_player.h)
     target_include_directories(xmb-raf-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
     target_link_libraries(xmb-raf-tests PRIVATE Qt6::Core Qt6::Gui)
+    if(MSVC)
+        target_compile_options(xmb-raf-tests PRIVATE /W4 /permissive- /utf-8)
+    endif()
 endif()
 option(XMB_FOLDER_BROWSER_BUILD_TESTS "Build the in-XMB folder browser listing and navigation tests" OFF)
 if(XMB_FOLDER_BROWSER_BUILD_TESTS)

@@ -592,12 +592,24 @@ int main(int argc,char** argv) {
     if(parser.isSet("raf-render")) {
         const QString spec=parser.value("raf-render");const int separator=spec.lastIndexOf('@');
         if(separator<=0 || separator==spec.size()-1){std::fprintf(stderr,"use --raf-render file@image.png\n");return 2;}
-        QFile file(spec.left(separator));if(!file.open(QIODevice::ReadOnly)){std::fprintf(stderr,"cannot read RAF\n");return 2;}
+        QFile file(spec.left(separator));
+        double sampleSeconds=-1.;
+        QString inputPath=spec.left(separator);
+        const int prevSep=inputPath.lastIndexOf('@');
+        if(prevSep>0 && !QFileInfo::exists(inputPath)) {
+            bool okSec=false;const double parsed=inputPath.mid(prevSep+1).toDouble(&okSec);
+            if(okSec && parsed>=0.){inputPath=inputPath.left(prevSep);file.setFileName(inputPath);sampleSeconds=parsed;}
+        }
+        if(!file.open(QIODevice::ReadOnly)){std::fprintf(stderr,"cannot read RAF\n");return 2;}
         const QByteArray data=file.readAll();if(file.error()!=QFileDevice::NoError){std::fprintf(stderr,"cannot read RAF\n");return 2;}
-        QString error;xmb::RafStillStats stats;const QImage image=xmb::renderRafStill(data,parser.value("dev-flash"),1920,1080,&error,&stats);
+        QString error;xmb::RafStillStats stats;
+        const QImage image=sampleSeconds>=0.?xmb::renderRafFrame(data,sampleSeconds,1920,1080,&error,&stats)
+                                            :xmb::renderRafStill(data,parser.value("dev-flash"),1920,1080,&error,&stats);
         if(image.isNull()){std::fprintf(stderr,"RAF render failed: %s\n",error.toUtf8().constData());return 2;}
         if(!image.save(spec.mid(separator+1),"PNG")){std::fprintf(stderr,"cannot write PNG\n");return 2;}
-        std::printf("RAF still: %d actors, %d models, %d textures, %d model triangles, %dx%d, camera=%s light=%s\n",stats.actors,stats.models,stats.textures,stats.triangles,image.width(),image.height(),stats.cameraFallback?"fallback":"scene",stats.lightFallback?"fallback":"scene");std::fflush(stdout);return 0;
+        std::printf("RAF %s: %d actors, %d models, %d textures, %d model triangles, %dx%d, camera=%s light=%s\n",
+            sampleSeconds>=0.?"frame":"still",stats.actors,stats.models,stats.textures,stats.triangles,image.width(),image.height(),
+            stats.cameraFallback?"fallback":"scene",stats.lightFallback?"fallback":"scene");std::fflush(stdout);return 0;
     }
     if(parser.isSet("edge-decode")) {
         const QString spec=parser.value("edge-decode");const int separator=spec.lastIndexOf('@');
@@ -658,7 +670,18 @@ int main(int argc,char** argv) {
         QJsonObject constants,strings,actors,samples;QJsonArray skipped;
         for(auto it=timeline.constants.cbegin();it!=timeline.constants.cend();++it)constants[it.key()]=it.value();
         for(auto it=timeline.strings.cbegin();it!=timeline.strings.cend();++it)strings[it.key()]=it.value();
-        const auto kind=[](xmb::VsmxKey::Kind k){switch(k){case xmb::VsmxKey::Alpha:return QStringLiteral("alpha");case xmb::VsmxKey::Position:return QStringLiteral("position");case xmb::VsmxKey::Scale:return QStringLiteral("scale");default:return QStringLiteral("colour");}};
+        const auto kind=[](xmb::VsmxKey::Kind k){
+            switch(k){
+            case xmb::VsmxKey::Alpha:return QStringLiteral("alpha");
+            case xmb::VsmxKey::Position:return QStringLiteral("position");
+            case xmb::VsmxKey::Scale:return QStringLiteral("scale");
+            case xmb::VsmxKey::Rotation:return QStringLiteral("rotation");
+            case xmb::VsmxKey::UvOffset:return QStringLiteral("uvOffset");
+            case xmb::VsmxKey::UvScale:return QStringLiteral("uvScale");
+            case xmb::VsmxKey::Attenuation:return QStringLiteral("attenuation");
+            default:return QStringLiteral("colour");
+            }
+        };
         const auto vector=[](const QVector4D& v){return QJsonArray{v.x(),v.y(),v.z(),v.w()};};
         for(auto it=timeline.actors.cbegin();it!=timeline.actors.cend();++it){QJsonArray keys;QJsonObject actorSamples;for(const auto& k:it.value())keys.append(QJsonObject{{"time",k.time},{"kind",kind(k.kind)},{"value",vector(k.value)}});for(double t:{0.,1.,2.,3.,4.,4.9,5.5}){QJsonObject values;for(const auto& k:it.value())values[kind(k.kind)]=vector(xmb::sample(timeline,it.key(),k.kind,t));actorSamples[QString::number(t)]=values;}actors[it.key()]=keys;samples[it.key()]=actorSamples;}
         for(const auto& s:timeline.notEvaluated)skipped.append(s);

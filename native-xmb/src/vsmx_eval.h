@@ -6,7 +6,8 @@
 
 namespace xmb {
 struct VsmxKey {
-    enum Kind { Alpha, Position, Scale, Colour } kind=Alpha;
+    enum Kind { Alpha, Position, Scale, Colour, Rotation, UvOffset, UvScale, Attenuation } kind=Alpha;
+    enum Curve { Linear, Smooth } curve=Linear;
     double time=0;
     QVector4D value;
 };
@@ -15,9 +16,21 @@ struct VsmxTimeline {
     QMap<QString,QString> strings;
     QMap<QString,QVector<VsmxKey>> actors;
     QStringList notEvaluated;
+    double loopPeriod=0; // > 0 when an IntervalTimer makes the timeline periodic
+    bool hasMotion() const;
 };
-bool evalVsmx(const QByteArray& data,VsmxTimeline* out,QString* error=nullptr);
-QVector4D sample(const VsmxTimeline& timeline,const QString& actor,VsmxKey::Kind kind,double t);
+struct VsmxEvalOptions {
+    int resolution=1080;
+    double aspect=16.0/9.0;
+    int hour=12,minute=0,second=0,millisecond=0;
+    int maxIntervalTicks=8;
+    // Initial scene pose per actor/light/camera so timed moves start from the RAF tree's authored values
+    // rather than zero when the script issues a set* call before writing the property directly.
+    QMap<QString,QMap<VsmxKey::Kind,QVector4D>> initialPose;
+};
+bool evalVsmx(const QByteArray& data,VsmxTimeline* out,QString* error=nullptr,const VsmxEvalOptions& options={});
+bool hasKeyKind(const VsmxTimeline& timeline,const QString& actor,VsmxKey::Kind kind);
+QVector4D sample(const VsmxTimeline& timeline,const QString& actor,VsmxKey::Kind kind,double t,const QVector4D& fallback={});
 
 // VSMX disassembly (read-only, for --raf-report). Header words are little-endian: code region at 8/12, text (UTF-16)
 // at 0x10, property names (UTF-16) at 0x1c, variable names (Latin-1) at 0x28; every instruction is 8 bytes (u32 id

@@ -203,8 +203,9 @@ QVector<Choice> choices(const QString& key,Assets& assets) {
     // (tap and hold both reach the XMB); "launcher" leaves the tap to the launcher's Home Menu / Guide and the
     // XMB keeps the hold.
     if(key=="input/psArbitration")return {{"XMB owns the PS button",QString("xmb")},{"Launcher owns the PS button",QString("launcher")}};
-    // The console's Notification Messages / Trophy Notifications pages are a two-item Display / Do Not Display list.
-    if(key=="system/notificationMessages" || key=="system/notificationTrophy")
+    // The console's Notification Messages / Trophy Notifications pages are a two-item Display / Do Not Display list;
+    // the native TV/Video Services Column toggle uses the same firmware labels.
+    if(key=="system/notificationMessages" || key=="system/notificationTrophy" || key=="appearance/tvColumn")
         return {{text("msg_display_on","Display"),true},{text("msg_display_off","Do Not Display"),false}};
     return {{"Off",false},{"On",true}};
 }
@@ -533,7 +534,9 @@ const QVector<RowSpec>* nativeOnlyRows(const QString& id) {
         {"cec_tv_on",nullptr,nullptr,Action::SettingChoices,"cec/tvOnAtStart",nullptr,"HDMI-CEC - TV On and Input",
             "Turns the TV on and switches it to this PC (HDMI-CEC) when the XMB starts and when it returns from Desktop Mode. Needs a Pulse-Eight USB-CEC adapter and its software."},
         {"cec_standby",nullptr,nullptr,Action::SettingChoices,"cec/standbyOnTurnOff",nullptr,"HDMI-CEC - TV Standby on Turn Off",
-            "Puts the TV in standby (HDMI-CEC) when you choose Turn Off the System. Needs a Pulse-Eight USB-CEC adapter and its software."}};
+            "Puts the TV in standby (HDMI-CEC) when you choose Turn Off the System. Needs a Pulse-Eight USB-CEC adapter and its software."},
+        {"tv_column",nullptr,nullptr,Action::SettingChoices,"appearance/tvColumn",nullptr,"TV/Video Services Column",
+            "Shows or hides the TV/Video Services column on the home bar. Turning it off leaves the console's nine categories."}};
     if(id=="display")return &displayExtra;
     return nullptr;
 }
@@ -2100,7 +2103,7 @@ QJsonObject settingsReport(Assets& assets,Preferences& preferences,const QString
 
     // ---- the app's own stored settings, resolved to the labels the pages show ------------------------
     static const QStringList appKeys{"appearance/theme","appearance/colour","appearance/background","appearance/font",
-        "appearance/wallpaper","clock/dateFormat","clock/hourFormat","clock/timeZone","audio/volume","audio/keyTone",
+        "appearance/wallpaper","appearance/tvColumn","clock/dateFormat","clock/hourFormat","clock/timeZone","audio/volume","audio/keyTone",
         "audio/muted","media/repeatMode","media/repeat","media/shuffle","power/idleMinutes",
         "display/screensaverMinutes","display/fullscreen","system/name","photo/interval","photo/fit","photo/floorBrightness"};
     QJsonObject app;
@@ -2649,7 +2652,7 @@ void Shell::setFullscreen(bool enabled){preferences_.setValue("display/fullscree
 void Shell::restoreDefaultSettings() {
     static const QVector<QPair<QString,QVariant>> defaults{
         {"appearance/colour",0},{"appearance/background",0},{"appearance/font",0},
-        {"appearance/theme",QString{}},{"appearance/wallpaper",QString{}},
+        {"appearance/theme",QString{}},{"appearance/wallpaper",QString{}},{"appearance/tvColumn",true},
         {"clock/dateFormat",1},{"clock/hourFormat",1},
         {"audio/volume",60},{"audio/keyTone",true},{"audio/muted",false},
         {"system/notificationMessages",true},{"system/notificationTrophy",true},

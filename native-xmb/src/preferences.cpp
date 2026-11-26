@@ -103,7 +103,7 @@ QVariant Preferences::defaultValue(const QString& key) {
     if(key=="photo/interval")return 5000;
     if(key=="media/repeatMode")return 0;
     // /setting/system/notification and /setting/system/notificationTrophy (vsh.elf): both classes default to shown.
-    if(key=="audio/keyTone" || key=="system/notificationMessages" || key=="system/notificationTrophy" || key=="jellyfin/autoplayNext")return true;
+    if(key=="audio/keyTone" || key=="system/notificationMessages" || key=="system/notificationTrophy" || key=="jellyfin/autoplayNext" || key=="appearance/tvColumn")return true;
     if(key=="power/idleMinutes" || key=="display/screensaverMinutes")return 0;
     if(key=="desktop/keepMusic" || key=="desktop/controllerMouse" || key=="steam/background")return true;
     if(key=="desktop/pointerSpeed")return 3;
