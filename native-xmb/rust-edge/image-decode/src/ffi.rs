@@ -3,12 +3,14 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::slice;
 
 use crate::cxml::{encode_parsed_cxml_tree, inflate_cxml_file_or_passthrough, parse_cxml};
+use crate::dds::decode_dds;
 use crate::edge::decode_edge_packed;
 use crate::gim::decode_gim;
 use crate::gtf::decode_gtf;
 use crate::qrc::{encode_parsed_qrc_toc, inflate_qrc_slice, parse_qrc};
 use crate::sfo::parse_sfo_packed;
 use crate::subtitles::{encode_cues, parse_pgs, parse_vobsub};
+use crate::tga::decode_tga;
 use crate::vag::vag_to_wav;
 
 thread_local! {
@@ -497,6 +499,100 @@ pub unsafe extern "C" fn img_parse_sfo(
         match parse_sfo_packed(bytes) {
             Ok(packed) => {
                 unsafe { hand_off(packed, out_buf, out_len) };
+                0
+            }
+            Err(e) => {
+                set_error(e);
+                1
+            }
+        }
+    }))
+    .unwrap_or_else(|_| {
+        set_error("internal panic caught at FFI boundary");
+        -2
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn img_decode_dds(
+    dds_ptr: *const u8,
+    dds_len: usize,
+    out_width: *mut u32,
+    out_height: *mut u32,
+    out_pixels: *mut *mut u8,
+    out_len: *mut usize,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        clear_error();
+        if out_width.is_null() || out_height.is_null() || out_pixels.is_null() || out_len.is_null() {
+            set_error("null output pointer");
+            return -1;
+        }
+        unsafe {
+            *out_width = 0;
+            *out_height = 0;
+            *out_pixels = std::ptr::null_mut();
+            *out_len = 0;
+        }
+        if dds_len > 0 && dds_ptr.is_null() {
+            set_error("null DDS input pointer");
+            return -1;
+        }
+        let bytes = if dds_len == 0 { &[] } else { unsafe { slice::from_raw_parts(dds_ptr, dds_len) } };
+        match decode_dds(bytes) {
+            Ok(decoded) => {
+                unsafe {
+                    *out_width = decoded.width;
+                    *out_height = decoded.height;
+                    hand_off(decoded.argb_bytes, out_pixels, out_len);
+                }
+                0
+            }
+            Err(e) => {
+                set_error(e);
+                1
+            }
+        }
+    }))
+    .unwrap_or_else(|_| {
+        set_error("internal panic caught at FFI boundary");
+        -2
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn img_decode_tga(
+    tga_ptr: *const u8,
+    tga_len: usize,
+    out_width: *mut u32,
+    out_height: *mut u32,
+    out_pixels: *mut *mut u8,
+    out_len: *mut usize,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        clear_error();
+        if out_width.is_null() || out_height.is_null() || out_pixels.is_null() || out_len.is_null() {
+            set_error("null output pointer");
+            return -1;
+        }
+        unsafe {
+            *out_width = 0;
+            *out_height = 0;
+            *out_pixels = std::ptr::null_mut();
+            *out_len = 0;
+        }
+        if tga_len > 0 && tga_ptr.is_null() {
+            set_error("null TGA input pointer");
+            return -1;
+        }
+        let bytes = if tga_len == 0 { &[] } else { unsafe { slice::from_raw_parts(tga_ptr, tga_len) } };
+        match decode_tga(bytes) {
+            Ok(decoded) => {
+                unsafe {
+                    *out_width = decoded.width;
+                    *out_height = decoded.height;
+                    hand_off(decoded.argb_bytes, out_pixels, out_len);
+                }
                 0
             }
             Err(e) => {

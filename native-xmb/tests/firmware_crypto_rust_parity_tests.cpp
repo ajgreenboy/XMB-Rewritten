@@ -1175,6 +1175,233 @@ int main(int argc, char** argv) {
               "sfo-parity-reject-truncated-header");
     }
 
+    // ---- 9. Phase 8: DDS & TGA texture decoder parity ---------------------
+    {
+        const auto cppDecodeDds = [](const QByteArray& bytes, QString* errOut) -> QImage {
+            if (errOut) errOut->clear();
+            try {
+                auto checkRange = [&](quint64 p, quint64 n) {
+                    if (p > quint64(bytes.size()) || n > quint64(bytes.size()) - p)
+                        throw std::runtime_error("Asset offset exceeds its container");
+                };
+                checkRange(0, 128);
+                const auto le = [&](int at) { return qFromLittleEndian<quint32>(bytes.constData() + at); };
+                if (!bytes.startsWith("DDS ") || le(4) != 124 || le(76) != 32)
+                    throw std::runtime_error("Invalid DDS header");
+                const auto w = le(16), h = le(12), flags = le(80), fourcc = le(84);
+                if (!w || !h || w > 4096 || h > 4096) throw std::runtime_error("Invalid DDS dimensions");
+                if (flags & 4) {
+                    const int format = fourcc == 0x31545844 ? 8 : fourcc == 0x33545844 ? 9 : fourcc == 0x35545844 ? 10 : 0;
+                    if (!format) throw std::runtime_error("Unsupported DDS compression");
+                    const quint64 blockBytes = format == 8 ? 8 : 16;
+                    const quint64 stride = quint64((w + 3) / 4) * blockBytes;
+                    const quint64 length = stride * ((h + 3) / 4);
+                    if (length > quint64(bytes.size()) - 128) throw std::runtime_error("DXT blocks exceed GIM image");
+                    QImage result(w, h, QImage::Format_ARGB32);
+                    const auto colour565 = [](quint16 value) {
+                        const int r = value >> 11, g = (value >> 5) & 63, b = value & 31;
+                        return qRgb((r << 3) | (r >> 2), (g << 2) | (g >> 4), (b << 3) | (b >> 2));
+                    };
+                    for (quint32 by = 0; by < h; by += 4)
+                        for (quint32 bx = 0; bx < w; bx += 4) {
+                            const auto* block = reinterpret_cast<const uchar*>(bytes.constData() + 128 + (by / 4) * stride + (bx / 4) * blockBytes);
+                            const auto* colours = block + (format == 8 ? 0 : 8);
+                            const quint16 c0 = qFromLittleEndian<quint16>(colours), c1 = qFromLittleEndian<quint16>(colours + 2);
+                            std::array<QRgb, 4> palette{colour565(c0), colour565(c1), 0, 0};
+                            if (format != 8 || c0 > c1)
+                                for (int i = 0; i < 2; ++i)
+                                    palette[2 + i] = qRgb(((2 - i) * qRed(palette[0]) + (1 + i) * qRed(palette[1])) / 3,
+                                                          ((2 - i) * qGreen(palette[0]) + (1 + i) * qGreen(palette[1])) / 3,
+                                                          ((2 - i) * qBlue(palette[0]) + (1 + i) * qBlue(palette[1])) / 3);
+                            else {
+                                palette[2] = qRgb((qRed(palette[0]) + qRed(palette[1])) / 2, (qGreen(palette[0]) + qGreen(palette[1])) / 2, (qBlue(palette[0]) + qBlue(palette[1])) / 2);
+                                palette[3] = qRgba(0, 0, 0, 0);
+                            }
+                            const quint32 indices = qFromLittleEndian<quint32>(colours + 4);
+                            std::array<int, 8> alphas{};
+                            quint64 alphaIndices = 0;
+                            if (format == 10) {
+                                alphas[0] = block[0];
+                                alphas[1] = block[1];
+                                if (alphas[0] > alphas[1])
+                                    for (int i = 1; i <= 6; ++i) alphas[i + 1] = ((7 - i) * alphas[0] + i * alphas[1]) / 7;
+                                else {
+                                    for (int i = 1; i <= 4; ++i) alphas[i + 1] = ((5 - i) * alphas[0] + i * alphas[1]) / 5;
+                                    alphas[6] = 0;
+                                    alphas[7] = 255;
+                                }
+                                for (int i = 0; i < 6; ++i) alphaIndices |= quint64(block[2 + i]) << (i * 8);
+                            }
+                            for (quint32 y = 0; y < 4 && by + y < h; ++y)
+                                for (quint32 x = 0; x < 4 && bx + x < w; ++x) {
+                                    const int pixel = int(y * 4 + x);
+                                    const auto colour = palette[(indices >> (pixel * 2)) & 3];
+                                    const int alpha = format == 10 ? alphas[(alphaIndices >> (pixel * 3)) & 7]
+                                                      : format == 9 ? ((block[pixel / 2] >> ((pixel & 1) * 4)) & 15) * 17
+                                                                    : qAlpha(colour);
+                                    reinterpret_cast<QRgb*>(result.scanLine(int(by + y)))[bx + x] = qRgba(qRed(colour), qGreen(colour), qBlue(colour), alpha);
+                                }
+                        }
+                    return result;
+                }
+                if (!(flags & 0x40) || le(88) != 32) throw std::runtime_error("Unsupported DDS pixel format");
+                const quint64 stride = (le(8) & 8) ? le(20) : quint64(w) * 4;
+                if (stride < quint64(w) * 4) throw std::runtime_error("Invalid DDS row pitch");
+                checkRange(128, stride * h);
+                const quint32 masks[] = {le(92), le(96), le(100), le(104)};
+                struct Channel { quint32 mask; int shift; quint32 maximum; };
+                std::array<Channel, 4> channels{};
+                quint32 used = 0;
+                for (int i = 0; i < 4; ++i) {
+                    const auto mask = masks[i];
+                    int shift = 0;
+                    if (!mask) {
+                        if (i < 3) throw std::runtime_error("Missing DDS colour mask");
+                        continue;
+                    }
+                    if (used & mask) throw std::runtime_error("Overlapping DDS colour masks");
+                    used |= mask;
+                    while (!((mask >> shift) & 1)) ++shift;
+                    const auto maximum = mask >> shift;
+                    if (maximum & (maximum + 1)) throw std::runtime_error("Non-contiguous DDS colour mask");
+                    channels[i] = {mask, shift, maximum};
+                }
+                QImage result(w, h, QImage::Format_ARGB32);
+                for (quint32 y = 0; y < h; ++y)
+                    for (quint32 x = 0; x < w; ++x) {
+                        const auto pixel = qFromLittleEndian<quint32>(bytes.constData() + 128 + y * stride + x * 4);
+                        int v[4] = {0, 0, 0, 255};
+                        for (int c = 0; c < 4; ++c)
+                            if (channels[c].mask)
+                                v[c] = int(quint64((pixel & channels[c].mask) >> channels[c].shift) * 255 / channels[c].maximum);
+                        reinterpret_cast<QRgb*>(result.scanLine(int(y)))[x] = qRgba(v[0], v[1], v[2], v[3]);
+                    }
+                return result;
+            } catch (const std::exception& ex) {
+                if (errOut) *errOut = QString::fromUtf8(ex.what());
+                return {};
+            }
+        };
+
+        const auto makeDdsHdr = [](quint32 w, quint32 h, quint32 flags08, quint32 pitch, quint32 pfFlags, quint32 fourcc, quint32 bpp,
+                                   quint32 mr, quint32 mg, quint32 mb, quint32 ma) {
+            QByteArray d(128, '\0');
+            d.replace(0, 4, "DDS ");
+            qToLittleEndian<quint32>(124, d.data() + 4);
+            qToLittleEndian<quint32>(flags08, d.data() + 8);
+            qToLittleEndian<quint32>(h, d.data() + 12);
+            qToLittleEndian<quint32>(w, d.data() + 16);
+            qToLittleEndian<quint32>(pitch, d.data() + 20);
+            qToLittleEndian<quint32>(32, d.data() + 76);
+            qToLittleEndian<quint32>(pfFlags, d.data() + 80);
+            qToLittleEndian<quint32>(fourcc, d.data() + 84);
+            qToLittleEndian<quint32>(bpp, d.data() + 88);
+            qToLittleEndian<quint32>(mr, d.data() + 92);
+            qToLittleEndian<quint32>(mg, d.data() + 96);
+            qToLittleEndian<quint32>(mb, d.data() + 100);
+            qToLittleEndian<quint32>(ma, d.data() + 104);
+            return d;
+        };
+
+        QByteArray ddsBgra = makeDdsHdr(2, 2, 0x8, 12, 0x41, 0, 32, 0x00ff0000, 0x0000ff00, 0x000000ff, 0xff000000);
+        ddsBgra += QByteArray::fromHex("1020304050607080deadbeef0102030411223344cafebabe");
+        QByteArray ddsRgbx = makeDdsHdr(2, 1, 0, 0, 0x40, 0, 32, 0x000003ff, 0x000ffc00, 0x3ff00000, 0);
+        ddsRgbx += QByteArray::fromHex("ff03000000fc3f00");
+
+        const QByteArray ddsInputs[] = {
+            makeDdsHdr(4, 4, 0, 0, 4, 0x31545844, 0, 0, 0, 0, 0) + QByteArray::fromHex("00f81f000055aaff"),
+            makeDdsHdr(3, 3, 0, 0, 4, 0x31545844, 0, 0, 0, 0, 0) + QByteArray::fromHex("1f0000f8ffffffff"),
+            makeDdsHdr(4, 4, 0, 0, 4, 0x33545844, 0, 0, 0, 0, 0) + QByteArray::fromHex("8888888888888888ffffffff00000000"),
+            makeDdsHdr(4, 4, 0, 0, 4, 0x35545844, 0, 0, 0, 0, 0) + QByteArray::fromHex("ff00499224499224ffffffff00000000"),
+            ddsBgra,
+            ddsRgbx,
+            QByteArray("DDS short"),
+            makeDdsHdr(4, 4, 0, 0, 4, 0x32545844, 0, 0, 0, 0, 0),
+            makeDdsHdr(2, 2, 0x8, 4, 0x40, 0, 32, 0x00ff0000, 0x0000ff00, 0x000000ff, 0),
+            makeDdsHdr(1, 1, 0, 0, 0x40, 0, 32, 0x00ff0000, 0x00ff0000, 0x000000ff, 0) + QByteArray(4, '\0'),
+            makeDdsHdr(1, 1, 0, 0, 0x40, 0, 32, 0x00ff0000, 0x0000a000, 0x000000ff, 0) + QByteArray(4, '\0'),
+        };
+        int ddsi = 0;
+        for (const QByteArray& d : ddsInputs) {
+            QString eCpp, eRust;
+            const QImage iCpp = cppDecodeDds(d, &eCpp);
+            const QImage iRust = xmb::image_rust::decodeDds(d, &eRust);
+            const QByteArray label = QByteArray("dds-parity-") + QByteArray::number(ddsi++);
+            check(iCpp.isNull() == iRust.isNull() && iCpp == iRust && eCpp == eRust, label.constData());
+        }
+
+        const auto cppDecodeTga = [](const QByteArray& file) -> QImage {
+            if (file.size() < 18) return {};
+            const auto* d = reinterpret_cast<const uchar*>(file.constData());
+            const int idLength = d[0], mapType = d[1], type = d[2], width = d[12] | (d[13] << 8), height = d[14] | (d[15] << 8), bpp = d[16], descriptor = d[17];
+            if (mapType != 0 || !(type == 2 || type == 3 || type == 10 || type == 11) || width <= 0 || height <= 0 || !(bpp == 8 || bpp == 24 || bpp == 32)) return {};
+            if (width > 8192 || height > 8192 || qint64(width) * height > 48ll * 1024 * 1024) return {};
+            const int bytes = bpp / 8;
+            qsizetype at = 18 + idLength;
+            QImage image(width, height, QImage::Format_ARGB32);
+            const auto pixel = [&](const uchar* p) { return bytes == 1 ? qRgb(p[0], p[0], p[0]) : qRgba(p[2], p[1], p[0], bytes == 4 ? p[3] : 255); };
+            std::vector<QRgb> pixels;
+            pixels.reserve(size_t(width) * height);
+            while (pixels.size() < size_t(width) * height) {
+                if (type < 9) {
+                    if (at + bytes > file.size()) return {};
+                    pixels.push_back(pixel(d + at));
+                    at += bytes;
+                    continue;
+                }
+                if (at >= file.size()) return {};
+                const int header = d[at++], count = (header & 0x7f) + 1;
+                if (header & 0x80) {
+                    if (at + bytes > file.size()) return {};
+                    const QRgb p = pixel(d + at);
+                    at += bytes;
+                    for (int i = 0; i < count; ++i) pixels.push_back(p);
+                } else {
+                    for (int i = 0; i < count; ++i) {
+                        if (at + bytes > file.size()) return {};
+                        pixels.push_back(pixel(d + at));
+                        at += bytes;
+                    }
+                }
+            }
+            const bool topFirst = descriptor & 0x20;
+            for (int y = 0; y < height; ++y)
+                for (int x = 0; x < width; ++x)
+                    image.setPixel(x, topFirst ? y : height - 1 - y, pixels[size_t(y) * width + x]);
+            return image;
+        };
+
+        auto makeTgaHdr = [](quint8 idLen, quint8 mapType, quint8 type, quint16 w, quint16 h, quint8 bpp, quint8 desc) {
+            QByteArray t(18 + idLen, '\0');
+            t[0] = char(idLen);
+            t[1] = char(mapType);
+            t[2] = char(type);
+            t[12] = char(w & 0xff);
+            t[13] = char(w >> 8);
+            t[14] = char(h & 0xff);
+            t[15] = char(h >> 8);
+            t[16] = char(bpp);
+            t[17] = char(desc);
+            return t;
+        };
+        const QByteArray tgaInputs[] = {
+            makeTgaHdr(3, 0, 3, 2, 2, 8, 0x20) + QByteArray::fromHex("10203040"),
+            makeTgaHdr(0, 0, 2, 2, 2, 24, 0x00) + QByteArray::fromHex("0102030405060708090a0b0c"),
+            makeTgaHdr(0, 0, 10, 2, 2, 32, 0x00) + QByteArray::fromHex("81102030800100ff00ffff00ff00ff"),
+            // RLE packet deliberately overshoots 3 pixels into a 2x2 buffer cleanly.
+            makeTgaHdr(0, 0, 11, 2, 2, 8, 0x20) + QByteArray::fromHex("827f81aa"),
+            makeTgaHdr(0, 1, 2, 2, 2, 24, 0x20) + QByteArray(12, '\0'),
+            makeTgaHdr(0, 0, 10, 2, 2, 32, 0x20) + QByteArray::fromHex("8010"),
+        };
+        int tgai = 0;
+        for (const QByteArray& t : tgaInputs) {
+            const QImage iCpp = cppDecodeTga(t);
+            const QImage iRust = xmb::image_rust::decodeTga(t);
+            const QByteArray label = QByteArray("tga-parity-") + QByteArray::number(tgai++);
+            check(iCpp.isNull() == iRust.isNull() && iCpp == iRust, label.constData());
+        }
+    }
+
     std::printf("rust-edge-parity: %s (%d failures)\n", failures ? "FAIL" : "PASS", failures);
     return failures ? 1 : 0;
 }

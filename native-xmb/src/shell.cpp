@@ -15,6 +15,8 @@
 #include <QPainter>
 #include "settings_menu.h"
 #include "save_data.h"
+#include "trophy_data.h"
+#include "autostart.h"
 #include "media_controls.h"
 #include <QApplication>
 #include "assets.h"
@@ -293,6 +295,7 @@ void Shell::addInstalledApps() {
                 details+(emulator?"\nThis title has no EBOOT.BIN to start.":"\nNo RPCS3 executable was found next to dev_hdd0, so it cannot be started."));
             const QString pic1=QDir(content).filePath(QStringLiteral("PIC1.PNG"));
             if(QFileInfo(pic1).isFile())entry.backgroundPath=pic1;
+            entry.previewAudioPath=findPreviewAudio(content);
             entry.gameTile=true;
             if(emulator && bootable){entry.action=Action::Launch;entry.value=listed.contains(id)?"%RPCS3_GAMEID%:"+id:eboot;}
             category.entries.push_back(std::move(entry));
@@ -312,6 +315,69 @@ void Shell::addInstalledApps() {
         const QString content=QFileInfo(QDir(folder).filePath("PS3_GAME/PARAM.SFO")).isFile()?QDir(folder).filePath("PS3_GAME"):folder;
         add(folder,content,true);
     }
+}
+void Shell::openTrophyCollection() {
+    if(pages_.size()>=32)return;
+    Page page;
+    page.entries=trophyCollectionRows(assets_,&page.title);
+    if(page.entries.isEmpty()) {
+        showMessage(assets_.text("explore_category_psn","msg_trophies",tr("Trophy Collection")),unavailableReason(QStringLiteral("trophy")),MessageKind::Page);
+        return;
+    }
+    pages_.push_back(std::move(page));
+}
+void Shell::openTrophySet(const QString& setKey) {
+    if(pages_.size()>=32)return;
+    Page page;
+    page.entries=trophySetRows(assets_,setKey,&page.title);
+    if(page.entries.isEmpty()) {
+        showMessage(tr("Trophy Collection"),tr("No trophies were found in this set."),MessageKind::Page);
+        return;
+    }
+    pages_.push_back(std::move(page));
+}
+void Shell::openGameDataUtility() {
+    if(pages_.size()>=32)return;
+    Page page;
+    page.entries=gameDataRows(assets_,&page.title);
+    if(page.entries.isEmpty()) {
+        showMessage(assets_.text("explore_category_game","msg_gamedata_utility",tr("Game Data Utility")),
+                    assets_.text("explore_category_game","msg_error_no_gamedata",tr("There is no game data.")),MessageKind::Page);
+        return;
+    }
+    pages_.push_back(std::move(page));
+}
+void Shell::stopPreviewAudio() {
+    previewDebounce_.stop();
+    if(!activePreviewPath_.isEmpty())activePreviewPath_.clear();
+    if(previewPlayer_ && previewPlayer_->playbackState()!=QMediaPlayer::StoppedState) {
+        previewPlayer_->stop();
+        previewPlayer_->setSource({});
+    }
+}
+void Shell::syncPreviewAudio() {
+    const bool blocked=diagnostics::safeMode()
+        || clockOverride_.isValid()
+        || qEnvironmentVariableIsSet("XMB_DUMP_ENTRIES")
+        || qEnvironmentVariable("XMB_PREVIEW_AUDIO")==QLatin1String("0")
+        || preferences_.value("audio/muted").toBool()
+        || preferences_.value("audio/volume").toInt()<=0
+        || mediaOpen_ || inGame_ || gameRunning() || psMenu_ || optionsOpen_ || !message_.isEmpty() || busy() || loggedOut_;
+    if(blocked){stopPreviewAudio();return;}
+    const auto& rows=entries();
+    if(rows.isEmpty()){stopPreviewAudio();return;}
+    const int idx=std::clamp(selection(),0,int(rows.size())-1);
+    const QString path=rows[idx].previewAudioPath;
+    if(path.isEmpty()){stopPreviewAudio();return;}
+    if(previewAudio_) {
+        previewAudio_->setVolume(std::clamp(preferences_.value("audio/volume").toInt(),0,100)/100.f*0.65f);
+        previewAudio_->setMuted(false);
+    }
+    if(path==activePreviewPath_ && (previewDebounce_.isActive() || (previewPlayer_ && previewPlayer_->playbackState()==QMediaPlayer::PlayingState)))
+        return;
+    stopPreviewAudio();
+    activePreviewPath_=path;
+    previewDebounce_.start();
 }
 // --- Network column from the firmware's XMBML -------------------------------------------------------
 // audit/FIRMWARE-PARITY-GAPS.md row 8 (M1) and audit/XMBML-NETWORK.md: the 4.93 firmware describes this
@@ -587,6 +653,7 @@ void Shell::resolveMediaColumns() {
 // which is the return lifecycle a launched game needs (audit/FEATURE-COVERAGE.md, ISC-20).
 bool Shell::startTracked(const QString& program,const QStringList& arguments,const QString& workingDirectory,const QString& title,const DisplaySpec& displaySpec,
         std::function<bool(const std::function<void(const QString&)>&)> successor) {
+    stopPreviewAudio();
     if(!game_.isNull()){showMessage(QObject::tr("A title is already running."),MessageKind::Page);return false;}
     // D9: the title's own resolution / refresh / HDR, applied before it starts and put back exactly when it ends however it
     // ends (the restore state is on disk before the first change; audit/DISPLAY-MODES.md). An unsupported request is logged
@@ -787,6 +854,7 @@ bool Shell::startSteamUriHandoff(const QString& appId,const QString& title) {
 // Steam launches itself, so the only honest lifecycle signal is Steam's own registry state. The
 // handoff records the app id, watches Apps\<id>\Running, and reports the return when it clears.
 bool Shell::startSteamTracked(const QString& appId,const QString& title) {
+    stopPreviewAudio();
 #ifndef Q_OS_WIN
     // No registry observation on Linux: hand the steam:// URI to the OS and stop, claiming nothing
     // about launch or exit. The Windows lifecycle path below is the only one that watches state.
@@ -1047,6 +1115,7 @@ bool Shell::launchCoverPress(const QString& why) {
     return true;
 }
 void Shell::launch(const Entry& entry) {
+    stopPreviewAudio();
     const QString emulator=emulatorPath();
     gameIsRpcs3_=true;
     if(emulator.isEmpty() || !startTracked(emulator,{"--no-gui",entry.value},QFileInfo(emulator).absolutePath(),entry.title)) {
@@ -1727,7 +1796,7 @@ void Shell::sortGameEntries(int mode) {
 void Shell::refreshContent() {
     if(contentScanning_){contentRefreshPending_=true;return;}
     contentScanning_=true;
-    struct Result { SteamInstallation steam; QVector<ContentApp> apps; QHash<QString,QImage> art; QHash<QString,QString> rawgPaths; QHash<QString,QString> importedPaths; QHash<QString,QString> importedHeroPaths; QSet<QString> fetchable; QSet<QString> logoIds; QStringList logoWanted; QString error; SteamAccountSnapshot account; };
+    struct Result { SteamInstallation steam; QVector<ContentApp> apps; QHash<QString,QImage> art; QHash<QString,QString> rawgPaths; QHash<QString,QString> importedPaths; QHash<QString,QString> importedHeroPaths; QHash<QString,QString> customPic1Paths; QHash<QString,QString> customAudioPaths; QSet<QString> fetchable; QSet<QString> logoIds; QStringList logoWanted; QString error; SteamAccountSnapshot account; };
     auto* watcher=new QFutureWatcher<Result>(this);
     connect(watcher,&QFutureWatcher<Result>::finished,this,[this,watcher]{
         auto result=watcher->result();watcher->deleteLater();contentScanning_=false;
@@ -1837,6 +1906,8 @@ void Shell::refreshContent() {
                     });
                 }
                 providers.push_back(std::move(e));
+                providers.last().backgroundPath=result.customPic1Paths.value(QStringLiteral("custom:")+app.id);
+                providers.last().previewAudioPath=result.customAudioPaths.value(QStringLiteral("custom:")+app.id);
                 providers.last().rawgArtworkVisible=!providers.last().logoArt && result.rawgPaths.contains(QStringLiteral("custom:")+app.id);
             }
             if(seerrRow) {
@@ -1994,6 +2065,12 @@ void Shell::refreshContent() {
             // the Steam store match (key-free, cached) > the manager's generated card > the default icon. The
             // manager writes a generated 512x288 card when an import found no art, so a card is not "real art".
             const QString rowId=QStringLiteral("custom:")+app.id;
+            const QString exeDir=app.executable.isEmpty()?QString{}:QFileInfo(app.executable).absolutePath();
+            if(!exeDir.isEmpty()) {
+                const QString pic1=QDir(exeDir).filePath(QStringLiteral("PIC1.PNG"));
+                if(QFileInfo(pic1).isFile())result.customPic1Paths.insert(rowId,pic1);
+                if(const QString snd=findPreviewAudio(exeDir);!snd.isEmpty())result.customAudioPaths.insert(rowId,snd);
+            }
             QImage manifest;
             if(!app.artwork.isEmpty()) {
                 QImageReader reader(app.artwork);reader.setDecideFormatFromContent(true);reader.setAutoTransform(true);
@@ -2251,6 +2328,20 @@ Shell::Shell(QString dataDirectory,Assets& assets,QObject* parent):QObject(paren
         for(auto& entry:category.entries)entry.themeIcon=themeEntryIcons.value(category.id+"/"+entry.id);
     }
     xmb::bootprof::mark("Shell settings column");
+    previewPlayer_=std::make_unique<QMediaPlayer>();
+    previewAudio_=std::make_unique<QAudioOutput>();
+    previewPlayer_->setAudioOutput(previewAudio_.get());
+    previewDebounce_.setSingleShot(true);
+    previewDebounce_.setInterval(350);
+    connect(&previewDebounce_,&QTimer::timeout,this,[this]{
+        if(activePreviewPath_.isEmpty() || !previewPlayer_)return;
+        previewPlayer_->setSource(QUrl::fromLocalFile(activePreviewPath_));
+        previewPlayer_->play();
+    });
+    connect(previewPlayer_.get(),&QMediaPlayer::errorOccurred,this,[this](QMediaPlayer::Error,const QString&){
+        stopPreviewAudio();
+    });
+    connect(this,&Shell::changed,this,&Shell::syncPreviewAudio);
     selections_.fill(0,categories_.size());
     // The tenth column (FIDELITY-ROOT-BAR C1/#5): built like every other category above, then dropped here when
     // `appearance/tvColumn` is off, so the bar, the navigation clamps and the entry dump all follow categories_.
@@ -3065,9 +3156,14 @@ void Shell::activate() {
     // Committing a value is the firmware's module-action path: snd_system_ok when the action completes
     // (explore_plugin.prx FUN_00030954 / FUN_00062e6c). SetSetting is silent here and plays Cue::Accept
     // after its write below (audit/INTERACTION-AUDIO.md section 10).
-        if(entry.action!=Action::SetSetting)
-        interactionAudio_.play(entry.action==Action::Unavailable?InteractionAudio::Cue::Error:
-            entry.action==Action::SettingChoices?InteractionAudio::Cue::Options:InteractionAudio::Cue::Confirm);
+    const bool realTrophyOrData=!qEnvironmentVariableIsSet("XMB_DUMP_ENTRIES")
+        && ((entry.id==QLatin1String("trophy") && hasTrophySets(assets_.hddRoot()))
+            || (entry.id==QLatin1String("data") && hasGameDataEntries(assets_.hddRoot())));
+    if(entry.action!=Action::SetSetting)
+        interactionAudio_.play(realTrophyOrData?InteractionAudio::Cue::Confirm
+            :entry.action==Action::Unavailable?InteractionAudio::Cue::Error
+            :entry.action==Action::SettingChoices?InteractionAudio::Cue::Options
+            :InteractionAudio::Cue::Confirm);
     // In-game XMB: an operation that needs the game's resources is refused with the firmware's quit offer
     // (explore_plugin_full msg_need_quit_game_to_operate_ask, TRACED; the set of operations that trigger it is
     // INFERRED: starting another title, media playback, a browser or store hand-off).
@@ -3117,6 +3213,7 @@ void Shell::activate() {
         break;
     case Action::SettingsPage:openSettings(entry.value);break;
     case Action::SaveData:openSaveData(entry.value);break;
+    case Action::TrophySet:openTrophySet(entry.value);break;
     case Action::SettingChoices:openChoices(entry.setting,entry.title);break;
     case Action::SetSetting:
         // The two file pickers that live inside the Theme and Background lists (`Install` and `Select
@@ -3506,6 +3603,10 @@ void Shell::activate() {
     case Action::JellyfinSignInSubmit:submitJellyfinSignIn();break;
     case Action::JellyfinSignInCancel:cancelJellyfinSignInPage();break;
     case Action::Unavailable:
+        if(!qEnvironmentVariableIsSet("XMB_DUMP_ENTRIES")) {
+            if(entry.id==QLatin1String("trophy") && hasTrophySets(assets_.hddRoot())){openTrophyCollection();break;}
+            if(entry.id==QLatin1String("data") && hasGameDataEntries(assets_.hddRoot())){openGameDataUtility();break;}
+        }
         // A Continue Watching row whose file has gone says why, instead of the generic line, which would be
         // false: the feature exists, the file does not.
         showMessage(entry.title,(entry.id.startsWith("continue:") || entry.id.startsWith("savedata:") || entry.id==QLatin1String("start_at_signin") || entry.id.startsWith("setup:")
@@ -3865,7 +3966,7 @@ OptionLabel Shell::activateLabel(const Entry& entry) const {
     switch(entry.action) {
     case Action::Folder:case Action::SteamFolder:case Action::JellyfinFolder:case Action::JellyfinMusicApp:case Action::JellyfinMusicNode:
     case Action::Library:case Action::SteamStoreBrowse:case Action::SteamStoreSection:
-    case Action::SteamDownloads:case Action::ReleaseGameJob:
+    case Action::SteamDownloads:case Action::ReleaseGameJob:case Action::TrophySet:
         return {"msg_open","Open"};
     case Action::File:
         return categories_[category_].id=="photo"?OptionLabel{"msg_display","View"}:OptionLabel{"msg_play","Play"};
@@ -3968,6 +4069,7 @@ QString Shell::entryKind(const Entry& entry) const {
     if(entry.id.startsWith("continue:"))return categories_[category_].id=="music"?QObject::tr("Music"):QObject::tr("Video");
     switch(entry.action) {
     case Action::Folder:case Action::Library:case Action::SteamFolder:case Action::JellyfinFolder:case Action::JellyfinMusicApp:case Action::JellyfinMusicNode:return QObject::tr("Folder");
+    case Action::TrophySet:return QObject::tr("Trophy Set");
     case Action::File: {
         const auto& kind=categories_[category_].id;
         return kind=="photo"?QObject::tr("Image"):kind=="music"?QObject::tr("Music"):QObject::tr("Video");
@@ -6472,6 +6574,7 @@ QString firstLine(const QString& text) {
 }
 }
 void Shell::beginSettingWrite(const Entry& entry) {
+    ++settingsWriteToken_;
     SettingsWrite write;
     write.key=entry.setting;write.label=entry.title;write.value=entry.option;
     write.valueText=entry.title;                       // the band row's own label is the chosen item
@@ -6493,6 +6596,9 @@ void Shell::beginSettingWrite(const Entry& entry) {
         if(write.askBody.isEmpty())write.askBody=QObject::tr("Do you want to accept this setting?");
     }
     write.slow=false;
+    write.asyncAutostart=(write.key==QLatin1String("host/startAtSignIn"));
+    if(write.asyncAutostart)
+        write.proceedText=firstLine(sysconf("msg_wait",QObject::tr("Please wait...")));
     // Back to the system's theme with no wallpaper of the user's own: the original background returns, so
     // the write is two keys and must stay atomic (the earlier single-frame path did the same).
     write.themeToSystem=entry.setting=="appearance/theme" && entry.option.toString().isEmpty()
@@ -6521,6 +6627,7 @@ void Shell::beginResetWrite() {
     const auto sysconf=[this](const QString& key,const QString& fallback) {
         return assets_.text("sysconf_plugin",key,fallback);
     };
+    ++settingsWriteToken_;
     SettingsWrite write;
     write.key=QStringLiteral("settings/restoreDefaults");
     write.label=QObject::tr("Restore Default Settings");
@@ -6543,6 +6650,30 @@ void Shell::beginResetWrite() {
 }
 void Shell::startSettingsWritePage() {
     if(settingsWrite_.key.isEmpty())return;
+    if(settingsWrite_.asyncAutostart) {
+        settingsWrite_.stage=WriteStage::Proceed;
+        busy_=true;busyClock_.start();
+        status_=settingsWrite_.proceedText;
+        interactionAudio_.play(InteractionAudio::Cue::Confirm);
+        qInfo().noquote()<<QStringLiteral("settings: write stage=proceed key=%1 page=busy async=autostart text=\"%2\"")
+            .arg(settingsWrite_.key,settingsWrite_.proceedText);
+        emit changed();
+        const quint64 token=settingsWriteToken_;
+        const int asked=settingsWrite_.value.toInt();
+        autostart::setEnabledAsync(asked==1,[this,token,asked](bool ok,const QString& err){
+            if(token!=settingsWriteToken_ || settingsWrite_.stage!=WriteStage::Proceed)return;
+            QString error=err;
+            const int read=host::hostChoiceIndex(settingsWrite_.key);
+            if(ok && read!=asked) {
+                ok=false;
+                error=QObject::tr("the computer still reports item %1 of the list (asked for %2)").arg(read).arg(asked);
+            } else if(!ok && error.isEmpty()) {
+                error=QObject::tr("the computer refused the write (it still reads %1)").arg(read);
+            }
+            completeSettingWrite(ok,error);
+        });
+        return;
+    }
     if(settingsWrite_.slow) {
         // The console's *_proceed page: the busy page holds the screen while the write runs. This build's
         // write is one store call, so the page is held for a minimum visible time (a fit: no local artifact
@@ -6664,6 +6795,10 @@ void Shell::runSettingWrite() {
         if(!ok)error=lastPreferencesError_.isEmpty()?preferences_.error():lastPreferencesError_;
         if(ok)applyPreferences();
     }
+    completeSettingWrite(ok,error);
+}
+void Shell::completeSettingWrite(bool ok,const QString& error) {
+    if(settingsWrite_.key.isEmpty())return;
     settingsWrite_.result=ok?settingsWrite_.okText:settingsWrite_.failText+QStringLiteral(": ")+error;
     if(settingsWrite_.stage==WriteStage::Proceed) {
         busy_=false;status_.clear();
@@ -6681,6 +6816,7 @@ void Shell::runSettingWrite() {
 }
 void Shell::finishSettingWrite() {
     if(settingsWrite_.stage!=WriteStage::FinishOk && settingsWrite_.stage!=WriteStage::FinishFailed)return;
+    ++settingsWriteToken_;
     const QString key=settingsWrite_.key;
     const bool ok=settingsWrite_.stage==WriteStage::FinishOk;
     // A failed write leaves the list up (the console's refused choice keeps the page and its focus, so the
@@ -6696,6 +6832,7 @@ void Shell::finishSettingWrite() {
 }
 void Shell::cancelSettingWrite(const QString& why) {
     if(settingsWrite_.stage==WriteStage::None)return;
+    ++settingsWriteToken_;
     qInfo().noquote()<<QStringLiteral("settings: write stage=cancelled key=%1 (%2)").arg(settingsWrite_.key,why);
     if(settingsWrite_.stage==WriteStage::Proceed) {
         busy_=false;status_.clear();
@@ -6732,6 +6869,7 @@ void Shell::removeContinueEntry(const QString& id,const QString& title) {
     reloadContinueWatching();
 }
 void Shell::startQueuedMedia() {
+    stopPreviewAudio();
     if(jellyfinQueue_){startJellyfinMedia();return;}
     const auto* selected=mediaQueue_.current();if(!selected)return;
     const auto item=*selected; // player callbacks must not invalidate the selected queue entry
@@ -7096,6 +7234,7 @@ void Shell::toggleMediaDisplay() {
 }
 void Shell::applyPreferences(){
     audio_->setVolume(preferences_.value("audio/volume").toInt()/100.f);audio_->setMuted(preferences_.value("audio/muted").toBool());
+    if(previewAudio_){previewAudio_->setVolume(preferences_.value("audio/volume").toInt()/100.f*0.65f);previewAudio_->setMuted(preferences_.value("audio/muted").toBool());}
     interactionAudio_.setEnabled(preferences_.value("audio/keyTone").toBool() && !preferences_.value("audio/muted").toBool());
     interactionAudio_.setVolume(preferences_.value("audio/volume").toInt()/100.f);
     if(slideshow_.isActive())slideshow_.setInterval(preferences_.value("photo/interval").toInt());
@@ -7369,6 +7508,7 @@ void Shell::rebuildUsers(){
 }
 // The surfaces a signed-in user owns end on a switch and on Log Out: playback, pages, panels and messages.
 void Shell::endUserSurfaces(){
+    stopPreviewAudio();
     ++mediaRequest_;++photoRequest_;jellyfinRequest_=0;finishJellyfinPlayback();jellyfinQueue_=false;mediaOpen_=false;galleryPaths_.clear();
     mediaQueue_.clear();mediaFailures_=0;slideshow_.stop();photo_={};photoRotation_=0;player_->stop();player_->setSource(QUrl{});
     resumePath_.clear();resumePending_=0;mediaDisplayPinned_=false;loading_=false;status_.clear();

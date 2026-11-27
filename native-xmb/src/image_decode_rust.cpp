@@ -435,4 +435,56 @@ bool parseSfo(const QByteArray& rawSfo, QHash<QString, QString>& out, QString* e
     return true;
 }
 
+QImage decodeDds(const QByteArray& dds, QString* error) {
+    if (error) error->clear();
+    uint32_t width = 0, height = 0;
+    ImgBufferGuard guard;
+    const auto* ptr = dds.isEmpty() ? nullptr : reinterpret_cast<const uint8_t*>(dds.constData());
+    const int rc = img_decode_dds(ptr, static_cast<size_t>(dds.size()), &width, &height, &guard.ptr, &guard.len);
+    if (rc != 0) {
+        if (error) *error = lastMessage();
+        return {};
+    }
+    const uint64_t rowBytes = uint64_t(width) * 4u;
+    if (!guard.ptr || width == 0 || height == 0 || guard.len != rowBytes * uint64_t(height)) {
+        if (error) *error = QStringLiteral("corrupt Rust DDS payload");
+        return {};
+    }
+    QImage image(static_cast<int>(width), static_cast<int>(height), QImage::Format_ARGB32);
+    if (image.isNull()) {
+        if (error) *error = QStringLiteral("cannot allocate DDS image");
+        return {};
+    }
+    for (uint32_t y = 0; y < height; ++y) {
+        std::memcpy(image.scanLine(static_cast<int>(y)), guard.ptr + size_t(y) * size_t(rowBytes), size_t(rowBytes));
+    }
+    return image;
+}
+
+QImage decodeTga(const QByteArray& tga, QString* error) {
+    if (error) error->clear();
+    uint32_t width = 0, height = 0;
+    ImgBufferGuard guard;
+    const auto* ptr = tga.isEmpty() ? nullptr : reinterpret_cast<const uint8_t*>(tga.constData());
+    const int rc = img_decode_tga(ptr, static_cast<size_t>(tga.size()), &width, &height, &guard.ptr, &guard.len);
+    if (rc != 0) {
+        if (error) *error = lastMessage();
+        return {};
+    }
+    const uint64_t rowBytes = uint64_t(width) * 4u;
+    if (!guard.ptr || width == 0 || height == 0 || guard.len != rowBytes * uint64_t(height)) {
+        if (error) *error = QStringLiteral("corrupt Rust TGA payload");
+        return {};
+    }
+    QImage image(static_cast<int>(width), static_cast<int>(height), QImage::Format_ARGB32);
+    if (image.isNull()) {
+        if (error) *error = QStringLiteral("cannot allocate TGA image");
+        return {};
+    }
+    for (uint32_t y = 0; y < height; ++y) {
+        std::memcpy(image.scanLine(static_cast<int>(y)), guard.ptr + size_t(y) * size_t(rowBytes), size_t(rowBytes));
+    }
+    return image;
+}
+
 } // namespace xmb::image_rust

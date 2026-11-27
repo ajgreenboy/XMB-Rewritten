@@ -148,6 +148,26 @@ int img_parse_sfo(
     size_t* out_len
 );
 
+/* Decodes a DDS texture (DXT1/3/5 or 32-bit bitmask uncompressed) into native-endian ARGB32. */
+int img_decode_dds(
+    const uint8_t* dds_ptr,
+    size_t dds_len,
+    uint32_t* out_width,
+    uint32_t* out_height,
+    uint8_t** out_pixels,
+    size_t* out_len
+);
+
+/* Decodes an uncompressed or RLE TGA texture (8/24/32-bpp) into native-endian ARGB32. */
+int img_decode_tga(
+    const uint8_t* tga_ptr,
+    size_t tga_len,
+    uint32_t* out_width,
+    uint32_t* out_height,
+    uint8_t** out_pixels,
+    size_t* out_len
+);
+
 void img_free_buffer(uint8_t* ptr, size_t len);
 
 size_t img_last_error(uint8_t* buf, size_t buf_cap);

@@ -122,4 +122,4 @@ owner (workstream B) and must sign off the `setHostChoice`/read-back change, whi
 
 ---
 
-status: triage only, no code changed, not built
+status: resolved on main — P6 editor `Launch window` combo verified in `app_editor.cpp` (`WEB-APPS.md` updated); P6 stale browser profile adoption implemented via `web_adopt` in `Shell::launchWebApp`; D3 `Start at Sign-in` wired to `autostart::setEnabledAsync` in both `setup_shell.cpp` and `Shell::startSettingsWritePage`.

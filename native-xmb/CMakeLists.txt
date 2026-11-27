@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
-project(RePS3Native VERSION 0.3.41 LANGUAGES CXX)
+project(RePS3Native VERSION 0.3.42 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
@@ -86,11 +86,14 @@ if(XMB_RUST_FIRMWARE_CRYPTO)
             "${XMB_RUST_WORKSPACE_DIR}/image-decode/Cargo.toml"
             "${XMB_RUST_WORKSPACE_DIR}/image-decode/src/lib.rs"
             "${XMB_RUST_WORKSPACE_DIR}/image-decode/src/cxml.rs"
+            "${XMB_RUST_WORKSPACE_DIR}/image-decode/src/dds.rs"
             "${XMB_RUST_WORKSPACE_DIR}/image-decode/src/gim.rs"
             "${XMB_RUST_WORKSPACE_DIR}/image-decode/src/gtf.rs"
             "${XMB_RUST_WORKSPACE_DIR}/image-decode/src/edge.rs"
             "${XMB_RUST_WORKSPACE_DIR}/image-decode/src/qrc.rs"
+            "${XMB_RUST_WORKSPACE_DIR}/image-decode/src/sfo.rs"
             "${XMB_RUST_WORKSPACE_DIR}/image-decode/src/subtitles.rs"
+            "${XMB_RUST_WORKSPACE_DIR}/image-decode/src/tga.rs"
             "${XMB_RUST_WORKSPACE_DIR}/image-decode/src/vag.rs"
             "${XMB_RUST_WORKSPACE_DIR}/image-decode/src/ffi.rs"
         COMMENT "Building the Rust untrusted-edge staticlib (cargo build --release -p xmb-rust-edge)"
@@ -124,6 +127,7 @@ qt_add_executable(re-ps3-native
     src/musicvis.cpp src/musicvis.h
     src/playlists.cpp src/playlists.h
     src/save_data.cpp src/save_data.h
+    src/trophy_data.cpp src/trophy_data.h
     src/spotify_client.cpp src/spotify_client.h src/spotify_shell.cpp
     src/discord_client.cpp src/discord_client.h
     src/glyphs.cpp src/glyphs.h
@@ -702,6 +706,31 @@ if(XMB_SYSTEM_POWER_BUILD_TESTS)
         src/system_power.cpp src/system_power.h)
     target_include_directories(xmb-system-power-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
     target_link_libraries(xmb-system-power-tests PRIVATE Qt6::Core)
+endif()
+option(XMB_TROPHY_BUILD_TESTS "Build RPCS3 Trophy Collection & Game Data Utility parser tests" OFF)
+if(XMB_TROPHY_BUILD_TESTS)
+    qt_add_executable(xmb-trophy-tests tests/trophy_tests.cpp
+        src/trophy_data.cpp src/trophy_data.h
+        src/assets.cpp src/assets.h
+        src/qrc.cpp src/qrc.h
+        src/p3t.cpp src/p3t.h
+        src/vsmx_eval.cpp src/vsmx_eval.h
+        src/gtf_decode.cpp src/gtf_decode.h
+        src/edge_decode.cpp src/edge_decode.h
+        src/image_subtitles.cpp src/image_subtitles.h
+        ${XMB_RUST_CRYPTO_SOURCES})
+    target_include_directories(xmb-trophy-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(xmb-trophy-tests PRIVATE Qt6::Core Qt6::Gui Qt6::Network ${XMB_ZLIB})
+    if(XMB_RUST_FIRMWARE_CRYPTO)
+        target_link_libraries(xmb-trophy-tests PRIVATE xmb_firmware_crypto_rust)
+        add_dependencies(xmb-trophy-tests xmb-rust-firmware-crypto)
+        if(XMB_USE_RUST_EDGE)
+            target_compile_definitions(xmb-trophy-tests PRIVATE XMB_USE_RUST_EDGE)
+        endif()
+    endif()
+    if(MSVC)
+        target_compile_options(xmb-trophy-tests PRIVATE /W4 /permissive- /utf-8)
+    endif()
 endif()
 if(Freetype_FOUND)
     target_link_libraries(re-ps3-native PRIVATE Freetype::Freetype)

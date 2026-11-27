@@ -1,6 +1,7 @@
 #include "save_data.h"
 #include "assets.h"
 #include "shell.h"
+#include "trophy_data.h"
 #ifdef XMB_USE_RUST_EDGE
 #include "image_decode_rust.h"
 #endif
@@ -106,6 +107,9 @@ QVector<Entry> saveDataRows(Assets& assets,const QString& kind) {
                         QImage img(icon0);
                         if(!img.isNull()){row.artwork=std::move(img);row.gameTile=true;}
                     }
+                    const QString pic1=dir.filePath(QStringLiteral("PIC1.PNG"));
+                    if(QFileInfo::exists(pic1))row.backgroundPath=pic1;
+                    row.previewAudioPath=findPreviewAudio(saveInfo.absoluteFilePath());
                     QStringList infoRows;
                     infoRows<<QObject::tr("Title: %1").arg(row.title);
                     if(!subTitle.isEmpty())infoRows<<QObject::tr("Subtitle: %1").arg(subTitle);

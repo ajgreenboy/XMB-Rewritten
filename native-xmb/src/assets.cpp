@@ -776,6 +776,12 @@ QByteArray Assets::vshModule(const QString& name) const {
     return file.open(QIODevice::ReadOnly)?file.readAll():QByteArray();
 }
 QImage Assets::decodeDds(const QByteArray& bytes) {
+#ifdef XMB_USE_RUST_EDGE
+    QString error;
+    QImage image = image_rust::decodeDds(bytes, &error);
+    if (image.isNull()) throw std::runtime_error(error.toStdString());
+    return image;
+#else
     range(bytes,0,128);
     const auto le=[&](int at){return qFromLittleEndian<quint32>(bytes.constData()+at);};
     if(!bytes.startsWith("DDS ") || le(4)!=124 || le(76)!=32)throw std::runtime_error("Invalid DDS header");
@@ -811,6 +817,7 @@ QImage Assets::decodeDds(const QByteArray& bytes) {
         reinterpret_cast<QRgb*>(result.scanLine(y))[x]=qRgba(v[0],v[1],v[2],v[3]);
     }
     return result;
+#endif
 }
 QHash<QString,QString> Assets::readEnglish(const Container& c) const {
     QHash<QString,QString> result;
@@ -882,6 +889,9 @@ QString Assets::text(const QString& container,const QString& name,const QString&
     return texts_[container].value(name,fallback);
 }
 QImage Assets::decodeTga(const QByteArray& file) {
+#ifdef XMB_USE_RUST_EDGE
+    return image_rust::decodeTga(file);
+#else
     if(file.size()<18)return {};
     const auto* d=reinterpret_cast<const uchar*>(file.constData());
     const int idLength=d[0],mapType=d[1],type=d[2],width=d[12]|(d[13]<<8),height=d[14]|(d[15]<<8),bpp=d[16],descriptor=d[17];
@@ -902,5 +912,6 @@ QImage Assets::decodeTga(const QByteArray& file) {
     const bool topFirst=descriptor&0x20;
     for(int y=0;y<height;++y)for(int x=0;x<width;++x)image.setPixel(x,topFirst?y:height-1-y,pixels[size_t(y)*width+x]);
     return image;
+#endif
 }
 }

@@ -179,7 +179,8 @@ enum class Action { Unavailable, SettingsPage, SettingChoices, SetSetting, EditN
     // .exe / image mode; AddGameField is a field row (Entry::value names it: "title", "artwork"); AddGameSave
     // writes the registration into apps.json and AddGameCancel (and Circle) leave without saving anything.
     AddGame, AddGameChooseExe, AddGameField, AddGameChooseArtwork, AddGameSave, AddGameCancel,
-    SteamStoreSearch };
+    SteamStoreSearch,
+    TrophySet };
 struct Entry {
     QString id,title,detail,container,texture;
     Action action=Action::Unavailable;
@@ -190,6 +191,7 @@ struct Entry {
     QImage artwork; // provider images decoded off the render thread
     QString artworkUrl; // a remote picture still to fetch for `artwork` (Spotify covers); empty elsewhere
     QString backgroundPath; // local PIC1.PNG or another full-screen item background
+    QString previewAudioPath; // local SND0.WAV/.OGG/.MP3/.AT3 hover preview audio next to a title or save
     // Where a generated row's title and icon came from: "xmbml" (the view's title_rsc/icon_rsc), "rco"
     // (a label the firmware builds in a plugin, resolved through its own RCO strings), "builtin" (the
     // last-resort literal this build shipped) or "fallback" (the whole column kept its built-in rows).
@@ -1638,6 +1640,12 @@ private:
     std::unique_ptr<QAudioOutput> audio_;
     std::unique_ptr<QVideoSink> video_;
     std::unique_ptr<MusicTap> musicTap_;   // declared after player_ so it is destroyed first
+    std::unique_ptr<QMediaPlayer> previewPlayer_;
+    std::unique_ptr<QAudioOutput> previewAudio_;
+    QTimer previewDebounce_;
+    QString activePreviewPath_;
+    void syncPreviewAudio();
+    void stopPreviewAudio();
     void openDirectory(const QString& path,bool libraryRoot=false);
     void openFile(const Entry& entry);
     // Set by refreshDirectory() so the scan's result reports itself as a rescan of an already-open page
@@ -1683,14 +1691,17 @@ private:
         bool slow=false;      // the write gets the Proceed stage
         bool popBand=false;   // a band was open: the finish returns to the row list
         bool host=false;      // the write goes to the computer, not the app's store
+        bool asyncAutostart=false; // Start at Sign-in: runs PowerShell + schtasks read-back off the GUI thread
         bool resetAll=false;  // Restore Default Settings: one atomic multi-key write
         bool themeToSystem=false; // "Original" over a wallpaper: clears the theme AND the background mode
     };
     SettingsWrite settingsWrite_;
+    quint64 settingsWriteToken_=0;
     void beginSettingWrite(const Entry& entry);
     void beginResetWrite();           // Restore Default Settings: the console's own top|proceed|finish chain
     void startSettingsWritePage();    // Ask accepted (or skipped): Proceed, then runSettingWrite()
     void runSettingWrite();           // the write itself, then the Finish stage
+    void completeSettingWrite(bool ok,const QString& error);
     // Restart / Sleep after the confirm: hold the busy page, run act() once the page has had a frame, then
     // release it (Sleep returns only after resume; Restart returns while Windows closes programs).
     void runPowerAction(const QString& busyText,const QString& failTitle,bool returnsAfterEffect,std::function<bool(QString*)> act);
@@ -1723,6 +1734,9 @@ private:
     void refreshUserInfoPages();
     QImage userIconImage(const Profile& profile) const;
     void addInstalledApps();
+    void openTrophyCollection();
+    void openTrophySet(const QString& setKey);
+    void openGameDataUtility();
     // Builds the Network column's rows from the firmware's own category_network.xml (audit/XMBML-NETWORK.md),
     // keeping the built-in rows when the definition cannot be read.
     void resolveNetworkColumn();
