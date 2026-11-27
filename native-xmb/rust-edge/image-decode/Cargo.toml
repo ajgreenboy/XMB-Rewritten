@@ -2,9 +2,12 @@
 name = "image-decode"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.89"
-description = "Safe Rust decoders for PS3 GTF textures, Edge geometry, and Blu-ray PGS / DVD VobSub bitmap subtitles behind a narrow C ABI."
-license = "MIT OR Apache-2.0"
+publish = false
+description = "Safe Rust binary decoders for PS3 GTF/GIM textures, VAG audio, QRC containers, Edge meshes, and Blu-ray PGS / DVD VobSub subtitles"
 
 [lib]
+name = "image_decode"
 crate-type = ["rlib"]
+
+[dependencies]
+flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] }

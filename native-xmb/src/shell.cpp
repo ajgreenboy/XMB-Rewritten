@@ -6534,7 +6534,8 @@ void Shell::loadTheme() {
     QString error;const auto p3t=P3t::load(path,&error);
     if(p3t.isNull()){showMessage(QFileInfo(path).fileName(),error,MessageKind::Page);qWarning().noquote()<<"theme:"<<path<<error;return;}
     theme_.name=p3t.name().isEmpty()?QFileInfo(path).completeBaseName():p3t.name();
-    theme_.background=p3t.background();theme_.icons=p3t.icons();
+    theme_.background=p3t.background();theme_.notification=p3t.notification();
+    theme_.icons=p3t.icons();theme_.pointers=p3t.pointers();
     if(p3t.hasScene())theme_.sceneBytes=p3t.sceneBytes();
     else if(p3t.dynamic())qInfo().noquote()<<"theme:"<<theme_.name<<"animated scene could not be parsed; using still background";
     // The theme's appearance selections (THEMES 6): font 0 Original / 1 Rounded / 2 Pop maps to the assets' font

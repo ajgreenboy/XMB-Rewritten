@@ -5,6 +5,7 @@ use std::slice;
 use crate::edge::decode_edge_packed;
 use crate::gim::decode_gim;
 use crate::gtf::decode_gtf;
+use crate::qrc::{encode_parsed_qrc_toc, inflate_qrc_slice, parse_qrc};
 use crate::subtitles::{encode_cues, parse_pgs, parse_vobsub};
 use crate::vag::vag_to_wav;
 
@@ -278,6 +279,93 @@ pub unsafe extern "C" fn img_vag_to_wav(
             unsafe { hand_off(wav, out_wav, out_len) };
         }
         0
+    }))
+    .unwrap_or_else(|_| {
+        set_error("internal panic caught at FFI boundary");
+        -2
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn img_parse_qrc(
+    qrc_ptr: *const u8,
+    qrc_len: usize,
+    out_unpacked_buf: *mut *mut u8,
+    out_unpacked_len: *mut usize,
+    out_toc_buf: *mut *mut u8,
+    out_toc_len: *mut usize,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        clear_error();
+        if out_unpacked_buf.is_null() || out_unpacked_len.is_null() || out_toc_buf.is_null() || out_toc_len.is_null() {
+            set_error("null output pointer");
+            return -1;
+        }
+        unsafe {
+            *out_unpacked_buf = std::ptr::null_mut();
+            *out_unpacked_len = 0;
+            *out_toc_buf = std::ptr::null_mut();
+            *out_toc_len = 0;
+        }
+        if qrc_len > 0 && qrc_ptr.is_null() {
+            set_error("null QRC input pointer");
+            return -1;
+        }
+        let bytes = if qrc_len == 0 { &[] } else { unsafe { slice::from_raw_parts(qrc_ptr, qrc_len) } };
+        match parse_qrc(bytes) {
+            Ok(parsed) => {
+                let toc = encode_parsed_qrc_toc(&parsed);
+                unsafe {
+                    hand_off(parsed.unpacked_bytes, out_unpacked_buf, out_unpacked_len);
+                    hand_off(toc, out_toc_buf, out_toc_len);
+                }
+                0
+            }
+            Err(e) => {
+                set_error(e);
+                1
+            }
+        }
+    }))
+    .unwrap_or_else(|_| {
+        set_error("internal panic caught at FFI boundary");
+        -2
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn img_inflate_qrc_entry(
+    data_ptr: *const u8,
+    data_len: usize,
+    expanded_len: u32,
+    out_buf: *mut *mut u8,
+    out_len: *mut usize,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        clear_error();
+        if out_buf.is_null() || out_len.is_null() {
+            set_error("null output pointer");
+            return -1;
+        }
+        unsafe {
+            *out_buf = std::ptr::null_mut();
+            *out_len = 0;
+        }
+        if data_len > 0 && data_ptr.is_null() {
+            set_error("null QRC entry pointer");
+            return -1;
+        }
+        let slice = if data_len == 0 { &[] } else { unsafe { slice::from_raw_parts(data_ptr, data_len) } };
+        match inflate_qrc_slice(slice, expanded_len) {
+            Ok(inflated) => {
+                unsafe { hand_off(inflated, out_buf, out_len) };
+                0
+            }
+            Err(e) => {
+                set_error(e);
+                1
+            }
+        }
     }))
     .unwrap_or_else(|_| {
         set_error("internal panic caught at FFI boundary");

@@ -60,18 +60,35 @@ void main(){ vec4 p=model*vec4(position,1); worldPos=p.xyz; worldNormal=normalMa
  texCoord=uv*uvTransform.zw+uvTransform.xy; gl_Position=mvp*vec4(position,1); })";
     const char* fragment=R"(
 in vec3 worldPos,worldNormal; in vec2 texCoord; out vec4 outColor;
-uniform sampler2D diffuseMap; uniform vec4 actorColor; uniform vec3 lightPos,lightColor,attenuation,ambient,eyePos;
+uniform sampler2D diffuseMap,normalMap,specularMap;
+uniform int normalMode,hasSpecularMap;
+uniform mat3 normalMatrix;
+uniform vec4 actorColor; uniform vec3 lightPos,lightColor,attenuation,ambient,eyePos;
 void main(){ vec4 tex=texture(diffuseMap,texCoord);
 #ifdef UNLIT
  outColor=tex*actorColor;
 #else
  vec3 delta=lightPos-worldPos; float d=length(delta);
  vec3 n=normalize(worldNormal), l=normalize(delta), v=normalize(eyePos-worldPos);
+ if(normalMode==1) {
+  n=normalize(normalMatrix*(texture(normalMap,texCoord).xyz*2.0-1.0));
+ } else if(normalMode==2) {
+  vec3 mapN=texture(normalMap,texCoord).xyz*2.0-1.0;
+  vec3 dp1=dFdx(worldPos), dp2=dFdy(worldPos);
+  vec2 duv1=dFdx(texCoord), duv2=dFdy(texCoord);
+  vec3 dp2perp=cross(dp2,n), dp1perp=cross(n,dp1);
+  vec3 T=dp2perp*duv1.x+dp1perp*duv2.x;
+  vec3 B=dp2perp*duv1.y+dp1perp*duv2.y;
+  float invmax=inversesqrt(max(dot(T,T),dot(B,B)));
+  if(invmax>0.0 && !isnan(invmax) && !isinf(invmax))
+   n=normalize(mat3(T*invmax,B*invmax,n)*mapN);
+ }
  float lambert=max(dot(n,l),0.0);
  float falloff=1.0/max(dot(attenuation,vec3(1,d,d*d)),0.001);
  vec3 lighting=ambient+lightColor*lambert*falloff;
  float specular=lambert>0.0 ? pow(max(dot(n,normalize(l+v)),0.0),32.0)*0.2 : 0.0;
  vec3 color=tex.rgb*actorColor.rgb*lighting+lightColor*specular*falloff;
+ if(hasSpecularMap!=0) color=tex.rgb*actorColor.rgb*lighting+lightColor*texture(specularMap,texCoord).rgb*(specular*falloff);
 #ifdef EDGE_LIT
  color+=tex.rgb*actorColor.rgb*pow(1.0-max(dot(n,v),0.0),3.0)*0.35;
 #endif
@@ -108,6 +125,16 @@ void main(){ vec4 tex=texture(diffuseMap,texCoord);
         gl.glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_REPEAT);gl.glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_REPEAT);
         textures_.insert(texture.id,id);
     }
+    const auto make1x1=[&](quint8 r,quint8 g,quint8 b,quint8 a)->GLuint {
+        const quint8 px[4]={r,g,b,a};
+        GLuint id=0;gl.glGenTextures(1,&id);gl.glBindTexture(GL_TEXTURE_2D,id);
+        gl.glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA8,1,1,0,GL_RGBA,GL_UNSIGNED_BYTE,px);
+        gl.glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_NEAREST);gl.glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_NEAREST);
+        gl.glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_REPEAT);gl.glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_REPEAT);
+        return id;
+    };
+    defaultWhiteTex_=make1x1(255,255,255,255);
+    defaultNormalTex_=make1x1(128,128,255,255);
     gl.glBindTexture(GL_TEXTURE_2D,0);
     for(const auto& material:scene_.materials)materials_.insert(material.id,material);
     for(const auto& actor:scene_.actors) {
@@ -210,7 +237,14 @@ void RafScenePlayer::render(QOpenGLFunctions_3_3_Core& gl,int width,int height,d
         }
         if(col.w()<=0.0001f || (std::abs(scl.x())<1e-6f && std::abs(scl.y())<1e-6f && std::abs(scl.z())<1e-6f))continue;
         auto& program=*selected;program.bind();
-        program.setUniformValue("diffuseMap",0);program.setUniformValue("lightPos",lightPos);program.setUniformValue("lightColor",lightColor);
+        GLuint normalTex=defaultNormalTex_;int normalMode=0;
+        if(!material.tangentNormalMap.isEmpty() && textures_.contains(material.tangentNormalMap)){normalTex=textures_.value(material.tangentNormalMap);normalMode=2;}
+        else if(!material.normalMap.isEmpty() && textures_.contains(material.normalMap)){normalTex=textures_.value(material.normalMap);normalMode=1;}
+        GLuint specTex=defaultWhiteTex_;int hasSpec=0;
+        if(!material.specularMap.isEmpty() && textures_.contains(material.specularMap)){specTex=textures_.value(material.specularMap);hasSpec=1;}
+        program.setUniformValue("diffuseMap",0);program.setUniformValue("normalMap",1);program.setUniformValue("specularMap",2);
+        program.setUniformValue("normalMode",normalMode);program.setUniformValue("hasSpecularMap",hasSpec);
+        program.setUniformValue("lightPos",lightPos);program.setUniformValue("lightColor",lightColor);
         program.setUniformValue("attenuation",attenuation);program.setUniformValue("ambient",ambient);program.setUniformValue("eyePos",eye);
         QMatrix4x4 model;model.translate(pos);
         model.rotate(qRadiansToDegrees(rot.z()),0,0,1);model.rotate(qRadiansToDegrees(rot.y()),0,1,0);model.rotate(qRadiansToDegrees(rot.x()),1,0,0);
@@ -231,6 +265,8 @@ void RafScenePlayer::render(QOpenGLFunctions_3_3_Core& gl,int width,int height,d
             gl.glDisable(GL_BLEND);
         }
         if(!fx.depthMask || (!fx.blendEnable && fx.hasExplicitDepthToken))gl.glDepthMask(GL_FALSE);
+        gl.glActiveTexture(GL_TEXTURE1);gl.glBindTexture(GL_TEXTURE_2D,normalTex);
+        gl.glActiveTexture(GL_TEXTURE2);gl.glBindTexture(GL_TEXTURE_2D,specTex);
         gl.glActiveTexture(GL_TEXTURE0);gl.glBindTexture(GL_TEXTURE_2D,textures_.value(material.colorMap));
         const Mesh m=meshes_.value(actor.model);gl.glBindVertexArray(m.vao);gl.glDrawElements(GL_TRIANGLES,m.count,GL_UNSIGNED_INT,nullptr);
         gl.glDepthMask(prevDepthMask);
@@ -247,6 +283,8 @@ void RafScenePlayer::release(QOpenGLFunctions_3_3_Core& gl) {
         if(m.vao)gl.glDeleteVertexArrays(1,&m.vao);
     }
     for(GLuint id:textures_)if(id)gl.glDeleteTextures(1,&id);
+    if(defaultWhiteTex_){gl.glDeleteTextures(1,&defaultWhiteTex_);defaultWhiteTex_=0;}
+    if(defaultNormalTex_){gl.glDeleteTextures(1,&defaultNormalTex_);defaultNormalTex_=0;}
     meshes_.clear();textures_.clear();materials_.clear();unknownEffects_.clear();
     litProgram_.removeAllShaders();textureProgram_.removeAllShaders();edgeProgram_.removeAllShaders();
     scene_={};timeline_={};stats_={};ready_=false;scriptEvaluated_=false;

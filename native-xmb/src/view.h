@@ -582,6 +582,8 @@ private:
     QImage wallpaperImage_,monthImage_;
     QHash<int,QVector3D> monthIconTints_;
     QString wallpaperPath_;
+    QString themeCursorPath_;
+    bool hasThemeCursor_=false;
     quint64 wallpaperRequest_=0;
     RafScenePlayer rafScene_;
     QString rafSceneKey_;

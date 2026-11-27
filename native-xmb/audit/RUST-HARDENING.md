@@ -1,6 +1,6 @@
 # Rust hardening design: the untrusted edge
 
-Status: **Phases 1–4 implemented** (`native-xmb/rust-edge/` Cargo workspace: `firmware-crypto`, `firmware-extract`, `steam-vdf`, `image-decode` [GTF, GIM `.GIM1.00`, VAG `.vag`/`VAGp` ADPCM audio, Edge, Blu-ray PGS, DVD VobSub], unified into `xmb-rust-edge` staticlib behind `-DXMB_RUST_FIRMWARE_CRYPTO=ON` and `-DXMB_USE_RUST_EDGE=ON`).
+Status: **Phases 1–5 implemented** (`native-xmb/rust-edge/` Cargo workspace: `firmware-crypto`, `firmware-extract`, `steam-vdf`, `image-decode` [GTF, GIM `.GIM1.00`, VAG `.vag`/`VAGp` ADPCM audio, Sony CXML `QRCC`/`QRCF` containers, Edge, Blu-ray PGS, DVD VobSub], unified into `xmb-rust-edge` staticlib behind `-DXMB_RUST_FIRMWARE_CRYPTO=ON` and `-DXMB_USE_RUST_EDGE=ON`, enabled by default in `native-xmb/build.ps1` and Linux release builds).
 
 ## 1. What this is and what it is not
 

@@ -760,6 +760,27 @@ void View::syncFocusedBackground() {
     }));
 }
 void View::loadWallpaper() {
+    if(themeCursorPath_!=shell_.themePath()) {
+        themeCursorPath_=shell_.themePath();
+        const auto& ptrs=shell_.themePointers();
+        P3t::Pointer chosen=ptrs.value(QStringLiteral("pointer_arrow"));
+        if(chosen.image.isNull()) {
+            QStringList keys=ptrs.keys();keys.sort();
+            for(const QString& k:keys) {
+                const auto& cand=ptrs.value(k);
+                if(!cand.image.isNull()){chosen=cand;break;}
+            }
+        }
+        if(!chosen.image.isNull()) {
+            setCursor(QCursor(QPixmap::fromImage(chosen.image),
+                              std::clamp(chosen.x,0,std::max(0,chosen.image.width()-1)),
+                              std::clamp(chosen.y,0,std::max(0,chosen.image.height()-1))));
+            hasThemeCursor_=true;
+        } else if(hasThemeCursor_) {
+            unsetCursor();
+            hasThemeCursor_=false;
+        }
+    }
     if(shell_.backgroundMode()!=2)return;
     // A theme scene plays per frame on View's GL context via RafScenePlayer when XMB_RAF_ANIMATE!=0, or draws once
     // as a t=0 still frame when XMB_RAF_ANIMATE=0; on failure, or with XMB_RAF_THEMES=0, the theme keeps its still bgimage.
@@ -1632,7 +1653,7 @@ void View::paintGL() {
     if(const double hint=optionHintAmount();hint>.002)signature+=QString::asprintf(" opthint %d",int(hint*256.));
     if(notificationEase_.value>.002 && !notificationShown_.title.isEmpty())
         signature+=QString::asprintf(" notify %d ",int(notificationEase_.value*256.))+notificationShown_.title+'|'+
-            notificationShown_.detail+'|'+notificationShown_.icon;
+            notificationShown_.detail+'|'+notificationShown_.icon+'|'+(shell_.themeNotification().isNull()?QString():shell_.themePath());
     // The volume HUD fades on its own clock between shell changes, so its opacity (quantised by 1/256, finer
     // than the 2x layer can show) and the value it is drawing belong in the signature. The 150 ms appear edge is
     // a SEPARATE multiplier applied at the draw site (drawScene: `hud.opacity*fadeIn`), and leaving it out of this
@@ -1913,8 +1934,13 @@ void View::drawNotification(QPainter& p,double amount) {
     layout.box.x+=slide;layout.icon.x+=slide;layout.title.x+=slide;layout.detail.x+=slide;
     const auto& box=layout.box;
     p.save();p.setRenderHint(QPainter::Antialiasing,true);
-    p.setPen(Qt::NoPen);p.setBrush(QColor(toast::kFillRed,toast::kFillGreen,toast::kFillBlue,int(std::lround(toast::kFillAlpha*alpha*255.))));
-    p.drawRoundedRect(QRectF(box.x,box.y,box.w,box.h),toast::kBoxRadius,toast::kBoxRadius);
+    if(!shell_.themeNotification().isNull()) {
+        p.setOpacity(alpha);
+        p.drawImage(QRectF(box.x,box.y,box.w,box.h),shell_.themeNotification());
+    } else {
+        p.setPen(Qt::NoPen);p.setBrush(QColor(toast::kFillRed,toast::kFillGreen,toast::kFillBlue,int(std::lround(toast::kFillAlpha*alpha*255.))));
+        p.drawRoundedRect(QRectF(box.x,box.y,box.w,box.h),toast::kBoxRadius,toast::kBoxRadius);
+    }
     p.restore();
     if(layout.hasIcon)drawImage(p,"system_plugin",notificationShown_.icon,QRectF(layout.icon.x,layout.icon.y,layout.icon.side,layout.icon.side),alpha);
     else if(!notificationTextureWarned_) {

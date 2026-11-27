@@ -9,6 +9,7 @@
 #include "gtf_decode.h"
 #include "image_decode_rust.h"
 #include "image_subtitles.h"
+#include "qrc.h"
 #include "steam_vdf.h"
 #include "steam_vdf_rust.h"
 
@@ -582,6 +583,43 @@ QByteArray makeVagStream(quint32 sampleRate, bool withHeader, uchar endFlag, int
     return out;
 }
 
+QByteArray buildSyntheticQrc(const QByteArray& id, const QByteArray& payload, bool compressEntry, bool wrapQrcc, quint32 backRefOverride = 0) {
+    const QByteArray storedPayload = compressEntry ? qCompress(payload).mid(4) : payload;
+    const QByteArray strings("id\0src\0size\0", 12);
+    QByteArray ids(4, '\0');
+    put32(ids, 0, backRefOverride);
+    ids += id + '\0';
+    const quint32 attrCount = compressEntry ? 3 : 2;
+    QByteArray toc(28 + int(attrCount) * 16, '\0');
+    put32(toc, 4, attrCount);
+    // attr 0: id (name off 0, type 7, a=0, b=0)
+    put32(toc, 28 + 0, 0); put32(toc, 28 + 4, 7); put32(toc, 28 + 8, 0); put32(toc, 28 + 12, 0);
+    // attr 1: src (name off 3, type 6, a=0, b=storedPayload.size())
+    put32(toc, 44 + 0, 3); put32(toc, 44 + 4, 6); put32(toc, 44 + 8, 0); put32(toc, 44 + 12, quint32(storedPayload.size()));
+    if (compressEntry) {
+        // attr 2: size (name off 7, type 1, a=payload.size(), b=0)
+        put32(toc, 60 + 0, 7); put32(toc, 60 + 4, 1); put32(toc, 60 + 8, quint32(payload.size())); put32(toc, 60 + 12, 0);
+    }
+    const quint32 tocOff = 56;
+    const quint32 idsOff = tocOff + quint32(toc.size());
+    const quint32 stringsOff = idsOff + quint32(ids.size());
+    const quint32 dataOff = stringsOff + quint32(strings.size());
+    QByteArray qrcf(56, '\0');
+    qrcf.replace(0, 4, "QRCF");
+    put32(qrcf, 4, 0x110);
+    put32(qrcf, 8, tocOff); put32(qrcf, 12, quint32(toc.size()));
+    put32(qrcf, 16, idsOff); put32(qrcf, 20, quint32(ids.size()));
+    put32(qrcf, 24, stringsOff); put32(qrcf, 28, quint32(strings.size()));
+    put32(qrcf, 48, dataOff); put32(qrcf, 52, quint32(storedPayload.size()));
+    qrcf += toc + ids + strings + storedPayload;
+    if (!wrapQrcc) return qrcf;
+    QByteArray qrcc(8, '\0');
+    qrcc.replace(0, 4, "QRCC");
+    put32(qrcc, 4, quint32(qrcf.size()));
+    qrcc += qCompress(qrcf).mid(4);
+    return qrcc;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -902,6 +940,53 @@ int main(int argc, char** argv) {
         check(cppVagToWav(vagL, vagR) == xmb::image_rust::vagToWav(vagL, vagR) && !cppVagToWav(vagL, vagR).isEmpty(), "vag-parity-stereo-vagp");
         check(cppVagToWav(vagRaw) == xmb::image_rust::vagToWav(vagRaw) && !cppVagToWav(vagRaw).isEmpty(), "vag-parity-headless-flag7");
         check(cppVagToWav(QByteArray()).isEmpty() && xmb::image_rust::vagToWav(QByteArray()).isEmpty(), "vag-parity-empty");
+    }
+
+    // ---- 6. Phase 5: Sony CXML QRC (QRCC/QRCF) container parity ----------
+    {
+        const QByteArray payload("#MNU_1.0\nCOLOR:float:0.75\n");
+        const QByteArray qrcc = buildSyntheticQrc("override/day/ICONS.mnu", payload, true, true);
+        const QString qrcPath = temp.path() + "/test.qrc";
+        check(writeBytes(qrcPath, qrcc), "qrc-write-synthetic-qrcc");
+        xmb::QrcArchive cppArc(qrcPath);
+        const QByteArray cppEntry = cppArc.file(QStringLiteral("override/day/ICONS.mnu"));
+
+        QByteArray rustUnpacked;
+        quint32 rustDataBase = 0;
+        QHash<QString, xmb::image_rust::QrcTocEntry> rustEntries;
+        QString rustErr;
+        const bool okRust = xmb::image_rust::parseQrc(qrcc, rustUnpacked, rustDataBase, rustEntries, &rustErr);
+        QByteArray rustEntry;
+        if (okRust && rustEntries.contains(QStringLiteral("override/day/ICONS.mnu"))) {
+            const auto e = rustEntries.value(QStringLiteral("override/day/ICONS.mnu"));
+            xmb::image_rust::inflateQrcEntry(rustUnpacked.constData() + rustDataBase + e.offset, e.size, e.expanded, rustEntry, &rustErr);
+        }
+        check(okRust && cppEntry == payload && rustEntry == cppEntry && cppArc.names() == rustEntries.keys(), "qrc-parity-qrcc-compressed-entry");
+
+        const QByteArray qrcfRaw = buildSyntheticQrc("lib/raf/vert0.vpo", QByteArray("vpo-bytes", 9), false, false);
+        check(writeBytes(qrcPath, qrcfRaw), "qrc-write-synthetic-qrcf");
+        xmb::QrcArchive cppArcRaw(qrcPath);
+        check(xmb::image_rust::parseQrc(qrcfRaw, rustUnpacked, rustDataBase, rustEntries, &rustErr) &&
+                  rustEntries.contains(QStringLiteral("lib/raf/vert0.vpo")) &&
+                  rustUnpacked.mid(rustDataBase + rustEntries.value(QStringLiteral("lib/raf/vert0.vpo")).offset,
+                                   rustEntries.value(QStringLiteral("lib/raf/vert0.vpo")).size) ==
+                      cppArcRaw.file(QStringLiteral("lib/raf/vert0.vpo")),
+              "qrc-parity-qrcf-uncompressed-entry");
+
+        const QByteArray badBackRef = buildSyntheticQrc("lib/raf/vert0.vpo", QByteArray("cg"), false, false, 99);
+        bool cppThrew = false;
+        QString cppThrowMsg;
+        writeBytes(qrcPath, badBackRef);
+        try { xmb::QrcArchive badArc(qrcPath); } catch (const std::exception& ex) { cppThrew = true; cppThrowMsg = QString::fromUtf8(ex.what()); }
+        const bool rustBad = !xmb::image_rust::parseQrc(badBackRef, rustUnpacked, rustDataBase, rustEntries, &rustErr);
+        check(cppThrew && rustBad && cppThrowMsg == rustErr, "qrc-parity-reject-bad-backref");
+
+        const QByteArray badVer("QRCF\0\0\x02\0", 8);
+        cppThrew = false;
+        writeBytes(qrcPath, badVer);
+        try { xmb::QrcArchive badArc(qrcPath); } catch (const std::exception& ex) { cppThrew = true; cppThrowMsg = QString::fromUtf8(ex.what()); }
+        check(cppThrew && !xmb::image_rust::parseQrc(badVer, rustUnpacked, rustDataBase, rustEntries, &rustErr) && cppThrowMsg == rustErr,
+              "qrc-parity-reject-unsupported-version");
     }
 
     std::printf("rust-edge-parity: %s (%d failures)\n", failures ? "FAIL" : "PASS", failures);

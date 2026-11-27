@@ -37,6 +37,7 @@ private:
     RafStillStats stats_;
     QHash<QString,Mesh> meshes_;
     QHash<QString,GLuint> textures_;
+    GLuint defaultWhiteTex_=0,defaultNormalTex_=0;
     QHash<QString,P3t::Raf::Material> materials_;
     QOpenGLShaderProgram litProgram_,textureProgram_,edgeProgram_;
     QSet<QString> unknownEffects_;

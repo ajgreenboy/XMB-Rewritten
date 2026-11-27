@@ -1,4 +1,4 @@
-param([string]$QtRoot=$env:QTDIR,[string]$OutputDirectory,[string]$SteamworksHeaders=$env:STEAMWORKS_HEADERS,[string]$SourceRevision=$env:XMB_SOURCE_REVISION)
+param([string]$QtRoot=$env:QTDIR,[string]$OutputDirectory,[string]$SteamworksHeaders=$env:STEAMWORKS_HEADERS,[string]$SourceRevision=$env:XMB_SOURCE_REVISION,[switch]$NoRustEdge)
 $ErrorActionPreference='Stop'
 $root=Split-Path -Parent $PSScriptRoot
 . (Join-Path $PSScriptRoot 'build-metadata.ps1')
@@ -25,6 +25,14 @@ $cmake=Join-Path $vs 'Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cma
 $ninja=Join-Path $vs 'Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja\ninja.exe'
 $output=if($OutputDirectory){[IO.Path]::GetFullPath($OutputDirectory)}else{Join-Path $root 'out\integration'}
 $configure='"'+$cmake+'" -S "'+$PSScriptRoot+'" -B "'+$output+'" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="'+$QtRoot+'" -DCMAKE_MAKE_PROGRAM="'+$ninja+'" -DXMB_TEST_HOOKS=OFF'
+$cargoBin=Join-Path $env:USERPROFILE '.cargo\bin'
+if((Test-Path (Join-Path $cargoBin 'cargo.exe')) -and ($env:PATH -notlike "*$cargoBin*")){$env:PATH="$cargoBin;$env:PATH"}
+$hasCargo=[bool](Get-Command cargo -ErrorAction SilentlyContinue)
+if(-not $NoRustEdge -and $hasCargo){
+    $configure+=' -DXMB_RUST_FIRMWARE_CRYPTO=ON -DXMB_USE_RUST_EDGE=ON'
+} else {
+    $configure+=' -DXMB_RUST_FIRMWARE_CRYPTO=OFF -DXMB_USE_RUST_EDGE=OFF'
+}
 if($SteamworksHeaders){$configure+=' -DXMB_STEAMWORKS_HEADERS="'+[IO.Path]::GetFullPath($SteamworksHeaders)+'"'}
 cmd /d /c ('call "'+$vcvars+'" >nul && '+$configure)
 if($LASTEXITCODE){throw 'Native CMake configuration failed.'}

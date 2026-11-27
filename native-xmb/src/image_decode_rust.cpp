@@ -216,4 +216,61 @@ QByteArray vagToWav(const QByteArray& left, const QByteArray& right) {
     return QByteArray(reinterpret_cast<const char*>(guard.ptr), static_cast<qsizetype>(guard.len));
 }
 
+bool parseQrc(const QByteArray& rawQrc, QByteArray& unpackedQrcf, quint32& dataBase, QHash<QString, QrcTocEntry>& entries, QString* error) {
+    unpackedQrcf.clear();
+    dataBase = 0;
+    entries.clear();
+    if (error) error->clear();
+    ImgBufferGuard unpackedGuard, tocGuard;
+    const auto* ptr = rawQrc.isEmpty() ? nullptr : reinterpret_cast<const uint8_t*>(rawQrc.constData());
+    const int rc = img_parse_qrc(
+        ptr, static_cast<size_t>(rawQrc.size()), &unpackedGuard.ptr, &unpackedGuard.len, &tocGuard.ptr, &tocGuard.len);
+    if (rc != 0) {
+        if (error) *error = lastMessage();
+        return false;
+    }
+    if (!unpackedGuard.ptr || !tocGuard.ptr || tocGuard.len < 8) {
+        if (error) *error = QStringLiteral("corrupt Rust QRC TOC payload");
+        return false;
+    }
+    dataBase = qFromLittleEndian<quint32>(tocGuard.ptr);
+    const quint32 count = qFromLittleEndian<quint32>(tocGuard.ptr + 4);
+    size_t pos = 8;
+    entries.reserve(static_cast<qsizetype>(std::min<quint32>(count, 65536)));
+    for (quint32 i = 0; i < count; ++i) {
+        if (pos + 4 > tocGuard.len) { entries.clear(); return false; }
+        const quint32 idLen = qFromLittleEndian<quint32>(tocGuard.ptr + pos);
+        pos += 4;
+        if (idLen > tocGuard.len - pos || pos + idLen + 12 > tocGuard.len) { entries.clear(); return false; }
+        const QString id = QString::fromUtf8(reinterpret_cast<const char*>(tocGuard.ptr + pos), static_cast<qsizetype>(idLen));
+        pos += idLen;
+        QrcTocEntry e;
+        e.offset = qFromLittleEndian<quint32>(tocGuard.ptr + pos); pos += 4;
+        e.size = qFromLittleEndian<quint32>(tocGuard.ptr + pos); pos += 4;
+        e.expanded = qFromLittleEndian<quint32>(tocGuard.ptr + pos); pos += 4;
+        entries.insert(id, e);
+    }
+    if (pos != tocGuard.len) { entries.clear(); return false; }
+    unpackedQrcf = QByteArray(reinterpret_cast<const char*>(unpackedGuard.ptr), static_cast<qsizetype>(unpackedGuard.len));
+    return true;
+}
+
+bool inflateQrcEntry(const char* ptr, qsizetype len, quint32 expanded, QByteArray& out, QString* error) {
+    out.clear();
+    if (error) error->clear();
+    ImgBufferGuard guard;
+    const auto* uptr = (len <= 0 || !ptr) ? nullptr : reinterpret_cast<const uint8_t*>(ptr);
+    const int rc = img_inflate_qrc_entry(uptr, static_cast<size_t>(std::max<qsizetype>(0, len)), expanded, &guard.ptr, &guard.len);
+    if (rc != 0) {
+        if (error) *error = lastMessage();
+        return false;
+    }
+    if (!guard.ptr || guard.len != size_t(expanded)) {
+        if (error) *error = QStringLiteral("QRC expanded length mismatch");
+        return false;
+    }
+    out = QByteArray(reinterpret_cast<const char*>(guard.ptr), static_cast<qsizetype>(guard.len));
+    return true;
+}
+
 } // namespace xmb::image_rust

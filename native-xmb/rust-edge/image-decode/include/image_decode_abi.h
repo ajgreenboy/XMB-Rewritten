@@ -85,6 +85,32 @@ int img_vag_to_wav(
     size_t* out_len
 );
 
+/* Parses and validates a Sony CXML QRC container (QRCC or QRCF v0x110).
+ * On success (0):
+ *   *out_unpacked_buf / *out_unpacked_len holds the unpacked QRCF container bytes.
+ *   *out_toc_buf / *out_toc_len holds:
+ *     [u32 data_base LE][u32 entry_count LE]
+ *     per entry: [u32 id_len LE][u8 * id_len][u32 offset LE][u32 size LE][u32 expanded LE]
+ * Caller frees both buffers with img_free_buffer.
+ */
+int img_parse_qrc(
+    const uint8_t* qrc_ptr,
+    size_t qrc_len,
+    uint8_t** out_unpacked_buf,
+    size_t* out_unpacked_len,
+    uint8_t** out_toc_buf,
+    size_t* out_toc_len
+);
+
+/* Inflates a single zlib-compressed QRC entry bounded to expanded_len (<= 32 MiB). */
+int img_inflate_qrc_entry(
+    const uint8_t* data_ptr,
+    size_t data_len,
+    uint32_t expanded_len,
+    uint8_t** out_buf,
+    size_t* out_len
+);
+
 void img_free_buffer(uint8_t* ptr, size_t len);
 
 size_t img_last_error(uint8_t* buf, size_t buf_cap);

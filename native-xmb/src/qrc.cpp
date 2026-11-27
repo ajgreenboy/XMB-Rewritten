@@ -1,4 +1,7 @@
 #include "qrc.h"
+#ifdef XMB_USE_RUST_EDGE
+#include "image_decode_rust.h"
+#endif
 #include <QFile>
 #include <QtEndian>
 #include <stdexcept>
@@ -33,6 +36,18 @@ QrcArchive::QrcArchive(const QString& path) {
     if(!source.open(QIODevice::ReadOnly))throw std::runtime_error("Cannot open local QRC");
     if(source.size()>64*1024*1024)throw std::runtime_error("QRC exceeds 64 MiB");
     bytes_=source.readAll();
+#ifdef XMB_USE_RUST_EDGE
+    QByteArray unpacked;
+    QHash<QString,xmb::image_rust::QrcTocEntry> rustEntries;
+    QString err;
+    if(!xmb::image_rust::parseQrc(bytes_,unpacked,data_,rustEntries,&err))
+        throw std::runtime_error(err.toStdString());
+    bytes_=std::move(unpacked);
+    entries_.reserve(rustEntries.size());
+    for(auto it=rustEntries.cbegin();it!=rustEntries.cend();++it)
+        entries_.insert(it.key(),Entry{it.value().offset,it.value().size,it.value().expanded});
+    return;
+#endif
     if(bytes_.startsWith("QRCC"))bytes_=unpack(bytes_,8,quint32(bytes_.size()-8),word(bytes_,4));
     if(!bytes_.startsWith("QRCF") || word(bytes_,4)!=0x110)throw std::runtime_error("Unsupported QRC version");
     const auto toc=word(bytes_,8),tocSize=word(bytes_,12),ids=word(bytes_,16),idsSize=word(bytes_,20);
@@ -71,6 +86,15 @@ QByteArray QrcArchive::file(const QString& id) const {
     const auto entry=entries_.constFind(id);
     if(entry==entries_.cend())throw std::runtime_error("Named file is absent from QRC");
     const quint64 start=quint64(data_)+entry->offset;
+#ifdef XMB_USE_RUST_EDGE
+    range(bytes_,start,entry->size);
+    if(!entry->expanded)return bytes_.mid(start,entry->size);
+    QByteArray inflated;
+    QString err;
+    if(!xmb::image_rust::inflateQrcEntry(bytes_.constData()+start,entry->size,entry->expanded,inflated,&err))
+        throw std::runtime_error(err.toStdString());
+    return inflated;
+#endif
     return entry->expanded?unpack(bytes_,start,entry->size,entry->expanded):bytes_.mid(start,entry->size);
 }
 }
