@@ -33,6 +33,7 @@
 #include "steam_family.h"
 #include "steam_account_state.h"
 #include "steam_store.h"
+#include "steam_downloads.h"
 #include "steam_library.h"
 #include "steam_quit.h"
 #include "steam_hidden.h"
@@ -177,7 +178,8 @@ enum class Action { Unavailable, SettingsPage, SettingChoices, SetSetting, EditN
     // add flow. AddGame opens the page; AddGameChooseExe / AddGameChooseArtwork open the in-XMB file browser in
     // .exe / image mode; AddGameField is a field row (Entry::value names it: "title", "artwork"); AddGameSave
     // writes the registration into apps.json and AddGameCancel (and Circle) leave without saving anything.
-    AddGame, AddGameChooseExe, AddGameField, AddGameChooseArtwork, AddGameSave, AddGameCancel };
+    AddGame, AddGameChooseExe, AddGameField, AddGameChooseArtwork, AddGameSave, AddGameCancel,
+    SteamStoreSearch };
 struct Entry {
     QString id,title,detail,container,texture;
     Action action=Action::Unavailable;
@@ -301,7 +303,11 @@ enum class OptionCommand { Activate, Information,
     // server transcode (MenuOption::index is the server's stream index).
     SubtitleBurnIn, ReleaseDownloadCancel, ReleaseDownloadRetry, ReleaseDownloadPause, ReleaseDownloadResume, ReleaseDownloadPauseAll, ReleaseDownloadResumeAll, SeerrDownloadPause, SeerrDownloadResume, SeerrDownloadCancel, SeerrDownloadWatch,
     // A friend row's Triangle menu (friends_ui.h): Profile opens the friend's real profile page; Status and Comment are listed with the reason they cannot act.
-    FriendProfile, FriendStatus, FriendComment };
+    FriendProfile, FriendStatus, FriendComment,
+    SortPlaytimeDescending, SortSizeDescending, SortTitleAscending,
+    GroupByCollection, GroupByStatus,
+    SteamToggleFavorite, SteamCollectionMenu, SteamCollectionToggle, SteamCollectionCreate,
+    SteamLaunchOptions, SteamStoreSearch, SteamCmdChooseLibrary, SteamCmdChooseLibraryTarget };
 // A label read from the RCO text table: the key plus the English string it should resolve to. The fallback
 // is used only when the local flash image has no table; whenever the RCO is present, its value is the label.
 struct OptionLabel { const char* key=nullptr; QString fallback; };
@@ -621,7 +627,7 @@ public:
     bool steamCmdBack();                                   // Circle on a SteamCMD page; true when it handled it
     void steamCmdField(const QString& field,const QString& value);
     bool steamCmdReady() const;                            // steamcmd.exe is found and an account name is saved
-    void steamCmdStartJob(const QString& appId,const QString& title,int kind);
+    void steamCmdStartJob(const QString& appId,const QString& title,int kind,const QString& explicitLibrary={});
     void steamCmdPump();
     bool hasSteamCmdJobsToToggle(bool paused);
     void setSteamCmdJobsPaused(bool paused);
@@ -1290,7 +1296,13 @@ private:
     DiscordClient discordFriends_;
     SteamOwned steamOwned_;
     OwnedGameList ownedGames_;      // purchased titles from the Steam Web API (may be empty without a key)
-    SteamCollectionList collections_; // the account's own Steam library collections
+    SteamCollectionList baseCollections_; // Steam's raw user collections from cloud-storage-namespace-1.json
+    SteamCollectionList collections_; // the account's own Steam library collections merged with steamOverlay_
+    SteamUserOverlay steamOverlay_;   // local XMB favorites, custom collections and launch options
+    QHash<QString,StoreItem> storeItemsById_; // last SteamStore response items by appId
+    QString steamStoreSearchTerm_;
+    QHash<QString,SteamDownload> watchedSteamDownloads_;
+    bool watchedSteamDownloadsSeeded_=false;
     SteamFamily family_;              // the Steam Families group this account belongs to
     QVector<FamilyGame> familyGames_; // optional family-shared titles from <data>/family-shared.json
     SteamInstallation steamInstalled_; // last local Steam scan, for the library folders
@@ -1411,6 +1423,10 @@ private:
     QVector<Entry> steamDownloadRows(QString& error);
     void openSteamDownloads();
     void reloadSteamDownloads();
+    void pollSteamDownloadsBackground();
+    void openSteamStoreItemPage(const QString& appId,const QString& fallbackTitle,const QString& fallbackPrice);
+    void applySteamOverlayAndRebuild();
+    void sortGameEntries(int mode);
     std::shared_ptr<ReleaseGameQueue> releaseJobs_;
     // Returns true when the job was enqueued and Download Management opened; false when it was refused
     // (safe mode, invalid arguments, a duplicate, a full queue, or a save failure), after showing why.

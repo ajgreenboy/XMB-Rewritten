@@ -60,6 +60,7 @@
 #include <QUrl>
 #include <QImageReader>
 #include <QStandardPaths>
+#include <QStorageInfo>
 #include <QLoggingCategory>
 #include <QDateTime>
 #include <QFutureWatcher>
@@ -755,7 +756,8 @@ bool Shell::titleRunning() const {
 // exited; there is no lifecycle watch. XMB_STEAM_HANDOFF_CAPTURE (a file path) records the URI instead
 // of opening it, so a scripted or smoke run can verify the exact hand-off without touching the desktop.
 bool Shell::startSteamUriHandoff(const QString& appId,const QString& title) {
-    const QString uri=steamLaunchUri(appId);
+    const QString launchArgs=steamOverlay_.launchOptions.value(appId).trimmed();
+    const QString uri=steamLaunchUriWithArgs(appId,launchArgs);
     if(uri.isEmpty()){showMessage(title,tr("This is not a Steam app."),MessageKind::Page);return false;}
     const QString capture=qEnvironmentVariable("XMB_STEAM_HANDOFF_CAPTURE").trimmed();
     if(!capture.isEmpty()) {
@@ -798,6 +800,8 @@ bool Shell::startSteamNow(const QString& appId,const QString& title) {
 bool Shell::launchSteamApp(const QString& appId,const QString& title) {
     QString exe=QDir(steamRoot_).filePath("steam.exe");
     QStringList launchArguments{"-applaunch",appId};
+    const QString extraArgs=steamOverlay_.launchOptions.value(appId).trimmed();
+    if(!extraArgs.isEmpty())launchArguments<<QProcess::splitCommand(extraArgs);
     QString launchDirectory=steamRoot_;
     if(steamFake()) {
         // Test seam: start the stand-in game from the scratch library's install folder, never steam.exe.
@@ -1176,16 +1180,23 @@ QVector<Entry> Shell::steamFolderEntries(const QString& mode) const {
     // Title lookups shared by every folder mode. An installed title wins over its owned
     // entry because the local manifest title is the one the console shows.
     QHash<QString,QString> installedTitles,ownedTitles,familyTitles;
+    QSet<QString> customGameIds;
     for(const auto& game:steamInstalled_.games)installedTitles.insert(game.appId,game.title);
     for(const auto& game:ownedGames_)ownedTitles.insert(game.appId,game.title);
     for(const auto& game:familyGames_)familyTitles.insert(game.appId,game.title);
+    for(const auto& app:contentApps_)if(app.kind=="game")customGameIds.insert(QStringLiteral("custom:")+app.id);
     const auto isKnown=[&](const QString& appId) {
-        return installedTitles.contains(appId) || ownedTitles.contains(appId) || familyTitles.contains(appId);
+        return installedTitles.contains(appId) || ownedTitles.contains(appId) || familyTitles.contains(appId) || customGameIds.contains(appId);
     };
     const auto titleFor=[&](const QString& appId)->QString {
         if(installedTitles.contains(appId))return installedTitles.value(appId);
         if(ownedTitles.contains(appId))return ownedTitles.value(appId);
-        return familyTitles.value(appId);
+        if(familyTitles.contains(appId))return familyTitles.value(appId);
+        if(appId.startsWith(QLatin1String("custom:"))) {
+            const QString id=appId.mid(7);
+            for(const auto& app:contentApps_)if(app.id==id)return app.title;
+        }
+        return appId;
     };
     if(mode=="installed") {
         for(const auto& game:steamInstalled_.games) {
@@ -1254,6 +1265,14 @@ QVector<Entry> Shell::steamFolderEntries(const QString& mode) const {
         if(found==collections_.cend())return rows;
         for(const auto& appId:found->appIds) {
             if(!isKnown(appId))continue;
+            if(appId.startsWith(QLatin1String("custom:"))) {
+                const QString customId=appId.mid(7);
+                const QString label=collectionLabel(appId);
+                auto e=item(appId,titleFor(appId),"game_tex_default_ps3","explore_plugin_full",Action::LaunchApp,customId);
+                e.detail=label.isEmpty()?QObject::tr("Imported game"):label;
+                rows.push_back(std::move(e));
+                continue;
+            }
             if(installedTitles.contains(appId)) {
                 const QString label=collectionLabel(appId);
                 add(appId,titleFor(appId),label.isEmpty()?QObject::tr("Installed"):label,Action::LaunchSteam);
@@ -1510,6 +1529,193 @@ void Shell::reloadSteamDownloads() {
         .arg(page.entries.size()).arg(page.selection);
     emit changed();
 }
+void Shell::pollSteamDownloadsBackground() {
+    if(steamRoot_.isEmpty())return;
+    QString err;
+    const QVector<SteamDownload> current=scanSteamDownloads(steamRoot_,&err);
+    if(!err.isEmpty())return;
+    QHash<QString,SteamDownload> nextMap;
+    for(const auto& dl:current)nextMap.insert(dl.appId,dl);
+
+    bool needRefresh=false;
+    if(watchedSteamDownloadsSeeded_) {
+        for(auto it=watchedSteamDownloads_.cbegin();it!=watchedSteamDownloads_.cend();++it) {
+            const SteamDownload& prev=it.value();
+            if((prev.active || prev.queued) && !nextMap.contains(prev.appId)) {
+                const auto scan=scanSteam(steamRoot_);
+                for(const auto& g:scan.games) {
+                    if(g.appId==prev.appId) {
+                        notify(QObject::tr("Download Complete"),
+                               QObject::tr("%1 is ready to play.").arg(g.title.isEmpty()?prev.title:g.title),
+                               QStringLiteral("tex_notification_info"));
+                        needRefresh=true;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    const bool changedSet=(watchedSteamDownloads_.size()!=nextMap.size()) || !watchedSteamDownloads_.isEmpty() || !nextMap.isEmpty();
+    watchedSteamDownloads_=nextMap;
+    watchedSteamDownloadsSeeded_=true;
+
+    bool touchedUi=false;
+    const auto updateEntry=[&](Entry& e) {
+        if(e.id==QLatin1String("steam-downloads")) {
+            const int activeCount=int(watchedSteamDownloads_.size());
+            const QString wanted=activeCount>0?QObject::tr("%1 active or queued").arg(activeCount):QObject::tr("Steam and SteamCMD download queue");
+            if(e.detail!=wanted){e.detail=wanted;touchedUi=true;}
+            return;
+        }
+        if(!e.id.startsWith(QLatin1String("steam:")))return;
+        const QString appId=e.value;
+        if(watchedSteamDownloads_.contains(appId)) {
+            const QString dlText=downloadRowDetail(watchedSteamDownloads_.value(appId));
+            if(e.detail!=dlText){e.detail=dlText;touchedUi=true;}
+        }
+    };
+    if(changedSet) {
+        for(auto& cat:categories_)if(cat.id==QLatin1String("game"))for(auto& e:cat.entries)updateEntry(e);
+        for(auto& page:pages_)for(auto& e:page.entries)updateEntry(e);
+    }
+    if(needRefresh)refreshContent();
+    else if(touchedUi)emit changed();
+}
+void Shell::openSteamStoreItemPage(const QString& appId,const QString& fallbackTitle,const QString& fallbackPrice) {
+    if(appId.isEmpty() || pages_.size()>=32)return;
+    const StoreItem itemData=storeItemsById_.value(appId);
+    const QString title=itemData.title.isEmpty()?fallbackTitle:itemData.title;
+    const QString price=SteamStore::priceText(itemData).isEmpty()?fallbackPrice:SteamStore::priceText(itemData);
+    bool isInstalled=false;
+    for(const auto& g:steamInstalled_.games)if(g.appId==appId){isInstalled=true;break;}
+    bool isOwned=isInstalled;
+    for(const auto& g:ownedGames_)if(g.appId==appId){isOwned=true;break;}
+
+    Page page;page.title=title;
+    if(isInstalled) {
+        auto start=item("store-launch:"+appId,QObject::tr("Start Game"),"game_tex_default_ps3","explore_plugin_full",
+                        Action::LaunchSteam,appId);
+        start.detail=QObject::tr("Installed on this PC");
+        page.entries.push_back(std::move(start));
+    }
+    {
+        auto inst=item("store-install:"+appId,isInstalled?QObject::tr("Reinstall / Verify in Steam"):QObject::tr("Install Game"),
+                       "tex_dl_dst_game","explore_category_network",Action::InstallSteam,appId);
+        inst.detail=steamCmdReady()
+            ?QObject::tr("Download and install with SteamCMD")
+            :(price.isEmpty()?QObject::tr("Ask the Steam client to install"):QObject::tr("Steam client (%1)").arg(price));
+        page.entries.push_back(std::move(inst));
+    }
+    {
+        auto client=item("store-client:"+appId,QObject::tr("Open Store Page in Steam"),"item_tex_ps_store","explore_plugin_full",
+                         Action::OpenUrl,QStringLiteral("steam://store/%1").arg(appId));
+        client.detail=QObject::tr("Buy, wishlist or view screenshots in the Steam client");
+        client.artwork=serviceIcons::steam(steamRoot_);client.iconSized=true;
+        page.entries.push_back(std::move(client));
+    }
+    {
+        const QString webUrl=SteamOwned::storeUrl(appId);
+        auto web=item("store-web:"+appId,QObject::tr("Open Store Page in Browser"),"tex_browser","explore_category_network",
+                      Action::OpenUrl,webUrl);
+        web.detail=webUrl;
+        page.entries.push_back(std::move(web));
+    }
+    {
+        QStringList infoRows;
+        if(!price.isEmpty())infoRows<<QObject::tr("Price: %1").arg(price);
+        if(itemData.discounted && itemData.discountPercent>0)
+            infoRows<<QObject::tr("Discount: -%1%").arg(itemData.discountPercent);
+        infoRows<<QObject::tr("Status: %1").arg(isInstalled?QObject::tr("Installed"):isOwned?QObject::tr("In Steam Library"):QObject::tr("Store Title"));
+        infoRows<<QObject::tr("Platform: %1").arg(itemData.windows?QObject::tr("Windows"):QObject::tr("Other"));
+        infoRows<<QObject::tr("Steam App ID: %1").arg(appId);
+        auto details=item("store-info:"+appId,QObject::tr("Game Details"),"item_tex_plain_folder","explore_plugin_full",
+                          Action::Information,title+QStringLiteral("\n\n")+infoRows.join('\n'));
+        details.detail=price.isEmpty()?QObject::tr("App ID %1").arg(appId):price;
+        page.entries.push_back(std::move(details));
+    }
+    pages_.push_back(std::move(page));
+    emit changed();
+}
+void Shell::applySteamOverlayAndRebuild() {
+    collections_=mergeSteamCollectionsWithOverlay(baseCollections_,steamOverlay_);
+    for(auto& cat:categories_) {
+        if(cat.id!=QLatin1String("game"))continue;
+        for(auto& e:cat.entries) {
+            if(e.id.startsWith(QLatin1String("steam:"))) {
+                e.detail=collectionLabel(e.value);
+            } else if(e.id.startsWith(QLatin1String("custom:")) && e.action==Action::LaunchApp) {
+                e.detail=collectionLabel(e.id);
+            }
+        }
+    }
+    for(auto& page:pages_) {
+        for(auto& e:page.entries) {
+            if(e.id.startsWith(QLatin1String("steam:"))) {
+                const QString label=collectionLabel(e.value);
+                if(e.action==Action::LaunchSteam)e.detail=label.isEmpty()?QObject::tr("Installed"):label;
+                else if(e.action==Action::InstallSteam && !e.detail.contains(QStringLiteral("Family shared")))
+                    e.detail=label.isEmpty()?QObject::tr("Not installed"):label+QStringLiteral(" - Not installed");
+            } else if(e.id.startsWith(QLatin1String("custom:")) && e.action==Action::LaunchApp) {
+                e.detail=collectionLabel(e.id);
+            }
+        }
+    }
+}
+void Shell::sortGameEntries(int mode) {
+    // mode: 0 = created asc (lastUpdated asc), 1 = created desc (lastUpdated desc),
+    //       2 = updated asc (lastPlayed asc),  3 = updated desc (lastPlayed desc),
+    //       4 = playtime desc,                 5 = size on disk desc,
+    //       6 = title A-Z
+    QHash<QString,qint64> sizeMap,updatedMap;
+    for(const auto& g:steamInstalled_.games) {
+        sizeMap.insert(g.appId,g.sizeOnDisk);
+        updatedMap.insert(g.appId,g.lastUpdated);
+    }
+    QHash<QString,int> ownedPlaytime;
+    for(const auto& g:ownedGames_)ownedPlaytime.insert(g.appId,g.playtimeMinutes);
+    const auto isSortableGame=[](const Entry& e) {
+        return e.id.startsWith(QLatin1String("steam:")) ||
+               (e.id.startsWith(QLatin1String("custom:")) && e.action==Action::LaunchApp);
+    };
+    const auto keyMetric=[&](const Entry& e)->qint64 {
+        const QString appId=e.id.startsWith(QLatin1String("steam:"))?e.value:QString{};
+        switch(mode) {
+        case 0:
+        case 1: return updatedMap.value(appId,0);
+        case 2:
+        case 3: return steamActivity_.value(appId).lastPlayed;
+        case 4: return std::max(steamActivity_.value(appId).playtimeMinutes,ownedPlaytime.value(appId,0));
+        case 5: return sizeMap.value(appId,0);
+        default: return 0;
+        }
+    };
+    const auto cmp=[&](const Entry& a,const Entry& b)->bool {
+        if(mode==6)return a.title.localeAwareCompare(b.title)<0;
+        const qint64 ma=keyMetric(a),mb=keyMetric(b);
+        const bool aKnown=ma>0,bKnown=mb>0;
+        if(aKnown!=bKnown)return aKnown;
+        if(aKnown && ma!=mb) {
+            const bool asc=(mode==0 || mode==2);
+            return asc?(ma<mb):(ma>mb);
+        }
+        return a.title.localeAwareCompare(b.title)<0;
+    };
+    if(!pages_.isEmpty()) {
+        auto& page=pages_.last();
+        if(page.entries.size()<2)return;
+        const QString selected=page.entries.value(page.selection).id;
+        std::stable_sort(page.entries.begin(),page.entries.end(),cmp);
+        for(int i=0;i<page.entries.size();++i)if(page.entries[i].id==selected){page.selection=i;break;}
+        return;
+    }
+    auto& cat=categories_[category_];
+    if(cat.id!=QLatin1String("game") || cat.entries.size()<2)return;
+    const QString selected=cat.entries.value(selections_[category_]).id;
+    int endGame=0;
+    while(endGame<cat.entries.size() && isSortableGame(cat.entries[endGame]))++endGame;
+    if(endGame>1)std::stable_sort(cat.entries.begin(),cat.entries.begin()+endGame,cmp);
+    for(int i=0;i<cat.entries.size();++i)if(cat.entries[i].id==selected){selections_[category_]=i;break;}
+}
 void Shell::refreshContent() {
     if(contentScanning_){contentRefreshPending_=true;return;}
     contentScanning_=true;
@@ -1596,7 +1802,7 @@ void Shell::refreshContent() {
                     app.kind=="game"?Action::LaunchApp:app.kind=="jellyfin"?Action::JellyfinApp:Action::OpenUrl,app.kind=="web"?app.url:app.id);
                 // The separator is the console's U+00B7. It was double-encoded here (U+00C2 U+00B7, rendered
                 // as two glyphs) until this fix; the source stays ASCII, the code point is built explicitly.
-                e.detail=app.kind=="game"?QString{}:app.kind=="jellyfin"?QStringLiteral("Jellyfin"):QStringLiteral("Service app ")+QChar(0x00B7)+QStringLiteral(" Opens in your browser");
+                e.detail=app.kind=="game"?collectionLabel(QStringLiteral("custom:")+app.id):app.kind=="jellyfin"?QStringLiteral("Jellyfin"):QStringLiteral("Service app ")+QChar(0x00B7)+QStringLiteral(" Opens in your browser");
                 e.artwork=result.art.value("custom:"+app.id);e.gameTile=app.kind=="game";e.logoArt=e.gameTile && result.logoIds.contains(e.id);
                 // Jellyfin's row wears Jellyfin's mark unless the user gave the app its own picture.
                 // A web app wears its site's own icon once fetched (cached per site under the data folder).
@@ -2083,13 +2289,15 @@ Shell::Shell(QString dataDirectory,Assets& assets,QObject* parent):QObject(paren
         ownedSignature_=signature;
         ownedGames_=games;
         ownedFromKeyless_=false;   // Valve's list replaces the account's local stand-in
-        collections_=collections;
-        qInfo()<<"steam owned:"<<games.size()<<"games in"<<collections.size()<<"collections";
+        baseCollections_=collections;
+        steamOverlay_=loadSteamUserOverlay(dataDirectory_);
+        collections_=mergeSteamCollectionsWithOverlay(baseCollections_,steamOverlay_);
+        qInfo()<<"steam owned:"<<games.size()<<"games in"<<collections_.size()<<"collections";
         refreshContent();
     });
     connect(steamArtwork_.get(),&SteamArtwork::loaded,this,[this](const QString& id,const QImage& image){
         bool touched=false;
-        const auto apply=[&](Entry& e){if(e.id=="steam:"+id && !e.logoArt && !rawgArtworkPaths_.contains(e.id)){
+        const auto apply=[&](Entry& e){if((e.id=="steam:"+id || e.id=="store:"+id) && !e.logoArt && !rawgArtworkPaths_.contains(e.id)){
             const auto override=steamArtworkOverride(dataDirectory_,id);
             if(!override.row.isEmpty())return;
             // Inside a page the row is an ordinary item: the same centre square as steamFolderEntries() decodes, so
@@ -2199,17 +2407,39 @@ Shell::Shell(QString dataDirectory,Assets& assets,QObject* parent):QObject(paren
     connect(&steamStore_,&SteamStore::loaded,this,[this](const StoreItemList& items,const QString& query,const QString& error){
         if(!error.isEmpty()){showMessage(QObject::tr("Steam Store"),error,MessageKind::Page);emit changed();return;}
         Page page;page.title=query.isEmpty()?QObject::tr("Steam Store"):query;
+        const QString cache=QDir(dataDirectory_).filePath(QStringLiteral("cache/steam"));
+        QStringList missingArt;
+        int decoded=0;
         for(const auto& row:items) {
+            storeItemsById_.insert(row.appId,row);
             auto e=item("store:"+row.appId,row.title,"game_tex_default_ps3","explore_plugin_full",
                 Action::InstallSteam,row.appId);
             const QString price=SteamStore::priceText(row);
             e.detail=price.isEmpty()?QObject::tr("Open in Steam"):price;
+            if(decoded<64) {
+                QImageReader reader(SteamArtwork::cachePath(cache,row.appId));
+                if(reader.canRead()) {
+                    const auto size=reader.size();
+                    if(size.isValid() && size.width()<=16384 && size.height()<=16384) {
+                        reader.setScaledSize(size.scaled(512,288,Qt::KeepAspectRatio));
+                        const auto image=reader.read();
+                        if(!image.isNull()) {
+                            const int side=std::min(image.width(),image.height());
+                            e.artwork=image.copy((image.width()-side)/2,(image.height()-side)/2,side,side);
+                            ++decoded;
+                        }
+                    }
+                }
+            }
+            if(e.artwork.isNull())missingArt.push_back(row.appId);
             page.entries.push_back(std::move(e));
         }
         if(page.entries.isEmpty()){
             showMessage(assets_.text("explore_plugin_full","msg_error_no_content","There are no content items."),MessageKind::Inline);
             emit changed();return;
         }
+        if(!missingArt.isEmpty() && qEnvironmentVariable("XMB_STEAM_ARTWORK")!="0" && !diagnostics::safeMode())
+            steamArtwork_->refresh(missingArt);
         // Verification hook: the store page is dumped next to the catalogue for scripted checks.
         if(qEnvironmentVariableIsSet("XMB_DUMP_ENTRIES")) {
             QJsonArray rows;
@@ -2234,6 +2464,9 @@ Shell::Shell(QString dataDirectory,Assets& assets,QObject* parent):QObject(paren
     // percentages would sit still while Steam works. Every 5 s the page re-reads the queue, but only when
     // nothing is drawn over it (an information page, the options panel, a wait page) and no media is open.
     connect(&downloadsRefresh_,&QTimer::timeout,this,[this]{
+        if(!diagnostics::safeMode() && !mediaOpen_ && !inGame_ && !busy() &&
+           qEnvironmentVariable("XMB_STEAM_ACTIVITY")!=QLatin1String("0") && !qEnvironmentVariableIsSet("XMB_DUMP_ENTRIES"))
+            pollSteamDownloadsBackground();
         if(pages_.isEmpty() || !pages_.last().downloads || !message_.isEmpty() || optionsOpen_ || mediaOpen_ || busy())return;
         refreshSeerrDownloads();
         reloadSteamDownloads();
@@ -3102,10 +3335,33 @@ void Shell::activate() {
             if(const QString source=steamLibrarySourceText();!source.isEmpty())e.detail=source;
             page.entries.push_back(std::move(e));
         }
+        if(!steamInstalled_.games.isEmpty()) {
+            auto e=item("steam-folder-installed",QObject::tr("Installed Games"),"item_tex_plain_folder",
+                "explore_plugin_full",Action::SteamFolder,"installed");
+            e.detail=QString::number(steamInstalled_.games.size());e.artwork=serviceIcons::steam(steamRoot_);e.iconSized=true;
+            page.entries.push_back(std::move(e));
+        }
+        {
+            auto e=item("steam-store-search",QObject::tr("Search Steam Store"),"item_tex_ps_store",
+                "explore_plugin_full",Action::SteamStoreSearch,QString());
+            e.detail=QObject::tr("Search Valve's storefront by title");e.artwork=glyphs::search();e.iconSized=!e.artwork.isNull();
+            page.entries.push_back(std::move(e));
+        }
+        {
+            auto e=item("steam-downloads",QObject::tr("Download Management"),"tex_dl_manage",
+                "explore_category_network",Action::SteamDownloads,QString());
+            const int activeDl=int(watchedSteamDownloads_.size());
+            e.detail=activeDl>0?QObject::tr("%1 active or queued").arg(activeDl):QObject::tr("Steam and SteamCMD download queue");
+            e.artwork=glyphs::download();e.iconSized=!e.artwork.isNull();
+            page.entries.push_back(std::move(e));
+        }
         pages_.push_back(std::move(page));
         emit changed();
         break;
     }
+    case Action::SteamStoreSearch:
+        emit requestJellyfinFieldEdit(QStringLiteral("steamstore:search"),QObject::tr("Search Steam Store"),steamStoreSearchTerm_,false);
+        break;
     case Action::SteamStoreBrowse: {
         // Sections first: no request until a section is chosen, so opening the store is instant.
         Page page;page.title=QObject::tr("Steam Store");
@@ -3123,6 +3379,10 @@ void Shell::activate() {
     }
     case Action::SteamStoreSection:steamStore_.featured(entry.value);break;
     case Action::InstallSteam: {
+        if(entry.id.startsWith(QLatin1String("store:"))) {
+            openSteamStoreItemPage(entry.value,entry.title,entry.detail);
+            break;
+        }
         // With SteamCMD set up and signed in, the XMB installs the game itself (audit/STEAMCMD.md); otherwise Steam
         // owns the download: opening steam://install/<id> asks the client to install it.
         if(steamCmdReady() && steamcmd::validAppId(entry.value)){steamCmdStartJob(entry.value,entry.title,0);break;}
@@ -3145,12 +3405,18 @@ void Shell::activate() {
         // error-code page carrying the OS's own reason; overwriting it here would throw that away.
         if(app==contentApps_.cend() || !QFileInfo(app->executable).isFile())
             showMessage(entry.title,"This application could not be started.",MessageKind::Page);
-        else if(app->kind==QLatin1String("game") && !gameRunning()) {
-            const auto copy=*app;
-            GameBoot::begin([this,copy,title=entry.title]{
-                coverLaunch(title,false,[this,copy,title]{return startTracked(copy.executable,copy.arguments,copy.workingDirectory,title,copy.display);});
-            });
-        } else startTracked(app->executable,app->arguments,app->workingDirectory,entry.title,app->display);
+        else {
+            QStringList launchArgs=app->arguments;
+            const QString extraArgs=steamOverlay_.launchOptions.value(QStringLiteral("custom:")+app->id).trimmed();
+            if(!extraArgs.isEmpty())launchArgs<<QProcess::splitCommand(extraArgs);
+            if(app->kind==QLatin1String("game") && !gameRunning()) {
+                auto copy=*app;
+                copy.arguments=launchArgs;
+                GameBoot::begin([this,copy,title=entry.title]{
+                    coverLaunch(title,false,[this,copy,title]{return startTracked(copy.executable,copy.arguments,copy.workingDirectory,title,copy.display);});
+                });
+            } else startTracked(app->executable,launchArgs,app->workingDirectory,entry.title,app->display);
+        }
         break;
     }
     case Action::OpenUrl:
@@ -3646,7 +3912,8 @@ bool Shell::optionPageSortable() const {
 // Information at 539-638), so only this class is rebuilt to it. The media and Continue Watching menus keep
 // their measured row sets (F3/H2): no frame covers them with this item-menu source.
 static bool isGameTitleRow(const Entry& entry) {
-    return entry.action==Action::Launch || entry.action==Action::LaunchSteam || entry.action==Action::LaunchApp;
+    return entry.action==Action::Launch || entry.action==Action::LaunchSteam || entry.action==Action::LaunchApp ||
+           (entry.action==Action::InstallSteam && entry.id.startsWith(QLatin1String("steam:")));
 }
 // The firmware decides the guide per item class (explore_plugin: each class's hint getter returns
 // msg_option_with_icon or 0; 63 getters call it). Which rows answer yes was measured on the RPCS3 rig, one
@@ -3819,12 +4086,25 @@ void Shell::buildOptions() {
             options_.last().submenu=true;options_.last().gateBadge=true;
         }
         const int actionGroup=options_.size();
-        addOption({"msg_game_start","Start"},OptionCommand::Activate,"game-title");
+        addOption(entry.action==Action::InstallSteam?OptionLabel{"","Install"}:OptionLabel{"msg_game_start","Start"},OptionCommand::Activate,"game-title");
         // A Steam title: the Steam client's own pages and commands for it, as steam:// hand-offs (this build's
         // rows; the console has no Steam). Played time and the last session ride on the Library row's note.
         bool steamId=false;entry.value.toULongLong(&steamId);
         const bool steamRow=steamId && (entry.action==Action::LaunchSteam || entry.action==Action::InstallSteam);
         const bool steamInstalled=steamRow && entry.action==Action::LaunchSteam;
+        if(steamRow || entry.id.startsWith(QLatin1String("custom:"))) {
+            const QString overlayKey=steamRow?entry.value:entry.id;
+            const bool isFav=steamOverlay_.favorites.contains(overlayKey);
+            addOption({"",isFav?QStringLiteral("Remove from Favorites"):QStringLiteral("Add to Favorites")},
+                      OptionCommand::SteamToggleFavorite,"steam-game",true,
+                      isFav?tr("Removes this title from your Favorites collection."):tr("Adds this title to your Favorites collection."));
+            addOption({"",QStringLiteral("Collections...")},OptionCommand::SteamCollectionMenu,"steam-game",true,
+                      tr("Assign this title to a collection or create a new one."));
+            options_.last().submenu=true;
+            const QString currentArgs=steamOverlay_.launchOptions.value(overlayKey).trimmed();
+            addOption({"",QStringLiteral("Launch Options...")},OptionCommand::SteamLaunchOptions,"steam-game",true,
+                      currentArgs.isEmpty()?tr("Set custom command-line arguments for this title."):tr("Current: %1").arg(currentArgs));
+        }
         if(steamRow) {
             const auto link=[&](const QString& title,int kind,const QString& note){
                 addOption({"",title},OptionCommand::SteamLink,"steam-game");options_.last().index=kind;options_.last().note=note;
@@ -3847,6 +4127,11 @@ void Shell::buildOptions() {
                     job(QStringLiteral("Validate with SteamCMD"),2,tr("SteamCMD checks every file and repairs what differs."));
                 } else {
                     job(QStringLiteral("Install with SteamCMD"),0,tr("SteamCMD downloads the game into your Steam library."));
+                    if(steamcmd::steamLibraries(steamRoot_).size()>1) {
+                        addOption({"",QStringLiteral("Choose Install Location...")},OptionCommand::SteamCmdChooseLibrary,"steam-game",true,
+                                  tr("Pick which Steam library drive to install this game into."));
+                        options_.last().submenu=true;
+                    }
                     link(QStringLiteral("Install in Steam Client"),5,tr("Hands the install to the Steam window instead."));
                 }
             } else if(!steamInstalled) {
@@ -3961,6 +4246,10 @@ void Shell::buildOptions() {
             addOption({"msg_copy_plural","Copy Multiple"},OptionCommand::CopyPlural,"local-content");
             addOption({"msg_del_plural","Delete Multiple"},OptionCommand::DeletePlural,"local-content");
         }
+    }
+    if(entry.action==Action::SteamStoreSection || entry.id.startsWith(QLatin1String("store:"))) {
+        addOption({"",QStringLiteral("Search Steam Store")},OptionCommand::SteamStoreSearch,"steam-store",true,
+                  tr("Search Valve's storefront by title using the on-screen keyboard."));
     }
     // The Continue Watching row is this build's own record, not a firmware item: the firmware has no row
     // for forgetting a resume point. Its label is the firmware's own generic remove word (`msg_eject` =
@@ -4250,13 +4539,22 @@ void Shell::optionsActivate() {
         // to read a date from: the rows are then listed and cannot be chosen, with the reason on the row, rather
         // than offered as a sort that would reorder nothing. A local folder page keeps them enabled.
         {
-            bool anyDate=false;
-            if(!pages_.isEmpty())for(const auto& row:pages_.last().entries) {
+            bool anyDate=false,anyGame=false;
+            const auto& list=pages_.isEmpty()?categories_[category_].entries:pages_.last().entries;
+            for(const auto& row:list) {
+                if(row.id.startsWith(QLatin1String("steam:")) || row.id.startsWith(QLatin1String("custom:")))anyGame=true;
                 if(row.value.isEmpty())continue;
                 const QFileInfo info(row.value);
                 if(info.exists() && (info.birthTime().isValid() || info.lastModified().isValid())){anyDate=true;break;}
             }
-            if(!anyDate)for(auto& row:options_) {
+            if(anyGame && !qEnvironmentVariableIsSet("XMB_DUMP_ENTRIES")) {
+                addOption({"",QStringLiteral("Play Time ")+QChar(0x25BC)},OptionCommand::SortPlaytimeDescending,"sort-row",true,
+                          tr("Sorts titles by total recorded Steam play time."));
+                addOption({"",QStringLiteral("Size on Disk ")+QChar(0x25BC)},OptionCommand::SortSizeDescending,"sort-row",true,
+                          tr("Sorts installed titles by size on disk."));
+                addOption({"",QStringLiteral("Title (A-Z)")},OptionCommand::SortTitleAscending,"sort-row",true,
+                          tr("Sorts titles alphabetically."));
+            } else if(!anyDate && !anyGame)for(auto& row:options_) {
                 row.enabled=false;
                 row.note=tr("No row on this page carries a file date, so there is nothing for a date sort to order.");
             }
@@ -4300,7 +4598,23 @@ void Shell::optionsActivate() {
         const bool created=option.command==OptionCommand::SortCreatedAscending||option.command==OptionCommand::SortCreatedDescending;
         const bool ascending=option.command==OptionCommand::SortCreatedAscending||option.command==OptionCommand::SortUpdatedAscending;
         resetOptions();
-        sortPageByDate(ascending,created);
+        bool anyFileDate=false;
+        if(!pages_.isEmpty())for(const auto& row:pages_.last().entries) {
+            if(!row.value.isEmpty() && QFileInfo(row.value).exists()){anyFileDate=true;break;}
+        }
+        if(anyFileDate)sortPageByDate(ascending,created);
+        else sortGameEntries(created?(ascending?0:1):(ascending?2:3));
+        interactionAudio_.play(InteractionAudio::Cue::Confirm);
+        emit changed();
+        break;
+    }
+    case OptionCommand::SortPlaytimeDescending:
+    case OptionCommand::SortSizeDescending:
+    case OptionCommand::SortTitleAscending: {
+        const int mode=option.command==OptionCommand::SortPlaytimeDescending?4
+                      :option.command==OptionCommand::SortSizeDescending?5:6;
+        resetOptions();
+        sortGameEntries(mode);
         interactionAudio_.play(InteractionAudio::Cue::Confirm);
         emit changed();
         break;
@@ -4316,12 +4630,145 @@ void Shell::optionsActivate() {
         break;
     }
     case OptionCommand::GroupByTitle:
+    case OptionCommand::GroupByCollection:
+    case OptionCommand::GroupByStatus:
     case OptionCommand::GroupAll:
         resetOptions();
         groupPageBy(option.command);
         interactionAudio_.play(InteractionAudio::Cue::Confirm);
         emit changed();
         break;
+    case OptionCommand::SteamToggleFavorite: {
+        bool numeric=false;entry.value.toULongLong(&numeric);
+        const QString key=(numeric && (entry.action==Action::LaunchSteam || entry.action==Action::InstallSteam))?entry.value:entry.id;
+        resetOptions();
+        if(!key.isEmpty()) {
+            const bool removed=steamOverlay_.favorites.contains(key);
+            if(removed)steamOverlay_.favorites.remove(key);
+            else steamOverlay_.favorites.insert(key);
+            saveSteamUserOverlay(dataDirectory_,steamOverlay_);
+            applySteamOverlayAndRebuild();
+            notify(entry.title,removed?tr("Removed from Favorites"):tr("Added to Favorites"),QStringLiteral("tex_notification_info"),false);
+            interactionAudio_.play(InteractionAudio::Cue::Confirm);
+        }
+        emit changed();
+        break;
+    }
+    case OptionCommand::SteamCollectionMenu: {
+        bool numeric=false;entry.value.toULongLong(&numeric);
+        const QString key=(numeric && (entry.action==Action::LaunchSteam || entry.action==Action::InstallSteam))?entry.value:entry.id;
+        optionsParent_=options_;optionsNested_=true;optionsTitle_=tr("Collections");
+        options_.clear();
+        QStringList names;
+        for(const auto& c:collections_)if(!names.contains(c.name,Qt::CaseInsensitive))names.append(c.name);
+        for(auto it=steamOverlay_.customCollections.cbegin();it!=steamOverlay_.customCollections.cend();++it)
+            if(!names.contains(it.key(),Qt::CaseInsensitive))names.append(it.key());
+        names.sort(Qt::CaseInsensitive);
+        for(int i=0;i<names.size();++i) {
+            const QString& colName=names[i];
+            bool inCol=false;
+            for(const auto& c:collections_)if(c.name.compare(colName,Qt::CaseInsensitive)==0 && c.appIds.contains(key)){inCol=true;break;}
+            MenuOption row{colName,OptionCommand::SteamCollectionToggle};
+            row.index=i;
+            row.active=inCol;
+            row.note=inCol?tr("In this collection (Cross removes a custom assignment)"):tr("Cross adds this title to %1").arg(colName);
+            options_.push_back(row);
+        }
+        {
+            MenuOption createRow{tr("New Collection..."),OptionCommand::SteamCollectionCreate};
+            createRow.note=tr("Type a new collection name on the on-screen keyboard.");
+            options_.push_back(createRow);
+        }
+        optionsSelection_=0;
+        interactionAudio_.play(InteractionAudio::Cue::Options);
+        emit changed();
+        break;
+    }
+    case OptionCommand::SteamCollectionToggle: {
+        bool numeric=false;entry.value.toULongLong(&numeric);
+        const QString key=(numeric && (entry.action==Action::LaunchSteam || entry.action==Action::InstallSteam))?entry.value:entry.id;
+        const QString colName=option.title.trimmed();
+        resetOptions();
+        if(!key.isEmpty() && !colName.isEmpty()) {
+            if(colName.compare(QStringLiteral("Favorites"),Qt::CaseInsensitive)==0) {
+                if(steamOverlay_.favorites.contains(key))steamOverlay_.favorites.remove(key);
+                else steamOverlay_.favorites.insert(key);
+            } else {
+                QStringList list=steamOverlay_.customCollections.value(colName);
+                if(list.contains(key))list.removeAll(key);
+                else list.append(key);
+                steamOverlay_.customCollections.insert(colName,list);
+            }
+            saveSteamUserOverlay(dataDirectory_,steamOverlay_);
+            applySteamOverlayAndRebuild();
+            interactionAudio_.play(InteractionAudio::Cue::Confirm);
+        }
+        emit changed();
+        break;
+    }
+    case OptionCommand::SteamCollectionCreate: {
+        bool numeric=false;entry.value.toULongLong(&numeric);
+        const QString key=(numeric && (entry.action==Action::LaunchSteam || entry.action==Action::InstallSteam))?entry.value:entry.id;
+        resetOptions();
+        if(!key.isEmpty()) {
+            interactionAudio_.play(InteractionAudio::Cue::Confirm);
+            emit requestJellyfinFieldEdit(QStringLiteral("steam:new-collection:")+key,tr("New Collection Name"),{},false);
+        }
+        emit changed();
+        break;
+    }
+    case OptionCommand::SteamLaunchOptions: {
+        bool numeric=false;entry.value.toULongLong(&numeric);
+        const QString key=(numeric && (entry.action==Action::LaunchSteam || entry.action==Action::InstallSteam))?entry.value:entry.id;
+        resetOptions();
+        if(!key.isEmpty()) {
+            interactionAudio_.play(InteractionAudio::Cue::Confirm);
+            emit requestJellyfinFieldEdit(QStringLiteral("steam:launch-options:")+key,
+                tr("Launch Options (%1)").arg(entry.title),
+                steamOverlay_.launchOptions.value(key),false);
+        }
+        emit changed();
+        break;
+    }
+    case OptionCommand::SteamStoreSearch:
+        resetOptions();
+        interactionAudio_.play(InteractionAudio::Cue::Confirm);
+        emit requestJellyfinFieldEdit(QStringLiteral("steamstore:search"),tr("Search Steam Store"),steamStoreSearchTerm_,false);
+        emit changed();
+        break;
+    case OptionCommand::SteamCmdChooseLibrary: {
+        const QStringList libraries=steamcmd::steamLibraries(steamRoot_);
+        const QString stored=preferences_.value("steamcmd/library").toString();
+        optionsParent_=options_;optionsNested_=true;optionsTitle_=tr("Choose Install Location");
+        options_.clear();
+        for(int i=0;i<libraries.size();++i) {
+            const QString& lib=libraries[i];
+            MenuOption row{QDir::toNativeSeparators(lib),OptionCommand::SteamCmdChooseLibraryTarget};
+            row.index=i;
+            row.active=(lib.compare(stored,Qt::CaseInsensitive)==0) || (stored.isEmpty() && i==0);
+            const QStorageInfo storage(lib);
+            if(storage.isValid() && storage.bytesAvailable()>0)
+                row.note=tr("%1 free").arg(downloadSize(storage.bytesAvailable()));
+            else row.note=tr("Install %1 into this Steam library.").arg(entry.title);
+            if(row.active)optionsSelection_=i;
+            options_.push_back(row);
+        }
+        interactionAudio_.play(InteractionAudio::Cue::Options);
+        emit changed();
+        break;
+    }
+    case OptionCommand::SteamCmdChooseLibraryTarget: {
+        const QStringList libraries=steamcmd::steamLibraries(steamRoot_);
+        const QString chosenLib=libraries.value(option.index);
+        const Entry row=entry;
+        resetOptions();
+        if(!chosenLib.isEmpty()) {
+            preferences_.setValue("steamcmd/library",chosenLib);
+            interactionAudio_.play(InteractionAudio::Cue::Confirm);
+            steamCmdStartJob(row.value,row.title,0,chosenLib);
+        }
+        break;
+    }
     // Forget this row's remembered position and rebuild the page it was listed on. Removing is a
     // destructive change to this build's own state, so it asks first with the firmware's two-button box:
     // buttons msg_ok/msg_cancel on Cross/Circle, snd_decide only when Cross accepts (TRACED 0x00341870).
@@ -5339,12 +5786,84 @@ void Shell::showEntryInformation(const Entry& entry) {
     if(entry.id.startsWith(QLatin1String("store:"))) {
         QStringList rows;
         if(!entry.detail.isEmpty() && entry.detail!=QObject::tr("Open in Steam"))rows<<QObject::tr("Price: %1").arg(entry.detail);
+        if(storeItemsById_.contains(entry.value)) {
+            const auto& item=storeItemsById_.value(entry.value);
+            if(item.discounted && item.discountPercent>0)
+                rows<<QObject::tr("Discount: -%1%").arg(item.discountPercent);
+            rows<<QObject::tr("Platform: %1").arg(item.windows?QObject::tr("Windows"):QObject::tr("Other"));
+        }
+        rows<<QObject::tr("Steam App ID: %1").arg(entry.value);
         rows<<QObject::tr("Store: Steam");
         rows<<QString();
-        rows<<QObject::tr("Selecting this title hands it to Steam, which handles any purchase and the install.");
+        rows<<QObject::tr("Selecting this title opens its store details page.");
         showMessage(entry.title,rows.join(QLatin1Char('\n')),MessageKind::Info);
         qInfo().noquote()<<"shell: options information title="<<entry.title<<"(steam store)";
         return;
+    }
+    bool numericSteam=false;entry.value.toULongLong(&numericSteam);
+    if(entry.id.startsWith(QLatin1String("steam:")) || (numericSteam && (entry.action==Action::LaunchSteam || entry.action==Action::InstallSteam))) {
+        const QString appId=entry.value;
+        const SteamGame* installed=nullptr;
+        for(const auto& g:steamInstalled_.games)if(g.appId==appId){installed=&g;break;}
+        const OwnedGame* owned=nullptr;
+        for(const auto& g:ownedGames_)if(g.appId==appId){owned=&g;break;}
+        const FamilyGame* family=nullptr;
+        for(const auto& g:familyGames_)if(g.appId==appId){family=&g;break;}
+        const SteamActivity act=steamActivity_.value(appId);
+        const int totalMinutes=std::max(act.playtimeMinutes,owned?owned->playtimeMinutes:0);
+        QString playtimeStr=QObject::tr("Not played yet");
+        if(totalMinutes>=60) {
+            const int h=totalMinutes/60,m=totalMinutes%60;
+            playtimeStr=m>0?QObject::tr("%1 h %2 min").arg(h).arg(m):QObject::tr("%1 h").arg(h);
+        } else if(totalMinutes>0) {
+            playtimeStr=QObject::tr("%1 min").arg(totalMinutes);
+        }
+        QString lastPlayedStr=QObject::tr("Never");
+        if(act.lastPlayed>0) {
+            const QDateTime dt=QDateTime::fromSecsSinceEpoch(act.lastPlayed);
+            if(dt.isValid())lastPlayedStr=dt.toString("yyyy/MM/dd HH:mm");
+        }
+        QStringList rows;
+        rows<<row("msg_format","Format",installed?QObject::tr("Steam Game (Installed)")
+            :(family && !owned?QObject::tr("Steam Game (Family Shared)"):QObject::tr("Steam Game (Not Installed)")));
+        rows<<row("msg_size","Size",(installed && installed->sizeOnDisk>0)?downloadSize(installed->sizeOnDisk)
+            :(installed?unknown:QObject::tr("Not installed")));
+        rows<<QObject::tr("Play Time: %1").arg(playtimeStr);
+        rows<<QObject::tr("Last Played: %1").arg(lastPlayedStr);
+        if(installed && installed->lastUpdated>0) {
+            const QDateTime up=QDateTime::fromSecsSinceEpoch(installed->lastUpdated);
+            if(up.isValid())rows<<row("msg_updated_date","Updated",up.toString("yyyy/MM/dd HH:mm"));
+        }
+        const QString colLabel=collectionLabel(appId);
+        if(!colLabel.isEmpty())rows<<QObject::tr("Collections: %1").arg(colLabel);
+        const QString launchArgs=steamOverlay_.launchOptions.value(appId).trimmed();
+        if(!launchArgs.isEmpty())rows<<QObject::tr("Launch Options: %1").arg(launchArgs);
+        if(installed && !installed->buildId.isEmpty())rows<<QObject::tr("Build ID: %1").arg(installed->buildId);
+        rows<<QObject::tr("Steam App ID: %1").arg(appId);
+        if(installed && !installed->installDirectory.isEmpty())
+            rows<<QStringLiteral("Path: ")+QDir::toNativeSeparators(installed->installDirectory);
+        showMessage(entry.title,rows.join('\n'),MessageKind::Info);
+        qInfo().noquote()<<"shell: options information title="<<entry.title<<"rows="<<rows.size()<<"(steam game)";
+        return;
+    }
+    if(entry.id.startsWith(QLatin1String("custom:")) && entry.action==Action::LaunchApp) {
+        const auto app=std::find_if(contentApps_.cbegin(),contentApps_.cend(),[&](const auto& a){return a.id==entry.value;});
+        if(app!=contentApps_.cend()) {
+            const QFileInfo exeInfo(app->executable);
+            QStringList rows;
+            rows<<row("msg_format","Format",QObject::tr("Imported Game"));
+            rows<<row("msg_size","Size",exeInfo.isFile()?downloadSize(exeInfo.size()):unknown);
+            rows<<row("msg_created_date_time","Created",exeInfo.isFile()?exeInfo.lastModified().toString("yyyy/MM/dd HH:mm"):unknown);
+            const QString colLabel=collectionLabel(entry.id);
+            if(!colLabel.isEmpty())rows<<QObject::tr("Collections: %1").arg(colLabel);
+            const QString extraArgs=steamOverlay_.launchOptions.value(entry.id).trimmed();
+            const QString allArgs=(app->arguments.join(' ')+QLatin1Char(' ')+extraArgs).trimmed();
+            if(!allArgs.isEmpty())rows<<QObject::tr("Launch Options: %1").arg(allArgs);
+            rows<<QStringLiteral("Path: ")+QDir::toNativeSeparators(app->executable);
+            showMessage(entry.title,rows.join('\n'),MessageKind::Info);
+            qInfo().noquote()<<"shell: options information title="<<entry.title<<"rows="<<rows.size()<<"(imported game)";
+            return;
+        }
     }
     QStringList rows;
     rows<<row("msg_format","Format",entryKind(entry));
@@ -5399,11 +5918,24 @@ void Shell::buildGroupContentMenu() {
     optionsParent_=options_;optionsNested_=true;optionsTitle_=optionLabel({"msg_folder_class","Group Content"});
     options_.clear();
     const bool grouped=!pages_.isEmpty()&&pages_.last().grouped;
+    const QString groupKey=pages_.isEmpty()?QString{}:pages_.last().groupKey;
+    bool hasGameRows=false;
+    if(!pages_.isEmpty()) {
+        const auto& src=pages_.last().grouped?pages_.last().groupedSource:pages_.last().entries;
+        for(const auto& r:src)if(r.id.startsWith(QLatin1String("steam:")) || r.id.startsWith(QLatin1String("custom:"))){hasGameRows=true;break;}
+    }
     addOption({"msg_title_folder","By Title"},OptionCommand::GroupByTitle,"group-title");
-    options_.last().active=grouped;
+    options_.last().active=grouped && (groupKey.isEmpty() || groupKey==QLatin1String("title"));
+    if(hasGameRows && !qEnvironmentVariableIsSet("XMB_DUMP_ENTRIES")) {
+        addOption({"","By Collection"},OptionCommand::GroupByCollection,"group-collection");
+        options_.last().active=grouped && groupKey==QLatin1String("collection");
+        addOption({"","By Status"},OptionCommand::GroupByStatus,"group-status");
+        options_.last().active=grouped && groupKey==QLatin1String("status");
+    }
     addOption({"msg_all","All"},OptionCommand::GroupAll,"group-all");
     options_.last().active=!grouped;
-    optionsSelection_=grouped?0:1;
+    optionsSelection_=0;
+    for(int i=0;i<options_.size();++i)if(options_[i].active){optionsSelection_=i;break;}
     interactionAudio_.play(InteractionAudio::Cue::Options);
     QStringList titles;for(const auto& row:options_)titles<<row.title;
     qInfo().noquote()<<"shell: options group menu opened rows="<<options_.size()
@@ -5429,18 +5961,39 @@ void Shell::groupPageBy(OptionCommand command) {
     if(command==OptionCommand::GroupAll) {
         if(!page.grouped)return;
         const int count=page.groupedSource.size();
-        page.entries=page.groupedSource;page.groupedSource.clear();page.grouped=false;
+        page.entries=page.groupedSource;page.groupedSource.clear();page.grouped=false;page.groupKey.clear();
         page.selection=0;
         qInfo().noquote()<<QStringLiteral("shell: group content restored page=\"%1\" rows=%2")
             .arg(page.title).arg(count);
         return;
     }
-    // By Title. The ungrouped rows are kept on the page, so All puts them back without a rescan and a group
-    // folder can be opened from them. The folders are ordinary rows of the page, so the cursor, the label
-    // column, the value column and the information page all work without a second row class.
+    // By Title / By Collection / By Status. The ungrouped rows are kept on the page, so All puts them back
+    // without a rescan and a group folder can be opened from them.
     if(!page.grouped)page.groupedSource=page.entries;
     QMap<QString,QVector<Entry>> groups;
-    for(const auto& row:page.groupedSource)groups[groupLetter(row.title)].push_back(row);
+    if(command==OptionCommand::GroupByCollection) {
+        page.groupKey=QStringLiteral("collection");
+        for(const auto& row:page.groupedSource) {
+            const QString appKey=row.id.startsWith(QLatin1String("steam:"))?row.value:row.id;
+            bool matched=false;
+            for(const auto& col:collections_)if(col.appIds.contains(appKey)){groups[col.name].push_back(row);matched=true;}
+            if(!matched)groups[QObject::tr("Uncategorized")].push_back(row);
+        }
+    } else if(command==OptionCommand::GroupByStatus) {
+        page.groupKey=QStringLiteral("status");
+        for(const auto& row:page.groupedSource) {
+            QString bucket;
+            if(row.action==Action::LaunchSteam || row.action==Action::LaunchApp || row.action==Action::Launch)
+                bucket=QObject::tr("Installed");
+            else if(row.detail.contains(QStringLiteral("Family shared"),Qt::CaseInsensitive))
+                bucket=QObject::tr("Family Shared");
+            else bucket=QObject::tr("Not Installed");
+            groups[bucket].push_back(row);
+        }
+    } else {
+        page.groupKey=QStringLiteral("title");
+        for(const auto& row:page.groupedSource)groups[groupLetter(row.title)].push_back(row);
+    }
     page.entries.clear();
     for(auto it=groups.cbegin();it!=groups.cend();++it) {
         auto folder=item(QStringLiteral("group:")+it.key(),it.key(),QStringLiteral("item_tex_plain_folder"),
@@ -5450,19 +6003,39 @@ void Shell::groupPageBy(OptionCommand command) {
         page.entries.push_back(std::move(folder));
     }
     page.grouped=true;page.selection=0;
-    qInfo().noquote()<<QStringLiteral("shell: group content by title page=\"%1\" rows=%2 groups=%3 keys=%4")
+    qInfo().noquote()<<QStringLiteral("shell: group content by %5 page=\"%1\" rows=%2 groups=%3 keys=%4")
         .arg(page.title).arg(page.groupedSource.size()).arg(page.entries.size())
         .arg([&groups]{QStringList keys;for(auto it=groups.cbegin();it!=groups.cend();++it)keys<<it.key();
-            return keys.join(QChar(','));}());
+            return keys.join(QChar(','));}(),page.groupKey);
 }
 void Shell::openGroupFolder(const Entry& entry) {
     // A group folder is a page of the rows that share one key: the same entries, in the same order, so a row's
     // action, value and information page are unchanged. Circle returns to the letter list, whose All puts the
     // page back together.
     if(pages_.isEmpty() || !pages_.last().grouped)return;
+    const QString mode=pages_.last().groupKey;
     Page page;page.title=entry.value;
-    for(const auto& row:pages_.last().groupedSource)
-        if(groupLetter(row.title)==entry.value)page.entries.push_back(row);
+    for(const auto& row:pages_.last().groupedSource) {
+        if(mode==QLatin1String("collection")) {
+            const QString appKey=row.id.startsWith(QLatin1String("steam:"))?row.value:row.id;
+            bool inThis=false,inAny=false;
+            for(const auto& col:collections_)if(col.appIds.contains(appKey)) {
+                inAny=true;
+                if(col.name==entry.value)inThis=true;
+            }
+            if(inThis || (!inAny && entry.value==QObject::tr("Uncategorized")))page.entries.push_back(row);
+        } else if(mode==QLatin1String("status")) {
+            QString bucket;
+            if(row.action==Action::LaunchSteam || row.action==Action::LaunchApp || row.action==Action::Launch)
+                bucket=QObject::tr("Installed");
+            else if(row.detail.contains(QStringLiteral("Family shared"),Qt::CaseInsensitive))
+                bucket=QObject::tr("Family Shared");
+            else bucket=QObject::tr("Not Installed");
+            if(bucket==entry.value)page.entries.push_back(row);
+        } else if(groupLetter(row.title)==entry.value) {
+            page.entries.push_back(row);
+        }
+    }
     if(page.entries.isEmpty())return;
     pages_.push_back(std::move(page));
     qInfo().noquote()<<QStringLiteral("shell: group folder opened key=%1 rows=%2")
@@ -7497,6 +8070,42 @@ void Shell::setJellyfinSignInField(const QString& field,const QString& value) {
     // The one field-edit signal also carries the Jellyfin search term: the row that asks for it sends
     // the key "search", and the accepted text opens a result page. It is not a credential field, so it
     // is kept (for the next keyboard prefill) but only its length is logged.
+    if(field==QStringLiteral("steamstore:search")) {
+        const QString term=value.trimmed();
+        if(term.isEmpty())return;
+        steamStoreSearchTerm_=term;
+        qInfo().noquote()<<"steam store: search term accepted ("<<term.size()<<" character(s))";
+        steamStore_.search(term);
+        return;
+    }
+    if(field.startsWith(QStringLiteral("steam:new-collection:"))) {
+        const QString key=field.mid(21).trimmed();
+        const QString colName=value.trimmed().left(120);
+        if(key.isEmpty() || colName.isEmpty())return;
+        if(colName.compare(QStringLiteral("Favorites"),Qt::CaseInsensitive)==0) {
+            steamOverlay_.favorites.insert(key);
+        } else {
+            QStringList list=steamOverlay_.customCollections.value(colName);
+            if(!list.contains(key))list.append(key);
+            steamOverlay_.customCollections.insert(colName,list);
+        }
+        saveSteamUserOverlay(dataDirectory_,steamOverlay_);
+        applySteamOverlayAndRebuild();
+        notify(colName,tr("Collection updated"),QStringLiteral("tex_notification_info"),false);
+        emit changed();
+        return;
+    }
+    if(field.startsWith(QStringLiteral("steam:launch-options:"))) {
+        const QString key=field.mid(21).trimmed();
+        if(key.isEmpty())return;
+        const QString args=value.trimmed().left(1024);
+        if(args.isEmpty())steamOverlay_.launchOptions.remove(key);
+        else steamOverlay_.launchOptions.insert(key,args);
+        saveSteamUserOverlay(dataDirectory_,steamOverlay_);
+        notify(tr("Launch Options"),args.isEmpty()?tr("Cleared custom launch options"):args,QStringLiteral("tex_notification_info"),false);
+        emit changed();
+        return;
+    }
     if(field==QStringLiteral("musicsearch")){openJellyfinMusicSearch(value);return;}
     if(field==QStringLiteral("search")) {
         const QString term=value.trimmed();

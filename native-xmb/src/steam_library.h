@@ -13,6 +13,10 @@ struct SteamGame {
     QString installDirectory;
     QString artwork;
     QString backgroundArtwork;
+    qint64 sizeOnDisk = 0;
+    qint64 lastUpdated = 0;
+    QString buildId;
+    QString libraryPath;
 };
 
 struct SteamInstallation {
@@ -63,6 +67,7 @@ SteamAppState steamAppState(const QString& appId);
 // so the caller hands the URI to the OS and makes no claim about whether the title started or exited.
 // Empty for a non-numeric id.
 QString steamLaunchUri(const QString& appId);
+QString steamLaunchUriWithArgs(const QString& appId, const QString& launchArgs);
 
 // How long a launch handoff keeps watching before it gives up without a confirmed run. The shell
 // and the tracking tests share this literal so the reducer's timeout behavior is exercised at the

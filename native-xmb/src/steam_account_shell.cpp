@@ -21,6 +21,7 @@ void Shell::resetSteamAccountState() {
     ownedGames_.clear();
     ownedSignature_.clear();
     ownedFromKeyless_=false;
+    baseCollections_.clear();
     collections_.clear();
     steamActivity_.clear();
     family_=SteamFamily{};
@@ -59,7 +60,9 @@ void Shell::applySteamAccountSnapshot(SteamAccountSnapshot snapshot) {
     steamAccounts_=std::move(snapshot.accounts);
     // Local and keyless: the account's own groups need no Web API key. With no account found the list is left as it is
     // (an account change already cleared it); the owned-games handler may still fill it from an XMB_STEAM_ID account.
-    if(!snapshot.steamId.isEmpty())collections_=std::move(snapshot.collections);
+    if(!snapshot.steamId.isEmpty())baseCollections_=std::move(snapshot.collections);
+    steamOverlay_=loadSteamUserOverlay(dataDirectory_);
+    collections_=mergeSteamCollectionsWithOverlay(baseCollections_,steamOverlay_);
 
     // The owned list. Valve's wins whenever a key exists and its list is what is on screen; otherwise the account's
     // own local data stands in (no key, or the key's list has not arrived yet after an account change).

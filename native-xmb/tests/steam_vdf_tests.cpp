@@ -23,6 +23,7 @@
 //   xmb-steam-vdf-tests --real <file>         compare the real Steam files with <file>
 //   xmb-steam-vdf-tests --real <file> --record
 #include "steam_accounts.h"
+#include "steam_collections.h"
 #include "steam_library.h"
 
 #include <QCoreApplication>
@@ -848,6 +849,49 @@ int main(int argc, char** argv) {
     const SteamInstallation missingSteamAppsScan = scanSteam(world.paths.root);
     check(missingSteamAppsScan.games.size() == 2 && missingSteamAppsScan.warnings.size() == 1,
           "missing steamapps reports unavailable library without losing healthy games");
+
+    // Verify new v0.3.40 Steam workflow extensions: ACF SizeOnDisk, steamLaunchUriWithArgs, and SteamUserOverlay persistence/merge.
+    check(!missingSteamAppsScan.games.isEmpty() && missingSteamAppsScan.games.constFirst().sizeOnDisk == 123,
+          "scanSteam parses SizeOnDisk from appmanifest_*.acf");
+    check(steamLaunchUriWithArgs(QStringLiteral("620"), QString()) == QStringLiteral("steam://rungameid/620"),
+          "steamLaunchUriWithArgs falls back to steam://rungameid/ when arguments are empty");
+    check(steamLaunchUriWithArgs(QStringLiteral("620"), QStringLiteral("-novid -console")) ==
+              QStringLiteral("steam://run/620//-novid%20-console/"),
+          "steamLaunchUriWithArgs percent-encodes custom launch arguments into steam://run/<id>//<args>/");
+    {
+        QTemporaryDir overlayDir;
+        check(overlayDir.isValid(), "create temporary overlay directory");
+        const SteamUserOverlay emptyOverlay = loadSteamUserOverlay(overlayDir.path());
+        check(emptyOverlay.isEmpty(), "absent steam-collections-local.json loads as an empty overlay");
+        SteamCollectionList baseCols;
+        SteamCollection actionCol;
+        actionCol.id = QStringLiteral("uc-action");
+        actionCol.name = QStringLiteral("Action");
+        actionCol.appIds = {QStringLiteral("100")};
+        baseCols.push_back(actionCol);
+        check(mergeSteamCollectionsWithOverlay(baseCols, emptyOverlay).size() == 1,
+              "empty overlay leaves base Steam collections untouched");
+
+        SteamUserOverlay edited;
+        edited.favorites.insert(QStringLiteral("620"));
+        edited.favorites.insert(QStringLiteral("custom:rpcs3"));
+        edited.customCollections.insert(QStringLiteral("Co-op"), {QStringLiteral("620"), QStringLiteral("400")});
+        edited.customCollections.insert(QStringLiteral("Action"), {QStringLiteral("200")});
+        edited.launchOptions.insert(QStringLiteral("620"), QStringLiteral("-vulkan -novid"));
+        check(saveSteamUserOverlay(overlayDir.path(), edited), "saveSteamUserOverlay writes steam-collections-local.json");
+        const SteamUserOverlay reloaded = loadSteamUserOverlay(overlayDir.path());
+        check(reloaded.favorites == edited.favorites &&
+                  reloaded.customCollections == edited.customCollections &&
+                  reloaded.launchOptions.value(QStringLiteral("620")) == QStringLiteral("-vulkan -novid"),
+              "loadSteamUserOverlay round-trips favorites, custom collections, and launch options");
+        const SteamCollectionList merged = mergeSteamCollectionsWithOverlay(baseCols, reloaded);
+        check(merged.size() == 3 &&
+                  merged[0].name == QStringLiteral("Action") && merged[0].appIds.size() == 2 &&
+                  merged[1].name == QStringLiteral("Co-op") && merged[1].appIds.size() == 2 &&
+                  merged[2].name == QStringLiteral("Favorites") && merged[2].appIds.contains(QStringLiteral("620")) &&
+                  merged[2].appIds.contains(QStringLiteral("custom:rpcs3")),
+              "mergeSteamCollectionsWithOverlay merges Favorites and custom collections in sorted order");
+    }
 
     QSet<QString> distinct;
     for (const QString& l : lines) distinct.insert(l.section(QLatin1Char('\t'), 1, 1));

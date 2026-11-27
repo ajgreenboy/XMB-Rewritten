@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
-project(RePS3Native VERSION 0.3.39 LANGUAGES CXX)
+project(RePS3Native VERSION 0.3.40 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
@@ -403,6 +403,7 @@ option(XMB_STEAM_VDF_BUILD_TESTS "Build the Steam KeyValues (VDF) golden tests" 
 if(XMB_STEAM_VDF_BUILD_TESTS)
     qt_add_executable(xmb-steam-vdf-tests tests/steam_vdf_tests.cpp
         src/steam_library.cpp src/steam_library.h src/steam_accounts.cpp src/steam_accounts.h
+        src/steam_collections.cpp src/steam_collections.h
         src/steam_vdf.cpp src/steam_vdf.h ${XMB_RUST_CRYPTO_SOURCES})
     target_include_directories(xmb-steam-vdf-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
     target_compile_definitions(xmb-steam-vdf-tests PRIVATE XMB_VDF_GOLDEN="${CMAKE_CURRENT_SOURCE_DIR}/tests/steam_vdf_golden.txt")

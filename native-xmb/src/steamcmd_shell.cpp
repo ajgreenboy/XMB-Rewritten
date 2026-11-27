@@ -27,6 +27,7 @@
 #include <QProcess>
 #include <QSaveFile>
 #include <QStandardPaths>
+#include <QStorageInfo>
 #include <QTimer>
 #include <algorithm>
 #include <iterator>
@@ -266,9 +267,14 @@ static QVector<Entry> steamCmdBrowseRows(const QString& here) {
 static QVector<Entry> steamCmdLibraryRows(const QStringList& libraries, const QString& selected) {
     QVector<Entry> rows;
     for (const QString& library : libraries) {
+        QString detail = library == selected ? QObject::tr("Current install location")
+                                             : QObject::tr("Use this library for new installs");
+        const QStorageInfo storage(library);
+        if (storage.isValid() && storage.bytesAvailable() > 0)
+            detail += QStringLiteral("  ") + QChar(0x00B7) + QStringLiteral("  ") +
+                      QObject::tr("%1 free").arg(sizeText(storage.bytesAvailable()));
         rows.push_back(makeRow(QStringLiteral("steamcmd:library:") + library, nativePath(library),
-                               library == selected ? QObject::tr("Current install location")
-                                                   : QObject::tr("Use this library for new installs"),
+                               detail,
                                QStringLiteral("select-library|") + library));
     }
     if (rows.isEmpty())
@@ -397,7 +403,7 @@ QVector<Entry> Shell::steamCmdJobRows() {
 }
 
 // ---- jobs ----------------------------------------------------------------------------------------------------
-void Shell::steamCmdStartJob(const QString& appId, const QString& title, int kind) {
+void Shell::steamCmdStartJob(const QString& appId, const QString& title, int kind, const QString& explicitLibrary) {
     auto& ui = steamCmdState();
     if (!steamcmd::validAppId(appId)) { showMessage(title, tr("This is not a Steam game this program can install."), MessageKind::Page); emit changed(); return; }
     if (!steamCmdReady()) { openSteamCmdPage(); return; }
@@ -426,7 +432,9 @@ void Shell::steamCmdStartJob(const QString& appId, const QString& title, int kin
         job.library = d.absolutePath();
     } else {
         const QStringList libraries = steamcmd::steamLibraries(steamRoot_);
-        job.library = libraryChoice(preferences_.value(kLibraryKey).toString(), libraries);
+        const QString chosenLib = !explicitLibrary.trimmed().isEmpty() ? explicitLibrary.trimmed()
+                                                                       : preferences_.value(kLibraryKey).toString();
+        job.library = libraryChoice(chosenLib, libraries);
         if (job.library.isEmpty()) {
             showMessage(tr("SteamCMD"), tr("The Steam client's library folders are not known, so there is nowhere to install to. Start Steam once, then try again."), MessageKind::Page);
             emit changed(); return;

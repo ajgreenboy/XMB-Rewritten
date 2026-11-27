@@ -8,6 +8,7 @@
 #include <QSettings>
 #include <QSet>
 #include <QStandardPaths>
+#include <QUrl>
 #include <QVector>
 #include <algorithm>
 
@@ -475,6 +476,10 @@ void scanLibrary(const QString& steamRoot, const QString& steamId, const QString
         game.installDirectory = actualDirectory;
         game.artwork = artworkFor(steamRoot, appId, steamId);
         game.backgroundArtwork = backgroundArtworkFor(steamRoot, appId, steamId);
+        game.sizeOnDisk = stringValue(state->children, QStringLiteral("SizeOnDisk")).toLongLong();
+        game.lastUpdated = stringValue(state->children, QStringLiteral("LastUpdated")).toLongLong();
+        game.buildId = stringValue(state->children, QStringLiteral("buildid")).trimmed();
+        game.libraryPath = normalizedPath(library);
         result.games.append(std::move(game));
         seenApps.insert(appId);
     }
@@ -678,6 +683,15 @@ QString steamLaunchUri(const QString& appId) {
     const QString id = appId.trimmed();
     if (!validSteamAppId(id)) return {};
     return QStringLiteral("steam://rungameid/") + id;
+}
+
+QString steamLaunchUriWithArgs(const QString& appId, const QString& launchArgs) {
+    const QString id = appId.trimmed();
+    if (!validSteamAppId(id)) return {};
+    const QString trimmedArgs = launchArgs.trimmed();
+    if (trimmedArgs.isEmpty()) return steamLaunchUri(id);
+    return QStringLiteral("steam://run/%1//%2/").arg(
+        id, QString::fromUtf8(QUrl::toPercentEncoding(trimmedArgs)));
 }
 
 SteamConsoleLogSlice steamConsoleLogTail(const QString& steamRoot, qint64 offset,

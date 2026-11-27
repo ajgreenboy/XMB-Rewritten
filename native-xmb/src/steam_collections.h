@@ -1,5 +1,7 @@
 #pragma once
 
+#include <QHash>
+#include <QSet>
 #include <QString>
 #include <QStringList>
 #include <QVector>
@@ -16,6 +18,23 @@ struct SteamCollection {
 };
 
 using SteamCollectionList = QVector<SteamCollection>;
+
+// Local XMB overlay stored in <data>/steam-collections-local.json so the user can
+// star favorites, create custom collections, assign games (Steam or imported), and
+// store per-title launch options without mutating Steam's own cloud-storage files.
+struct SteamUserOverlay {
+    QSet<QString> favorites;
+    QHash<QString, QStringList> customCollections;
+    QHash<QString, QString> launchOptions;
+    bool isEmpty() const {
+        return favorites.isEmpty() && customCollections.isEmpty() && launchOptions.isEmpty();
+    }
+};
+
+SteamUserOverlay loadSteamUserOverlay(const QString& dataDirectory);
+bool saveSteamUserOverlay(const QString& dataDirectory, const SteamUserOverlay& overlay);
+SteamCollectionList mergeSteamCollectionsWithOverlay(const SteamCollectionList& base,
+                                                     const SteamUserOverlay& overlay);
 
 // Reads the collections Steam keeps under
 //   <Steam>/userdata/<accountid>/config/cloudstorage/cloud-storage-namespace-1.json

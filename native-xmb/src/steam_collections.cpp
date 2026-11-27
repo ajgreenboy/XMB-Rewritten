@@ -8,7 +8,9 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QSaveFile>
 #include <QSet>
+#include <algorithm>
 
 namespace xmb {
 namespace {
@@ -113,6 +115,143 @@ SteamCollectionList scanSteamCollectionsIn(const QString& steamRoot, const QStri
 
 SteamCollectionList scanSteamCollections(const QString& steamId64, QString* error) {
     return scanSteamCollectionsIn({}, steamId64, error);
+}
+
+namespace {
+QString overlayFilePath(const QString& dataDirectory) {
+    return dataDirectory.trimmed().isEmpty()
+        ? QString{}
+        : QDir(dataDirectory).filePath(QStringLiteral("steam-collections-local.json"));
+}
+
+QString slugifyCollectionId(const QString& name) {
+    QString slug;
+    for (const QChar c : name.trimmed().toLower()) {
+        if (c.isLetterOrNumber()) slug.append(c);
+        else if (!slug.endsWith(QLatin1Char('-'))) slug.append(QLatin1Char('-'));
+    }
+    while (slug.startsWith(QLatin1Char('-'))) slug.remove(0, 1);
+    while (slug.endsWith(QLatin1Char('-'))) slug.chop(1);
+    return QStringLiteral("xmb-") + (slug.isEmpty() ? QStringLiteral("collection") : slug);
+}
+} // namespace
+
+SteamUserOverlay loadSteamUserOverlay(const QString& dataDirectory) {
+    SteamUserOverlay overlay;
+    const QString path = overlayFilePath(dataDirectory);
+    if (path.isEmpty()) return overlay;
+    QFile file(path);
+    if (!file.exists() || file.size() <= 0 || file.size() > MaxFileBytes) return overlay;
+    if (!file.open(QIODevice::ReadOnly)) return overlay;
+    QJsonParseError err{};
+    const auto doc = QJsonDocument::fromJson(file.readAll(), &err);
+    file.close();
+    if (err.error != QJsonParseError::NoError || !doc.isObject()) return overlay;
+    const QJsonObject root = doc.object();
+    for (const auto& val : root.value(QLatin1String("favorites")).toArray()) {
+        const QString id = val.toString().trimmed();
+        if (!id.isEmpty()) overlay.favorites.insert(id);
+    }
+    const QJsonObject cols = root.value(QLatin1String("collections")).toObject();
+    for (auto it = cols.begin(); it != cols.end(); ++it) {
+        const QString name = it.key().trimmed().left(MaxNameLength);
+        if (name.isEmpty() || !it.value().isArray()) continue;
+        QStringList ids;
+        QSet<QString> seen;
+        for (const auto& v : it.value().toArray()) {
+            const QString id = v.toString().trimmed();
+            if (!id.isEmpty() && !seen.contains(id)) {
+                seen.insert(id);
+                ids.append(id);
+            }
+        }
+        overlay.customCollections.insert(name, ids);
+    }
+    const QJsonObject opts = root.value(QLatin1String("launchOptions")).toObject();
+    for (auto it = opts.begin(); it != opts.end(); ++it) {
+        const QString id = it.key().trimmed();
+        const QString args = it.value().toString().trimmed();
+        if (!id.isEmpty() && !args.isEmpty()) overlay.launchOptions.insert(id, args.left(1024));
+    }
+    return overlay;
+}
+
+bool saveSteamUserOverlay(const QString& dataDirectory, const SteamUserOverlay& overlay) {
+    const QString path = overlayFilePath(dataDirectory);
+    if (path.isEmpty()) return false;
+    QDir().mkpath(QFileInfo(path).absolutePath());
+    QJsonObject root;
+    root.insert(QStringLiteral("version"), 1);
+    QStringList favList = overlay.favorites.values();
+    favList.sort();
+    QJsonArray favArray;
+    for (const QString& id : favList) favArray.append(id);
+    root.insert(QStringLiteral("favorites"), favArray);
+
+    QJsonObject colsObj;
+    QStringList colNames = overlay.customCollections.keys();
+    colNames.sort();
+    for (const QString& name : colNames) {
+        QJsonArray arr;
+        for (const QString& id : overlay.customCollections.value(name)) arr.append(id);
+        colsObj.insert(name, arr);
+    }
+    root.insert(QStringLiteral("collections"), colsObj);
+
+    QJsonObject optsObj;
+    QStringList optKeys = overlay.launchOptions.keys();
+    optKeys.sort();
+    for (const QString& id : optKeys) {
+        const QString args = overlay.launchOptions.value(id).trimmed();
+        if (!args.isEmpty()) optsObj.insert(id, args);
+    }
+    root.insert(QStringLiteral("launchOptions"), optsObj);
+
+    QSaveFile file(path);
+    if (!file.open(QIODevice::WriteOnly)) return false;
+    const QByteArray bytes = QJsonDocument(root).toJson(QJsonDocument::Indented);
+    return file.write(bytes) == bytes.size() && file.commit();
+}
+
+SteamCollectionList mergeSteamCollectionsWithOverlay(const SteamCollectionList& base,
+                                                     const SteamUserOverlay& overlay) {
+    if (overlay.favorites.isEmpty() && overlay.customCollections.isEmpty()) return base;
+    SteamCollectionList out = base;
+    const auto ensureCollection = [&](const QString& name, const QStringList& addIds) {
+        const QString trimmed = name.trimmed().left(MaxNameLength);
+        if (trimmed.isEmpty()) return;
+        auto it = std::find_if(out.begin(), out.end(), [&](const SteamCollection& c) {
+            return c.name.compare(trimmed, Qt::CaseInsensitive) == 0;
+        });
+        if (it == out.end()) {
+            SteamCollection created;
+            created.id = slugifyCollectionId(trimmed);
+            created.name = trimmed;
+            for (const QString& id : addIds) {
+                if (!id.isEmpty() && !created.appIds.contains(id)) created.appIds.push_back(id);
+            }
+            out.push_back(std::move(created));
+        } else {
+            for (const QString& id : addIds) {
+                if (!id.isEmpty() && !it->appIds.contains(id)) it->appIds.push_back(id);
+            }
+        }
+    };
+
+    if (!overlay.favorites.isEmpty()) {
+        QStringList favs = overlay.favorites.values();
+        favs.sort();
+        ensureCollection(QStringLiteral("Favorites"), favs);
+    }
+    QStringList customNames = overlay.customCollections.keys();
+    customNames.sort();
+    for (const QString& name : customNames) {
+        ensureCollection(name, overlay.customCollections.value(name));
+    }
+    std::sort(out.begin(), out.end(), [](const SteamCollection& a, const SteamCollection& b) {
+        return a.name.localeAwareCompare(b.name) < 0;
+    });
+    return out;
 }
 
 } // namespace xmb
