@@ -175,6 +175,7 @@ QByteArray buildLogin(const Style& s, const QString& idA = QString::fromLatin1(I
 
 QString escapedNative(const QString& path) {
     QString p = QDir::toNativeSeparators(path);
+    if (p.startsWith(QStringLiteral("C:/"))) p.replace(QLatin1Char('/'), QLatin1Char('\\'));
     return p;
 }
 
@@ -256,7 +257,7 @@ struct Fixture {
 QByteArray realizePaths(QByteArray data, const Paths& model, const Paths& real) {
     const auto doubled = [](const QString& x) { return QString(x).replace(QLatin1Char('\\'), QStringLiteral("\\\\")); };
     const auto swap = [&](const QString& m, const QString& r) {
-        const QString mn = QDir::toNativeSeparators(m), rn = QDir::toNativeSeparators(r);
+        const QString mn = escapedNative(m), rn = QDir::toNativeSeparators(r);
         data.replace(doubled(mn).toUtf8(), doubled(rn).toUtf8());
         data.replace(mn.toUtf8(), rn.toUtf8());
         data.replace(m.toUtf8(), r.toUtf8());
