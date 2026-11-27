@@ -216,7 +216,31 @@ void RafScenePlayer::render(QOpenGLFunctions_3_3_Core& gl,int width,int height,d
     }
     gl.glViewport(0,0,width,height);gl.glClearColor(0,0,0,1);gl.glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
     gl.glDisable(GL_CULL_FACE);gl.glDisable(GL_DEPTH_TEST);gl.glEnable(GL_BLEND);gl.glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);
-    for(const auto& actor:scene_.actors) {
+    QVector<int> actorOrder(scene_.actors.size());
+    bool anyZSort=false;
+    for(int i=0;i<scene_.actors.size();++i) {
+        actorOrder[i]=i;
+        if(scene_.actors[i].zsort!=0)anyZSort=true;
+    }
+    if(anyZSort) {
+        QVector<float> camZ(scene_.actors.size(),0.f);
+        for(int i=0;i<scene_.actors.size();++i) {
+            const auto& a=scene_.actors[i];
+            QVector3D p=vec(a.position);
+            if(useScript && hasKeyKind(timeline_,a.id,VsmxKey::Position))
+                p=sample(timeline_,a.id,VsmxKey::Position,seconds,vec4(a.position)).toVector3D();
+            camZ[i]=(view*QVector4D(p,1.f)).z();
+        }
+        std::stable_sort(actorOrder.begin(),actorOrder.end(),[&](int lhs,int rhs){
+            const int zl=scene_.actors[lhs].zsort,zr=scene_.actors[rhs].zsort;
+            if(zl==0 && zr==0)return false;
+            const int mode=zl!=0?zl:zr;
+            // In right-handed view space, more negative Z is further from the camera.
+            return mode==2?(camZ[lhs]>camZ[rhs]):(camZ[lhs]<camZ[rhs]);
+        });
+    }
+    for(const int actorIdx:actorOrder) {
+        const auto& actor=scene_.actors[actorIdx];
         const auto material=materials_.value(actor.material);
         const RafEffectSpec fx=resolveRafEffect(
             material.effect,

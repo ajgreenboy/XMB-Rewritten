@@ -2487,9 +2487,49 @@ void Shell::openChoices(const QString& key,const QString& title) {
         if(current==choice.value)page.selection=int(page.entries.size());
         page.entries.push_back(std::move(entry));
     }
-    if(key=="appearance/theme" && !theme_.path.isEmpty()) {
-        auto entry=option(key+"/"+QString::number(page.entries.size()),theme_.name.isEmpty()?QFileInfo(theme_.path).completeBaseName():theme_.name,{},key,Action::SetSetting);
-        entry.option=theme_.path;page.selection=int(page.entries.size());page.entries.push_back(std::move(entry));
+    if(key=="appearance/theme") {
+        QSet<QString> seenPaths;
+        const auto addThemeFile=[&](const QString& filePath) {
+            const QFileInfo info(filePath);
+            if(!info.isFile())return;
+            const QString canonical=info.canonicalFilePath().isEmpty()?QDir::cleanPath(info.absoluteFilePath()):info.canonicalFilePath();
+            if(seenPaths.contains(canonical))return;
+            QString err;
+            const P3t p3t=P3t::load(info.absoluteFilePath(),&err);
+            if(p3t.isNull())return;
+            seenPaths.insert(canonical);
+            const QString locName=p3t.localizedName();
+            const QString label=locName.isEmpty()?info.completeBaseName():locName;
+            auto entry=option(key+"/"+QString::number(page.entries.size()),label,{},key,Action::SetSetting);
+            entry.option=info.absoluteFilePath();
+            QImage icon=p3t.themeIcon();
+            if(icon.isNull())icon=p3t.preview();
+            if(!icon.isNull()){entry.artwork=icon;entry.iconSized=true;}
+            QStringList facts;
+            if(!p3t.author().isEmpty())facts<<p3t.author();
+            if(!p3t.infoVersion().isEmpty())facts<<QStringLiteral("v")+p3t.infoVersion();
+            const int bgs=int(p3t.backgrounds().size());
+            if(p3t.hasScene())facts<<QObject::tr("Dynamic RAF scene");
+            else if(bgs>1)facts<<QObject::tr("%1 backgrounds").arg(bgs);
+            else if(bgs==1)facts<<QObject::tr("1 background");
+            const int ic=int(p3t.icons().size());
+            if(ic>0)facts<<QObject::tr("%1 icons").arg(ic);
+            entry.detail=facts.join(QStringLiteral("  \u00B7  "));
+            if(!theme_.path.isEmpty() && (QFileInfo(theme_.path).canonicalFilePath()==canonical || QDir::cleanPath(theme_.path)==QDir::cleanPath(info.absoluteFilePath())))
+                page.selection=int(page.entries.size());
+            page.entries.push_back(std::move(entry));
+        };
+        if(!theme_.path.isEmpty())addThemeFile(theme_.path);
+        const QDir userThemes(QDir(dataDirectory_).filePath(QStringLiteral("themes")));
+        if(userThemes.exists()) {
+            for(const auto& f:userThemes.entryInfoList(QStringList{QStringLiteral("*.p3t")},QDir::Files,QDir::Name|QDir::IgnoreCase))
+                addThemeFile(f.absoluteFilePath());
+        }
+        const QDir flashThemes(QDir(assets_.root()).filePath(QStringLiteral("vsh/resource/theme")));
+        if(flashThemes.exists()) {
+            for(const auto& f:flashThemes.entryInfoList(QStringList{QStringLiteral("*.p3t")},QDir::Files,QDir::Name|QDir::IgnoreCase))
+                addThemeFile(f.absoluteFilePath());
+        }
     }
     pages_.push_back(std::move(page));
 }
@@ -2639,8 +2679,19 @@ void Shell::chooseTheme(const QString& file) {
     if(file.isEmpty())return;
     QString error;
     if(P3t::load(file,&error).isNull()){message_=QFileInfo(file).fileName()+"\n\n"+error;emit changed();return;}
+    QString targetPath=QFileInfo(file).absoluteFilePath();
+    if(!dataDirectory_.isEmpty()) {
+        const QDir themesDir(QDir(dataDirectory_).filePath(QStringLiteral("themes")));
+        if(QDir().mkpath(themesDir.absolutePath())) {
+            const QString destPath=themesDir.filePath(QFileInfo(file).fileName());
+            if(QFileInfo(targetPath).canonicalFilePath()!=QFileInfo(destPath).canonicalFilePath()) {
+                QFile::remove(destPath);
+                if(QFile::copy(targetPath,destPath))targetPath=QFileInfo(destPath).absoluteFilePath();
+            }
+        }
+    }
     // The theme's still background is shown through the wallpaper mode (View::loadWallpaper puts it before the user's own).
-    preferences_.setValues({{"appearance/theme",QFileInfo(file).absoluteFilePath()},{"appearance/background",2}});emit changed();
+    preferences_.setValues({{"appearance/theme",targetPath},{"appearance/background",2}});emit changed();
 }
 void Shell::setSystemName(const QString& name){preferences_.setValue("system/name",name.trimmed());emit changed();}
 void Shell::setFullscreen(bool enabled){preferences_.setValue("display/fullscreen",enabled);emit changed();}

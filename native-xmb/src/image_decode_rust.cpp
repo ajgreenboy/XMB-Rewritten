@@ -400,4 +400,39 @@ QByteArray inflateCxmlFile(const QByteArray& packed) {
     return QByteArray(reinterpret_cast<const char*>(guard.ptr), static_cast<qsizetype>(guard.len));
 }
 
+bool parseSfo(const QByteArray& rawSfo, QHash<QString, QString>& out, QString* error) {
+    out.clear();
+    if (error) error->clear();
+    ImgBufferGuard guard;
+    const auto* ptr = rawSfo.isEmpty() ? nullptr : reinterpret_cast<const uint8_t*>(rawSfo.constData());
+    const int rc = img_parse_sfo(ptr, static_cast<size_t>(rawSfo.size()), &guard.ptr, &guard.len);
+    if (rc != 0) {
+        if (error) *error = lastMessage();
+        return false;
+    }
+    if (!guard.ptr || guard.len < 4) {
+        if (error) *error = QStringLiteral("corrupt Rust PARAM.SFO payload");
+        return false;
+    }
+    const quint32 count = qFromLittleEndian<quint32>(guard.ptr);
+    size_t pos = 4;
+    out.reserve(static_cast<qsizetype>(std::min<quint32>(count, 256)));
+    for (quint32 i = 0; i < count; ++i) {
+        if (pos + 4 > guard.len) { out.clear(); return false; }
+        const quint32 kLen = qFromLittleEndian<quint32>(guard.ptr + pos);
+        pos += 4;
+        if (kLen > guard.len - pos || pos + kLen + 4 > guard.len) { out.clear(); return false; }
+        const QString key = QString::fromUtf8(reinterpret_cast<const char*>(guard.ptr + pos), static_cast<qsizetype>(kLen));
+        pos += kLen;
+        const quint32 vLen = qFromLittleEndian<quint32>(guard.ptr + pos);
+        pos += 4;
+        if (vLen > guard.len - pos) { out.clear(); return false; }
+        const QString val = QString::fromUtf8(reinterpret_cast<const char*>(guard.ptr + pos), static_cast<qsizetype>(vLen));
+        pos += vLen;
+        out.insert(key, val);
+    }
+    if (pos != guard.len) { out.clear(); return false; }
+    return true;
+}
+
 } // namespace xmb::image_rust

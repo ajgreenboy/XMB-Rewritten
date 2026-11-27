@@ -58,6 +58,7 @@
 #include <QJsonObject>
 #include <QSaveFile>
 #include <QScopedValueRollback>
+#include <QStandardPaths>
 #include <QWindow>
 #include "idle_profile.h"
 #include "uniform_cache.h"
@@ -248,6 +249,40 @@ View::View(Shell& shell,Assets& assets,QWidget* parent):QOpenGLWidget(parent),sh
         shell_.noteActivity();
     });
     connect(&shell_,&Shell::requestTitleText,this,[this]{beginTitleText();});
+    connect(&shell_,&Shell::requestInGameScreenshot,this,[this]{
+        QImage shot=inGameBackdrop_;
+#ifdef Q_OS_WIN
+        if(shot.isNull() && tap_ && tap_->running()) {
+            QString detail;
+            tap_->grabLastGood(&shot,&detail);
+        }
+        if(shot.isNull() && inGameHwnd_) {
+            const auto cap=captureGameWindow(inGameHwnd_,1000);
+            if(cap.status==GameCaptureStatus::Ok)shot=cap.image;
+        }
+#endif
+        if(shot.isNull())shot=grabFramebuffer();
+        if(shot.isNull()) {
+            shell_.notify(tr("Screenshot Failed"),tr("No game frame could be captured."),QStringLiteral("tex_notification_caution"),false);
+            return;
+        }
+        QString baseDir=shell_.photoLibraryRoots().value(0);
+        if(baseDir.isEmpty())baseDir=QStandardPaths::writableLocation(QStandardPaths::PicturesLocation);
+        if(baseDir.isEmpty())baseDir=shell_.dataDirectory();
+        const QDir dir(QDir(baseDir).filePath(QStringLiteral("Screenshots")));
+        QDir().mkpath(dir.absolutePath());
+        QString safeTitle=shell_.runningTitle();
+        safeTitle.replace(QRegularExpression(QStringLiteral("[^A-Za-z0-9_-]+")),QStringLiteral("_"));
+        if(safeTitle.isEmpty())safeTitle=QStringLiteral("Game");
+        const QString fileName=QStringLiteral("XMB_%1_%2.png").arg(safeTitle,QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd_HHmmss")));
+        const QString fullPath=dir.filePath(fileName);
+        if(shot.save(fullPath,"PNG")) {
+            qInfo().noquote()<<"ingame: screenshot saved to"<<QDir::toNativeSeparators(fullPath)<<shot.size();
+            shell_.notify(tr("Screenshot Saved"),fileName,QStringLiteral("tex_notification_info"));
+        } else {
+            shell_.notify(tr("Screenshot Failed"),tr("Could not write %1.").arg(fileName),QStringLiteral("tex_notification_caution"),false);
+        }
+    });
     connect(&titleText_,&textentry::TextDelivery::finished,this,[this](int verdict,int sent){
         // Success is silent; every other ending says why nothing (or only part) was typed. Counts and verdict names only, never text.
         const auto v=textentry::Verdict(verdict);

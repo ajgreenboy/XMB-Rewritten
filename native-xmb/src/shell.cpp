@@ -24,6 +24,9 @@
 #include "launch_cover.h"
 #include "host.h"
 #include "p3t.h"
+#ifdef XMB_USE_RUST_EDGE
+#include "image_decode_rust.h"
+#endif
 #include "steam_library.h"
 #include "steam_artwork.h"
 #include "rawg_artwork.h"
@@ -99,6 +102,10 @@ QHash<QString,QString> readSfo(const QString& path) {
     QFile file(path);QHash<QString,QString> values;
     if(!file.open(QIODevice::ReadOnly))return values;
     const QByteArray d=file.readAll();
+#ifdef XMB_USE_RUST_EDGE
+    image_rust::parseSfo(d,values);
+    return values;
+#else
     if(d.size()<20 || !d.startsWith(QByteArray("\0PSF",4)))return values;
     const auto u16=[&](qsizetype at){return at+2<=d.size()?quint32(quint8(d[at])|quint8(d[at+1])<<8):0u;};
     const auto u32=[&](qsizetype at){return at+4<=d.size()?quint32(u16(at)|u16(at+2)<<16):0u;};
@@ -112,6 +119,7 @@ QHash<QString,QString> readSfo(const QString& path) {
         else if(format==0x0404)values.insert(key,QString::number(u32(dataAt)));
     }
     return values;
+#endif
 }
 }
 // ---- Resume points and Continue Watching ---------------------------------------------------------
@@ -4251,6 +4259,10 @@ void Shell::buildOptions() {
         addOption({"",QStringLiteral("Search Steam Store")},OptionCommand::SteamStoreSearch,"steam-store",true,
                   tr("Search Valve's storefront by title using the on-screen keyboard."));
     }
+    if(inGame_ && titleRunning() && entry.id.startsWith(QLatin1String("ingame:")) && !qEnvironmentVariableIsSet("XMB_DUMP_ENTRIES")) {
+        addOption({"",QStringLiteral("Save Screenshot")},OptionCommand::InGameScreenshot,"ingame-screenshot",true,
+                  tr("Saves a screenshot of the running title to your Photo library."));
+    }
     // The Continue Watching row is this build's own record, not a firmware item: the firmware has no row
     // for forgetting a resume point. Its label is the firmware's own generic remove word (`msg_eject` =
     // "Remove") rather than an English literal, and the note plus the confirm box say what is removed, so
@@ -4734,6 +4746,12 @@ void Shell::optionsActivate() {
         resetOptions();
         interactionAudio_.play(InteractionAudio::Cue::Confirm);
         emit requestJellyfinFieldEdit(QStringLiteral("steamstore:search"),tr("Search Steam Store"),steamStoreSearchTerm_,false);
+        emit changed();
+        break;
+    case OptionCommand::InGameScreenshot:
+        resetOptions();
+        interactionAudio_.play(InteractionAudio::Cue::Confirm);
+        emit requestInGameScreenshot();
         emit changed();
         break;
     case OptionCommand::SteamCmdChooseLibrary: {
@@ -5735,8 +5753,40 @@ void Shell::applyEmbeddedSubtitleChoice() {
 void Shell::showEntryInformation(const Entry& entry) {
     // Empty save-data utility rows are notices/commands, not saves with metadata to inspect.
     if(entry.id.startsWith("savedata:")) {
+        if(!entry.value.isEmpty() && entry.action==Action::Information) {
+            showMessage(entry.title,entry.value,MessageKind::Info);
+            qInfo().noquote()<<"shell: options information title="<<entry.title<<"(savedata entry)";
+            return;
+        }
         showMessage(entry.title,entry.detail,MessageKind::Page);
         return;
+    }
+    if(entry.setting==QLatin1String("appearance/theme")) {
+        const QString themeFile=entry.action==Action::SetSetting?entry.option.toString():theme_.path;
+        if(!themeFile.isEmpty() && QFileInfo::exists(themeFile)) {
+            QString err;
+            const P3t p3t=P3t::load(themeFile,&err);
+            if(!p3t.isNull()) {
+                QStringList rows;
+                const QString locName=p3t.localizedName();
+                rows<<QObject::tr("Name: %1").arg(locName.isEmpty()?entry.title:locName);
+                if(!p3t.author().isEmpty())rows<<QObject::tr("Author: %1").arg(p3t.author());
+                if(!p3t.infoVersion().isEmpty())rows<<QObject::tr("Version: %1").arg(p3t.infoVersion());
+                if(!p3t.genre().isEmpty())rows<<QObject::tr("Genre: %1").arg(p3t.genre());
+                if(!p3t.comment().isEmpty())rows<<QObject::tr("Comment: %1").arg(p3t.comment());
+                if(!p3t.url().isEmpty())rows<<QObject::tr("URL: %1").arg(p3t.url());
+                rows<<QObject::tr("Backgrounds: %1%2").arg(p3t.backgrounds().size())
+                    .arg(p3t.hasScene()?QObject::tr(" (+ Dynamic RAF Scene)"):QString{});
+                rows<<QObject::tr("Icons: %1").arg(p3t.icons().size());
+                rows<<QObject::tr("Sound Effects: %1").arg(p3t.soundRoles().size());
+                if(!p3t.fontSelectionName().isEmpty())rows<<QObject::tr("Font: %1").arg(p3t.fontSelectionName());
+                if(!p3t.colorSelectionName().isEmpty())rows<<QObject::tr("Color: %1").arg(p3t.colorSelectionName());
+                rows<<QStringLiteral("Path: ")+QDir::toNativeSeparators(themeFile);
+                showMessage(locName.isEmpty()?entry.title:locName,rows.join('\n'),MessageKind::Info);
+                qInfo().noquote()<<"shell: options information title="<<entry.title<<"rows="<<rows.size()<<"(theme)";
+                return;
+            }
+        }
     }
     // The firmware's information page (D5; audit/DIALOGS-FIRMWARE.md 2.5) labels its rows with its own
     // strings from explore_plugin_full: Format, Size, Created, Filmed, Resolution, Details, plus Unknown
@@ -7108,7 +7158,9 @@ void Shell::loadTheme() {
     if(p3t.isNull()){showMessage(QFileInfo(path).fileName(),error,MessageKind::Page);qWarning().noquote()<<"theme:"<<path<<error;return;}
     const QString resolvedName=p3t.localizedName();
     theme_.name=resolvedName.isEmpty()?QFileInfo(path).completeBaseName():resolvedName;
-    theme_.background=p3t.background();theme_.notification=p3t.notification();
+    theme_.author=p3t.author();theme_.genre=p3t.genre();theme_.version=p3t.infoVersion();
+    theme_.comment=p3t.comment();theme_.url=p3t.url();
+    theme_.background=p3t.background();theme_.backgrounds=p3t.backgrounds();theme_.notification=p3t.notification();
     theme_.icons=p3t.icons();theme_.pointers=p3t.pointers();
     if(p3t.hasScene())theme_.sceneBytes=p3t.sceneBytes();
     else if(p3t.dynamic())qInfo().noquote()<<"theme:"<<theme_.name<<"animated scene could not be parsed; using still background";

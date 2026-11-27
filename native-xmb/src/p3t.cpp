@@ -518,6 +518,12 @@ void P3t::readScene(int depth) {
             actor.uvScale=vector3(element,QStringLiteral("uv_scale"));
             actor.uvOffset=vector3(element,QStringLiteral("uv_offset"));
             if(element.attributes.contains(QStringLiteral("color")))actor.color=vector4(element,QStringLiteral("color"));
+            if(element.attributes.contains(QStringLiteral("zsort"))) {
+                const QString zs=element.text(QStringLiteral("zsort")).trimmed().toLower();
+                if(zs==QLatin1String("back_to_front") || zs==QLatin1String("backtofront"))actor.zsort=1;
+                else if(zs==QLatin1String("front_to_back") || zs==QLatin1String("fronttoback"))actor.zsort=2;
+                else actor.zsort=std::clamp(int(number(element,QStringLiteral("zsort"))),0,2);
+            }
             scene.actors.push_back(actor);
         }
     }

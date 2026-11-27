@@ -7,6 +7,7 @@ use crate::edge::decode_edge_packed;
 use crate::gim::decode_gim;
 use crate::gtf::decode_gtf;
 use crate::qrc::{encode_parsed_qrc_toc, inflate_qrc_slice, parse_qrc};
+use crate::sfo::parse_sfo_packed;
 use crate::subtitles::{encode_cues, parse_pgs, parse_vobsub};
 use crate::vag::vag_to_wav;
 
@@ -460,6 +461,49 @@ pub unsafe extern "C" fn img_inflate_cxml_file(
             unsafe { hand_off(out, out_buf, out_len) };
         }
         0
+    }))
+    .unwrap_or_else(|_| {
+        set_error("internal panic caught at FFI boundary");
+        -2
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn img_parse_sfo(
+    sfo_ptr: *const u8,
+    sfo_len: usize,
+    out_buf: *mut *mut u8,
+    out_len: *mut usize,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        clear_error();
+        if out_buf.is_null() || out_len.is_null() {
+            set_error("null output pointer");
+            return -1;
+        }
+        unsafe {
+            *out_buf = std::ptr::null_mut();
+            *out_len = 0;
+        }
+        if sfo_len > 0 && sfo_ptr.is_null() {
+            set_error("null PARAM.SFO input pointer");
+            return -1;
+        }
+        let bytes = if sfo_len == 0 {
+            &[]
+        } else {
+            unsafe { slice::from_raw_parts(sfo_ptr, sfo_len) }
+        };
+        match parse_sfo_packed(bytes) {
+            Ok(packed) => {
+                unsafe { hand_off(packed, out_buf, out_len) };
+                0
+            }
+            Err(e) => {
+                set_error(e);
+                1
+            }
+        }
     }))
     .unwrap_or_else(|_| {
         set_error("internal panic caught at FFI boundary");

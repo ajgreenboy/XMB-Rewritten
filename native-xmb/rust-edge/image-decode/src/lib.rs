@@ -9,5 +9,6 @@ pub mod ffi;
 pub mod gim;
 pub mod gtf;
 pub mod qrc;
+pub mod sfo;
 pub mod subtitles;
 pub mod vag;

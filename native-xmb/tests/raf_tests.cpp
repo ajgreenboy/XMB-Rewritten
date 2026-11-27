@@ -107,6 +107,13 @@ static void edgeTests() {
     check(ok && std::abs(vertices[1].normal.x()-1.f)<1e-6f && vertices[1].normal.y()==0.f,"X11Y11Z10 normals are signed-normalised");
     check(ok && vertices[2].uv==QVector2D(1.f,.5f),"half-float texture coordinates");
     check(!decodeEdge(edge(2),vertices,indices,&error) && error.contains(QStringLiteral("segment")),"more than one segment is refused, not misread");
+    {
+        QByteArray twoSeg=edge(2);
+        const int seg0=0x10,seg1=seg0+0x78;
+        twoSeg.replace(seg1,0x78,twoSeg.mid(seg0,0x78));
+        check(decodeEdge(twoSeg,vertices,indices,&error) && vertices.size()==8 && indices==QVector<quint32>({0,1,2,0,2,3,4,5,6,4,6,7}),
+              "a populated two-segment Edge mesh decodes all 8 vertices and offsets segment 1 indices by +4");
+    }
     check(!decodeEdge(edge(1,true),vertices,indices,&error) && error.contains(QStringLiteral("vertex stream")),"an unknown vertex format is refused");
     check(!decodeEdge(edge().left(0x40),vertices,indices,&error) && vertices.isEmpty() && indices.isEmpty(),"a truncated file is refused and leaves no output");
 }

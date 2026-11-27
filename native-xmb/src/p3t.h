@@ -51,6 +51,7 @@ public:
             QString id,model,material;
             Vec3 position,rotation,scale,uvScale,uvOffset;
             Vec4 color{1,1,1,1};
+            int zsort=0; // 0 = tree order, 1 = back_to_front, 2 = front_to_back
         };
         // An Edge .anim file header (EA03): its bounds are timeline metadata, not decoded keyframes.
         struct Animation {

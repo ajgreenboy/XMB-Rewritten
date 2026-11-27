@@ -846,7 +846,9 @@ int main(int argc, char** argv) {
     }
 
     {
-        const QByteArray edgeInputs[] = {makeEdge(), makeEdge(2), makeEdge(1, true), makeEdge().left(0x40)};
+        QByteArray twoSeg = makeEdge(2);
+        twoSeg.replace(0x10 + 0x78, 0x78, twoSeg.mid(0x10, 0x78));
+        const QByteArray edgeInputs[] = {makeEdge(), makeEdge(2), twoSeg, makeEdge(1, true), makeEdge().left(0x40)};
         int ei = 0;
         for (const QByteArray& e : edgeInputs) {
             QVector<xmb::EdgeVertex> vCpp, vRust;
@@ -1087,6 +1089,90 @@ int main(int argc, char** argv) {
         check(!xmb::image_rust::parseCxml(QByteArray("BAD_MAGIC"), parsedCxml, &cxmlErr) &&
                   cxmlErr == QStringLiteral("This is not a PS3 theme file."),
               "cxml-parity-reject-non-theme");
+    }
+
+    // ---- 8. Phase 7: Sony PARAM.SFO (\0PSF) binary parser parity ---------
+    {
+        const auto cppReadSfo = [](const QByteArray& d) {
+            QHash<QString, QString> values;
+            if (d.size() < 20 || !d.startsWith(QByteArray("\0PSF", 4))) return values;
+            const auto u16 = [&](qsizetype at) {
+                return at + 2 <= d.size() ? quint32(quint8(d[at]) | quint8(d[at + 1]) << 8) : 0u;
+            };
+            const auto u32 = [&](qsizetype at) {
+                return at + 4 <= d.size() ? quint32(u16(at) | u16(at + 2) << 16) : 0u;
+            };
+            const quint32 keys = u32(8), data = u32(12), count = std::min<quint32>(u32(16), 256);
+            for (quint32 i = 0; i < count; ++i) {
+                const qsizetype e = 20 + qsizetype(i) * 16;
+                if (e + 16 > d.size()) break;
+                const quint32 keyAt = keys + u16(e), format = u16(e + 2), length = u32(e + 4), dataAt = data + u32(e + 12);
+                if (keyAt >= quint32(d.size()) || dataAt + length > quint32(d.size())) continue;
+                const QString key = QString::fromLatin1(d.constData() + keyAt);
+                if (format == 0x0204 || format == 0x0004)
+                    values.insert(key, QString::fromUtf8(d.constData() + dataAt, int(length)).remove(QChar(0)));
+                else if (format == 0x0404)
+                    values.insert(key, QString::number(u32(dataAt)));
+            }
+            return values;
+        };
+
+        const QByteArray keys("TITLE\0TITLE_ID\0SUB_TITLE\0DETAIL\0ATTRIBUTE\0PARENTAL_LEVEL\0", 57);
+        const QByteArray valTitle("Demon's Souls\0\0\0", 16);
+        const QByteArray valId("BLUS30443\0", 10);
+        const QByteArray valSub("Tower Knight\0", 13);
+        const QByteArray valDetail("Boletarian Palace 1-2\0", 22);
+        char valAttr[4], valParental[4];
+        qToLittleEndian<quint32>(0x000000A5u, valAttr);
+        qToLittleEndian<quint32>(9u, valParental);
+
+        const quint32 count = 6;
+        const quint32 keysOff = 20 + count * 16;
+        const quint32 dataOff = (keysOff + quint32(keys.size()) + 3u) & ~3u;
+        QByteArray sfo(qsizetype(dataOff), '\0');
+        sfo.replace(0, 4, QByteArray("\0PSF", 4));
+        qToLittleEndian<quint32>(0x00000101u, sfo.data() + 4);
+        qToLittleEndian<quint32>(keysOff, sfo.data() + 8);
+        qToLittleEndian<quint32>(dataOff, sfo.data() + 12);
+        qToLittleEndian<quint32>(count, sfo.data() + 16);
+
+        struct SfoEntrySpec { quint16 keyRel; quint16 fmt; QByteArray data; };
+        const SfoEntrySpec specs[] = {
+            {0, 0x0204, valTitle},
+            {6, 0x0004, valId},
+            {15, 0x0204, valSub},
+            {25, 0x0204, valDetail},
+            {32, 0x0404, QByteArray(valAttr, 4)},
+            {42, 0x0404, QByteArray(valParental, 4)},
+        };
+        sfo.replace(qsizetype(keysOff), keys.size(), keys);
+        quint32 relData = 0;
+        for (quint32 i = 0; i < count; ++i) {
+            const qsizetype e = 20 + qsizetype(i) * 16;
+            qToLittleEndian<quint16>(specs[i].keyRel, sfo.data() + e);
+            qToLittleEndian<quint16>(specs[i].fmt, sfo.data() + e + 2);
+            qToLittleEndian<quint32>(quint32(specs[i].data.size()), sfo.data() + e + 4);
+            qToLittleEndian<quint32>(quint32(specs[i].data.size()), sfo.data() + e + 8);
+            qToLittleEndian<quint32>(relData, sfo.data() + e + 12);
+            sfo.append(specs[i].data);
+            relData += quint32(specs[i].data.size());
+        }
+
+        const QHash<QString, QString> cppMap = cppReadSfo(sfo);
+        QHash<QString, QString> rustMap;
+        QString sfoErr;
+        const bool okSfo = xmb::image_rust::parseSfo(sfo, rustMap, &sfoErr);
+        check(okSfo && cppMap == rustMap && rustMap.size() == 6 &&
+                  rustMap.value(QStringLiteral("TITLE")) == QStringLiteral("Demon's Souls") &&
+                  rustMap.value(QStringLiteral("TITLE_ID")) == QStringLiteral("BLUS30443") &&
+                  rustMap.value(QStringLiteral("ATTRIBUTE")) == QStringLiteral("165") &&
+                  rustMap.value(QStringLiteral("PARENTAL_LEVEL")) == QStringLiteral("9"),
+              "sfo-parity-strings-and-u32");
+
+        check(!xmb::image_rust::parseSfo(QByteArray("NOT_PSF_HEADER_20B__"), rustMap, &sfoErr) && rustMap.isEmpty(),
+              "sfo-parity-reject-bad-magic");
+        check(!xmb::image_rust::parseSfo(QByteArray("\0PSFshort", 9), rustMap, &sfoErr) && rustMap.isEmpty(),
+              "sfo-parity-reject-truncated-header");
     }
 
     std::printf("rust-edge-parity: %s (%d failures)\n", failures ? "FAIL" : "PASS", failures);

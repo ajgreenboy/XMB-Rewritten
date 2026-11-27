@@ -136,6 +136,18 @@ int img_inflate_cxml_file(
     size_t* out_len
 );
 
+/* Parses a Sony PARAM.SFO (\0PSF) binary buffer into packed key-value entries:
+ *   [u32 entry_count LE]
+ *   per entry: [u32 key_len LE][u8 * key_len][u32 val_len LE][u8 * val_len]
+ * Returns 0 on success (caller frees *out_buf with img_free_buffer), non-zero on error.
+ */
+int img_parse_sfo(
+    const uint8_t* sfo_ptr,
+    size_t sfo_len,
+    uint8_t** out_buf,
+    size_t* out_len
+);
+
 void img_free_buffer(uint8_t* ptr, size_t len);
 
 size_t img_last_error(uint8_t* buf, size_t buf_cap);

@@ -30,4 +30,5 @@ bool parseQrc(const QByteArray& rawQrc, QByteArray& unpackedQrcf, quint32& dataB
 bool inflateQrcEntry(const char* ptr, qsizetype len, quint32 expanded, QByteArray& out, QString* error = nullptr);
 bool parseCxml(const QByteArray& rawCxml, ParsedCxmlContainer& out, QString* error = nullptr);
 QByteArray inflateCxmlFile(const QByteArray& packed);
+bool parseSfo(const QByteArray& rawSfo, QHash<QString, QString>& out, QString* error = nullptr);
 } // namespace xmb::image_rust

@@ -307,7 +307,8 @@ enum class OptionCommand { Activate, Information,
     SortPlaytimeDescending, SortSizeDescending, SortTitleAscending,
     GroupByCollection, GroupByStatus,
     SteamToggleFavorite, SteamCollectionMenu, SteamCollectionToggle, SteamCollectionCreate,
-    SteamLaunchOptions, SteamStoreSearch, SteamCmdChooseLibrary, SteamCmdChooseLibraryTarget };
+    SteamLaunchOptions, SteamStoreSearch, SteamCmdChooseLibrary, SteamCmdChooseLibraryTarget,
+    InGameScreenshot };
 // A label read from the RCO text table: the key plus the English string it should resolve to. The fallback
 // is used only when the local flash image has no table; whenever the RCO is present, its value is the label.
 struct OptionLabel { const char* key=nullptr; QString fallback; };
@@ -435,7 +436,12 @@ public:
     bool tvColumnVisible() const;
     // The PS3 theme in use (Theme Settings > Theme), decoded in memory from its .p3t: empty path = the system's own.
     QString themePath() const { return theme_.path; }
-    const QImage& themeBackground() const { return theme_.background; }
+    const QImage& themeBackground() const {
+        if(theme_.backgrounds.size()>1 && !clockOverride_.isValid())
+            return theme_.backgrounds.at(clockDateTime().time().hour()%theme_.backgrounds.size());
+        return theme_.background;
+    }
+    const QVector<QImage>& themeBackgrounds() const { return theme_.backgrounds; }
     const QImage& themeNotification() const { return theme_.notification; }
     const QHash<QString,P3t::Pointer>& themePointers() const { return theme_.pointers; }
     const QByteArray& themeSceneBytes() const { return theme_.sceneBytes; }
@@ -848,6 +854,7 @@ signals:
     // Cross on a sign-in field: the view opens the on-screen keyboard on `initial` and returns what the user
     // accepted through Shell::setJellyfinSignInField. `masked` makes the keyboard compose dots.
     void requestJellyfinFieldEdit(QString field,QString title,QString initial,bool masked);
+    void requestInGameScreenshot();
 private:
     QVector<ReleaseSource> releaseSources_;
     QHash<QString,QString> releaseLocalPaths_;
@@ -1599,7 +1606,7 @@ private:
     QString mediaTitle_,renderer_;
     QDateTime clockOverride_;
     // Only the decoded pieces are kept (the .p3t itself is read again when the theme changes); nothing is written to disk.
-    struct Theme { QString path,name; QImage background,notification; QByteArray sceneBytes; QHash<QString,QImage> icons; QHash<QString,P3t::Pointer> pointers;
+    struct Theme { QString path,name,author,genre,version,comment,url; QImage background,notification; QVector<QImage> backgrounds; QByteArray sceneBytes; QHash<QString,QImage> icons; QHash<QString,P3t::Pointer> pointers;
     // The theme's appearance selections (P3t::fontSelection/colorSelection), mapped to the assets' font style index
     // (0 Rodin / 1 Seurat / 2 VAGRundschriftDLig) and the pinned month (1..12); -1 = the theme has no such element.
     int font=-1,color=-1; };
