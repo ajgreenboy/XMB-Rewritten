@@ -61,6 +61,30 @@ int img_parse_vobsub(
     size_t* out_len
 );
 
+/* Decodes a PS3 big-endian .GIM1.00 image into native-endian ARGB32 (QRgb: 0xAARRGGBB per pixel).
+ * Returns 0 on success (caller frees *out_pixels with img_free_buffer), non-zero on error.
+ */
+int img_decode_gim(
+    const uint8_t* gim_ptr,
+    size_t gim_len,
+    uint32_t* out_width,
+    uint32_t* out_height,
+    uint8_t** out_pixels,
+    size_t* out_len
+);
+
+/* Decodes mono or stereo PlayStation ADPCM VAG (.vag / VAGp) audio streams into a 16-bit PCM RIFF WAVE buffer.
+ * Returns 0 on success (even if *out_len == 0 for empty input; caller frees non-null *out_wav with img_free_buffer).
+ */
+int img_vag_to_wav(
+    const uint8_t* left_ptr,
+    size_t left_len,
+    const uint8_t* right_ptr,
+    size_t right_len,
+    uint8_t** out_wav,
+    size_t* out_len
+);
+
 void img_free_buffer(uint8_t* ptr, size_t len);
 
 size_t img_last_error(uint8_t* buf, size_t buf_cap);

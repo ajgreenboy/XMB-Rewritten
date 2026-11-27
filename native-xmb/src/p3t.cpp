@@ -2,6 +2,10 @@
 #include "assets.h"
 #include "edge_decode.h"
 #include "gtf_decode.h"
+#ifdef XMB_USE_RUST_EDGE
+#include "image_decode_rust.h"
+#endif
+#include "raf_effect.h"
 #include "vsmx_eval.h"
 #include <QDebug>
 #include <QFile>
@@ -424,8 +428,12 @@ void P3t::readScene(int depth) {
             for(auto& material:scene.materials) {
                 if(material.id!=materialId)continue;
                 if(type==0 && material.colorMap.isEmpty())material.colorMap=reference;
-                else if((type==1 || type==3) && material.normalMap.isEmpty())material.normalMap=reference;
+                else if(type==1 && material.normalMap.isEmpty())material.normalMap=reference;
                 else if(type==2 && material.specularMap.isEmpty())material.specularMap=reference;
+                else if(type==3 && material.tangentNormalMap.isEmpty()) {
+                    material.tangentNormalMap=reference;
+                    if(material.normalMap.isEmpty())material.normalMap=reference;
+                } else if(type==4 && material.reflectionMap.isEmpty())material.reflectionMap=reference;
                 break;
             }
         }
@@ -596,6 +604,9 @@ QImage P3t::gim(const QByteArray& g) {
 }
 
 QByteArray P3t::vagToWav(const QByteArray& left,const QByteArray& right) {
+#ifdef XMB_USE_RUST_EDGE
+    return xmb::image_rust::vagToWav(left,right);
+#endif
     const auto decode=[](const QByteArray& v,quint32& rate) {
         qsizetype p=0;rate=44100;
         if(v.startsWith("VAGp")){const quint32 r=be32(v,16);if(r && r!=kNone)rate=r;p=48;}
@@ -657,7 +668,7 @@ QJsonObject vsmxReport(const QByteArray& data) {
     } else o["evaluator"]=QJsonObject{{"error",error}};
     return o;
 }
-// raf.prx builds an effect name from these tokens (M: its string table); which _gen_ubber1 flag each sets is not traced.
+// raf.prx builds an effect name from these tokens (TRACED: FUN_00031e68 / FUN_0003f5e0 / 0x0404a4 / FUN_00040fb0).
 QJsonObject effectTokens(const QString& effect) {
     static const QStringList bases{"pure_texture","basic_lighting","sce01"},modifiers{"edge_lit","alpha_0","alpha_1","alpha_add","depth_0","depth_1"};
     QString base;for(const auto& b:bases)if(effect.startsWith(b))base=b;
@@ -668,8 +679,9 @@ QJsonObject effectTokens(const QString& effect) {
         found.append(part);
     }
     for(const auto& f:found)if(!modifiers.contains(f))unknown.append(f);
+    const RafEffectSpec spec=resolveRafEffect(effect);
     return QJsonObject{{"effect",effect},{"base",base.isEmpty()?QJsonValue():QJsonValue(base)},{"modifiers",QJsonArray::fromStringList(found)},
-        {"unknownTokens",QJsonArray::fromStringList(unknown)}};
+        {"unknownTokens",QJsonArray::fromStringList(unknown)},{"firmwareProgram",spec.firmwareProgram},{"shaderIndex",spec.shaderIndex}};
 }
 }
 // --raf-report: the parsed scene graph, for checking a user-supplied theme against what a renderer would need.

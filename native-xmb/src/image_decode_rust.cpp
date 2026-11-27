@@ -180,4 +180,40 @@ bool parseVobSub(const QByteArray& idx, const QByteArray& sub, int track, QVecto
     return true;
 }
 
+QImage decodeGim(const QByteArray& gim, QString* error) {
+    if (error) error->clear();
+    uint32_t width = 0, height = 0;
+    ImgBufferGuard guard;
+    const auto* ptr = gim.isEmpty() ? nullptr : reinterpret_cast<const uint8_t*>(gim.constData());
+    const int rc = img_decode_gim(ptr, static_cast<size_t>(gim.size()), &width, &height, &guard.ptr, &guard.len);
+    if (rc != 0) {
+        if (error) *error = lastMessage();
+        return {};
+    }
+    const uint64_t rowBytes = uint64_t(width) * 4u;
+    if (!guard.ptr || width == 0 || height == 0 || guard.len != rowBytes * uint64_t(height)) {
+        if (error) *error = QStringLiteral("corrupt Rust GIM payload");
+        return {};
+    }
+    QImage image(static_cast<int>(width), static_cast<int>(height), QImage::Format_ARGB32);
+    if (image.isNull()) {
+        if (error) *error = QStringLiteral("cannot allocate GIM image");
+        return {};
+    }
+    for (uint32_t y = 0; y < height; ++y) {
+        std::memcpy(image.scanLine(static_cast<int>(y)), guard.ptr + size_t(y) * size_t(rowBytes), size_t(rowBytes));
+    }
+    return image;
+}
+
+QByteArray vagToWav(const QByteArray& left, const QByteArray& right) {
+    ImgBufferGuard guard;
+    const auto* lPtr = left.isEmpty() ? nullptr : reinterpret_cast<const uint8_t*>(left.constData());
+    const auto* rPtr = right.isEmpty() ? nullptr : reinterpret_cast<const uint8_t*>(right.constData());
+    const int rc = img_vag_to_wav(
+        lPtr, static_cast<size_t>(left.size()), rPtr, static_cast<size_t>(right.size()), &guard.ptr, &guard.len);
+    if (rc != 0 || !guard.ptr || guard.len == 0) return {};
+    return QByteArray(reinterpret_cast<const char*>(guard.ptr), static_cast<qsizetype>(guard.len));
+}
+
 } // namespace xmb::image_rust

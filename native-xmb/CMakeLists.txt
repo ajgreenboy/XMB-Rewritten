@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
-project(RePS3Native VERSION 0.3.36 LANGUAGES CXX)
+project(RePS3Native VERSION 0.3.37 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
@@ -85,9 +85,11 @@ if(XMB_RUST_FIRMWARE_CRYPTO)
             "${XMB_RUST_WORKSPACE_DIR}/steam-vdf/src/ffi.rs"
             "${XMB_RUST_WORKSPACE_DIR}/image-decode/Cargo.toml"
             "${XMB_RUST_WORKSPACE_DIR}/image-decode/src/lib.rs"
+            "${XMB_RUST_WORKSPACE_DIR}/image-decode/src/gim.rs"
             "${XMB_RUST_WORKSPACE_DIR}/image-decode/src/gtf.rs"
             "${XMB_RUST_WORKSPACE_DIR}/image-decode/src/edge.rs"
             "${XMB_RUST_WORKSPACE_DIR}/image-decode/src/subtitles.rs"
+            "${XMB_RUST_WORKSPACE_DIR}/image-decode/src/vag.rs"
             "${XMB_RUST_WORKSPACE_DIR}/image-decode/src/ffi.rs"
         COMMENT "Building the Rust untrusted-edge staticlib (cargo build --release -p xmb-rust-edge)"
         VERBATIM)

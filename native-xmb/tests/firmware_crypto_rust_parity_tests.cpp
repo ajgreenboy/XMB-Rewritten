@@ -303,6 +303,285 @@ bool sameCues(const QVector<xmb::ImageCue>& a, const QVector<xmb::ImageCue>& b) 
     return true;
 }
 
+// ---- Phase 4 synthetic GIM and VAG builders + C++ reference decoders (matching assets.cpp & p3t.cpp) ----
+
+QByteArray gimBlock(quint16 type, quint32 dataOff, const QByteArray& body) {
+    QByteArray hdr(16, '\0');
+    put16(hdr, 0, type);
+    put32(hdr, 4, quint32(16 + body.size()));
+    put32(hdr, 8, 16);
+    put32(hdr, 12, dataOff);
+    return hdr + body;
+}
+
+QByteArray makeGimImageBlock(quint16 format, quint16 w, quint16 h, quint16 align, const QByteArray& pixels, quint16 order = 0) {
+    QByteArray info(0x30, '\0');
+    put16(info, 4, format);
+    put16(info, 6, order);
+    put16(info, 8, w);
+    put16(info, 10, h);
+    put16(info, 14, align);
+    put32(info, 0x1c, 0x30);
+    return gimBlock(4, 16, info + pixels);
+}
+
+QByteArray makeGimPaletteBlock(quint16 format, quint16 count, const QByteArray& entries) {
+    QByteArray info(0x30, '\0');
+    put16(info, 4, format);
+    put16(info, 6, 0);
+    put16(info, 8, count);
+    put16(info, 10, 1);
+    put32(info, 0x1c, 0x30);
+    return gimBlock(5, 16, info + entries);
+}
+
+QByteArray wrapGimRoot(const QByteArray& pictureChildren) {
+    const QByteArray pic = gimBlock(3, 16, pictureChildren);
+    const QByteArray root = gimBlock(2, 16, pic);
+    return QByteArray(".GIM1.00\0\0\0\0\0\0\0\0", 16) + root;
+}
+
+QImage cppDecodeGim(const QByteArray& b, QString* error) {
+    if (error) error->clear();
+    const auto fail = [&](const QString& msg) -> QImage {
+        if (error) *error = msg;
+        return {};
+    };
+    const auto inRange = [&](quint64 p, quint64 n) {
+        return p <= quint64(b.size()) && n <= quint64(b.size()) - p;
+    };
+    const auto u16 = [&](quint64 p, bool& ok) -> quint16 {
+        if (!inRange(p, 2)) { ok = false; return 0; }
+        return qFromBigEndian<quint16>(b.constData() + p);
+    };
+    const auto u32 = [&](quint64 p, bool& ok) -> quint32 {
+        if (!inRange(p, 4)) { ok = false; return 0; }
+        return qFromBigEndian<quint32>(b.constData() + p);
+    };
+    const auto c565 = [](quint16 v) {
+        const int r = v >> 11, g = (v >> 5) & 63, bl = v & 31;
+        return qRgb((r << 3) | (r >> 2), (g << 2) | (g >> 4), (bl << 3) | (bl >> 2));
+    };
+    const auto c5551 = [](quint16 v) {
+        const int r = (v >> 10) & 31, g = (v >> 5) & 31, bl = v & 31;
+        return qRgba((r << 3) | (r >> 2), (g << 3) | (g >> 2), (bl << 3) | (bl >> 2), (v & 0x8000) ? 255 : 0);
+    };
+    const auto c4444 = [](quint16 v) {
+        return qRgba(((v >> 12) & 15) * 17, ((v >> 8) & 15) * 17, ((v >> 4) & 15) * 17, (v & 15) * 17);
+    };
+    if (!b.startsWith(".GIM1.00")) return fail(QStringLiteral("Unsupported GIM byte order"));
+    quint64 at = 0x10, pictureData = 0, pictureEnd = quint64(b.size());
+    for (int blocks = 0; blocks < 128; ++blocks) {
+        bool ok = true;
+        const auto type = u16(at, ok);
+        const auto size = u32(at + 4, ok), data = u32(at + 12, ok);
+        if (!ok) return fail(QStringLiteral("Asset offset exceeds its container"));
+        if (size < 16 || data < 16 || data >= size) return fail(QStringLiteral("Invalid GIM block"));
+        if (!inRange(at, size)) return fail(QStringLiteral("Asset offset exceeds its container"));
+        if (type == 2 || type == 3) {
+            if (type == 3) { pictureData = at + data; pictureEnd = at + size; }
+            at += data;
+            continue;
+        }
+        if (type != 4) { at += size; continue; }
+        const quint64 info = at + data;
+        if (!inRange(info, 0x30)) return fail(QStringLiteral("Asset offset exceeds its container"));
+        const auto format = u16(info + 4, ok), order = u16(info + 6, ok), w = u16(info + 8, ok), h = u16(info + 10, ok);
+        const auto alignment = u16(info + 14, ok);
+        if (order != 0) return fail(QStringLiteral("Unsupported GIM pixel order"));
+        if (!w || !h || w > 4096 || h > 4096 || !alignment || alignment > 4096) return fail(QStringLiteral("Invalid GIM dimensions"));
+        const quint64 pixels = info + u32(info + 0x1c, ok);
+        if (pixels < info + 0x30) return fail(QStringLiteral("GIM pixels overlap image metadata"));
+        const quint64 end = at + size;
+        if (format >= 8 && format <= 10) {
+            const quint64 blockBytes = format == 8 ? 8 : 16;
+            const quint64 rowBytes = quint64((w + 3) / 4) * blockBytes;
+            const quint64 stride = ((rowBytes + alignment - 1) / alignment) * alignment;
+            const quint64 length = stride * ((h + 3) / 4);
+            if (pixels > end || length > end - pixels) return fail(QStringLiteral("DXT blocks exceed GIM image"));
+            if (!inRange(pixels, length)) return fail(QStringLiteral("Asset offset exceeds its container"));
+            QImage result(w, h, QImage::Format_ARGB32);
+            for (int by = 0; by < h; by += 4) for (int bx = 0; bx < w; bx += 4) {
+                const auto* block = reinterpret_cast<const uchar*>(b.constData() + pixels + (by / 4) * stride + (bx / 4) * blockBytes);
+                const auto* colours = block + (format == 8 ? 0 : 8);
+                const quint16 c0 = qFromLittleEndian<quint16>(colours), c1 = qFromLittleEndian<quint16>(colours + 2);
+                QRgb palette[4]{c565(c0), c565(c1), 0, 0};
+                if (format != 8 || c0 > c1) {
+                    for (int i = 0; i < 2; ++i)
+                        palette[2 + i] = qRgb(((2 - i) * qRed(palette[0]) + (1 + i) * qRed(palette[1])) / 3,
+                                              ((2 - i) * qGreen(palette[0]) + (1 + i) * qGreen(palette[1])) / 3,
+                                              ((2 - i) * qBlue(palette[0]) + (1 + i) * qBlue(palette[1])) / 3);
+                } else {
+                    palette[2] = qRgb((qRed(palette[0]) + qRed(palette[1])) / 2,
+                                      (qGreen(palette[0]) + qGreen(palette[1])) / 2,
+                                      (qBlue(palette[0]) + qBlue(palette[1])) / 2);
+                    palette[3] = qRgba(0, 0, 0, 0);
+                }
+                const quint32 indices = qFromLittleEndian<quint32>(colours + 4);
+                int alphas[8]{};
+                quint64 alphaIndices = 0;
+                if (format == 10) {
+                    alphas[0] = block[0]; alphas[1] = block[1];
+                    if (alphas[0] > alphas[1]) for (int i = 1; i <= 6; ++i) alphas[i + 1] = ((7 - i) * alphas[0] + i * alphas[1]) / 7;
+                    else { for (int i = 1; i <= 4; ++i) alphas[i + 1] = ((5 - i) * alphas[0] + i * alphas[1]) / 5; alphas[6] = 0; alphas[7] = 255; }
+                    for (int i = 0; i < 6; ++i) alphaIndices |= quint64(block[2 + i]) << (i * 8);
+                }
+                for (int y = 0; y < 4 && by + y < h; ++y) for (int x = 0; x < 4 && bx + x < w; ++x) {
+                    const int pixel = y * 4 + x;
+                    const auto colour = palette[(indices >> (pixel * 2)) & 3];
+                    const int alpha = format == 10 ? alphas[(alphaIndices >> (pixel * 3)) & 7]
+                                    : format == 9 ? ((block[pixel / 2] >> ((pixel & 1) * 4)) & 15) * 17
+                                    : qAlpha(colour);
+                    reinterpret_cast<QRgb*>(result.scanLine(by + y))[bx + x] = qRgba(qRed(colour), qGreen(colour), qBlue(colour), alpha);
+                }
+            }
+            return result;
+        }
+        if (format >= 4 && format <= 6) {
+            QVector<QRgb> palColours;
+            for (quint64 blk = pictureData ? pictureData : end; blk + 16 <= pictureEnd && blk + 16 <= quint64(b.size());) {
+                const auto ptype = u16(blk, ok);
+                const auto psize = u32(blk + 4, ok), pdata = u32(blk + 12, ok);
+                if (!ok) return fail(QStringLiteral("Asset offset exceeds its container"));
+                if (psize < 16 || pdata < 16 || pdata >= psize || blk + psize > pictureEnd || blk + psize > quint64(b.size())) {
+                    if (ptype == 5) return fail(QStringLiteral("Invalid GIM palette block"));
+                    break;
+                }
+                if (ptype != 5) { blk += psize; continue; }
+                const quint64 pinfo = blk + pdata;
+                if (!inRange(pinfo, 0x30)) return fail(QStringLiteral("Asset offset exceeds its container"));
+                const auto pfmt = u16(pinfo + 4, ok), porder = u16(pinfo + 6, ok);
+                const quint64 pcount = quint64(u16(pinfo + 8, ok)) * u16(pinfo + 10, ok);
+                const quint64 entryBytes = pfmt <= 2 ? 2 : pfmt == 3 ? 4 : 0;
+                if (!entryBytes) return fail(QStringLiteral("Unsupported GIM palette format 0x%1").arg(pfmt, 0, 16));
+                if (porder != 0) return fail(QStringLiteral("Unsupported GIM palette order"));
+                if (!pcount || pcount > 65536) return fail(QStringLiteral("Invalid GIM palette dimensions"));
+                const quint64 pstart = pinfo + u32(pinfo + 0x1c, ok);
+                if (pstart < pinfo + 0x30 || pstart > blk + psize || pcount * entryBytes > blk + psize - pstart)
+                    return fail(QStringLiteral("GIM palette exceeds its block"));
+                if (!inRange(pstart, pcount * entryBytes)) return fail(QStringLiteral("Asset offset exceeds its container"));
+                palColours.reserve(int(pcount));
+                for (quint64 i = 0; i < pcount; ++i) {
+                    const quint64 pat = pstart + i * entryBytes;
+                    if (pfmt == 3) palColours.push_back(qRgba(uchar(b[int(pat)]), uchar(b[int(pat) + 1]), uchar(b[int(pat) + 2]), uchar(b[int(pat) + 3])));
+                    else {
+                        const auto pv = u16(pat, ok);
+                        palColours.push_back(pfmt == 0 ? c565(pv) : pfmt == 1 ? c5551(pv) : c4444(pv));
+                    }
+                }
+                break;
+            }
+            const quint64 bits = format == 4 ? 4 : format == 5 ? 8 : 16;
+            const quint64 rowBytes = (quint64(w) * bits + 7) / 8;
+            const quint64 stride = ((rowBytes + alignment - 1) / alignment) * alignment;
+            const quint64 length = stride * quint64(h);
+            if (pixels > end || length > end - pixels) return fail(QStringLiteral("GIM index rows exceed image block"));
+            if (!inRange(pixels, length)) return fail(QStringLiteral("Asset offset exceeds its container"));
+            QImage result(w, h, QImage::Format_ARGB32);
+            const int entries = int(palColours.size());
+            for (int y = 0; y < h; ++y) {
+                auto* row = reinterpret_cast<QRgb*>(result.scanLine(y));
+                const auto* line = reinterpret_cast<const uchar*>(b.constData() + pixels + quint64(y) * stride);
+                for (int x = 0; x < w; ++x) {
+                    quint32 index = format == 4 ? ((x & 1) ? (line[x >> 1] & 15) : (line[x >> 1] >> 4))
+                                  : format == 5 ? line[x]
+                                  : qFromBigEndian<quint16>(line + x * 2);
+                    if (entries) {
+                        if (index >= quint32(entries))
+                            return fail(QStringLiteral("GIM palette index %1 exceeds %2 entries").arg(index).arg(entries));
+                        row[x] = palColours[int(index)];
+                    } else {
+                        const int cov = format == 4 ? int(index) * 17 : format == 5 ? int(index) : int(index >> 8);
+                        row[x] = qRgba(255, 255, 255, cov);
+                    }
+                }
+            }
+            return result;
+        }
+        if (format != 3) return fail(QStringLiteral("Unsupported GIM pixel format 0x%1").arg(format, 0, 16));
+        const quint64 stride = ((quint64(w) * 4 + alignment - 1) / alignment) * alignment;
+        if (pixels < info || pixels + stride * h > end) return fail(QStringLiteral("GIM pixels exceed image block"));
+        if (!inRange(pixels, stride * h)) return fail(QStringLiteral("Asset offset exceeds its container"));
+        QImage result(w, h, QImage::Format_ARGB32);
+        for (int y = 0; y < h; ++y) {
+            auto* row = reinterpret_cast<QRgb*>(result.scanLine(y));
+            for (int x = 0; x < w; ++x) {
+                const auto v = u32(pixels + y * stride + x * 4, ok);
+                row[x] = qRgba(v >> 24, (v >> 16) & 255, (v >> 8) & 255, v & 255);
+            }
+        }
+        return result;
+    }
+    return fail(QStringLiteral("GIM image block not found"));
+}
+
+QByteArray cppVagToWav(const QByteArray& left, const QByteArray& right = {}) {
+    const auto decode = [](const QByteArray& v, quint32& rate) {
+        qsizetype p = 0;
+        rate = 44100;
+        if (v.startsWith("VAGp") && v.size() >= 20) {
+            const quint32 r = qFromBigEndian<quint32>(v.constData() + 16);
+            if (r && r != 0xFFFFFFFFu) rate = r;
+            p = 48;
+        }
+        static constexpr double k[5][2]{{0, 0}, {60, 0}, {115, -52}, {98, -55}, {122, -60}};
+        double s1 = 0, s2 = 0;
+        QVector<qint16> out;
+        for (; p + 16 <= v.size(); p += 16) {
+            const auto* b = reinterpret_cast<const uchar*>(v.constData() + p);
+            if (b[1] == 7) break;
+            const int shift = std::min(b[0] & 15, 12);
+            const auto& c = k[std::min(b[0] >> 4, 4)];
+            for (int i = 0; i < 28; ++i) {
+                const int nibble = i % 2 ? b[2 + i / 2] >> 4 : b[2 + i / 2] & 15;
+                const int raw = qint16(quint16(nibble << 12)) >> 4;
+                const double x = std::clamp(std::round(double((raw * 16) >> shift) + (s1 * c[0] + s2 * c[1]) / 64.), -32768., 32767.);
+                out.push_back(qint16(x));
+                s2 = s1;
+                s1 = x;
+            }
+            if (b[1] == 1) break;
+        }
+        return out;
+    };
+    quint32 rate = 44100, unused = 0;
+    const auto l = decode(left, rate);
+    if (l.isEmpty()) return {};
+    const auto r = right.isEmpty() ? QVector<qint16>{} : decode(right, unused);
+    const quint16 channels = r.isEmpty() ? 1 : 2;
+    const qsizetype frames = r.isEmpty() ? l.size() : std::min(l.size(), r.size());
+    const quint32 bytes = quint32(frames) * channels * 2;
+    QByteArray w;
+    w.reserve(44 + bytes);
+    const auto u32 = [&](quint32 v) { char b[4]; qToLittleEndian(v, b); w.append(b, 4); };
+    const auto u16 = [&](quint16 v) { char b[2]; qToLittleEndian(v, b); w.append(b, 2); };
+    w += "RIFF"; u32(36 + bytes); w += "WAVEfmt "; u32(16); u16(1); u16(channels); u32(rate); u32(rate * channels * 2); u16(channels * 2); u16(16);
+    w += "data"; u32(bytes);
+    for (qsizetype i = 0; i < frames; ++i) { u16(quint16(l[i])); if (channels == 2) u16(quint16(r[i])); }
+    return w;
+}
+
+QByteArray makeVagStream(quint32 sampleRate, bool withHeader, uchar endFlag, int seed) {
+    QByteArray out;
+    if (withHeader) {
+        out.resize(48, '\0');
+        out.replace(0, 4, "VAGp");
+        put32(out, 16, sampleRate);
+    }
+    for (int blk = 0; blk < 5; ++blk) {
+        QByteArray b(16, '\0');
+        b[0] = bchar(((blk % 5) << 4) | ((blk + 1) & 7));
+        b[1] = bchar(blk == 4 ? endFlag : 0);
+        for (int i = 0; i < 14; ++i) {
+            const int lo = (seed + blk * 7 + i * 3) & 15;
+            const int hi = (15 - ((seed + blk * 5 + i) & 15)) & 15;
+            b[2 + i] = bchar((hi << 4) | lo);
+        }
+        out += b;
+    }
+    return out;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -575,6 +854,54 @@ int main(int argc, char** argv) {
         const bool badCpp = xmb::parseVobSub(QByteArray("garbage\n"), sub, 0, cCpp, &rCpp);
         const bool badRust = xmb::image_rust::parseVobSub(QByteArray("garbage\n"), sub, 0, cRust, &rRust);
         check(!badCpp && !badRust && rCpp == rRust, "vobsub-parity-reject-bad-idx");
+    }
+
+    // ---- 5. Phase 4: GIM (.GIM1.00) and VAG (.vag / VAGp) parity --------
+    {
+        const QByteArray gimInputs[] = {
+            // RGBA8888 (format 3) with 8-byte row alignment
+            wrapGimRoot(makeGimImageBlock(3, 2, 2, 8, QByteArray::fromHex("10203040ff0080ff50607080010203ff"))),
+            // INDEX4 (format 4) with RGB565 palette (format 0)
+            wrapGimRoot(makeGimImageBlock(4, 2, 2, 4, QByteArray::fromHex("0100000010000000")) +
+                        makeGimPaletteBlock(0, 2, QByteArray::fromHex("f80007e0"))),
+            // INDEX8 (format 5) with RGBA8888 palette (format 3)
+            wrapGimRoot(makeGimImageBlock(5, 2, 2, 4, QByteArray::fromHex("0001000001020000")) +
+                        makeGimPaletteBlock(3, 3, QByteArray::fromHex("ff00008000ff00ff0000ffff"))),
+            // INDEX8 (format 5) palette-less alpha coverage mask (OSK RCO mask form)
+            wrapGimRoot(makeGimImageBlock(5, 2, 2, 4, QByteArray::fromHex("0040000080ff0000"))),
+            // INDEX16 (format 6) with RGBA4444 palette (format 2)
+            wrapGimRoot(makeGimImageBlock(6, 2, 1, 4, QByteArray::fromHex("00000001")) +
+                        makeGimPaletteBlock(2, 2, QByteArray::fromHex("f00f0f0f"))),
+            // DXT1 4-colour (format 8, c0 > c1)
+            wrapGimRoot(makeGimImageBlock(8, 4, 4, 8, QByteArray::fromHex("00f81f000055aaff"))),
+            // DXT1 3-colour + transparent black (format 8, c0 <= c1)
+            wrapGimRoot(makeGimImageBlock(8, 4, 4, 8, QByteArray::fromHex("1f0000f8ffffffff"))),
+            // DXT3 explicit 4-bit alpha (format 9)
+            wrapGimRoot(makeGimImageBlock(9, 4, 4, 16, QByteArray::fromHex("8888888888888888ffffffff00000000"))),
+            // DXT5 interpolated alpha (format 10)
+            wrapGimRoot(makeGimImageBlock(10, 4, 4, 16, QByteArray::fromHex("ff00499224499224ffffffff00000000"))),
+            // Refusals: wrong magic, bad block size, out-of-range palette index
+            QByteArray("MIG.00.1PSP\0\0\0\0\0", 16),
+            QByteArray(".GIM1.00\0\0\0\0\0\0\0\0\0\x02\0\0\0\0\0\x04\0\0\0\x10\0\0\0\x10", 32),
+            wrapGimRoot(makeGimImageBlock(5, 2, 1, 4, QByteArray::fromHex("00050000")) +
+                        makeGimPaletteBlock(0, 2, QByteArray::fromHex("f80007e0"))),
+        };
+        int gimi = 0;
+        for (const QByteArray& g : gimInputs) {
+            QString eCpp, eRust;
+            const QImage iCpp = cppDecodeGim(g, &eCpp);
+            const QImage iRust = xmb::image_rust::decodeGim(g, &eRust);
+            const QByteArray label = QByteArray("gim-parity-") + QByteArray::number(gimi++);
+            check(iCpp.isNull() == iRust.isNull() && iCpp == iRust && eCpp == eRust, label.constData());
+        }
+
+        const QByteArray vagL = makeVagStream(48000, true, 1, 3);
+        const QByteArray vagR = makeVagStream(48000, true, 1, 11);
+        const QByteArray vagRaw = makeVagStream(44100, false, 7, 5);
+        check(cppVagToWav(vagL) == xmb::image_rust::vagToWav(vagL) && !cppVagToWav(vagL).isEmpty(), "vag-parity-mono-vagp");
+        check(cppVagToWav(vagL, vagR) == xmb::image_rust::vagToWav(vagL, vagR) && !cppVagToWav(vagL, vagR).isEmpty(), "vag-parity-stereo-vagp");
+        check(cppVagToWav(vagRaw) == xmb::image_rust::vagToWav(vagRaw) && !cppVagToWav(vagRaw).isEmpty(), "vag-parity-headless-flag7");
+        check(cppVagToWav(QByteArray()).isEmpty() && xmb::image_rust::vagToWav(QByteArray()).isEmpty(), "vag-parity-empty");
     }
 
     std::printf("rust-edge-parity: %s (%d failures)\n", failures ? "FAIL" : "PASS", failures);

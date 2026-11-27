@@ -8,4 +8,6 @@ QImage decodeGtf(const QByteArray& gtf, QString* error = nullptr);
 bool decodeEdge(const QByteArray& edge, QVector<EdgeVertex>& vertices, QVector<quint32>& indices, QString* error = nullptr);
 bool parsePgs(const QByteArray& sup, QVector<ImageCue>& out, QString* reason = nullptr);
 bool parseVobSub(const QByteArray& idx, const QByteArray& sub, int track, QVector<ImageCue>& out, QString* reason = nullptr);
+QImage decodeGim(const QByteArray& gim, QString* error = nullptr);
+QByteArray vagToWav(const QByteArray& left, const QByteArray& right = {});
 } // namespace xmb::image_rust

@@ -3,8 +3,10 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::slice;
 
 use crate::edge::decode_edge_packed;
+use crate::gim::decode_gim;
 use crate::gtf::decode_gtf;
 use crate::subtitles::{encode_cues, parse_pgs, parse_vobsub};
+use crate::vag::vag_to_wav;
 
 thread_local! {
     static LAST_ERROR: RefCell<String> = const { RefCell::new(String::new()) };
@@ -192,6 +194,90 @@ pub unsafe extern "C" fn img_parse_vobsub(
                 1
             }
         }
+    }))
+    .unwrap_or_else(|_| {
+        set_error("internal panic caught at FFI boundary");
+        -2
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn img_decode_gim(
+    gim_ptr: *const u8,
+    gim_len: usize,
+    out_width: *mut u32,
+    out_height: *mut u32,
+    out_pixels: *mut *mut u8,
+    out_len: *mut usize,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        clear_error();
+        if out_width.is_null() || out_height.is_null() || out_pixels.is_null() || out_len.is_null() {
+            set_error("null output pointer");
+            return -1;
+        }
+        unsafe {
+            *out_width = 0;
+            *out_height = 0;
+            *out_pixels = std::ptr::null_mut();
+            *out_len = 0;
+        }
+        if gim_len > 0 && gim_ptr.is_null() {
+            set_error("null GIM input pointer");
+            return -1;
+        }
+        let bytes = if gim_len == 0 { &[] } else { unsafe { slice::from_raw_parts(gim_ptr, gim_len) } };
+        match decode_gim(bytes) {
+            Ok(decoded) => {
+                unsafe {
+                    *out_width = decoded.width;
+                    *out_height = decoded.height;
+                    hand_off(decoded.argb_bytes, out_pixels, out_len);
+                }
+                0
+            }
+            Err(e) => {
+                set_error(e);
+                1
+            }
+        }
+    }))
+    .unwrap_or_else(|_| {
+        set_error("internal panic caught at FFI boundary");
+        -2
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn img_vag_to_wav(
+    left_ptr: *const u8,
+    left_len: usize,
+    right_ptr: *const u8,
+    right_len: usize,
+    out_wav: *mut *mut u8,
+    out_len: *mut usize,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        clear_error();
+        if out_wav.is_null() || out_len.is_null() {
+            set_error("null output pointer");
+            return -1;
+        }
+        unsafe {
+            *out_wav = std::ptr::null_mut();
+            *out_len = 0;
+        }
+        if (left_len > 0 && left_ptr.is_null()) || (right_len > 0 && right_ptr.is_null()) {
+            set_error("null VAG input pointer");
+            return -1;
+        }
+        let left = if left_len == 0 { &[] } else { unsafe { slice::from_raw_parts(left_ptr, left_len) } };
+        let right = if right_len == 0 { &[] } else { unsafe { slice::from_raw_parts(right_ptr, right_len) } };
+        let wav = vag_to_wav(left, right);
+        if !wav.is_empty() {
+            unsafe { hand_off(wav, out_wav, out_len) };
+        }
+        0
     }))
     .unwrap_or_else(|_| {
         set_error("internal panic caught at FFI boundary");

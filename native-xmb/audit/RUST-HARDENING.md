@@ -1,6 +1,6 @@
 # Rust hardening design: the untrusted edge
 
-Status: **Phases 1–3 implemented** (`native-xmb/rust-edge/` Cargo workspace: `firmware-crypto`, `firmware-extract`, `steam-vdf`, `image-decode` [GTF, Edge, Blu-ray PGS, DVD VobSub], unified into `xmb-rust-edge` staticlib behind `-DXMB_RUST_FIRMWARE_CRYPTO=ON` and `-DXMB_USE_RUST_EDGE=ON`; Phases 4–5 remain proposals).
+Status: **Phases 1–4 implemented** (`native-xmb/rust-edge/` Cargo workspace: `firmware-crypto`, `firmware-extract`, `steam-vdf`, `image-decode` [GTF, GIM `.GIM1.00`, VAG `.vag`/`VAGp` ADPCM audio, Edge, Blu-ray PGS, DVD VobSub], unified into `xmb-rust-edge` staticlib behind `-DXMB_RUST_FIRMWARE_CRYPTO=ON` and `-DXMB_USE_RUST_EDGE=ON`).
 
 ## 1. What this is and what it is not
 
@@ -177,12 +177,14 @@ Choices settled and verified for Phases 1–3:
    - `RustCrypto` (`aes` 0.9, `hmac` 0.13, `sha1` 0.11) for FIPS-197 AES-128/256 and RFC 2104 HMAC-SHA1; `flate2` (`rust_backend` / `miniz_oxide`, pure Rust) for SCE zlib/gzip decompression bounded at 1 GiB; zero-`unsafe` PUP/SCE/TAR unpacker with traversal/symlink/device/reparse-point rejection and transactional staging.
 3. **Phase 2 (`steam-vdf`):**
    - Zero-`unsafe` Valve KeyValues (`.vdf` / `.acf`) parser implementing all 6 `Options` fields (`skipBom`, `quotedBracesAreStructural`, `maxTokenBytes`, `maxTokens`, `maxEntries`, `maxDepth`) with owned length-prefixed binary serialization over C ABI (`include/steam_vdf_abi.h`, `src/steam_vdf_rust.{h,cpp}`). Verified against all **4,908 golden fixtures** in `tests/steam_vdf_golden.txt` (`0` failures).
-4. **Phase 3 (`image-decode`):**
+4. **Phases 3–4 (`image-decode` — GTF, Edge, PGS, VobSub, GIM, and VAG):**
    - Zero-`unsafe` binary decoders (`include/image_decode_abi.h`, `src/image_decode_rust.{h,cpp}`) for:
      - **PS3 GTF textures** (`B8`, `A8R8G8B8` linear & Morton-swizzled, `DXT1/3/5`),
+     - **PS3/PSP GIM textures (`.GIM1.00`)** (`RGBA8888`, `INDEX4/8/16` with `RGB565`/`RGBA5551`/`RGBA4444`/`RGBA8888` palettes or palette-less OSK alpha coverage masks, and `DXT1/3/5` with row pitch alignment),
+     - **PlayStation ADPCM VAG audio (`.vag` / `VAGp`)** (28-sample 16-byte blocks, 5 IIR filter pairs, mono/stereo RIFF WAVE PCM synthesis for `.p3t` theme sound effects),
      - **PS3 Edge geometry** (`plane.edge` compressed MSB delta/reuse index stream + `float3`/`X11Y11Z10`/`half2` vertex streams),
      - **Blu-ray PGS (`.sup`)** (`HDMV RLE` + studio-range BT.709/BT.601 YCbCrA composition, cropping, window clipping, pixel-work budgets),
      - **DVD VobSub (`.idx` + `.sub`)** (`.idx` palette/custom-colors/delay/timestamp parser + MPEG-1/2 PES private-stream-1 walker + interlaced 2-bit SPU RLE).
-   - Verified via 64/64 C++/Rust byte-for-byte parity checks in `xmb-firmware-rust-parity-tests` and 53/53 checks in Rust-delegated `xmb-raf-tests`.
+   - Verified via 80/80 C++/Rust byte-for-byte parity checks in `xmb-firmware-rust-parity-tests` and 53/53 checks in Rust-delegated `xmb-raf-tests`.
 5. **CMake & CI integration:**
-   - `-DXMB_RUST_FIRMWARE_CRYPTO=ON` builds `xmb-rust-edge` and `xmb-firmware-rust-parity-tests`; `-DXMB_USE_RUST_EDGE=ON` routes live C++ calls (`firmware_crypto`, `firmware_extract`, `steam_vdf`, `gtf_decode`, `edge_decode`, `image_subtitles`) through the Rust `staticlib`. Both Windows and Ubuntu 24.04 Linux CI jobs in `.github/workflows/tests.yml` run `cargo test --workspace` and the C++/Rust parity suites on every push.
+   - `-DXMB_RUST_FIRMWARE_CRYPTO=ON` builds `xmb-rust-edge` and `xmb-firmware-rust-parity-tests`; `-DXMB_USE_RUST_EDGE=ON` routes live C++ calls (`firmware_crypto`, `firmware_extract`, `steam_vdf`, `gtf_decode`, `edge_decode`, `image_subtitles`, `Assets::decodeGim`, `P3t::vagToWav`) through the Rust `staticlib`. Both Windows and Ubuntu 24.04 Linux CI jobs in `.github/workflows/tests.yml` run `cargo test --workspace` and the C++/Rust parity suites on every push.

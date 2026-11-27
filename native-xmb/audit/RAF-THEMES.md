@@ -91,9 +91,30 @@ with the existing `CgProgram` reader, at run time from dev_flash, exactly the wa
 | `11x1` | 90 | + NormalMap, tangent | lit, tangent-space normal map |
 
 The two middle digits produce byte-identical translated code (`0001`=`0011`=`0101`=`0111`; `0000`=`0010`), and
-`1000` differs from `0000` only in the sampler unit: those flags most likely select render state (alpha/depth),
-not shader code (INFERRED). **Which effect name sets which digit is not traced** (needs the raf.prx code that formats
-`_gen_ubber1`); until then the renderer cannot honestly pick a firmware program for `pure_texture*`/`basic_lighting*`.
+`1000` differs from `0000` only in the sampler unit.
+
+**Traced `_gen_ubber1_XXXX.fpo` and effect-token mapping from `raf.prx` (`FUN_00031e68` at VMA `0x031ea0..0x032c80`, `FUN_0003f5e0` at `0x03f5e0..0x03f874`, `0x0404a4..0x0405f8`, and `FUN_00040fb0` at `0x040fb0..0x041260`, implemented in `src/raf_effect.h`):**
+
+1. **Effect token parser (`FUN_00031e68` at `0x031ea0..0x032c80`):**
+   - Defaults: `baseEffect = "pure_texture"`, `edgeLit = 0`, `depthTest = 1`, `depthFunc = 0x0203` (`GL_LEQUAL`), `depthMask = 1`, `alphaTest = 1`, `alphaFunc = 0x0204` (`GL_GREATER`), `alphaRef = 0.0`, `blendEnable = 1`, `blendSrc = 0x0302` (`GL_SRC_ALPHA`), `blendDst = 0x0303` (`GL_ONE_MINUS_SRC_ALPHA`).
+   - Substring checks:
+     - `"pure_texture"` -> `baseEffect = "pure_texture"`
+     - `"basic_lighting"` -> `baseEffect = "basic_lighting"`
+     - `"sce01"` -> `baseEffect = "sce01"`
+     - `"edge_lit"` (`0x0329a8`) -> `edgeLit = 1`
+     - `"alpha_0"` (`0x032a24`) -> `blendEnable = 0`, `alphaTest = 0`
+     - `"alpha_1"` (`0x0329d4`) -> `alphaTest = 1`, `alphaFunc = GL_GREATER (0x0204)`, `alphaRef = 0.0`, `blendEnable = 1`, `blendSrc = GL_SRC_ALPHA (0x0302)`, `blendDst = GL_ONE_MINUS_SRC_ALPHA (0x0303)`
+     - `"alpha_add"` (`0x032a8c`) -> `alphaTest = 1`, `alphaFunc = GL_GREATER (0x0204)`, `alphaRef = 0.0`, `blendEnable = 1`, `blendSrc = GL_ONE (1)`, `blendDst = GL_ONE (1)`
+     - `"depth_0"` (`0x032a54`) -> `depthTest = 0`, `depthFunc = GL_ALWAYS (0x0207)`, `depthMask = 0`
+     - `"depth_1"` (`0x032970`) -> `depthTest = 1`, `depthFunc = GL_LEQUAL (0x0203)`, `depthMask = 1`
+2. **Shader index & 4-digit `_gen_ubber1_XXXX.fpo` selection (`FUN_0003f5e0` at `0x03f740..0x03f874`, draw-time selector at `0x0404a4..0x0405f8`, name builder `FUN_00040fb0` at `0x0411a0..0x041260`):**
+   - At startup (`0x042180..0x0422bc`), `raf.prx` preloads all 16 `lib/raf/_gen_ubber1_XXXX.fpo` programs for `flags = 0..15`, where digit `bit` (`0..3`, left to right) is `'1'` if `(flags & (1 << bit)) != 0` else `'0'`, plus index `16` = `lib/raf/sce01.fpo`.
+   - `"sce01"` -> `shaderIndex = 16` (`lib/raf/sce01.fpo`).
+   - `"pure_texture"` -> `shaderIndex = 1` (`lib/raf/_gen_ubber1_1000.fpo`, bit 0 set).
+   - `"basic_lighting"` -> `shaderIndex = -1` at material init, resolved at draw time (`0x0404a4..0x0405f8`) from the material's bound texture slots:
+     - Bits `0..1` (first two digits): `0` (`00xx`) when no normal map is bound; `1` (`10xx`) when object-space normal map (`+0x74`, type 1) is bound; `3` (`11xx`) when tangent-space normal map (`+0x7c`, type 3) is bound.
+     - Bit `2` (third digit): `4` (`xx1x`) when reflection map (`+0x80`, type 4) is bound.
+     - Bit `3` (fourth digit): `8` (`xxx1`) when lighting enable (`+0x180`, initialized to `1`) is set.
 
 ## 2. What exists in code (status of section-3 steps 1-4)
 

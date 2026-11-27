@@ -1,5 +1,8 @@
 #include "assets.h"
 #include "frame_trace.h"
+#ifdef XMB_USE_RUST_EDGE
+#include "image_decode_rust.h"
+#endif
 #include <QElapsedTimer>
 #include <QDir>
 #include <QFile>
@@ -391,6 +394,14 @@ Assets::Container Assets::readContainer(const QString& name) const {
     return c;
 }
 QImage Assets::decodeGim(const QByteArray& b,const QString& name) {
+#ifdef XMB_USE_RUST_EDGE
+    if(qEnvironmentVariableIntValue("XMB_GIM_TRACE")!=1) {
+        QString err;
+        QImage img=xmb::image_rust::decodeGim(b,&err);
+        if(img.isNull())throw std::runtime_error(err.toStdString());
+        return img;
+    }
+#endif
     if(!b.startsWith(".GIM1.00"))throw std::runtime_error("Unsupported GIM byte order");
     // Root and picture containers point to their first child; leaf blocks carry
     // their own total size. Only the first frame/mipmap is used for UI icons.

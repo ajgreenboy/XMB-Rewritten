@@ -1,6 +1,7 @@
 #include "edge_decode.h"
 #include "gtf_decode.h"
 #include "preferences.h"
+#include "raf_effect.h"
 #include "vsmx_eval.h"
 #include <QCoreApplication>
 #include <QImage>
@@ -218,6 +219,39 @@ static void tvColumnPreferenceTests() {
           "appearance/tvColumn rejects non-boolean values");
 }
 
+static void rafEffectMappingTests() {
+    // Traced from raf.prx FUN_00031e68 (0x031ea0..0x032c80), FUN_0003f5e0 (0x03f5e0..0x03f874),
+    // 0x0404a4..0x0405f8 and FUN_00040fb0 (0x040fb0..0x041260).
+    const RafEffectSpec sce=resolveRafEffect(QStringLiteral("sce01"));
+    check(sce.known && sce.shaderIndex==16 && !sce.unlit && sce.firmwareProgram==QStringLiteral("lib/raf/sce01.fpo"),
+          "sce01 resolves to shader index 16 (lib/raf/sce01.fpo)");
+
+    const RafEffectSpec pure=resolveRafEffect(QStringLiteral("pure_texture_alpha_0_depth_1"));
+    check(pure.known && pure.shaderIndex==1 && pure.unlit && !pure.blendEnable && !pure.alphaTest &&
+          pure.depthTest && pure.depthMask && pure.depthFunc==0x0203 &&
+          pure.firmwareProgram==QStringLiteral("lib/raf/_gen_ubber1_1000.fpo"),
+          "pure_texture_alpha_0_depth_1 maps to _gen_ubber1_1000.fpo with blend off and GL_LEQUAL depth");
+
+    const RafEffectSpec lit0001=resolveRafEffect(QStringLiteral("basic_lighting_edge_lit"),false,false,false);
+    check(lit0001.known && lit0001.shaderIndex==8 && !lit0001.unlit && lit0001.edgeLit &&
+          lit0001.firmwareProgram==QStringLiteral("lib/raf/_gen_ubber1_0001.fpo"),
+          "basic_lighting_edge_lit with no normal/reflection map maps to _gen_ubber1_0001.fpo and edgeLit=true");
+
+    const RafEffectSpec lit1001=resolveRafEffect(QStringLiteral("basic_lighting"),true,false,false);
+    check(lit1001.known && lit1001.shaderIndex==9 && lit1001.firmwareProgram==QStringLiteral("lib/raf/_gen_ubber1_1001.fpo"),
+          "basic_lighting with object-space normal map (type 1) maps to _gen_ubber1_1001.fpo");
+
+    const RafEffectSpec lit1101=resolveRafEffect(QStringLiteral("basic_lighting"),false,true,false);
+    check(lit1101.known && lit1101.shaderIndex==11 && lit1101.firmwareProgram==QStringLiteral("lib/raf/_gen_ubber1_1101.fpo"),
+          "basic_lighting with tangent-space normal map (type 3) maps to _gen_ubber1_1101.fpo");
+
+    const RafEffectSpec lit1111=resolveRafEffect(QStringLiteral("basic_lighting_alpha_add_depth_0"),true,true,true);
+    check(lit1111.known && lit1111.shaderIndex==15 && lit1111.firmwareProgram==QStringLiteral("lib/raf/_gen_ubber1_1111.fpo") &&
+          lit1111.blendEnable && lit1111.blendSrc==1 && lit1111.blendDst==1 &&
+          !lit1111.depthTest && !lit1111.depthMask && lit1111.depthFunc==0x0207,
+          "alpha_add sets additive GL_ONE/GL_ONE blend, depth_0 sets GL_ALWAYS depth off, and reflection+tangent sets _gen_ubber1_1111.fpo");
+}
+
 int main(int argc,char** argv) {
     QCoreApplication app(argc,argv);
     gtfTests();
@@ -225,6 +259,7 @@ int main(int argc,char** argv) {
     vsmxTests();
     vsmxAnimatedTests();
     tvColumnPreferenceTests();
+    rafEffectMappingTests();
     std::printf("%s\n",failures?"FAILED":"all passed");
     return failures?1:0;
 }

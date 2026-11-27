@@ -184,13 +184,18 @@ void RafScenePlayer::render(QOpenGLFunctions_3_3_Core& gl,int width,int height,d
     gl.glViewport(0,0,width,height);gl.glClearColor(0,0,0,1);gl.glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
     gl.glDisable(GL_CULL_FACE);gl.glDisable(GL_DEPTH_TEST);gl.glEnable(GL_BLEND);gl.glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);
     for(const auto& actor:scene_.actors) {
-        const auto material=materials_.value(actor.material);const QString effect=material.effect.toLower();
-        const bool alpha=effect==QStringLiteral("pure_texture_alpha_0_depth_1");
+        const auto material=materials_.value(actor.material);
+        const RafEffectSpec fx=resolveRafEffect(
+            material.effect,
+            !material.normalMap.isEmpty() && material.tangentNormalMap.isEmpty(),
+            !material.tangentNormalMap.isEmpty(),
+            !material.reflectionMap.isEmpty());
         QOpenGLShaderProgram* selected=&litProgram_;
-        if(effect==QStringLiteral("pure_texture") || alpha)selected=&textureProgram_;
-        else if(effect==QStringLiteral("basic_lighting_edge_lit"))selected=&edgeProgram_;
-        else if(effect!=QStringLiteral("basic_lighting") && effect!=QStringLiteral("sce01") && !unknownEffects_.contains(effect)){
-            qInfo()<<"Unknown RAF effect, using basic lighting:"<<material.effect;unknownEffects_.insert(effect);
+        if(fx.unlit)selected=&textureProgram_;
+        else if(fx.edgeLit)selected=&edgeProgram_;
+        if(!fx.known && !unknownEffects_.contains(material.effect.toLower())){
+            qInfo()<<"Unknown RAF effect, using basic lighting:"<<material.effect;
+            unknownEffects_.insert(material.effect.toLower());
         }
         QVector3D pos=vec(actor.position),rot=vec(actor.rotation),scl=vec(actor.scale),uvOff=vec(actor.uvOffset),uvScl=vec(actor.uvScale);
         QVector4D col=vec4(actor.color);
@@ -213,11 +218,23 @@ void RafScenePlayer::render(QOpenGLFunctions_3_3_Core& gl,int width,int height,d
         program.setUniformValue("model",model);program.setUniformValue("mvp",projection*view*model);program.setUniformValue("normalMatrix",model.normalMatrix());
         program.setUniformValue("uvTransform",QVector4D(uvOff.x(),uvOff.y(),uvScl.x(),uvScl.y()));
         program.setUniformValue("actorColor",col);
-        GLboolean depthMask=GL_TRUE;const GLboolean blend=gl.glIsEnabled(GL_BLEND);
-        if(alpha){gl.glGetBooleanv(GL_DEPTH_WRITEMASK,&depthMask);gl.glEnable(GL_BLEND);gl.glDepthMask(GL_FALSE);}
+        GLboolean prevDepthMask=GL_TRUE;
+        gl.glGetBooleanv(GL_DEPTH_WRITEMASK,&prevDepthMask);
+        if(fx.blendEnable){
+            gl.glEnable(GL_BLEND);
+            gl.glBlendFunc(GLenum(fx.blendSrc),GLenum(fx.blendDst));
+        } else if(fx.hasExplicitDepthToken) {
+            // Keep historical blend behaviour for pure_texture_alpha_0_depth_1 while disabling depth writes.
+            gl.glEnable(GL_BLEND);
+            gl.glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);
+        } else {
+            gl.glDisable(GL_BLEND);
+        }
+        if(!fx.depthMask || (!fx.blendEnable && fx.hasExplicitDepthToken))gl.glDepthMask(GL_FALSE);
         gl.glActiveTexture(GL_TEXTURE0);gl.glBindTexture(GL_TEXTURE_2D,textures_.value(material.colorMap));
         const Mesh m=meshes_.value(actor.model);gl.glBindVertexArray(m.vao);gl.glDrawElements(GL_TRIANGLES,m.count,GL_UNSIGNED_INT,nullptr);
-        if(alpha){gl.glDepthMask(depthMask);if(!blend)gl.glDisable(GL_BLEND);}
+        gl.glDepthMask(prevDepthMask);
+        gl.glEnable(GL_BLEND);gl.glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);
         program.release();
     }
     gl.glBindVertexArray(0);gl.glBindTexture(GL_TEXTURE_2D,0);gl.glDisable(GL_BLEND);

@@ -1,5 +1,6 @@
 #pragma once
 #include "p3t.h"
+#include "raf_effect.h"
 #include "vsmx_eval.h"
 #include <QByteArray>
 #include <QDateTime>
