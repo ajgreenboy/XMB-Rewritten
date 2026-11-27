@@ -273,4 +273,131 @@ bool inflateQrcEntry(const char* ptr, qsizetype len, quint32 expanded, QByteArra
     return true;
 }
 
+bool parseCxml(const QByteArray& rawCxml, ParsedCxmlContainer& out, QString* error) {
+    out = {};
+    if (error) error->clear();
+    ImgBufferGuard unpackedGuard, treeGuard;
+    const auto* ptr = rawCxml.isEmpty() ? nullptr : reinterpret_cast<const uint8_t*>(rawCxml.constData());
+    const int rc = img_parse_cxml(
+        ptr, static_cast<size_t>(rawCxml.size()), &unpackedGuard.ptr, &unpackedGuard.len, &treeGuard.ptr, &treeGuard.len);
+    if (rc != 0) {
+        if (error) *error = lastMessage();
+        return false;
+    }
+    if (!unpackedGuard.ptr || !treeGuard.ptr || treeGuard.len < 58) {
+        if (error) *error = QStringLiteral("corrupt Rust CXML tree payload");
+        return false;
+    }
+    const uint8_t* p = treeGuard.ptr;
+    const size_t n = treeGuard.len;
+    size_t pos = 0;
+    const uint8_t containerKind = p[pos++];
+    out.container = containerKind == 0 ? QStringLiteral("P3TF")
+                  : containerKind == 2 ? QStringLiteral("_RAF")
+                                       : QStringLiteral("RAFO");
+    out.compressedScene = p[pos++] != 0;
+    out.version = qFromLittleEndian<quint32>(p + pos);
+    pos += 4;
+    out.sections.reserve(6);
+    for (int i = 0; i < 6; ++i) {
+        const quint32 off = qFromLittleEndian<quint32>(p + pos);
+        const quint32 sz = qFromLittleEndian<quint32>(p + pos + 4);
+        pos += 8;
+        out.sections.push_back(P3t::Raf::Section{off, sz});
+    }
+    const quint32 elemCount = qFromLittleEndian<quint32>(p + pos);
+    pos += 4;
+    out.elements.reserve(static_cast<qsizetype>(std::min<quint32>(elemCount, 200000)));
+    for (quint32 ei = 0; ei < elemCount; ++ei) {
+        if (pos + 12 > n) return false;
+        P3t::Element elem;
+        elem.depth = qFromLittleEndian<qint32>(p + pos);
+        pos += 4;
+        const quint32 nameLen = qFromLittleEndian<quint32>(p + pos);
+        pos += 4;
+        if (nameLen > n - pos || pos + nameLen + 4 > n) return false;
+        elem.name = QString::fromUtf8(reinterpret_cast<const char*>(p + pos), static_cast<qsizetype>(nameLen));
+        pos += nameLen;
+        const quint32 attrCount = qFromLittleEndian<quint32>(p + pos);
+        pos += 4;
+        for (quint32 ai = 0; ai < attrCount; ++ai) {
+            if (pos + 5 > n) return false;
+            const quint32 keyLen = qFromLittleEndian<quint32>(p + pos);
+            pos += 4;
+            if (keyLen > n - pos || pos + keyLen + 1 > n) return false;
+            const QString key = QString::fromUtf8(reinterpret_cast<const char*>(p + pos), static_cast<qsizetype>(keyLen));
+            pos += keyLen;
+            const uint8_t kind = p[pos++];
+            P3t::Attribute attr;
+            if (kind == 0) {
+                if (pos + 8 > n) return false;
+                attr.kind = P3t::Attribute::Kind::Int;
+                attr.integer = qFromLittleEndian<qint64>(p + pos);
+                pos += 8;
+            } else if (kind == 1) {
+                if (pos + 8 > n) return false;
+                attr.kind = P3t::Attribute::Kind::Float;
+                uint64_t bits = qFromLittleEndian<quint64>(p + pos);
+                std::memcpy(&attr.real, &bits, sizeof(double));
+                pos += 8;
+            } else if (kind == 2) {
+                if (pos + 4 > n) return false;
+                const quint32 sLen = qFromLittleEndian<quint32>(p + pos);
+                pos += 4;
+                if (sLen > n - pos) return false;
+                attr.kind = P3t::Attribute::Kind::String;
+                attr.text = QString::fromUtf8(reinterpret_cast<const char*>(p + pos), static_cast<qsizetype>(sLen));
+                pos += sLen;
+            } else if (kind == 3) {
+                if (pos + 4 > n) return false;
+                const quint32 count = qFromLittleEndian<quint32>(p + pos);
+                pos += 4;
+                if (uint64_t(count) * 8u > n - pos) return false;
+                attr.kind = P3t::Attribute::Kind::Ints;
+                attr.integers.reserve(static_cast<qsizetype>(count));
+                for (quint32 k = 0; k < count; ++k) {
+                    attr.integers.push_back(qFromLittleEndian<qint64>(p + pos));
+                    pos += 8;
+                }
+            } else if (kind == 4) {
+                if (pos + 4 > n) return false;
+                const quint32 count = qFromLittleEndian<quint32>(p + pos);
+                pos += 4;
+                if (uint64_t(count) * 8u > n - pos) return false;
+                attr.kind = P3t::Attribute::Kind::Floats;
+                attr.reals.reserve(static_cast<qsizetype>(count));
+                for (quint32 k = 0; k < count; ++k) {
+                    uint64_t bits = qFromLittleEndian<quint64>(p + pos);
+                    double d = 0.0;
+                    std::memcpy(&d, &bits, sizeof(double));
+                    attr.reals.push_back(d);
+                    pos += 8;
+                }
+            } else if (kind == 5) {
+                if (pos + 8 > n) return false;
+                attr.kind = P3t::Attribute::Kind::File;
+                attr.offset = qFromLittleEndian<quint32>(p + pos);
+                attr.size = qFromLittleEndian<quint32>(p + pos + 4);
+                pos += 8;
+            } else {
+                return false;
+            }
+            elem.attributes.insert(key, std::move(attr));
+        }
+        out.elements.push_back(std::move(elem));
+    }
+    if (pos != n) return false;
+    out.unpacked = QByteArray(reinterpret_cast<const char*>(unpackedGuard.ptr), static_cast<qsizetype>(unpackedGuard.len));
+    return true;
+}
+
+QByteArray inflateCxmlFile(const QByteArray& packed) {
+    if (packed.isEmpty()) return {};
+    ImgBufferGuard guard;
+    const auto* ptr = reinterpret_cast<const uint8_t*>(packed.constData());
+    const int rc = img_inflate_cxml_file(ptr, static_cast<size_t>(packed.size()), &guard.ptr, &guard.len);
+    if (rc != 0 || !guard.ptr || guard.len == 0) return {};
+    return QByteArray(reinterpret_cast<const char*>(guard.ptr), static_cast<qsizetype>(guard.len));
+}
+
 } // namespace xmb::image_rust

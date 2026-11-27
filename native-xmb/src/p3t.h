@@ -22,7 +22,13 @@ public:
         QVector<qint64> integers; QVector<double> reals;
         quint32 offset=0,size=0; // File: packed bytes within the file table
     };
-    struct Element { int depth=0; QString name; QHash<QString,Attribute> attributes; QString text(const QString& key) const; };
+    struct Element {
+        int depth=0; QString name; QHash<QString,Attribute> attributes;
+        QString text(const QString& key) const {
+            const auto found=attributes.constFind(key);
+            return found!=attributes.cend() && found->kind==Attribute::Kind::String?found->text:QString{};
+        }
+    };
 
     // pointertable: one of the theme's mouse pointers and the hotspot inside its picture.
     struct Pointer { QImage image; int x=0,y=0; };
@@ -107,6 +113,7 @@ public:
     QImage themeAuthorIcon() const;
     // localizedinfo: locale code -> that language's theme name (the XMB swaps them by language setting).
     QHash<QString,QString> localizedNames() const;
+    QString localizedName(const QString& localeName={}) const;
     // The theme's appearance selections (PSDevWiki P3T): font 0 original / 1 rounded / 2 pop; colour 0 follows the
     // month, 1..12 pins a month's palette. -1 when the theme has no such element.
     int fontSelection() const;

@@ -989,6 +989,106 @@ int main(int argc, char** argv) {
               "qrc-parity-reject-unsupported-version");
     }
 
+    // ---- 7. Phase 6: Sony CXML (P3TF / RAFO / _RAF) container parity -----
+    {
+        // Build a synthetic P3TF exercising all 8 CXML attribute kinds:
+        //   1=Int, 2=Float, 3=String, 4=Ints, 5=Floats, 6=File, 7=Id, 8=Ref
+        const QByteArray strings("theme\0info\0name\0author\0ver\0vec_i\0vec_f\0icon\0ref_id\0", 51);
+        QByteArray ids(4, '\0');
+        ids += QByteArray("AirPaintId\0", 11);
+        QByteArray ints(8, '\0');
+        put32(ints, 0, quint32(-7));
+        put32(ints, 4, 42);
+        QByteArray floats(12, '\0');
+        put32(floats, 0, std::bit_cast<quint32>(1.25f));
+        put32(floats, 4, std::bit_cast<quint32>(-2.5f));
+        put32(floats, 8, std::bit_cast<quint32>(3.75f));
+        const QByteArray rawFilePayload("GIM_ICON_PAYLOAD_BYTES");
+        const QByteArray compressedFile = qCompress(rawFilePayload).mid(4);
+
+        QByteArray tree(28 + 28 + 7 * 16, '\0');
+        // elem 0 ("theme", 0 attrs, first_child = 28)
+        put32(tree, 0, 0);
+        put32(tree, 4, 0);
+        put32(tree, 8, 0xFFFFFFFFu);
+        put32(tree, 12, 0xFFFFFFFFu);
+        put32(tree, 16, 0xFFFFFFFFu);
+        put32(tree, 20, 28);
+        put32(tree, 24, 28);
+        // elem 1 ("info" at 28, 7 attrs)
+        put32(tree, 28, 6);
+        put32(tree, 32, 7);
+        put32(tree, 36, 0);
+        put32(tree, 40, 0xFFFFFFFFu);
+        put32(tree, 44, 0xFFFFFFFFu);
+        put32(tree, 48, 0xFFFFFFFFu);
+        put32(tree, 52, 0xFFFFFFFFu);
+        int a = 56;
+        // attr 0: "name" (11), kind 7 (Id -> ids+4)
+        put32(tree, a, 11); put32(tree, a + 4, 7); put32(tree, a + 8, 0); put32(tree, a + 12, 0); a += 16;
+        // attr 1: "author" (16), kind 3 (String -> strings+6="info")
+        put32(tree, a, 16); put32(tree, a + 4, 3); put32(tree, a + 8, 6); put32(tree, a + 12, 0); a += 16;
+        // attr 2: "ver" (23), kind 2 (Float -> 1.5f)
+        put32(tree, a, 23); put32(tree, a + 4, 2); put32(tree, a + 8, std::bit_cast<quint32>(1.5f)); put32(tree, a + 12, 0); a += 16;
+        // attr 3: "vec_i" (27), kind 4 (Ints -> [0..2])
+        put32(tree, a, 27); put32(tree, a + 4, 4); put32(tree, a + 8, 0); put32(tree, a + 12, 2); a += 16;
+        // attr 4: "vec_f" (33), kind 5 (Floats -> [0..3])
+        put32(tree, a, 33); put32(tree, a + 4, 5); put32(tree, a + 8, 0); put32(tree, a + 12, 3); a += 16;
+        // attr 5: "icon" (39), kind 6 (File -> [0, compressedFile.size()])
+        put32(tree, a, 39); put32(tree, a + 4, 6); put32(tree, a + 8, 0); put32(tree, a + 12, quint32(compressedFile.size())); a += 16;
+        // attr 6: "ref_id" (44), kind 8 (Ref -> ids+4)
+        put32(tree, a, 44); put32(tree, a + 4, 8); put32(tree, a + 8, 0); put32(tree, a + 12, 0);
+
+        const quint32 treeOff = 56;
+        const quint32 idsOff = treeOff + quint32(tree.size());
+        const quint32 strOff = idsOff + quint32(ids.size());
+        const quint32 intOff = strOff + quint32(strings.size());
+        const quint32 fltOff = intOff + quint32(ints.size());
+        const quint32 filOff = fltOff + quint32(floats.size());
+
+        QByteArray p3tf(56, '\0');
+        p3tf.replace(0, 4, "P3TF");
+        put32(p3tf, 4, 272);
+        put32(p3tf, 8, treeOff); put32(p3tf, 12, quint32(tree.size()));
+        put32(p3tf, 16, idsOff); put32(p3tf, 20, quint32(ids.size()));
+        put32(p3tf, 24, strOff); put32(p3tf, 28, quint32(strings.size()));
+        put32(p3tf, 32, intOff); put32(p3tf, 36, quint32(ints.size()));
+        put32(p3tf, 40, fltOff); put32(p3tf, 44, quint32(floats.size()));
+        put32(p3tf, 48, filOff); put32(p3tf, 52, quint32(compressedFile.size()));
+        p3tf += tree + ids + strings + ints + floats + compressedFile;
+
+        xmb::image_rust::ParsedCxmlContainer parsedCxml;
+        QString cxmlErr;
+        const bool okP3tf = xmb::image_rust::parseCxml(p3tf, parsedCxml, &cxmlErr);
+        check(okP3tf && parsedCxml.container == QStringLiteral("P3TF") && !parsedCxml.compressedScene &&
+                  parsedCxml.version == 272 && parsedCxml.elements.size() == 2 &&
+                  parsedCxml.elements[1].name == QStringLiteral("info") &&
+                  parsedCxml.elements[1].text(QStringLiteral("name")) == QStringLiteral("AirPaintId") &&
+                  parsedCxml.elements[1].text(QStringLiteral("ref_id")) == QStringLiteral("AirPaintId") &&
+                  parsedCxml.elements[1].attributes.value(QStringLiteral("vec_i")).integers == QVector<qint64>{-7, 42} &&
+                  parsedCxml.elements[1].attributes.value(QStringLiteral("vec_f")).reals == QVector<double>{1.25, -2.5, 3.75},
+              "cxml-parity-p3tf-all-8-attribute-kinds");
+
+        check(xmb::image_rust::inflateCxmlFile(compressedFile) == rawFilePayload &&
+                  xmb::image_rust::inflateCxmlFile(rawFilePayload) == rawFilePayload,
+              "cxml-parity-inflate-file-and-passthrough");
+
+        QByteArray rafo = p3tf;
+        rafo.replace(0, 4, "RAFO");
+        QByteArray wrappedRaf(8, '\0');
+        wrappedRaf.replace(0, 4, "_RAF");
+        put32(wrappedRaf, 4, quint32(rafo.size()));
+        wrappedRaf += qCompress(rafo).mid(4);
+        check(xmb::image_rust::parseCxml(wrappedRaf, parsedCxml, &cxmlErr) &&
+                  parsedCxml.container == QStringLiteral("_RAF") && parsedCxml.compressedScene &&
+                  parsedCxml.unpacked == rafo && parsedCxml.elements.size() == 2,
+              "cxml-parity-compressed-raf");
+
+        check(!xmb::image_rust::parseCxml(QByteArray("BAD_MAGIC"), parsedCxml, &cxmlErr) &&
+                  cxmlErr == QStringLiteral("This is not a PS3 theme file."),
+              "cxml-parity-reject-non-theme");
+    }
+
     std::printf("rust-edge-parity: %s (%d failures)\n", failures ? "FAIL" : "PASS", failures);
     return failures ? 1 : 0;
 }

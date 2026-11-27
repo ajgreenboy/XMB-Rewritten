@@ -1935,8 +1935,25 @@ void View::drawNotification(QPainter& p,double amount) {
     const auto& box=layout.box;
     p.save();p.setRenderHint(QPainter::Antialiasing,true);
     if(!shell_.themeNotification().isNull()) {
+        // PSDevWiki P3T spec (audit/THEMES.md 2.1 / 4.3): a theme's notification plaque is stretched at its centre
+        // while keeping its corner caps unstretched (3x3 nine-slice).
+        const QImage& plaque=shell_.themeNotification();
+        const qreal i=std::min<qreal>(12.,std::min(plaque.width(),plaque.height())/3.);
         p.setOpacity(alpha);
-        p.drawImage(QRectF(box.x,box.y,box.w,box.h),shell_.themeNotification());
+        if(i>=1. && box.w>=2.*i && box.h>=2.*i) {
+            const qreal sx[4]={0.,i,qreal(plaque.width())-i,qreal(plaque.width())};
+            const qreal sy[4]={0.,i,qreal(plaque.height())-i,qreal(plaque.height())};
+            const qreal dx[4]={box.x,box.x+i,box.x+box.w-i,box.x+box.w};
+            const qreal dy[4]={box.y,box.y+i,box.y+box.h-i,box.y+box.h};
+            for(int row=0;row<3;++row)for(int col=0;col<3;++col) {
+                const QRectF source(sx[col],sy[row],sx[col+1]-sx[col],sy[row+1]-sy[row]);
+                const QRectF target(dx[col],dy[row],dx[col+1]-dx[col],dy[row+1]-dy[row]);
+                if(source.width()>0. && source.height()>0. && target.width()>0. && target.height()>0.)
+                    p.drawImage(target,plaque,source);
+            }
+        } else {
+            p.drawImage(QRectF(box.x,box.y,box.w,box.h),plaque);
+        }
     } else {
         p.setPen(Qt::NoPen);p.setBrush(QColor(toast::kFillRed,toast::kFillGreen,toast::kFillBlue,int(std::lround(toast::kFillAlpha*alpha*255.))));
         p.drawRoundedRect(QRectF(box.x,box.y,box.w,box.h),toast::kBoxRadius,toast::kBoxRadius);

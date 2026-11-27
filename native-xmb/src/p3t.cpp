@@ -12,6 +12,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QLocale>
 #include <QSet>
 #include <QtEndian>
 #ifdef Q_OS_WIN
@@ -126,15 +127,29 @@ QByteArray inflate(const QByteArray& packed) {
 }
 }
 
-QString P3t::Element::text(const QString& key) const {
-    const auto found=attributes.constFind(key);
-    return found!=attributes.cend() && found->kind==Attribute::Kind::String?found->text:QString{};
-}
-
 P3t P3t::read(QByteArray data,QString* error) { return readContainer(std::move(data),error,0); }
 
 P3t P3t::readContainer(QByteArray data,QString* error,int nesting) {
     const auto fail=[&](const QString& why){if(error)*error=why;return P3t{};};
+#ifdef XMB_USE_RUST_EDGE
+    image_rust::ParsedCxmlContainer parsed;
+    QString rustErr;
+    if(!image_rust::parseCxml(data,parsed,&rustErr))return fail(rustErr);
+    P3t theme;
+    theme.elements_=std::move(parsed.elements);
+    theme.sections_=std::move(parsed.sections);
+    if(theme.sections_.size()==6) {
+        const auto& fileSec=theme.sections_[5];
+        theme.files_=clip(parsed.unpacked,fileSec.offset,qsizetype(fileSec.offset)+fileSec.size);
+    }
+    theme.data_=std::move(parsed.unpacked);
+    theme.container_=parsed.container;
+    theme.containerVersion_=parsed.version;
+    theme.sceneCompressed_=parsed.compressedScene;
+    theme.readScene(nesting);
+    if(nesting==0)theme.trace();
+    return theme;
+#else
     // A .p3t is "P3TF"; a RAF scene is "RAFO", either raw or inside a "_RAF" + u32 size + zlib container (the same
     // wrapper coldboot.raf uses). Some tools store a bare zlib stream, which the fallback unpacker accepts.
     QByteArray raw;QString container;bool compressedScene=false;
@@ -202,6 +217,7 @@ P3t P3t::readContainer(QByteArray data,QString* error,int nesting) {
     theme.readScene(nesting);
     if(nesting==0)theme.trace();
     return theme;
+#endif
 }
 P3t P3t::load(const QString& path,QString* error) {
     QFile file(path);
@@ -211,7 +227,12 @@ P3t P3t::load(const QString& path,QString* error) {
 }
 QByteArray P3t::file(const Attribute& attribute) const {
     if(attribute.kind!=Attribute::Kind::File)return {};
-    return inflate(clip(files_,attribute.offset,qsizetype(attribute.offset)+attribute.size));
+    const QByteArray slice=clip(files_,attribute.offset,qsizetype(attribute.offset)+attribute.size);
+#ifdef XMB_USE_RUST_EDGE
+    return image_rust::inflateCxmlFile(slice);
+#else
+    return inflate(slice);
+#endif
 }
 QByteArray P3t::file(const Element& element,const QString& key) const {
     const auto found=element.attributes.constFind(key);
@@ -238,6 +259,33 @@ QHash<QString,QString> P3t::localizedNames() const {
         if(!locale.isEmpty() && !translated.isEmpty() && !result.contains(locale))result.insert(locale,translated);
     }
     return result;
+}
+QString P3t::localizedName(const QString& localeName) const {
+    const auto map=localizedNames();
+    if(!map.isEmpty()) {
+        const QString raw=(localeName.isEmpty()?QLocale::system().name():localeName).trimmed().toLower();
+        QString norm=raw;norm.replace(QLatin1Char('_'),QLatin1Char('-'));
+        const QStringList parts=norm.split(QLatin1Char('-'),Qt::SkipEmptyParts);
+        const QString lang=parts.value(0),country=parts.value(1);
+        QStringList candidates;
+        if(lang==QLatin1String("ja") || lang==QLatin1String("jp"))candidates<<QStringLiteral("jp")<<QStringLiteral("ja");
+        else if(lang==QLatin1String("zh")) {
+            const bool trad=country==QLatin1String("tw") || country==QLatin1String("hk") || country==QLatin1String("mo") || norm.contains(QLatin1String("hant"));
+            candidates<<(trad?QStringLiteral("zh_t"):QStringLiteral("zh_s"))<<(trad?QStringLiteral("zh-t"):QStringLiteral("zh-s"));
+        } else if(lang==QLatin1String("nb") || lang==QLatin1String("nn") || lang==QLatin1String("no")) {
+            candidates<<QStringLiteral("no")<<QStringLiteral("nb");
+        } else {
+            if(!country.isEmpty())candidates<<(lang+QLatin1Char('-')+country)<<(lang+QLatin1Char('_')+country);
+            if(!lang.isEmpty())candidates<<lang;
+        }
+        for(const QString& cand:candidates) {
+            for(auto it=map.cbegin();it!=map.cend();++it)
+                if(it.key().compare(cand,Qt::CaseInsensitive)==0 && !it.value().isEmpty())return it.value();
+        }
+    }
+    const QString base=name();
+    if(!base.isEmpty())return base;
+    return map.value(QStringLiteral("en"));
 }
 int P3t::selection(const QString& element) const {
     const auto* found=find(element);

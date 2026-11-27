@@ -6533,7 +6533,8 @@ void Shell::loadTheme() {
     if(path.isEmpty())return;
     QString error;const auto p3t=P3t::load(path,&error);
     if(p3t.isNull()){showMessage(QFileInfo(path).fileName(),error,MessageKind::Page);qWarning().noquote()<<"theme:"<<path<<error;return;}
-    theme_.name=p3t.name().isEmpty()?QFileInfo(path).completeBaseName():p3t.name();
+    const QString resolvedName=p3t.localizedName();
+    theme_.name=resolvedName.isEmpty()?QFileInfo(path).completeBaseName():resolvedName;
     theme_.background=p3t.background();theme_.notification=p3t.notification();
     theme_.icons=p3t.icons();theme_.pointers=p3t.pointers();
     if(p3t.hasScene())theme_.sceneBytes=p3t.sceneBytes();

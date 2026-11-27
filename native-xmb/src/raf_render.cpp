@@ -60,8 +60,8 @@ void main(){ vec4 p=model*vec4(position,1); worldPos=p.xyz; worldNormal=normalMa
  texCoord=uv*uvTransform.zw+uvTransform.xy; gl_Position=mvp*vec4(position,1); })";
     const char* fragment=R"(
 in vec3 worldPos,worldNormal; in vec2 texCoord; out vec4 outColor;
-uniform sampler2D diffuseMap,normalMap,specularMap;
-uniform int normalMode,hasSpecularMap;
+uniform sampler2D diffuseMap,normalMap,specularMap,reflectionMap;
+uniform int normalMode,hasSpecularMap,hasReflectionMap;
 uniform mat3 normalMatrix;
 uniform vec4 actorColor; uniform vec3 lightPos,lightColor,attenuation,ambient,eyePos;
 void main(){ vec4 tex=texture(diffuseMap,texCoord);
@@ -87,8 +87,14 @@ void main(){ vec4 tex=texture(diffuseMap,texCoord);
  float falloff=1.0/max(dot(attenuation,vec3(1,d,d*d)),0.001);
  vec3 lighting=ambient+lightColor*lambert*falloff;
  float specular=lambert>0.0 ? pow(max(dot(n,normalize(l+v)),0.0),32.0)*0.2 : 0.0;
+ vec3 specMask=hasSpecularMap!=0 ? texture(specularMap,texCoord).rgb : vec3(1.0);
  vec3 color=tex.rgb*actorColor.rgb*lighting+lightColor*specular*falloff;
- if(hasSpecularMap!=0) color=tex.rgb*actorColor.rgb*lighting+lightColor*texture(specularMap,texCoord).rgb*(specular*falloff);
+ if(hasSpecularMap!=0) color=tex.rgb*actorColor.rgb*lighting+lightColor*specMask*(specular*falloff);
+ if(hasReflectionMap!=0) {
+  vec3 r=reflect(-v,n);
+  vec2 envUv=vec2(atan(r.x,r.z)*0.15915494+0.5,asin(clamp(r.y,-1.0,1.0))*0.31830989+0.5);
+  color+=texture(reflectionMap,envUv).rgb*specMask*0.25;
+ }
 #ifdef EDGE_LIT
  color+=tex.rgb*actorColor.rgb*pow(1.0-max(dot(n,v),0.0),3.0)*0.35;
 #endif
@@ -242,8 +248,10 @@ void RafScenePlayer::render(QOpenGLFunctions_3_3_Core& gl,int width,int height,d
         else if(!material.normalMap.isEmpty() && textures_.contains(material.normalMap)){normalTex=textures_.value(material.normalMap);normalMode=1;}
         GLuint specTex=defaultWhiteTex_;int hasSpec=0;
         if(!material.specularMap.isEmpty() && textures_.contains(material.specularMap)){specTex=textures_.value(material.specularMap);hasSpec=1;}
-        program.setUniformValue("diffuseMap",0);program.setUniformValue("normalMap",1);program.setUniformValue("specularMap",2);
-        program.setUniformValue("normalMode",normalMode);program.setUniformValue("hasSpecularMap",hasSpec);
+        GLuint reflTex=defaultWhiteTex_;int hasRefl=0;
+        if(!fx.unlit && !material.reflectionMap.isEmpty() && textures_.contains(material.reflectionMap)){reflTex=textures_.value(material.reflectionMap);hasRefl=1;}
+        program.setUniformValue("diffuseMap",0);program.setUniformValue("normalMap",1);program.setUniformValue("specularMap",2);program.setUniformValue("reflectionMap",3);
+        program.setUniformValue("normalMode",normalMode);program.setUniformValue("hasSpecularMap",hasSpec);program.setUniformValue("hasReflectionMap",hasRefl);
         program.setUniformValue("lightPos",lightPos);program.setUniformValue("lightColor",lightColor);
         program.setUniformValue("attenuation",attenuation);program.setUniformValue("ambient",ambient);program.setUniformValue("eyePos",eye);
         QMatrix4x4 model;model.translate(pos);
@@ -267,6 +275,7 @@ void RafScenePlayer::render(QOpenGLFunctions_3_3_Core& gl,int width,int height,d
         if(!fx.depthMask || (!fx.blendEnable && fx.hasExplicitDepthToken))gl.glDepthMask(GL_FALSE);
         gl.glActiveTexture(GL_TEXTURE1);gl.glBindTexture(GL_TEXTURE_2D,normalTex);
         gl.glActiveTexture(GL_TEXTURE2);gl.glBindTexture(GL_TEXTURE_2D,specTex);
+        gl.glActiveTexture(GL_TEXTURE3);gl.glBindTexture(GL_TEXTURE_2D,reflTex);
         gl.glActiveTexture(GL_TEXTURE0);gl.glBindTexture(GL_TEXTURE_2D,textures_.value(material.colorMap));
         const Mesh m=meshes_.value(actor.model);gl.glBindVertexArray(m.vao);gl.glDrawElements(GL_TRIANGLES,m.count,GL_UNSIGNED_INT,nullptr);
         gl.glDepthMask(prevDepthMask);

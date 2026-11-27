@@ -2,6 +2,7 @@ use std::cell::RefCell;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::slice;
 
+use crate::cxml::{encode_parsed_cxml_tree, inflate_cxml_file_or_passthrough, parse_cxml};
 use crate::edge::decode_edge_packed;
 use crate::gim::decode_gim;
 use crate::gtf::decode_gtf;
@@ -366,6 +367,99 @@ pub unsafe extern "C" fn img_inflate_qrc_entry(
                 1
             }
         }
+    }))
+    .unwrap_or_else(|_| {
+        set_error("internal panic caught at FFI boundary");
+        -2
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn img_parse_cxml(
+    cxml_ptr: *const u8,
+    cxml_len: usize,
+    out_unpacked_buf: *mut *mut u8,
+    out_unpacked_len: *mut usize,
+    out_tree_buf: *mut *mut u8,
+    out_tree_len: *mut usize,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        clear_error();
+        if out_unpacked_buf.is_null()
+            || out_unpacked_len.is_null()
+            || out_tree_buf.is_null()
+            || out_tree_len.is_null()
+        {
+            set_error("null output pointer");
+            return -1;
+        }
+        unsafe {
+            *out_unpacked_buf = std::ptr::null_mut();
+            *out_unpacked_len = 0;
+            *out_tree_buf = std::ptr::null_mut();
+            *out_tree_len = 0;
+        }
+        if cxml_len > 0 && cxml_ptr.is_null() {
+            set_error("null CXML input pointer");
+            return -1;
+        }
+        let bytes = if cxml_len == 0 {
+            &[]
+        } else {
+            unsafe { slice::from_raw_parts(cxml_ptr, cxml_len) }
+        };
+        match parse_cxml(bytes) {
+            Ok(parsed) => {
+                let tree = encode_parsed_cxml_tree(&parsed);
+                unsafe {
+                    hand_off(parsed.unpacked_bytes, out_unpacked_buf, out_unpacked_len);
+                    hand_off(tree, out_tree_buf, out_tree_len);
+                }
+                0
+            }
+            Err(e) => {
+                set_error(e);
+                1
+            }
+        }
+    }))
+    .unwrap_or_else(|_| {
+        set_error("internal panic caught at FFI boundary");
+        -2
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn img_inflate_cxml_file(
+    data_ptr: *const u8,
+    data_len: usize,
+    out_buf: *mut *mut u8,
+    out_len: *mut usize,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        clear_error();
+        if out_buf.is_null() || out_len.is_null() {
+            set_error("null output pointer");
+            return -1;
+        }
+        unsafe {
+            *out_buf = std::ptr::null_mut();
+            *out_len = 0;
+        }
+        if data_len > 0 && data_ptr.is_null() {
+            set_error("null CXML file pointer");
+            return -1;
+        }
+        let slice = if data_len == 0 {
+            &[]
+        } else {
+            unsafe { slice::from_raw_parts(data_ptr, data_len) }
+        };
+        let out = inflate_cxml_file_or_passthrough(slice);
+        if !out.is_empty() {
+            unsafe { hand_off(out, out_buf, out_len) };
+        }
+        0
     }))
     .unwrap_or_else(|_| {
         set_error("internal panic caught at FFI boundary");

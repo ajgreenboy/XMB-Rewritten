@@ -111,6 +111,31 @@ int img_inflate_qrc_entry(
     size_t* out_len
 );
 
+/* Parses and validates a Sony CXML P3TF / RAFO / _RAF container (.p3t theme or .raf scene).
+ * On success (0):
+ *   *out_unpacked_buf / *out_unpacked_len holds the unpacked P3TF or RAFO container bytes.
+ *   *out_tree_buf / *out_tree_len holds the encoded header sections and depth-first element tree.
+ * Caller frees both buffers with img_free_buffer.
+ */
+int img_parse_cxml(
+    const uint8_t* cxml_ptr,
+    size_t cxml_len,
+    uint8_t** out_unpacked_buf,
+    size_t* out_unpacked_len,
+    uint8_t** out_tree_buf,
+    size_t* out_tree_len
+);
+
+/* Inflates a zlib-compressed CXML file entry (bounded to 256 MiB), or returns the raw slice bytes
+ * unchanged if not a valid zlib stream (matching P3t::file behaviour).
+ */
+int img_inflate_cxml_file(
+    const uint8_t* data_ptr,
+    size_t data_len,
+    uint8_t** out_buf,
+    size_t* out_len
+);
+
 void img_free_buffer(uint8_t* ptr, size_t len);
 
 size_t img_last_error(uint8_t* buf, size_t buf_cap);
