@@ -1,0 +1,12 @@
+[workspace]
+resolver = "2"
+members = [
+    "firmware-crypto",
+    "firmware-extract",
+    "steam-vdf",
+    "image-decode",
+    "xmb-rust-edge",
+]
+
+[profile.release]
+opt-level = 3

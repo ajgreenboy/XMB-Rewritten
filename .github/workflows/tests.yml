@@ -174,3 +174,77 @@ jobs:
         run: |
           & "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "$env:GITHUB_WORKSPACE\native-xmb\tests\pending_installer_helper_tests.ps1"
           if ($LASTEXITCODE) { throw "Pending-installer helper lifecycle checks failed." }
+
+      - name: Run Rust untrusted-edge workspace tests
+        shell: pwsh
+        run: |
+          cargo test --workspace --manifest-path native-xmb/rust-edge/Cargo.toml --target-dir "$env:RUNNER_TEMP\cargo-edge-tests"
+          if ($LASTEXITCODE) { throw "cargo test --workspace failed." }
+
+      - name: Build and run C++/Rust byte-parity and Rust-delegated VDF/RAF tests
+        shell: pwsh
+        env:
+          QT_PLUGIN_PATH: ${{ env.QT_ROOT_DIR }}\plugins
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          $rustBuild = "$env:BUILD_DIR-rust"
+          cmake -S native-xmb -B "$rustBuild" -G Ninja -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_PREFIX_PATH="$env:QT_ROOT_DIR" `
+            -DXMB_RUST_FIRMWARE_CRYPTO=ON -DXMB_USE_RUST_EDGE=ON `
+            -DXMB_STEAM_VDF_BUILD_TESTS=ON -DXMB_RAF_BUILD_TESTS=ON
+          if ($LASTEXITCODE) { throw "Rust-edge CMake configure failed." }
+          cmake --build "$rustBuild" --parallel --target xmb-firmware-rust-parity-tests xmb-steam-vdf-tests xmb-raf-tests re-ps3-native
+          if ($LASTEXITCODE) { throw "Rust-edge CMake build failed." }
+          & "$rustBuild\xmb-firmware-rust-parity-tests.exe"
+          if ($LASTEXITCODE) { throw "xmb-firmware-rust-parity-tests failed." }
+          & "$rustBuild\xmb-steam-vdf-tests.exe"
+          if ($LASTEXITCODE) { throw "Rust-delegated xmb-steam-vdf-tests failed." }
+          & "$rustBuild\xmb-raf-tests.exe"
+          if ($LASTEXITCODE) { throw "Rust-delegated xmb-raf-tests failed." }
+
+  linux-build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out the source
+        uses: actions/checkout@v4
+
+      - name: Install Linux system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build pkg-config libsdl2-dev libpulse-dev libsecret-1-dev \
+            libgl1-mesa-dev libxkbcommon-x11-0 libxcb-cursor0 libfontconfig1-dev libfreetype-dev zlib1g-dev
+
+      - name: Install Qt (Linux GCC 64-bit)
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          arch: 'linux_gcc_64'
+          modules: 'qtmultimedia'
+          cache: true
+          extra: '--base https://download.qt.io/'
+          aqtsource: 'git+https://github.com/miurahr/aqtinstall.git@5a49f2b391ae8ee1d3c0dd87f8b33c1d49a4deb7'
+
+      - name: Run Rust untrusted-edge workspace tests on Linux
+        run: |
+          cargo test --workspace --manifest-path native-xmb/rust-edge/Cargo.toml --target-dir "$RUNNER_TEMP/cargo-linux-tests"
+
+      - name: Configure and build Linux app, manager, and Linux/Rust test runners
+        run: |
+          cmake -S native-xmb -B out/linux -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH="$QT_ROOT_DIR" \
+            -DXMB_RUST_FIRMWARE_CRYPTO=ON -DXMB_USE_RUST_EDGE=ON \
+            -DXMB_STEAM_LINUX_BUILD_TESTS=ON -DXMB_SYSTEM_POWER_BUILD_TESTS=ON \
+            -DXMB_STEAM_VDF_BUILD_TESTS=ON -DXMB_RAF_BUILD_TESTS=ON
+          cmake --build out/linux --parallel --target re-ps3-native xmb-manager xmb-firmware-rust-parity-tests xmb-steam-linux-tests xmb-system-power-tests xmb-steam-vdf-tests xmb-raf-tests
+
+      - name: Run Linux and Rust parity test runners
+        env:
+          QT_PLUGIN_PATH: ${{ env.QT_ROOT_DIR }}/plugins
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          ./out/linux/xmb-firmware-rust-parity-tests
+          ./out/linux/xmb-steam-linux-tests
+          ./out/linux/xmb-system-power-tests
+          ./out/linux/xmb-steam-vdf-tests
+          ./out/linux/xmb-raf-tests

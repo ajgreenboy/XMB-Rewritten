@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
-project(RePS3Native VERSION 0.3.35 LANGUAGES CXX)
+project(RePS3Native VERSION 0.3.36 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
@@ -36,62 +36,72 @@ if(NOT WIN32)
     pkg_check_modules(LIBSECRET REQUIRED IMPORTED_TARGET libsecret-1)
 endif()
 
-# Rust Phase-1 firmware edge (`firmware-crypto` + `firmware-extract`).
-# Off by default so CI runners without a Rust toolchain build unchanged.
-# When XMB_RUST_FIRMWARE_CRYPTO=ON, CMake invokes cargo on
-# `native-xmb/rust-edge/firmware-extract` (which re-exports `firmware-crypto`
-# into one collision-free staticlib), links the C++ shims, and builds
-# `xmb-firmware-rust-parity-tests`. Setting XMB_USE_RUST_FIRMWARE=ON in addition
-# routes `re-ps3-native`'s live `xmb::firmware::*`, `xmb::extractPup`, and
-# `xmb::pupVersion` calls through the Rust staticlib.
-option(XMB_RUST_FIRMWARE_CRYPTO "Build and link the Rust Phase-1 firmware-crypto + firmware-extract staticlib" OFF)
+# Rust untrusted-edge workspace (`firmware-crypto`, `firmware-extract`, `steam-vdf`, `image-decode`),
+# unified into one collision-free staticlib (`xmb-rust-edge`, `audit/RUST-HARDENING.md` Phases 1-3).
+# Off by default so local setups without a Rust toolchain build unchanged; CI tests both paths.
+option(XMB_RUST_FIRMWARE_CRYPTO "Build and link the Rust untrusted-edge staticlib (Phases 1-3: firmware, steam-vdf, image-decode)" OFF)
 option(XMB_USE_RUST_FIRMWARE "Route live firmware crypto and PUP extraction in re-ps3-native through Rust (requires XMB_RUST_FIRMWARE_CRYPTO=ON)" OFF)
+option(XMB_USE_RUST_EDGE "Route all Rust edge modules (firmware, steam-vdf, GTF/Edge/PGS/VobSub decoders) through Rust (requires XMB_RUST_FIRMWARE_CRYPTO=ON)" OFF)
 set(XMB_RUST_CRYPTO_SOURCES "")
-if(XMB_USE_RUST_FIRMWARE AND NOT XMB_RUST_FIRMWARE_CRYPTO)
-    message(FATAL_ERROR "XMB_USE_RUST_FIRMWARE=ON requires XMB_RUST_FIRMWARE_CRYPTO=ON")
+if((XMB_USE_RUST_FIRMWARE OR XMB_USE_RUST_EDGE) AND NOT XMB_RUST_FIRMWARE_CRYPTO)
+    message(FATAL_ERROR "XMB_USE_RUST_FIRMWARE / XMB_USE_RUST_EDGE requires XMB_RUST_FIRMWARE_CRYPTO=ON")
 endif()
 if(XMB_RUST_FIRMWARE_CRYPTO)
     find_program(CARGO_EXECUTABLE cargo HINTS "$ENV{USERPROFILE}/.cargo/bin" "$ENV{HOME}/.cargo/bin")
     if(NOT CARGO_EXECUTABLE)
-        message(FATAL_ERROR "XMB_RUST_FIRMWARE_CRYPTO requires a rustup-installed cargo (toolchain >= 1.89); see native-xmb/rust-edge/firmware-extract/README.md")
+        message(FATAL_ERROR "XMB_RUST_FIRMWARE_CRYPTO requires a rustup-installed cargo (toolchain >= 1.89); see native-xmb/audit/RUST-HARDENING.md")
     endif()
-    set(XMB_RUST_CRYPTO_CRATE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/rust-edge/firmware-crypto")
-    set(XMB_RUST_EXTRACT_CRATE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/rust-edge/firmware-extract")
+    set(XMB_RUST_WORKSPACE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/rust-edge")
     # cargo output is kept in the CMake binary dir so the source tree stays clean.
-    set(XMB_RUST_PHASE1_TARGET_DIR "${CMAKE_BINARY_DIR}/rust-firmware-phase1")
+    set(XMB_RUST_EDGE_TARGET_DIR "${CMAKE_BINARY_DIR}/rust-edge")
     if(WIN32)
-        set(XMB_RUST_PHASE1_STATICLIB "${XMB_RUST_PHASE1_TARGET_DIR}/release/firmware_extract.lib")
-        set(XMB_RUST_PHASE1_SYS_LIBS "ws2_32;userenv;bcrypt;ntdll;advapi32")
+        set(XMB_RUST_EDGE_STATICLIB "${XMB_RUST_EDGE_TARGET_DIR}/release/xmb_rust_edge.lib")
+        set(XMB_RUST_EDGE_SYS_LIBS "ws2_32;userenv;bcrypt;ntdll;advapi32")
     else()
-        set(XMB_RUST_PHASE1_STATICLIB "${XMB_RUST_PHASE1_TARGET_DIR}/release/libfirmware_extract.a")
-        set(XMB_RUST_PHASE1_SYS_LIBS "pthread;dl;m")
+        set(XMB_RUST_EDGE_STATICLIB "${XMB_RUST_EDGE_TARGET_DIR}/release/libxmb_rust_edge.a")
+        set(XMB_RUST_EDGE_SYS_LIBS "pthread;dl;m")
     endif()
     add_custom_command(
-        OUTPUT "${XMB_RUST_PHASE1_STATICLIB}"
-        COMMAND "${CARGO_EXECUTABLE}" build --release
-                --manifest-path "${XMB_RUST_EXTRACT_CRATE_DIR}/Cargo.toml"
-                --target-dir "${XMB_RUST_PHASE1_TARGET_DIR}"
-        WORKING_DIRECTORY "${XMB_RUST_EXTRACT_CRATE_DIR}"
+        OUTPUT "${XMB_RUST_EDGE_STATICLIB}"
+        COMMAND "${CARGO_EXECUTABLE}" build --release -p xmb-rust-edge
+                --manifest-path "${XMB_RUST_WORKSPACE_DIR}/Cargo.toml"
+                --target-dir "${XMB_RUST_EDGE_TARGET_DIR}"
+        WORKING_DIRECTORY "${XMB_RUST_WORKSPACE_DIR}"
         DEPENDS
-            "${XMB_RUST_CRYPTO_CRATE_DIR}/Cargo.toml"
-            "${XMB_RUST_CRYPTO_CRATE_DIR}/src/lib.rs"
-            "${XMB_RUST_CRYPTO_CRATE_DIR}/src/crypto.rs"
-            "${XMB_RUST_CRYPTO_CRATE_DIR}/src/ffi.rs"
-            "${XMB_RUST_EXTRACT_CRATE_DIR}/Cargo.toml"
-            "${XMB_RUST_EXTRACT_CRATE_DIR}/src/lib.rs"
-            "${XMB_RUST_EXTRACT_CRATE_DIR}/src/extract.rs"
-            "${XMB_RUST_EXTRACT_CRATE_DIR}/src/ffi.rs"
-        COMMENT "Building the Rust Phase-1 firmware-crypto + firmware-extract staticlib (cargo build --release)"
+            "${XMB_RUST_WORKSPACE_DIR}/Cargo.toml"
+            "${XMB_RUST_WORKSPACE_DIR}/xmb-rust-edge/Cargo.toml"
+            "${XMB_RUST_WORKSPACE_DIR}/xmb-rust-edge/src/lib.rs"
+            "${XMB_RUST_WORKSPACE_DIR}/firmware-crypto/Cargo.toml"
+            "${XMB_RUST_WORKSPACE_DIR}/firmware-crypto/src/lib.rs"
+            "${XMB_RUST_WORKSPACE_DIR}/firmware-crypto/src/crypto.rs"
+            "${XMB_RUST_WORKSPACE_DIR}/firmware-crypto/src/ffi.rs"
+            "${XMB_RUST_WORKSPACE_DIR}/firmware-extract/Cargo.toml"
+            "${XMB_RUST_WORKSPACE_DIR}/firmware-extract/src/lib.rs"
+            "${XMB_RUST_WORKSPACE_DIR}/firmware-extract/src/extract.rs"
+            "${XMB_RUST_WORKSPACE_DIR}/firmware-extract/src/ffi.rs"
+            "${XMB_RUST_WORKSPACE_DIR}/steam-vdf/Cargo.toml"
+            "${XMB_RUST_WORKSPACE_DIR}/steam-vdf/src/lib.rs"
+            "${XMB_RUST_WORKSPACE_DIR}/steam-vdf/src/vdf.rs"
+            "${XMB_RUST_WORKSPACE_DIR}/steam-vdf/src/ffi.rs"
+            "${XMB_RUST_WORKSPACE_DIR}/image-decode/Cargo.toml"
+            "${XMB_RUST_WORKSPACE_DIR}/image-decode/src/lib.rs"
+            "${XMB_RUST_WORKSPACE_DIR}/image-decode/src/gtf.rs"
+            "${XMB_RUST_WORKSPACE_DIR}/image-decode/src/edge.rs"
+            "${XMB_RUST_WORKSPACE_DIR}/image-decode/src/subtitles.rs"
+            "${XMB_RUST_WORKSPACE_DIR}/image-decode/src/ffi.rs"
+        COMMENT "Building the Rust untrusted-edge staticlib (cargo build --release -p xmb-rust-edge)"
         VERBATIM)
-    add_custom_target(xmb-rust-firmware-crypto DEPENDS "${XMB_RUST_PHASE1_STATICLIB}")
+    add_custom_target(xmb-rust-firmware-crypto DEPENDS "${XMB_RUST_EDGE_STATICLIB}")
     add_library(xmb_firmware_crypto_rust STATIC IMPORTED GLOBAL)
     set_target_properties(xmb_firmware_crypto_rust PROPERTIES
-        IMPORTED_LOCATION "${XMB_RUST_PHASE1_STATICLIB}"
-        INTERFACE_INCLUDE_DIRECTORIES "${XMB_RUST_CRYPTO_CRATE_DIR}/include;${XMB_RUST_EXTRACT_CRATE_DIR}/include"
-        INTERFACE_LINK_LIBRARIES "${XMB_RUST_PHASE1_SYS_LIBS}")
+        IMPORTED_LOCATION "${XMB_RUST_EDGE_STATICLIB}"
+        INTERFACE_INCLUDE_DIRECTORIES "${XMB_RUST_WORKSPACE_DIR}/firmware-crypto/include;${XMB_RUST_WORKSPACE_DIR}/firmware-extract/include;${XMB_RUST_WORKSPACE_DIR}/steam-vdf/include;${XMB_RUST_WORKSPACE_DIR}/image-decode/include"
+        INTERFACE_LINK_LIBRARIES "${XMB_RUST_EDGE_SYS_LIBS}")
     set(XMB_RUST_CRYPTO_SOURCES
         src/firmware_crypto_rust.cpp src/firmware_crypto_rust.h
-        src/firmware_extract_rust.cpp src/firmware_extract_rust.h)
+        src/firmware_extract_rust.cpp src/firmware_extract_rust.h
+        src/steam_vdf_rust.cpp src/steam_vdf_rust.h
+        src/image_decode_rust.cpp src/image_decode_rust.h)
 endif()
 qt_add_executable(re-ps3-native
     src/main.cpp src/assets.cpp src/assets.h src/p3t.cpp src/p3t.h src/qrc.cpp src/qrc.h src/catalog.cpp src/catalog.h
@@ -170,8 +180,11 @@ target_link_libraries(re-ps3-native PRIVATE ${XMB_ZLIB})
 if(XMB_RUST_FIRMWARE_CRYPTO)
     target_link_libraries(re-ps3-native PRIVATE xmb_firmware_crypto_rust)
     add_dependencies(re-ps3-native xmb-rust-firmware-crypto)
-    if(XMB_USE_RUST_FIRMWARE)
+    if(XMB_USE_RUST_FIRMWARE OR XMB_USE_RUST_EDGE)
         target_compile_definitions(re-ps3-native PRIVATE XMB_USE_RUST_FIRMWARE)
+    endif()
+    if(XMB_USE_RUST_EDGE)
+        target_compile_definitions(re-ps3-native PRIVATE XMB_USE_RUST_EDGE)
     endif()
 endif()
 qt_add_resources(re-ps3-native seerr_icon PREFIX "/service-icons" BASE "src" FILES "src/seerr.png" "src/seerr-icon-LICENSE.txt")
@@ -203,14 +216,16 @@ if(XMB_FIRMWARE_BUILD_TESTS)
     target_link_libraries(xmb-firmware-tests PRIVATE Qt6::Core ${XMB_ZLIB})
 endif()
 
-# Rust Phase-1 firmware-crypto + firmware-extract parity gate (needs a Rust toolchain; see XMB_RUST_FIRMWARE_CRYPTO).
+# Rust Phases 1-3 parity gate (firmware-crypto, firmware-extract, steam-vdf, gtf_decode, edge_decode, PGS & VobSub).
 if(XMB_RUST_FIRMWARE_CRYPTO)
     qt_add_executable(xmb-firmware-rust-parity-tests tests/firmware_crypto_rust_parity_tests.cpp
         src/firmware_crypto.cpp src/firmware_crypto_rust.cpp
-        src/firmware_extract.cpp src/firmware_extract_rust.cpp)
+        src/firmware_extract.cpp src/firmware_extract_rust.cpp
+        src/steam_vdf.cpp src/steam_vdf_rust.cpp
+        src/gtf_decode.cpp src/edge_decode.cpp src/image_subtitles.cpp src/image_decode_rust.cpp)
     target_include_directories(xmb-firmware-rust-parity-tests PRIVATE src)
     target_compile_definitions(xmb-firmware-rust-parity-tests PRIVATE XMB_FIRMWARE_NO_EMBEDDED_KEYS)
-    target_link_libraries(xmb-firmware-rust-parity-tests PRIVATE Qt6::Core ${XMB_ZLIB} xmb_firmware_crypto_rust)
+    target_link_libraries(xmb-firmware-rust-parity-tests PRIVATE Qt6::Core Qt6::Gui ${XMB_ZLIB} xmb_firmware_crypto_rust)
     add_dependencies(xmb-firmware-rust-parity-tests xmb-rust-firmware-crypto)
     if(MSVC)
         target_compile_options(xmb-firmware-rust-parity-tests PRIVATE /W4 /permissive- /utf-8)
@@ -359,9 +374,17 @@ endif()
 option(XMB_RAF_BUILD_TESTS "Build the dynamic-theme (RAF) GTF, Edge and VSMX decoder tests (synthetic fixtures)" OFF)
 if(XMB_RAF_BUILD_TESTS)
     qt_add_executable(xmb-raf-tests tests/raf_tests.cpp src/gtf_decode.cpp src/gtf_decode.h src/edge_decode.cpp src/edge_decode.h
-        src/vsmx_eval.cpp src/vsmx_eval.h src/preferences.cpp src/preferences.h src/jellyfin_player.cpp src/jellyfin_player.h)
+        src/vsmx_eval.cpp src/vsmx_eval.h src/preferences.cpp src/preferences.h src/jellyfin_player.cpp src/jellyfin_player.h
+        ${XMB_RUST_CRYPTO_SOURCES})
     target_include_directories(xmb-raf-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-    target_link_libraries(xmb-raf-tests PRIVATE Qt6::Core Qt6::Gui)
+    target_link_libraries(xmb-raf-tests PRIVATE Qt6::Core Qt6::Gui ${XMB_ZLIB})
+    if(XMB_RUST_FIRMWARE_CRYPTO)
+        target_link_libraries(xmb-raf-tests PRIVATE xmb_firmware_crypto_rust)
+        add_dependencies(xmb-raf-tests xmb-rust-firmware-crypto)
+        if(XMB_USE_RUST_EDGE)
+            target_compile_definitions(xmb-raf-tests PRIVATE XMB_USE_RUST_EDGE)
+        endif()
+    endif()
     if(MSVC)
         target_compile_options(xmb-raf-tests PRIVATE /W4 /permissive- /utf-8)
     endif()
@@ -376,10 +399,17 @@ option(XMB_STEAM_VDF_BUILD_TESTS "Build the Steam KeyValues (VDF) golden tests" 
 if(XMB_STEAM_VDF_BUILD_TESTS)
     qt_add_executable(xmb-steam-vdf-tests tests/steam_vdf_tests.cpp
         src/steam_library.cpp src/steam_library.h src/steam_accounts.cpp src/steam_accounts.h
-        src/steam_vdf.cpp src/steam_vdf.h)
+        src/steam_vdf.cpp src/steam_vdf.h ${XMB_RUST_CRYPTO_SOURCES})
     target_include_directories(xmb-steam-vdf-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
     target_compile_definitions(xmb-steam-vdf-tests PRIVATE XMB_VDF_GOLDEN="${CMAKE_CURRENT_SOURCE_DIR}/tests/steam_vdf_golden.txt")
-    target_link_libraries(xmb-steam-vdf-tests PRIVATE Qt6::Core)
+    target_link_libraries(xmb-steam-vdf-tests PRIVATE Qt6::Core Qt6::Gui ${XMB_ZLIB})
+    if(XMB_RUST_FIRMWARE_CRYPTO)
+        target_link_libraries(xmb-steam-vdf-tests PRIVATE xmb_firmware_crypto_rust)
+        add_dependencies(xmb-steam-vdf-tests xmb-rust-firmware-crypto)
+        if(XMB_USE_RUST_EDGE)
+            target_compile_definitions(xmb-steam-vdf-tests PRIVATE XMB_USE_RUST_EDGE)
+        endif()
+    endif()
 endif()
 option(XMB_STEAM_TRACKING_BUILD_TESTS "Build deterministic Steam lifecycle observation tests" OFF)
 if(XMB_STEAM_TRACKING_BUILD_TESTS)

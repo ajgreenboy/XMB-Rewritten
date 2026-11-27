@@ -1,9 +1,13 @@
 #include "gtf_decode.h"
+#ifdef XMB_USE_RUST_EDGE
+#include "image_decode_rust.h"
+#endif
 #include <QtEndian>
 #include <array>
 #include <algorithm>
 
 namespace xmb {
+#ifndef XMB_USE_RUST_EDGE
 namespace {
 quint64 morton(int x,int y,int width,int height) {
     quint64 index=0,bit=1;
@@ -18,7 +22,11 @@ QRgb colour565(quint16 value) {
     return qRgb((r<<3)|(r>>2),(g<<2)|(g>>4),(b<<3)|(b>>2));
 }
 }
+#endif // !XMB_USE_RUST_EDGE
 QImage decodeGtf(const QByteArray& gtf,QString* error) {
+#ifdef XMB_USE_RUST_EDGE
+    return image_rust::decodeGtf(gtf,error);
+#else
     if(error)error->clear();
     const auto fail=[&](const QString& message){if(error)*error=message;return QImage{};};
     if(gtf.size()<0x30)return fail(QStringLiteral("truncated GTF header"));
@@ -87,5 +95,6 @@ QImage decodeGtf(const QByteArray& gtf,QString* error) {
         }
     }
     return image;
+#endif
 }
 }

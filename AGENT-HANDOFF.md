@@ -14,10 +14,10 @@ from-scratch native renderer and services, not an emulator.
 
 ## 2. Start here, in this order
 
-1. [HANDOFF-2026-11-25.md](native-xmb/HANDOFF-2026-11-25.md) - current state (`v0.3.35`), what landed
-   11-17 to 11-25 (including the merged Linux port, Rust Phase 1 firmware crates, animated RAF theme
-   playback, and the TV column setting), open work, branch and worktree status. This is the newest
-   handoff and takes precedence over everything else. See [HANDOFF-2026-11-17.md](native-xmb/HANDOFF-2026-11-17.md) for
+1. [HANDOFF-2026-11-25.md](native-xmb/HANDOFF-2026-11-25.md) - current state (`v0.3.36`), what landed
+   11-17 to 11-26 (including the merged Linux port, Rust Phases 1-3 untrusted-edge workspace, Ubuntu/Rust
+   CI jobs, animated RAF theme playback, and the TV column setting), open work, branch and worktree status.
+   This is the newest handoff and takes precedence over everything else. See [HANDOFF-2026-11-17.md](native-xmb/HANDOFF-2026-11-17.md) for
    11-13 to 11-17 history and [HANDOFF-2026-11-13.md](native-xmb/HANDOFF-2026-11-13.md) for
    build/run/verify mechanics and gotchas.
 2. [PHASES-2026-11-07.md](native-xmb/audit/PHASES-2026-11-07.md) - the plan of record: done work, ranked

@@ -1,4 +1,7 @@
 #include "edge_decode.h"
+#ifdef XMB_USE_RUST_EDGE
+#include "image_decode_rust.h"
+#endif
 #include <QtEndian>
 #include <bit>
 #include <cmath>
@@ -11,6 +14,9 @@ namespace xmb {
 // bias and add the value eight entries earlier (16-bit arithmetic). Selector zero emits the next sequential
 // vertex, one consumes a delta. Triangle codes 0/1/2 reuse an edge, 3 starts three new vertices.
 bool decodeEdge(const QByteArray& b,QVector<EdgeVertex>& vertices,QVector<quint32>& indices,QString* error) {
+#ifdef XMB_USE_RUST_EDGE
+    return image_rust::decodeEdge(b,vertices,indices,error);
+#else
     vertices.clear();indices.clear();if(error)error->clear();
     const auto fail=[&](const QString& message){vertices.clear();indices.clear();if(error)*error=message;return false;};
     const auto valid=[&](quint64 o,quint64 n){return o<=quint64(b.size()) && n<=quint64(b.size())-o;};
@@ -72,5 +78,6 @@ bool decodeEdge(const QByteArray& b,QVector<EdgeVertex>& vertices,QVector<quint3
         v.normal={snorm(n,11),snorm(n>>11,11),snorm(n>>22,10)};v.uv={half(u16(uv+i*4)),half(u16(uv+i*4+2))};vertices.push_back(v);
     }
     return true;
+#endif
 }
 }

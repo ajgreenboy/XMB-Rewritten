@@ -1,6 +1,6 @@
 # Rust hardening design: the untrusted edge
 
-Status: **Phase 1 implemented** (`native-xmb/rust-edge/firmware-crypto` + `native-xmb/rust-edge/firmware-extract`, opt-in via `-DXMB_RUST_FIRMWARE_CRYPTO=ON` and `-DXMB_USE_RUST_FIRMWARE=ON`; Phases 2–5 remain proposals).
+Status: **Phases 1–3 implemented** (`native-xmb/rust-edge/` Cargo workspace: `firmware-crypto`, `firmware-extract`, `steam-vdf`, `image-decode` [GTF, Edge, Blu-ray PGS, DVD VobSub], unified into `xmb-rust-edge` staticlib behind `-DXMB_RUST_FIRMWARE_CRYPTO=ON` and `-DXMB_USE_RUST_EDGE=ON`; Phases 4–5 remain proposals).
 
 ## 1. What this is and what it is not
 
@@ -167,11 +167,22 @@ Proof of the FFI pattern on P1 de-risks P2–P5.
 
 ---
 
-## 9. Phase 1 implementation record (2026-11-25)
+## 9. Phase 1–3 implementation record (2026-11-25 .. 2026-11-26)
 
-Choices settled for Phase 1:
+Choices settled and verified for Phases 1–3:
 
-1. **Link mode:** `staticlib` (`firmware_extract` re-exports `firmware_crypto` so a single Rust `staticlib` supplies both `fw_hmac_sha1`/`fw_aes_*` and `fw_extract_pup`/`fw_pup_version` with no duplicate Rust `std` symbols on MSVC or GNU ld).
-2. **Crypto & decompression:** `RustCrypto` (`aes` 0.9, `hmac` 0.13, `sha1` 0.11) for FIPS-197 AES-128/256 and RFC 2104 HMAC-SHA1; `flate2` (`rust_backend` / `miniz_oxide`, pure Rust) for SCE zlib/gzip decompression bounded at 1 GiB.
-3. **Crate layout:** `native-xmb/rust-edge/firmware-crypto/` and `native-xmb/rust-edge/firmware-extract/`.
-4. **C++ shims & CMake options:** `src/firmware_crypto_rust.{h,cpp}` and `src/firmware_extract_rust.{h,cpp}` in `native-xmb/src/`. `-DXMB_RUST_FIRMWARE_CRYPTO=ON` builds the Rust staticlib on both Windows MSVC and Linux and enables `xmb-firmware-rust-parity-tests`; `-DXMB_USE_RUST_FIRMWARE=ON` routes live `xmb::firmware::*`, `xmb::extractPup`, and `xmb::pupVersion` calls through the Rust staticlib.
+1. **Unified Cargo workspace & single `staticlib` (`native-xmb/rust-edge/Cargo.toml`):**
+   - `xmb-rust-edge` re-exports `firmware_crypto`, `firmware_extract`, `steam_vdf`, and `image_decode` into a single `xmb_rust_edge.lib` (Windows MSVC) / `libxmb_rust_edge.a` (Linux) with zero duplicate Rust `std` symbols.
+2. **Phase 1 (`firmware-crypto` + `firmware-extract`):**
+   - `RustCrypto` (`aes` 0.9, `hmac` 0.13, `sha1` 0.11) for FIPS-197 AES-128/256 and RFC 2104 HMAC-SHA1; `flate2` (`rust_backend` / `miniz_oxide`, pure Rust) for SCE zlib/gzip decompression bounded at 1 GiB; zero-`unsafe` PUP/SCE/TAR unpacker with traversal/symlink/device/reparse-point rejection and transactional staging.
+3. **Phase 2 (`steam-vdf`):**
+   - Zero-`unsafe` Valve KeyValues (`.vdf` / `.acf`) parser implementing all 6 `Options` fields (`skipBom`, `quotedBracesAreStructural`, `maxTokenBytes`, `maxTokens`, `maxEntries`, `maxDepth`) with owned length-prefixed binary serialization over C ABI (`include/steam_vdf_abi.h`, `src/steam_vdf_rust.{h,cpp}`). Verified against all **4,908 golden fixtures** in `tests/steam_vdf_golden.txt` (`0` failures).
+4. **Phase 3 (`image-decode`):**
+   - Zero-`unsafe` binary decoders (`include/image_decode_abi.h`, `src/image_decode_rust.{h,cpp}`) for:
+     - **PS3 GTF textures** (`B8`, `A8R8G8B8` linear & Morton-swizzled, `DXT1/3/5`),
+     - **PS3 Edge geometry** (`plane.edge` compressed MSB delta/reuse index stream + `float3`/`X11Y11Z10`/`half2` vertex streams),
+     - **Blu-ray PGS (`.sup`)** (`HDMV RLE` + studio-range BT.709/BT.601 YCbCrA composition, cropping, window clipping, pixel-work budgets),
+     - **DVD VobSub (`.idx` + `.sub`)** (`.idx` palette/custom-colors/delay/timestamp parser + MPEG-1/2 PES private-stream-1 walker + interlaced 2-bit SPU RLE).
+   - Verified via 64/64 C++/Rust byte-for-byte parity checks in `xmb-firmware-rust-parity-tests` and 53/53 checks in Rust-delegated `xmb-raf-tests`.
+5. **CMake & CI integration:**
+   - `-DXMB_RUST_FIRMWARE_CRYPTO=ON` builds `xmb-rust-edge` and `xmb-firmware-rust-parity-tests`; `-DXMB_USE_RUST_EDGE=ON` routes live C++ calls (`firmware_crypto`, `firmware_extract`, `steam_vdf`, `gtf_decode`, `edge_decode`, `image_subtitles`) through the Rust `staticlib`. Both Windows and Ubuntu 24.04 Linux CI jobs in `.github/workflows/tests.yml` run `cargo test --workspace` and the C++/Rust parity suites on every push.

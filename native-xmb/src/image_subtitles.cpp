@@ -1,4 +1,7 @@
 #include "image_subtitles.h"
+#ifdef XMB_USE_RUST_EDGE
+#include "image_decode_rust.h"
+#endif
 #include <QByteArray>
 #include <QHash>
 #include <QStringList>
@@ -8,6 +11,7 @@
 #include <cstring>
 
 namespace xmb {
+#ifndef XMB_USE_RUST_EDGE
 namespace {
 // Bounds. A feature-length PGS track is 5-40 MB and a VobSub .sub a few MB; anything bigger is a
 // wrong file. The pixel budget is for the decoded timeline (Indexed8, one byte per pixel).
@@ -506,8 +510,12 @@ void sortCues(QVector<ImageCue>& cues) {
     std::stable_sort(cues.begin(),cues.end(),[](const ImageCue& a,const ImageCue& b){return a.startMs<b.startMs;});
 }
 } // namespace
+#endif // !XMB_USE_RUST_EDGE
 
 bool parsePgs(const QByteArray& sup,QVector<ImageCue>& out,QString* reason) {
+#ifdef XMB_USE_RUST_EDGE
+    return image_rust::parsePgs(sup,out,reason);
+#else
     out.clear();
     auto fail=[&](const QString& why){if(reason)*reason=why;out.clear();return false;};
     if(sup.isEmpty())return fail("empty PGS stream");
@@ -633,9 +641,13 @@ bool parsePgs(const QByteArray& sup,QVector<ImageCue>& out,QString* reason) {
     if(reason){*reason=summary(skipped,timeline,"segment(s)/display set(s)");
         if(state.exhausted)*reason+=QString(reason->isEmpty()?"":"; ")+"stopped at the pixel-work limit";}
     return true;
+#endif
 }
 
 bool parseVobSub(const QByteArray& idxBytes,const QByteArray& sub,int track,QVector<ImageCue>& out,QString* reason) {
+#ifdef XMB_USE_RUST_EDGE
+    return image_rust::parseVobSub(idxBytes,sub,track,out,reason);
+#else
     out.clear();
     auto fail=[&](const QString& why){if(reason)*reason=why;out.clear();return false;};
     if(idxBytes.size()>maximumInputBytes || sub.size()>maximumInputBytes)
@@ -724,6 +736,7 @@ bool parseVobSub(const QByteArray& idxBytes,const QByteArray& sub,int track,QVec
         if(work>maximumPixelWork)*reason+=QString(reason->isEmpty()?"":"; ")+"stopped at the pixel-work limit";
     }
     return true;
+#endif
 }
 
 const ImageCue* cueAt(const QVector<ImageCue>& cues,qint64 ms) {

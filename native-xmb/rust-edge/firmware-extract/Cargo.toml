@@ -12,6 +12,3 @@ crate-type = ["staticlib", "rlib"]
 [dependencies]
 firmware-crypto = { path = "../firmware-crypto" }
 flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] }
-
-[profile.release]
-opt-level = 3

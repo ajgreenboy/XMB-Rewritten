@@ -1,0 +1,16 @@
+[package]
+name = "xmb-rust-edge"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.89"
+description = "Unified staticlib linking all native XMB Rust untrusted-edge crates (firmware-crypto, firmware-extract, steam-vdf, image-decode) with zero duplicate std symbols."
+license = "MIT OR Apache-2.0"
+
+[lib]
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+firmware-crypto = { path = "../firmware-crypto" }
+firmware-extract = { path = "../firmware-extract" }
+steam-vdf = { path = "../steam-vdf" }
+image-decode = { path = "../image-decode" }

@@ -1,9 +1,13 @@
 #include "steam_vdf.h"
+#ifdef XMB_USE_RUST_EDGE
+#include "steam_vdf_rust.h"
+#endif
 
 #include <QFile>
 #include <utility>
 
 namespace xmb::steamvdf {
+#ifndef XMB_USE_RUST_EDGE
 namespace {
 
 enum class TokenKind { Word, BraceOpen, BraceClose };
@@ -194,9 +198,14 @@ private:
 };
 
 } // namespace
+#endif // !XMB_USE_RUST_EDGE
 
 Document parse(const QByteArray& input, const Options& options) {
+#ifdef XMB_USE_RUST_EDGE
+    return steamvdf_rust::parse(input, options);
+#else
     return Parser(input, options).parse();
+#endif
 }
 
 const Entry* findEntry(const QVector<Entry>& entries, const QString& key, Qt::CaseSensitivity sensitivity) {
