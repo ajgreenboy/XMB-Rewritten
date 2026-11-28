@@ -169,7 +169,7 @@
           { "idPrefix": "steam-folder-collection:", "title": "Idle/CLicker/Shit", "detail": "2" },
           { "idPrefix": "steam-folder-collection:", "title": "Lego", "detail": "21" },
           { "idPrefix": "steam-folder-collection:", "title": "Multiplayer", "detail": "99" },
-          { "idPrefix": "steam-folder-collection:", "title": "Singleplayer", "detail": "91" },
+          { "idPrefix": "steam-folder-collection:", "title": "Singleplayer", "detail": "100" },
           { "idPrefix": "steam-folder-collection:", "title": "Valve", "detail": "19" },
           { "idPrefix": "steam-folder-library", "title": "Not Installed", "detailFormula": "notInstalled" }
         ],
