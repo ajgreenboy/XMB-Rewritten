@@ -904,16 +904,24 @@ function checkStateExpect(recipe: StateRecipe, sidecar: any, dump: any, folder: 
   if (expect.catalogueRowIds) {
     const got = entries.map(entry => entry.id);
     // "steam:*" stands for the run of installed Steam title rows at that position (they come from this
-    // computer's Steam library, so their app ids cannot be written into the catalogue). The run must be
-    // exactly as long as the dump's own installedSteam count when the dump reports one.
+    // computer's Steam library, so their app ids cannot be written into the catalogue). The run must hold
+    // exactly the dump's own installedSteam count of steam:<id> rows when the dump reports one. The signed-in
+    // account's non-Steam shortcuts (steam-shortcut:<id>, audit/STEAM-SHORTCUTS.md) are ordered with those rows,
+    // so they may appear inside the run; their number must equal the dump's own steamShortcuts count.
     const expected: string[] = [];
     for (const id of expect.catalogueRowIds) {
       if (id !== 'steam:*') { expected.push(id); continue; }
-      let run = 0;
-      while (/^steam:\d+$/.test(got[expected.length + run] ?? '')) run++;
+      let run = 0, shortcuts = 0;
+      while (/^steam(-shortcut)?:\d+$/.test(got[expected.length + run] ?? '')) {
+        if (got[expected.length + run].startsWith('steam-shortcut:')) shortcuts++;
+        run++;
+      }
       const installedCount = Number(dump.installedSteam);
-      if (Number.isFinite(installedCount) && run !== installedCount)
-        problems.push(`catalogue Game column: ${run} installed Steam row(s) where the dump reports ${installedCount}`);
+      if (Number.isFinite(installedCount) && run - shortcuts !== installedCount)
+        problems.push(`catalogue Game column: ${run - shortcuts} installed Steam row(s) where the dump reports ${installedCount}`);
+      const shortcutCount = Number(dump.steamShortcuts ?? 0);
+      if (Number.isFinite(shortcutCount) && shortcuts !== shortcutCount)
+        problems.push(`catalogue Game column: ${shortcuts} non-Steam shortcut row(s) where the dump reports ${shortcutCount}`);
       expected.push(...got.slice(expected.length, expected.length + run));
     }
     if (got.length !== expected.length || expected.some((id, index) => id !== got[index]))

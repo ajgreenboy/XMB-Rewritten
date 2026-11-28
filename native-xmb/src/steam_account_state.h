@@ -10,6 +10,7 @@
 #include "steam_collections.h"
 #include "steam_keyless.h"
 #include "steam_library.h"
+#include "steam_shortcuts.h"
 
 #include <QHash>
 #include <QString>
@@ -22,6 +23,8 @@ struct SteamAccountSnapshot {
     QString persona;                         // that account's persona name from loginusers.vdf; empty when unknown
     QHash<QString, SteamActivity> activity;  // play records (userdata/<id>/config/localconfig.vdf)
     SteamCollectionList collections;         // the account's static collections (local, keyless)
+    QVector<SteamShortcut> shortcuts;        // the account's non-Steam shortcuts (userdata/<id>/config/shortcuts.vdf)
+    QString shortcutsError;                  // why shortcuts.vdf was only partly read; empty when it read cleanly
     SteamKeylessLibrary keyless;             // the keyless library (steam_keyless.h)
     QVector<SteamAccount> accounts;          // the accounts the client remembers (active marks follow the registry)
 };

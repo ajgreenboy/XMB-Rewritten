@@ -11,9 +11,13 @@
 // read, and the real Steam key is never written. The app dumps its catalogue (XMB_DUMP_ENTRIES) after every library
 // rescan, which is what is checked: no pixels involved.
 //
+// Non-Steam shortcuts (native-xmb/audit/STEAM-SHORTCUTS.md): a binary userdata/<id>/config/shortcuts.vdf per account is built
+// here; account A has two (one with grid artwork), account B one. They are Game column rows ordered with the installed
+// titles, carry the 64-bit shortcut game id, are labelled Non-Steam, and are never part of the owned games.
+//
 // Proves: with no key the owned list is the signed-in account's keyless library and only that; a registry
 // ActiveUser change made OUTSIDE the XMB (a Steam-client switch) swaps the owned list, the collections, play-record
-// ordering and persona with no stale row; switching back restores the first account; and a fresh
+// ordering, persona and non-Steam shortcuts with no stale row; switching back restores the first account; and a fresh
 // start with a signed-out client selects the account named by AutoLoginUser (the "restart" case).
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -103,6 +107,25 @@ mkdirSync(data, { recursive: true });
 // Family Shared was dropped (decision D2): a leftover file from an older build must not add a title or a folder.
 put(join(data, "family-shared.json"), JSON.stringify({ account: ID_A, apps: [{ id: 9001, title: "Fixture Shared A" }] }));
 
+// ---- non-Steam shortcuts: binary shortcuts.vdf (type 0 map, 1 string, 2 int32, 8 end) ----
+const cstr = (s: string) => Buffer.from(s + "\0");
+const bStr = (k: string, v: string) => Buffer.concat([Buffer.from([1]), cstr(k), cstr(v)]);
+const bInt = (k: string, v: number) => Buffer.concat([Buffer.from([2]), cstr(k), u32(v)]);
+const bMap = (k: string, ...kids: Buffer[]) => Buffer.concat([Buffer.from([0]), cstr(k), ...kids, Buffer.from([8])]);
+const shortcutEntry = (index: number, name: string, exe: string, appId: number, lastPlay: number) =>
+  bMap(String(index), bInt("appid", appId), bStr("appname", name), bStr("exe", `"${exe}"`), bStr("StartDir", `"C:\\Fixture\\"`), bStr("icon", ""),
+       bStr("LaunchOptions", ""), bInt("IsHidden", 0), bInt("LastPlayTime", lastPlay), bMap("tags"));
+const shortcutsFile = (...entries: Buffer[]) => Buffer.concat([bMap("shortcuts", ...entries), Buffer.from([8])]);
+const SC_A1 = 0x90000001, SC_A2 = 0x90000002, SC_B1 = 0x91000001;
+const gameId = (appId: number) => String((BigInt(appId) << 32n) | 0x02000000n);
+put(join(acct(ACCT_A), "shortcuts.vdf"), shortcutsFile(
+  shortcutEntry(0, "Fixture Shortcut A1", "C:\\Fixture\\a1.exe", SC_A1, 1790000001),
+  shortcutEntry(1, "Fixture Shortcut A2", "C:\\Fixture\\a2.exe", SC_A2, 0)));
+put(join(acct(ACCT_B), "shortcuts.vdf"), shortcutsFile(shortcutEntry(0, "Fixture Shortcut B1", "C:\\Fixture\\b1.exe", SC_B1, 1770000000)));
+// A's first shortcut has grid artwork (a real 1x1 PNG named by its 32-bit id); the second has none.
+const PNG_1X1 = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64");
+put(join(acct(ACCT_A), "grid", `${SC_A1}.png`), PNG_1X1);
+
 // ---- registry (scratch key only) ----
 const reg = (...a: string[]) => spawnSync("reg", a, { encoding: "utf8" });
 const setActive = (acctId: number) => reg("add", `${regPath}\\ActiveProcess`, "/v", "ActiveUser", "/t", "REG_DWORD", "/d", String(acctId), "/f");
@@ -141,6 +164,8 @@ function start(timeoutMs = 120000) {
 const steamIds = (d: Dump, category: string) => (d.categories.find((c: any) => c.id === category)?.entries ?? []).filter((e: any) => /^steam:\d+$/.test(e.id)).map((e: any) => e.id.slice(6));
 const sorted = (xs: string[]) => [...xs].sort();
 const same = (a: string[], b: string[]) => JSON.stringify(sorted(a)) === JSON.stringify(sorted(b));
+const shortcutRows = (d: Dump) => (d.categories.find((c: any) => c.id === "game")?.entries ?? []).filter((e: any) => /^steam-shortcut:/.test(e.id));
+const gameOrder = (d: Dump) => (d.categories.find((c: any) => c.id === "game")?.entries ?? []).filter((e: any) => /^steam(-shortcut)?:\d+$/.test(e.id)).map((e: any) => e.id);
 const notInstalled = (d: Dump) => d.allTitles.filter((r: any) => /Not installed/.test(r.detail)).map((r: any) => r.id.replace("steam:", ""));
 
 // ===== run 1: account A active, then a switch made "inside the Steam client" to B, then back =====
@@ -158,6 +183,12 @@ if (a1) {
   expect(same(notInstalled(a1), ["1001", "1002", "2001", "3001"]), `A: Not installed rows [${sorted(notInstalled(a1))}]`);
   expect(!a1.allTitles.some((r: any) => r.id === "steam:9001") && !a1.ownedIds.includes("9001"), "A: a leftover family-shared file adds no title (Family Shared was dropped)");
   expect(steamIds(a1, "game").join() === "4001,7001", `A: installed rows ordered by A's play records (${steamIds(a1, "game")})`);
+  const scA = shortcutRows(a1);
+  expect(same(scA.map((e: any) => e.id), [`steam-shortcut:${SC_A1}`, `steam-shortcut:${SC_A2}`]), `A: exactly A's two non-Steam shortcuts are Game rows [${scA.map((e: any) => e.id)}]`);
+  expect(scA.every((e: any, i: number) => e.value === gameId(i === 0 ? SC_A1 : SC_A2) && e.detail === "Non-Steam"), "A: rows carry the 64-bit shortcut game id ((appid << 32) | 0x02000000) and the Non-Steam label");
+  expect(scA.find((e: any) => e.id === `steam-shortcut:${SC_A1}`)?.hasArtwork === true && scA.find((e: any) => e.id === `steam-shortcut:${SC_A2}`)?.hasArtwork === false, "A: the grid artwork of the first shortcut is on its row, the second has none");
+  expect(gameOrder(a1).join() === `steam-shortcut:${SC_A1},steam:4001,steam:7001,steam-shortcut:${SC_A2}`, `A: shortcuts are ordered with the installed titles by last play (${gameOrder(a1)})`);
+  expect(!a1.ownedIds.some((id: string) => id.length > 9) && !a1.allTitles.some((r: any) => /shortcut/.test(r.id)), "A: shortcuts are not owned games and not in the All Titles rows");
   const row2001 = a1.allTitles.find((r: any) => r.id === "steam:2001");
   expect(String(row2001?.detail).startsWith("Fixture Favourites"), `A: collection label on a collected row (${row2001?.detail})`);
 }
@@ -177,6 +208,10 @@ if (b1) {
   expect(!b1.allTitles.some((r: any) => r.id === "steam:9001"), "B: no family-shared title either");
   expect(same(notInstalled(b1), ["1001", "7002", "8001"]), `B: Not installed rows [${sorted(notInstalled(b1))}]`);
   expect(steamIds(b1, "game").join() === "7001,4001", `B: installed rows re-ordered by B's play records (${steamIds(b1, "game")})`);
+  const scB = shortcutRows(b1);
+  expect(same(scB.map((e: any) => e.id), [`steam-shortcut:${SC_B1}`]) && scB[0].value === gameId(SC_B1), `B: only B's shortcut remains after the switch [${scB.map((e: any) => e.id)}]`);
+  expect(gameOrder(b1).join() === `steam:7001,steam-shortcut:${SC_B1},steam:4001`, `B: shortcut re-ordered with B's play records (${gameOrder(b1)})`);
+  expect(!b1.ownedIds.some((id: string) => id.length > 9), "B: still no shortcut among the owned games");
   const row8001 = b1.allTitles.find((r: any) => r.id === "steam:8001");
   expect(String(row8001?.detail).startsWith("Fixture Bee Group"), `B: collection label (${row8001?.detail})`);
 }
@@ -185,7 +220,7 @@ console.log("stand-in: the Steam client switches back to account A");
 setActive(ACCT_A);
 const a2 = await waitFor((d) => d.steamId === ID_A && stamp(d) !== beforeBack, 30000);
 expect(!!a2, "switching back is followed too");
-if (a2 && a1) expect(same(a2.ownedIds, a1.ownedIds) && same(a2.collectionNames, a1.collectionNames) && same(a2.activityIds, a1.activityIds), "back on A: everything matches the first load");
+if (a2 && a1) expect(same(a2.ownedIds, a1.ownedIds) && same(a2.collectionNames, a1.collectionNames) && same(a2.activityIds, a1.activityIds) && same(shortcutRows(a2).map((e: any) => e.id), shortcutRows(a1).map((e: any) => e.id)), "back on A: everything matches the first load");
 app.stop();
 await sleep(1500);
 
@@ -196,7 +231,10 @@ rmSync(dump, { force: true });
 app = start();
 const b2 = await waitFor((d) => d.categories, 60000);
 expect(!!b2 && b2.steamId === ID_B, `restart, signed out, AutoLoginUser=fixture_b: account B (${b2?.steamId?.slice(-1)}) although A has the newer login`);
-if (b2) expect(same(b2.ownedIds, ["1001", "7001", "7002", "8001"]), "restart: B's list from the first scan, nothing of A");
+if (b2) {
+  expect(same(b2.ownedIds, ["1001", "7001", "7002", "8001"]), "restart: B's list from the first scan, nothing of A");
+  expect(same(shortcutRows(b2).map((e: any) => e.id), [`steam-shortcut:${SC_B1}`]), "restart: B's shortcut from the first scan, none of A's");
+}
 app.stop();
 await sleep(1500);
 setAutoLogin("fixture_a");

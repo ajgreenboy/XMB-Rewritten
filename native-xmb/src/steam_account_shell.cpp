@@ -1,7 +1,7 @@
 // What follows the signed-in Steam account inside the shell (audit/STEAM-ACCOUNT-SWITCH.md, "Full account switch").
 //
 // Every list the Game column derives from the account is replaced as one unit (steam_account_state.h): play records,
-// collections, and the owned list (Valve's when a Web API key exists, otherwise
+// non-Steam shortcuts, collections, and the owned list (Valve's when a Web API key exists, otherwise
 // the account's own keyless list from steam_keyless.h). The sources of a change are all funnelled here:
 //   - the XMB's own switch (steamSwitchFinished -> steamLibraryAccountChanged),
 //   - a sign-in noticed by the Steam-window sweep,
@@ -24,6 +24,7 @@ void Shell::resetSteamAccountState() {
     baseCollections_.clear();
     collections_.clear();
     steamActivity_.clear();
+    steamShortcuts_.clear();
     steamPersona_.clear();
     closeSteamLibraryPages();
 }
@@ -52,6 +53,8 @@ void Shell::applySteamAccountSnapshot(SteamAccountSnapshot snapshot) {
     steamId_=snapshot.steamId;
     steamPersona_=snapshot.persona;
     steamActivity_=std::move(snapshot.activity);
+    steamShortcuts_=std::move(snapshot.shortcuts);
+    if(!snapshot.shortcutsError.isEmpty())qWarning().noquote()<<"steam shortcuts:"<<snapshot.shortcutsError;
     steamAccounts_=std::move(snapshot.accounts);
     // Local and keyless: the account's own groups need no Web API key. With no account found the list is left as it is
     // (an account change already cleared it); the owned-games handler may still fill it from an XMB_STEAM_ID account.

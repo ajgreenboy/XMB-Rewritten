@@ -133,6 +133,7 @@ native diff.
 |---|---|
 | [STEAM-INTEGRATION.md](STEAM-INTEGRATION.md) | Steam and installed-PKG content |
 | [STEAM-ACCOUNTS.md](STEAM-ACCOUNTS.md) | The Steam account switcher |
+| [STEAM-SHORTCUTS.md](STEAM-SHORTCUTS.md) | Non-Steam shortcuts from `shortcuts.vdf` (binary VDF) as Game rows: parser limits, id arithmetic, launch form, artwork, tracking, what is unverified |
 | [STEAM-ACCOUNT-SWITCH.md](STEAM-ACCOUNT-SWITCH.md) | The automatic, credential-free account switch: exactly which Steam files and registry values are written, the backup, the flow, the test seams |
 | [STEAM-CLIENT-FRIENDS.md](STEAM-CLIENT-FRIENDS.md) | Friends through the signed-in Steam client |
 | [STEAM-DOWNLOADS.md](STEAM-DOWNLOADS.md) | Steam download state for the XMB download page |

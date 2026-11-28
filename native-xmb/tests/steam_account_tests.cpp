@@ -544,6 +544,18 @@ void capTest() {
     check(have.contains(QString::number(10000 + total - 1)) && !have.contains(QStringLiteral("10000")), "the cap keeps the most recently played");
 }
 
+// One binary shortcuts.vdf holding a single shortcut (steam_shortcuts.h documents the format).
+QByteArray shortcutsFile(const char* name, quint32 appId) {
+    QByteArray out;
+    out += QByteArray("\0shortcuts\0", 11) + QByteArray("\0" "0\0", 3);
+    out += QByteArray("\x02" "appid\0", 7);
+    for (int i = 0; i < 4; ++i) out += char((appId >> (8 * i)) & 0xFF);
+    out += QByteArray("\x01" "appname\0", 9) + QByteArray(name) + QByteArray(1, '\0');
+    out += QByteArray("\x01" "exe\0", 5) + QByteArray("\"C:\\Fixture\\x.exe\"") + QByteArray(1, '\0');
+    out += QByteArray("\x08\x08\x08", 3);
+    return out;
+}
+
 // ---- the per-account snapshot ----------------------------------------------------------------------------------------
 void snapshotTests() {
     const QString root = scratchRoot + QStringLiteral("/snapshot-root");
@@ -551,6 +563,8 @@ void snapshotTests() {
     qputenv("XMB_STEAM_REGISTRY_KEY", "HKEY_CURRENT_USER\\Software\\XmbTest\\SteamAccountTests-dead");
     SteamInstallation steam = makeRoot(root, data);
     clearSteamKeylessCache();
+    writeFile(root + QStringLiteral("/userdata/%1/config/shortcuts.vdf").arg(AcctA), shortcutsFile("Fixture Shortcut A", 0x90000001u));
+    writeFile(root + QStringLiteral("/userdata/%1/config/shortcuts.vdf").arg(AcctB), shortcutsFile("Fixture Shortcut B", 0x90000002u));
 
     const auto a = loadSteamAccountSnapshot(steam, data);
     checkText(a.steamId, IdA, "snapshot A: account");
@@ -559,6 +573,9 @@ void snapshotTests() {
     check(a.collections.size() == 2 && a.collections.first().name == "Fixture Dynamic" && a.collections.first().appIds.isEmpty() &&
           a.collections.last().name == "Fixture Favourites" && a.collections.last().appIds.size() == 2, "snapshot A: collections (the dynamic one has no member list)");
     check(a.accounts.size() == 2, "snapshot A: both remembered accounts");
+    check(a.shortcuts.size() == 1 && a.shortcuts.first().appName == "Fixture Shortcut A" && a.shortcuts.first().appId == 0x90000001u && a.shortcutsError.isEmpty(),
+          "snapshot A: the non-Steam shortcuts are A's");
+    check(!ids(a.keyless.games).contains(QString::number(0x90000001u)), "snapshot A: a shortcut is never part of the owned games");
     check(!a.keyless.games.isEmpty() && !ids(a.keyless.games).contains("7001"), "snapshot A: keyless list is A's");
 
     // The same installation, the account changed: nothing of A may be in B's snapshot.
@@ -569,13 +586,14 @@ void snapshotTests() {
     checkText(b.persona, QStringLiteral("Persona Bee"), "snapshot B: persona");
     check(b.activity.contains("7001") && !b.activity.contains("1002") && b.activity.value("1001").playtimeMinutes == 5, "snapshot B: play records are B's");
     check(b.collections.size() == 1 && b.collections.first().name == "Fixture Bee Group", "snapshot B: collections are B's");
+    check(b.shortcuts.size() == 1 && b.shortcuts.first().appName == "Fixture Shortcut B", "snapshot B: A's shortcuts are not shown to B");
     check(ids(b.keyless.games).contains("7002") && !ids(b.keyless.games).contains("2001"), "snapshot B: keyless list is B's");
 
     // No account at all: every account-specific list is empty (nothing leaks from a previous snapshot).
     SteamInstallation none = steam;
     none.steamId.clear();
     const auto empty = loadSteamAccountSnapshot(none, data);
-    check(empty.steamId.isEmpty() && empty.activity.isEmpty() && empty.collections.isEmpty() && empty.keyless.games.isEmpty(), "no account: nothing account-specific is loaded");
+    check(empty.steamId.isEmpty() && empty.activity.isEmpty() && empty.collections.isEmpty() && empty.keyless.games.isEmpty() && empty.shortcuts.isEmpty(), "no account: nothing account-specific is loaded");
     qunsetenv("XMB_STEAM_REGISTRY_KEY");
 }
 

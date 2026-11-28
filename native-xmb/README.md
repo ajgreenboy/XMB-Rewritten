@@ -171,6 +171,10 @@ first, and launch straight away; each row's detail carries its Steam collection 
 Favorites, ...). Row artwork, title position and spacing are the installed-PKG layout, so Steam rows and original
 PS3 titles share one presentation. F5 or **Refresh Game Library** rescans.
 
+Non-Steam shortcuts of the signed-in account (`userdata/<id>/config/shortcuts.vdf`) are Game rows among the installed
+titles, labelled Non-Steam and launched through Steam; they are never counted as owned games
+([audit/STEAM-SHORTCUTS.md](audit/STEAM-SHORTCUTS.md)).
+
 Below the installed titles sit a **Steam Store** row and one **All Games** folder. The All Games page lists an
 **All Titles** folder, one folder per Steam collection (icon: a 2x2 mosaic of its first titles' headers), then
 and **Not Installed** (every owned title that is not on disk). There is no Family Shared folder: the

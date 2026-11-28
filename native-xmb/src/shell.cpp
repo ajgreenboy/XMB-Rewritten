@@ -882,6 +882,16 @@ bool Shell::startSteamUriHandoff(const QString& appId,const QString& title) {
     showMessage(title,tr("Steam could not be opened."),MessageKind::Page);
     return false;
 }
+// A non-Steam shortcut is tracked by its 64-bit game id (steam_shortcuts.h); the registry flag, when Steam keeps one for
+// it, lives under the 32-bit shortcut id (audit/STEAM-SHORTCUTS.md, not verified on a real client).
+static const SteamShortcut* steamShortcutByGameId(const QVector<SteamShortcut>& list,const QString& gameId) {
+    for(const auto& s:list)if(s.gameId()==gameId)return &s;
+    return nullptr;
+}
+static QString steamStateKey(const QString& gameId) {
+    const QString registryId=steamShortcutRegistryAppId(gameId);
+    return registryId.isEmpty()?gameId:registryId;
+}
 // Steam launches itself, so the only honest lifecycle signal is Steam's own registry state. The
 // handoff records the app id, watches Apps\<id>\Running, and reports the return when it clears.
 bool Shell::startSteamTracked(const QString& appId,const QString& title) {
@@ -907,7 +917,11 @@ bool Shell::startSteamNow(const QString& appId,const QString& title) {
 bool Shell::launchSteamApp(const QString& appId,const QString& title) {
     QString exe=QDir(steamRoot_).filePath("steam.exe");
     QStringList launchArguments{"-applaunch",appId};
-    const QString extraArgs=steamOverlay_.launchOptions.value(appId).trimmed();
+    const bool shortcut=isSteamShortcutGameId(appId);
+    // A non-Steam shortcut goes through Steam by its shortcut game id; its own launch options live in shortcuts.vdf and
+    // Steam applies them. The exact form is to be verified on the real HTPC (audit/STEAM-SHORTCUTS.md).
+    if(shortcut)launchArguments={steamShortcutLaunchUri(appId)};
+    const QString extraArgs=shortcut?QString():steamOverlay_.launchOptions.value(appId).trimmed();
     if(!extraArgs.isEmpty())launchArguments<<QProcess::splitCommand(extraArgs);
     QString launchDirectory=steamRoot_;
     if(steamFake()) {
@@ -928,7 +942,7 @@ bool Shell::launchSteamApp(const QString& appId,const QString& title) {
     steamGameId_=appId;gameTitle_=title;gameCategory_=QStringLiteral("game");gameIsRpcs3_=false;steamTrack_={};
     steamWatchAge_.start();steamWatch_.start();
     activity_.start();
-    qInfo().noquote()<<"launch: steam -applaunch"<<appId<<"(watched through Steam's registry)";
+    qInfo().noquote()<<"launch: steam"<<launchArguments.join(' ')<<(shortcut?"(non-Steam shortcut; watched through Steam's registry and the shortcut's own process)":"(watched through Steam's registry)");
     armSteamSweep(120000);   // keeps a Steam window (Big Picture, News, an update dialog) off the screen while the title starts
     emit changed();
     return true;
@@ -1039,7 +1053,14 @@ void Shell::startSteamClientInBackground() {
 }
 void Shell::pollSteamGame() {
     if(steamGameId_.isEmpty()) { steamWatch_.stop(); return; }
-    auto state=steamAppState(steamGameId_);
+    auto state=steamAppState(steamStateKey(steamGameId_));
+    // A non-Steam shortcut: when Steam's registry does not say Running, the shortcut's own executable (the same image
+    // path, nothing else) running counts. Windows only; the snapshot is empty elsewhere.
+    if(const SteamShortcut* shortcut=steamShortcutByGameId(steamShortcuts_,steamGameId_);
+       shortcut && state.status!=SteamAppStatus::Running && state.status!=SteamAppStatus::Updating) {
+        for(const auto& p:steamquit::snapshotProcesses())
+            if(steamShortcutExeMatches(*shortcut,p.imagePath)){state.status=SteamAppStatus::Running;state.running=true;break;}
+    }
     // Test seam (audit/STEAM-QUIT.md): with XMB_STEAM_FAKE=1 a stand-in game in a scratch library stands for Steam's registry,
     // and the title counts as running while any process runs from its install folder.
     if(steamFake()) {
@@ -1769,7 +1790,7 @@ void Shell::sortGameEntries(int mode) {
     QHash<QString,int> ownedPlaytime;
     for(const auto& g:ownedGames_)ownedPlaytime.insert(g.appId,g.playtimeMinutes);
     const auto isSortableGame=[](const Entry& e) {
-        return e.id.startsWith(QLatin1String("steam:")) ||
+        return e.id.startsWith(QLatin1String("steam:")) || e.id.startsWith(QLatin1String("steam-shortcut:")) ||
                (e.id.startsWith(QLatin1String("custom:")) && e.action==Action::LaunchApp);
     };
     const auto keyMetric=[&](const Entry& e)->qint64 {
@@ -1832,7 +1853,7 @@ void Shell::refreshContent() {
             auto& category=categories_[c];
             const auto selected=category.entries.isEmpty()?QString{}:category.entries[selections_[c]].id;
             category.entries.erase(std::remove_if(category.entries.begin(),category.entries.end(),[](const Entry& e){
-                return e.id.startsWith("steam:") || e.id.startsWith("steam-folder-") || e.id.startsWith("steam-store") || e.id.startsWith("steam-hub") || e.id.startsWith("custom:") || e.id.startsWith("jellyfin-music:") || e.id=="jellyfin-setup" || e.id=="seerr-home";
+                return e.id.startsWith("steam:") || e.id.startsWith("steam-shortcut:") || e.id.startsWith("steam-folder-") || e.id.startsWith("steam-store") || e.id.startsWith("steam-hub") || e.id.startsWith("custom:") || e.id.startsWith("jellyfin-music:") || e.id=="jellyfin-setup" || e.id=="seerr-home";
             }),category.entries.end());
             QVector<Entry> providers,installed,steam;
             QVector<Entry> trailing;   // rows that go after the column's own (Music > Jellyfin Music, under Spotify)
@@ -1870,9 +1891,25 @@ void Shell::refreshContent() {
                     const QString label=collectionLabel(game.appId);if(!label.isEmpty())detail<<label;
                     e.detail=detail.join(QStringLiteral(" - "));installed.push_back(std::move(e));
                 }
+                // The account's non-Steam shortcuts (steam_shortcuts.h) are game rows like the installed ones and are
+                // ordered with them; they are never part of the owned-games numbers. They launch through Steam.
+                for(const auto& shortcut:steamShortcuts_) {
+                    auto e=item(shortcut.rowId(),shortcut.displayName(),"game_tex_default_ps3","explore_plugin_full",
+                        Action::LaunchSteam,shortcut.gameId());
+                    e.artwork=result.art.value(e.id);e.gameTile=true;e.logoArt=result.logoIds.contains(e.id);
+                    e.detail=QObject::tr("Non-Steam");
+                    installed.push_back(std::move(e));
+                }
                 // Most recently played first, as a console lists its recent titles; never-played keep Steam's order.
-                std::stable_sort(installed.begin(),installed.end(),[this](const Entry& a,const Entry& b){
-                    return steamActivity_.value(a.value).lastPlayed>steamActivity_.value(b.value).lastPlayed;
+                const auto playedAt=[this](const Entry& e)->qint64 {
+                    if(e.id.startsWith(QLatin1String("steam-shortcut:"))) {
+                        const SteamShortcut* shortcut=steamShortcutByGameId(steamShortcuts_,e.value);
+                        return shortcut?qint64(shortcut->lastPlayTime):0;
+                    }
+                    return steamActivity_.value(e.value).lastPlayed;
+                };
+                std::stable_sort(installed.begin(),installed.end(),[&playedAt](const Entry& a,const Entry& b){
+                    return playedAt(a)>playedAt(b);
                 });
                 {
                     // One folded Steam hub instead of two separate rows: Store and All Games live inside it.
@@ -2019,7 +2056,7 @@ void Shell::refreshContent() {
             }
             QFile file(qEnvironmentVariable("XMB_DUMP_ENTRIES"));
             const auto bytes=QJsonDocument(QJsonObject{{"categories",categories},{"owned",ownedGames_.size()},
-                {"collections",collections_.size()},{"installedSteam",result.steam.games.size()},
+                {"collections",collections_.size()},{"installedSteam",result.steam.games.size()},{"steamShortcuts",steamShortcuts_.size()},
                 {"steamId",steamId_},{"steamPersona",steamPersona_},{"ownedSource",ownedGames_.isEmpty()?QStringLiteral("none"):ownedFromKeyless_?QStringLiteral("keyless"):QStringLiteral("valve")},
                 {"ownedIds",[this]{QJsonArray ids;for(const auto& game:ownedGames_)ids.push_back(game.appId);return ids;}()},
                 {"allTitles",[this]{QJsonArray rows;for(const auto& row:steamFolderEntries(QStringLiteral("all-titles")))rows.push_back(QJsonObject{{"id",row.id},{"title",row.title},{"detail",row.detail}});return rows;}()},
@@ -2072,6 +2109,20 @@ void Shell::refreshContent() {
                 result.logoWanted.push_back(game.appId);
             }
             read(rowId,!override.isEmpty()?override:!rawg.isEmpty()?rawg:(game.artwork.isEmpty()?SteamArtwork::cachePath(cache,game.appId):game.artwork));
+        }
+        // Non-Steam shortcuts: the grid folder's logo, wide capsule, portrait, hero or icon, then the shortcut's own icon.
+        for(const auto& shortcut:result.account.shortcuts) {
+            const QString rowId=shortcut.rowId();
+            const auto grid=steamShortcutGridArtwork(result.steam.root,result.account.steamId,shortcut);
+            if(logoTiles::enabled() && !grid.logo.isEmpty()) {
+                const QImage logo=logoTiles::loadLogo(grid.logo);
+                if(!logo.isNull() && (result.art.size()<128 || result.art.contains(rowId))){result.art.insert(rowId,logo);result.logoIds.insert(rowId);continue;}
+            }
+            for(const QString& path:{grid.wide,grid.portrait,grid.hero,grid.icon,shortcut.icon}) {
+                if(path.isEmpty())continue;
+                read(rowId,path);
+                if(result.art.contains(rowId))break;
+            }
         }
         for(const auto& appId:ownedIds) {
             const QString override=steamArtworkOverride(data,appId).row;
@@ -3930,6 +3981,13 @@ bool Shell::steamFake() { return qEnvironmentVariable("XMB_STEAM_FAKE")==QLatin1
 void Shell::quitSteamTitle() {
     const QString appId=steamGameId_;
     if(steamQuitter_.active()){qInfo().noquote()<<"ingame: quit already in progress for"<<quitTitle_;return;}
+    // A non-Steam shortcut has no install folder of its own to scope the stop to, and the XMB never closes processes
+    // by a shared folder (an emulator folder holds many programs): the owner closes it from its own window.
+    if(isSteamShortcutGameId(appId)) {
+        qInfo().noquote()<<"ingame: quit not attempted for a non-Steam shortcut (no install folder to scope it to)";
+        showMessage(quitTitle_,QObject::tr("This is a non-Steam shortcut. Close it from its own window or menu; the XMB does not stop it."),MessageKind::Page);
+        return;
+    }
     QString installDir;
     for(const auto& g:steamInstalled_.games)if(g.appId==appId){installDir=g.installDirectory;break;}
     if(installDir.isEmpty()) {
@@ -4233,7 +4291,8 @@ void Shell::buildOptions() {
         // A Steam title: the Steam client's own pages and commands for it, as steam:// hand-offs (this build's
         // rows; the console has no Steam). Played time and the last session ride on the Library row's note.
         bool steamId=false;entry.value.toULongLong(&steamId);
-        const bool steamRow=steamId && (entry.action==Action::LaunchSteam || entry.action==Action::InstallSteam);
+        const bool steamRow=steamId && (entry.action==Action::LaunchSteam || entry.action==Action::InstallSteam) &&
+            !entry.id.startsWith(QLatin1String("steam-shortcut:"));   // a non-Steam shortcut has no store page, collections or SteamCMD jobs
         const bool steamInstalled=steamRow && entry.action==Action::LaunchSteam;
         if(steamRow || entry.id.startsWith(QLatin1String("custom:"))) {
             const QString overlayKey=steamRow?entry.value:entry.id;
@@ -6042,6 +6101,31 @@ void Shell::showEntryInformation(const Entry& entry) {
         rows<<QObject::tr("Selecting this title opens its store details page.");
         showMessage(entry.title,rows.join(QLatin1Char('\n')),MessageKind::Info);
         qInfo().noquote()<<"shell: options information title="<<entry.title<<"(steam store)";
+        return;
+    }
+    // A non-Steam shortcut (steam_shortcuts.h): what the shortcut file says, never counted with the owned games.
+    if(entry.id.startsWith(QLatin1String("steam-shortcut:"))) {
+        const SteamShortcut* shortcut=steamShortcutByGameId(steamShortcuts_,entry.value);
+        QStringList rows;
+        rows<<row("msg_format","Format",QObject::tr("Non-Steam Game"));
+        rows<<QObject::tr("Source: Non-Steam (a shortcut added to Steam)");
+        if(shortcut) {
+            QString lastPlayedStr=QObject::tr("Never");
+            if(shortcut->lastPlayTime>0) {
+                const QDateTime dt=QDateTime::fromSecsSinceEpoch(shortcut->lastPlayTime);
+                if(dt.isValid())lastPlayedStr=dt.toString("yyyy/MM/dd HH:mm");
+            }
+            rows<<QObject::tr("Last Played: %1").arg(lastPlayedStr);
+            if(!shortcut->tags.isEmpty())rows<<QObject::tr("Tags: %1").arg(shortcut->tags.join(QStringLiteral(", ")));
+            if(!shortcut->launchOptions.isEmpty())rows<<QObject::tr("Launch Options: %1").arg(shortcut->launchOptions);
+            if(!shortcut->exePath().isEmpty())rows<<QStringLiteral("Path: ")+QDir::toNativeSeparators(shortcut->exePath());
+            if(!shortcut->startDir.isEmpty())rows<<QObject::tr("Start In: %1").arg(QDir::toNativeSeparators(shortcut->startDir.trimmed().remove(QLatin1Char('"'))));
+            rows<<QObject::tr("Shortcut ID: %1").arg(shortcut->appId);
+        }
+        rows<<QString();
+        rows<<QObject::tr("Starting this title asks Steam to run the shortcut.");
+        showMessage(entry.title,rows.join('\n'),MessageKind::Info);
+        qInfo().noquote()<<"shell: options information title="<<entry.title<<"rows="<<rows.size()<<"(non-steam shortcut)";
         return;
     }
     bool numericSteam=false;entry.value.toULongLong(&numericSteam);

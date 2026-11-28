@@ -1318,6 +1318,7 @@ private:
     SteamOwned steamOwned_;
     OwnedGameList ownedGames_;      // purchased titles from the Steam Web API (may be empty without a key)
     SteamCollectionList baseCollections_; // Steam's raw user collections from cloud-storage-namespace-1.json
+    QVector<SteamShortcut> steamShortcuts_; // the signed-in account's non-Steam shortcuts (steam_shortcuts.h); never part of ownedGames_
     SteamCollectionList collections_; // the account's own Steam library collections merged with steamOverlay_
     SteamUserOverlay steamOverlay_;   // local XMB favorites, custom collections and launch options
     QHash<QString,StoreItem> storeItemsById_; // last SteamStore response items by appId

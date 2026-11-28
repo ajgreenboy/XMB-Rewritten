@@ -251,6 +251,7 @@ unit by `Shell::applySteamAccountSnapshot`; an account change first runs `Shell:
 | Owned list `ownedGames_`, `ownedSignature_`, `ownedFromKeyless_` | Valve (key) or keyless library | cleared on a change; the keyless list (or Valve's, once it arrives) is adopted |
 | In-flight owned request, `ownedInFlight_` | `SteamOwned` | `cancel()`; a response for another account is dropped (`ownedResponseIsStale`) |
 | Collections `collections_` and the row labels | `userdata/<id>/config/cloudstorage` | cleared, re-read keyless from the snapshot (they never needed a key) |
+| Non-Steam shortcuts `steamShortcuts_` | `userdata/<id>/config/shortcuts.vdf` (binary VDF, see [STEAM-SHORTCUTS.md](STEAM-SHORTCUTS.md)) and its `grid` artwork | cleared, re-read; the shortcut rows swap with the account |
 | Play records `steamActivity_` and the installed-row order | `userdata/<id>/config/localconfig.vdf` | cleared, re-read; the column is re-sorted by the new account |
 | Artwork overrides | `userdata/<id>/config/grid` (looked up by `artworkFor` with the scan's account) | the rescan re-resolves them for the new id |
 | Keyless library cache | per account id, validated by size and mtime of every input file | other accounts' entries are separate; stale entries cannot be served |

@@ -2,7 +2,7 @@
 
 namespace xmb {
 
-SteamAccountSnapshot loadSteamAccountSnapshot(const SteamInstallation& steam, const QString& dataDirectory) {
+SteamAccountSnapshot loadSteamAccountSnapshot(const SteamInstallation& steam, const QString& /*dataDirectory*/) {
     SteamAccountSnapshot snapshot;
     snapshot.steamId = steam.steamId;
     snapshot.accounts = scanSteamAccounts(steam.root);
@@ -11,6 +11,11 @@ SteamAccountSnapshot loadSteamAccountSnapshot(const SteamInstallation& steam, co
     if (snapshot.steamId.isEmpty()) return snapshot;   // no account: every account-specific list stays empty
 
     snapshot.activity = scanSteamActivity(steam.root, snapshot.steamId);
+    {
+        auto shortcuts = scanSteamShortcuts(steam.root, snapshot.steamId);
+        snapshot.shortcuts = std::move(shortcuts.shortcuts);
+        snapshot.shortcutsError = shortcuts.error;
+    }
     QString collectionsError;
     snapshot.collections = scanSteamCollectionsIn(steam.root, snapshot.steamId, &collectionsError);
     QHash<QString, QString> installedTitles;
