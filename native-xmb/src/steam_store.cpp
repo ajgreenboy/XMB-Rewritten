@@ -22,6 +22,18 @@ QString decodeUrl(const QString& raw) {
     return QString(raw).replace(QStringLiteral("\\/"), QStringLiteral("/"));
 }
 
+// Test seam: XMB_STEAM_STORE_BASE replaces the https://store.steampowered.com origin, but only with a plain-http
+// loopback origin (127.0.0.1, localhost or ::1), so a test can serve canned responses and no real host can be
+// substituted. Unset or any other value uses the real store.
+QString storeOrigin() {
+    const QString real = QStringLiteral("https://store.steampowered.com");
+    const QUrl url(qEnvironmentVariable("XMB_STEAM_STORE_BASE").trimmed());
+    const QString host = url.host();
+    const bool loopback = host == QLatin1String("127.0.0.1") || host == QLatin1String("localhost") || host == QLatin1String("::1");
+    if (url.scheme() != QLatin1String("http") || !loopback || url.port(-1) <= 0) return real;
+    return QStringLiteral("http://%1:%2").arg(host.contains(QLatin1Char(':')) ? QStringLiteral("[%1]").arg(host) : host).arg(url.port());
+}
+
 QString firstString(const QJsonObject& object, std::initializer_list<const char*> keys) {
     for (const char* key : keys) {
         const auto value = object.value(QLatin1String(key));
@@ -108,7 +120,7 @@ void SteamStore::search(const QString& term, int page) {
     query.addQueryItem(QStringLiteral("l"), QStringLiteral("en"));
     query.addQueryItem(QStringLiteral("cc"), QStringLiteral("US"));
     if (page > 1) query.addQueryItem(QStringLiteral("page"), QString::number(page));
-    request(QStringLiteral("https://store.steampowered.com/api/storesearch/?") + query.toString(QUrl::FullyEncoded),
+    request(storeOrigin() + QStringLiteral("/api/storesearch/?") + query.toString(QUrl::FullyEncoded),
             tr("Search “%1”").arg(trimmed), true);
 }
 
@@ -119,7 +131,7 @@ void SteamStore::featured(const QString& section) {
         {QStringLiteral("new_releases"), QStringLiteral("New Releases")},
         {QStringLiteral("specials"), QStringLiteral("Specials")}};
     const QString key = titles.contains(section) ? section : QStringLiteral("top_sellers");
-    request(QStringLiteral("https://store.steampowered.com/api/featuredcategories?cc=US&l=en"),
+    request(storeOrigin() + QStringLiteral("/api/featuredcategories?cc=US&l=en"),
             tr("Steam %1").arg(titles.value(key)), false, key);
 }
 

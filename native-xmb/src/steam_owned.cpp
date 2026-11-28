@@ -25,6 +25,18 @@ constexpr int MaxGames = 4096;
 
 QString keyFromEnvironment() { return qEnvironmentVariable("STEAM_WEB_API_KEY").trimmed(); }
 
+// Test seam: XMB_STEAM_API_BASE replaces the https://api.steampowered.com origin, but only with a plain-http
+// loopback origin (127.0.0.1, localhost or ::1), so a test can serve canned responses and no real host can be
+// substituted (the key header only ever reaches Valve or this machine). Unset or any other value uses the real API.
+QString apiOrigin() {
+    const QString real = QStringLiteral("https://api.steampowered.com");
+    const QUrl url(qEnvironmentVariable("XMB_STEAM_API_BASE").trimmed());
+    const QString host = url.host();
+    const bool loopback = host == QLatin1String("127.0.0.1") || host == QLatin1String("localhost") || host == QLatin1String("::1");
+    if (url.scheme() != QLatin1String("http") || !loopback || url.port(-1) <= 0) return real;
+    return QStringLiteral("http://%1:%2").arg(host.contains(QLatin1Char(':')) ? QStringLiteral("[%1]").arg(host) : host).arg(url.port());
+}
+
 QString iconUrlFor(const QString& appId, const QString& hash) {
     if (hash.isEmpty()) return {};
     return QStringLiteral("https://media.steampowered.com/steamcommunity/public/images/apps/%1/%2.jpg")
@@ -150,7 +162,7 @@ void SteamOwned::refresh(QString steamId64) {
     query.addQueryItem(QStringLiteral("include_played_free_games"), QStringLiteral("1"));
     query.addQueryItem(QStringLiteral("format"), QStringLiteral("json"));
     QNetworkRequest request{
-        QUrl(QStringLiteral("https://api.steampowered.com/IPlayerService/GetOwnedGames/v1/?") +
+        QUrl(apiOrigin() + QStringLiteral("/IPlayerService/GetOwnedGames/v1/?") +
              query.toString(QUrl::FullyEncoded))};
     // The key travels in a header (never in the URL, so no log or proxy records it); never follow a redirect to another host.
     request.setRawHeader("x-webapi-key", key.toUtf8());
