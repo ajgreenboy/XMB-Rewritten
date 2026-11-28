@@ -200,10 +200,10 @@ QVector<Choice> choices(const QString& key,Assets& assets) {
         {"Ctrl+Shift+Home",QString("Ctrl+Shift+Home")},{"Ctrl+Alt+F12",QString("Ctrl+Alt+F12")}};
     if(key=="desktop/pointerSpeed")return {{"Slow",1},{"Relaxed",2},{"Normal",3},{"Fast",4},{"Very Fast",5}};
     if(key=="power/idleMinutes")return {{"Off",0},{"15 minutes",15},{"30 minutes",30},{"1 hour",60},{"2 hours",120}};
-    // In-game XMB (INGAME-XMB-DESIGN step 8): who owns the PS tap over an RPCS3/Steam title. "xmb" is the default
+    // In-game XMB (INGAME-XMB-DESIGN step 8): who handles the PS tap over an RPCS3/Steam title. "xmb" is the default
     // (tap and hold both reach the XMB); "launcher" leaves the tap to the launcher's Home Menu / Guide and the
-    // XMB keeps the hold.
-    if(key=="input/psArbitration")return {{"XMB owns the PS button",QString("xmb")},{"Launcher owns the PS button",QString("launcher")}};
+    // XMB keeps the hold. Game Settings > PS Button (owner decision D5).
+    if(key=="input/psArbitration")return {{"XMB handles it",QString("xmb")},{"Leave to Steam",QString("launcher")}};
     // The console's Notification Messages / Trophy Notifications pages are a two-item Display / Do Not Display list;
     // the native TV/Video Services Column toggle uses the same firmware labels.
     if(key=="system/notificationMessages" || key=="system/notificationTrophy" || key=="appearance/tvColumn")
@@ -487,7 +487,7 @@ const QVector<RowSpec>* nativeOnlyRows(const QString& id) {
     if(id=="sound")return &sound;
     // The System page's firmware set stops at 26 rows; the PS-button arbitration over a running title is this
     // build's own input behaviour and keeps its surface here (INGAME-XMB-DESIGN step 8; the key is also settable
-    // in preferences.json).
+    // in preferences.json). Game Settings > PS Button (decision D5) is a second row for the same key.
     static const QVector<RowSpec> system{
         {"download_manager",nullptr,nullptr,Action::DownloadManager,nullptr,nullptr,"Download Manager",
             "Configure the Real-Debrid API key and FlareSolverr address used for release downloads."},
@@ -694,6 +694,14 @@ PageRows segmentRows(const QString& id,Assets& assets) {
             data.nativeOnly<<install.id;
             data.entries.push_back(std::move(install));
         }
+        // Native-only (owner decision D5): who handles the PS button while a Steam (or RPCS3) title runs. The key is
+        // input/psArbitration; it is also settable in preferences.json.
+        Entry psButton=option(QStringLiteral("ps_button"),QObject::tr("PS Button"),
+            QObject::tr("XMB handles it (default): over a running Steam title a PS tap or hold opens the in-game XMB. Leave to Steam: the XMB ignores the PS tap so Steam's own Guide button handling can use it; holding the PS button still opens the XMB. The same choice applies to RPCS3's Home Menu."),
+            QStringLiteral("input/psArbitration"),Action::SettingChoices,QString{});
+        psButton.settingsPage=id;psButton.source=QStringLiteral("native");
+        data.nativeOnly<<psButton.id;
+        data.entries.push_back(std::move(psButton));
     }
     if(id==QStringLiteral("device")) {
         // Native-only (D10): this build's own Bluetooth list/pair; the console's accessory page binds its pad to

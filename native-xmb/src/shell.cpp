@@ -3779,7 +3779,7 @@ quint32 Shell::runningTitlePid() const {
 }
 bool Shell::launcherOwnsPsTap() const {
     // input/psArbitration = "launcher" leaves the PS tap to RPCS3's Home Menu / Steam's Guide; the default ("xmb")
-    // keeps the current behaviour. The key is a preferences.json entry; no settings page row yet (step 8 follow-up).
+    // keeps the current behaviour. Game Settings > PS Button writes the key (owner decision D5).
     return preferences_.value("input/psArbitration").toString()==QLatin1String("launcher");
 }
 void Shell::syncInGameRows() {

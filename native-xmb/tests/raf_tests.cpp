@@ -226,6 +226,26 @@ static void tvColumnPreferenceTests() {
           "appearance/tvColumn rejects non-boolean values");
 }
 
+static void psArbitrationPreferenceTests() {
+    // Game Settings > PS Button (decision D5) writes input/psArbitration: "xmb" = XMB handles it (default),
+    // "launcher" = leave the PS tap to Steam / RPCS3. Shell::launcherOwnsPsTap() reads the same key.
+    QTemporaryDir dir;
+    check(dir.isValid(),"scratch directory for psArbitration preference checks");
+    Preferences prefs(dir.path());
+    check(!prefs.contains(QStringLiteral("input/psArbitration")) && prefs.value(QStringLiteral("input/psArbitration"))==QVariant(QStringLiteral("xmb")),
+          "input/psArbitration defaults to xmb (the XMB handles the PS button) before any write");
+    check(prefs.setValue(QStringLiteral("input/psArbitration"),QStringLiteral("launcher")) && prefs.value(QStringLiteral("input/psArbitration"))==QVariant(QStringLiteral("launcher")),
+          "input/psArbitration accepts launcher (leave it to Steam)");
+    Preferences reloaded(dir.path());
+    check(reloaded.value(QStringLiteral("input/psArbitration"))==QVariant(QStringLiteral("launcher")),
+          "input/psArbitration round-trips across disk reload");
+    check(prefs.setValue(QStringLiteral("input/psArbitration"),QStringLiteral("xmb")) && Preferences(dir.path()).value(QStringLiteral("input/psArbitration"))==QVariant(QStringLiteral("xmb")),
+          "input/psArbitration goes back to xmb and persists");
+    check(!prefs.setValue(QStringLiteral("input/psArbitration"),QStringLiteral("steam")) && !prefs.setValue(QStringLiteral("input/psArbitration"),true) &&
+          !prefs.setValue(QStringLiteral("input/psArbitration"),QStringLiteral("")) && prefs.value(QStringLiteral("input/psArbitration"))==QVariant(QStringLiteral("xmb")),
+          "input/psArbitration rejects anything but xmb and launcher and keeps the stored value");
+}
+
 static void rafEffectMappingTests() {
     // Traced from raf.prx FUN_00031e68 (0x031ea0..0x032c80), FUN_0003f5e0 (0x03f5e0..0x03f874),
     // 0x0404a4..0x0405f8 and FUN_00040fb0 (0x040fb0..0x041260).
@@ -266,6 +286,7 @@ int main(int argc,char** argv) {
     vsmxTests();
     vsmxAnimatedTests();
     tvColumnPreferenceTests();
+    psArbitrationPreferenceTests();
     rafEffectMappingTests();
     std::printf("%s\n",failures?"FAILED":"all passed");
     return failures?1:0;

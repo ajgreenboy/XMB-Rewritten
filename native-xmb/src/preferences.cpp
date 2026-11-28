@@ -109,6 +109,8 @@ QVariant Preferences::defaultValue(const QString& key) {
     if(key=="power/idleMinutes" || key=="display/screensaverMinutes")return 0;
     if(key=="desktop/keepMusic" || key=="desktop/controllerMouse" || key=="steam/background" || key=="steam/controllerMode")return true;
     if(key=="desktop/pointerSpeed")return 3;
+    // Who handles the PS button over a running Steam or RPCS3 title: "xmb" (default) or "launcher" (Game Settings > PS Button).
+    if(key=="input/psArbitration")return QString("xmb");
     if(key=="desktop/hotkey")return QString("Ctrl+Alt+Home");
     if(key=="audio/muted" || key=="media/repeat" || key=="media/shuffle" || key=="display/fullscreen" ||
        key=="cec/tvOnAtStart" || key=="cec/standbyOnTurnOff" || key=="hydra/catalogueCache")return false;
@@ -143,6 +145,7 @@ bool Preferences::validBare(const QString& key,const QVariant& value) {
     if(value.metaType().id()!=QMetaType::QString)return false;
     const auto text=value.toString();
     if(text.contains(QChar(0)))return false;
+    if(key=="input/psArbitration")return text==QLatin1String("xmb") || text==QLatin1String("launcher");
     if(key==QStringLiteral("steamcmd/path") || key==QStringLiteral("steamcmd/library"))
         return text.size()<=1024 && !text.contains(QLatin1Char('\n')) && !text.contains(QLatin1Char('\r'));
     if(key==QStringLiteral("steamcmd/account")) {
