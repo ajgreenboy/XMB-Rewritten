@@ -30,6 +30,7 @@
 #include "steam_switch.h"
 #include "steam_refresh.h"
 #include "steam_collections.h"
+#include "controller_mode.h"
 #include "steam_family.h"
 #include "steam_account_state.h"
 #include "steam_store.h"
@@ -162,6 +163,8 @@ enum class Action { Unavailable, SettingsPage, SettingChoices, SetSetting, EditN
     // Accessory Settings > Bluetooth Devices (bluetooth_shell.cpp, D10): lists and pairs Bluetooth controllers and
     // headsets. Native-only.
     BluetoothApp, BluetoothPair,
+    // Game Settings > Install controller driver (controller_mode.h): runs the bundled, re-verified ViGEmBus installer after a confirmation.
+    ControllerDriver,
     // First-run setup (setup_shell.cpp, D8, audit/FIRST-RUN.md): every row of the setup pages and Settings > System Settings > Run Setup Again.
     // Entry::value is the command ("next", "fw:use|<path>", ...); the page it sits on is told apart by its first row id "setup:<step>...".
     Setup,
@@ -310,7 +313,7 @@ enum class OptionCommand { Activate, Information,
     SortPlaytimeDescending, SortSizeDescending, SortTitleAscending,
     GroupByCollection, GroupByStatus,
     SteamToggleFavorite, SteamCollectionMenu, SteamCollectionToggle, SteamCollectionCreate,
-    SteamLaunchOptions, SteamStoreSearch, SteamCmdChooseLibrary, SteamCmdChooseLibraryTarget,
+    SteamLaunchOptions, SteamControllerMode, SteamStoreSearch, SteamCmdChooseLibrary, SteamCmdChooseLibraryTarget,
     InGameScreenshot,
     // A PS3 saved-data row (save_data.cpp): Copy backs the save folder up into <data>/savedata-backup, Delete moves it
     // to the Recycle Bin after the firmware's own ask. Both go through FileOperations (file_ops.h) and its refusals.
@@ -1074,6 +1077,12 @@ private:
     void initPhoneRemote();
     void activatePhoneRemote(const Entry& entry);
     void activateSystemUpdate(const Entry& entry);
+    void activateControllerDriver(const Entry& entry);
+    // Controller mode (audit/CONTROLLER-MODE.md): the virtual Xbox pad exists only between controllerLaunch() and controllerEnd().
+    bool controllerLaunch(const QString& appId,const std::function<bool()>& start);
+    void controllerEnd(const char* why);
+    void controllerTick();
+    controller::Override controllerOverride(const QString& appId) const;
     void initWifi();
     void activateWifi(const Entry& entry);
     void activateBluetooth(const Entry& entry);
@@ -1347,6 +1356,9 @@ private:
     QString steamGameId_;            // a Steam title handed to steam.exe, watched through the registry
     steamquit::Quitter steamQuitter_;   // closes a Steam title's own processes (Quit Game)
     QTimer steamWatch_;              // polls Steam's Running flags while steamGameId_ is set
+    std::unique_ptr<controller::VirtualPad> controllerPad_;   // the backend (ViGEm, or the fake with XMB_CONTROLLER_BACKEND=fake)
+    controller::Session controllerSession_;                    // Off / DriverMissing / Ready / Active / Error
+    QTimer controllerFeed_;                                    // feeds the DualSense to the virtual pad while it exists
     QElapsedTimer steamWatchAge_;    // since the handoff (or last update tick), for the start timeout
     SteamTrackState steamTrack_;      // the pure lifecycle reducer's state (seenRunning/consecutiveStopped)
     bool ownedInFlight_=false;

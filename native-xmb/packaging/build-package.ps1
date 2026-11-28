@@ -1,7 +1,10 @@
 param(
     [string]$OutputDirectory,
     [string]$PackageDirectory,
-    [switch]$Zip
+    [switch]$Zip,
+    # Where a local build finds the pinned ViGEmBus installer instead of downloading it (see fetch-vigem-driver.ps1).
+    [string]$DriverCache = $env:XMB_VIGEM_CACHE,
+    [switch]$OfflineDriver
 )
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)   # native-xmb/packaging -> repo root
@@ -52,6 +55,13 @@ $global:LASTEXITCODE = 0
 foreach($name in 'run-kiosk.ps1','watchdog.ps1','kiosk-launch.vbs','apply-update.ps1','install-autostart.ps1','repack-install.ps1','README.md','xmb-config.example.json') {
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination $PackageDirectory -Force
 }
+
+# Controller mode's driver (ViGEmBus), bundled but never committed: fetched from the URL pinned in vigem-driver.json (or the
+# local cache) and verified by SHA-256 AND Authenticode signature. Any mismatch fails the whole package.
+& (Join-Path $PSScriptRoot 'fetch-vigem-driver.ps1') -Destination (Join-Path $PackageDirectory 'drivers') -CacheDirectory $DriverCache -Offline:$OfflineDriver
+if(-not $?) { throw 'The controller driver installer could not be fetched and verified; not packaging.' }
+# Third-party notices (ViGEmClient MIT, ViGEmBus BSD-3-Clause, and the rest) ship with the app.
+Copy-Item -LiteralPath (Join-Path (Split-Path -Parent $PSScriptRoot) 'THIRD-PARTY.md') -Destination (Join-Path $PackageDirectory 'THIRD-PARTY-NOTICES.md') -Force
 
 Write-Host ''
 Write-Host 'Packaged. Contents:'

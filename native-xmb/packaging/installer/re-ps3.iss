@@ -61,6 +61,9 @@ CloseApplications=no
 [Tasks]
 Name: "autostart"; Description: "Start the XMB full-screen when I sign in to Windows (with crash watchdog)"
 Name: "shortcuts"; Description: "Add ""XMB"" and ""Return to XMB"" to the Start menu"
+; Controller Mode needs the ViGEmBus driver. Offered (and ticked) only when the ViGEmBus service is missing: an existing
+; ViGEmBus, whatever its version, is left alone. The vendor documents no silent switch, so its own window shows.
+Name: "controllerdriver"; Description: "Install the controller driver (needed for Controller Mode)"; Check: ViGEmBusMissing
 
 [Files]
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs; \
@@ -81,6 +84,10 @@ Filename: "powershell.exe"; \
 Filename: "powershell.exe"; \
   Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\install-autostart.ps1"" -Uninstall"; \
   Flags: runhidden waituntilterminated; Tasks: not autostart and not shortcuts
+; The vendor installer is elevated by itself (runas); this setup stays per user. A silent setup skips it: the vendor installer has no documented silent mode.
+Filename: "{app}\drivers\ViGEmBus_1.22.0_x64_x86_arm64.exe"; Verb: runas; \
+  Flags: shellexec waituntilterminated skipifsilent; Tasks: controllerdriver; Check: ViGEmBusMissing and BundledDriverPresent; \
+  StatusMsg: "Installing the controller driver..."
 ; Start it now the way the logon task would (without firmware it opens the XMB's own first-run setup). Through
 ; kiosk-launch.vbs, like the task: Windows 11's default terminal would otherwise open an empty terminal window.
 Filename: "{sys}\wscript.exe"; \
@@ -106,6 +113,17 @@ var
   OwnFlashPage: TInputDirWizardPage;      // the "I already have a dev_flash folder" alternative
   DisplayPage: TInputQueryWizardPage;
   ProgressPage: TOutputMarqueeProgressWizardPage;
+
+// True when no ViGEmBus service exists, so an existing driver (the HTPC has 1.21.442) is never touched.
+function ViGEmBusMissing(): Boolean;
+begin
+  Result := not RegKeyExists(HKLM, 'SYSTEM\CurrentControlSet\Services\ViGEmBus');
+end;
+
+function BundledDriverPresent(): Boolean;
+begin
+  Result := FileExists(ExpandConstant('{app}\drivers\ViGEmBus_1.22.0_x64_x86_arm64.exe'));
+end;
 
 function ConfigPath(): String;
 begin

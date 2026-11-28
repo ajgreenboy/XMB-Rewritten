@@ -173,6 +173,12 @@ SteamUserOverlay loadSteamUserOverlay(const QString& dataDirectory) {
         const QString args = it.value().toString().trimmed();
         if (!id.isEmpty() && !args.isEmpty()) overlay.launchOptions.insert(id, args.left(1024));
     }
+    const QJsonObject modes = root.value(QLatin1String("controllerMode")).toObject();
+    for (auto it = modes.begin(); it != modes.end(); ++it) {
+        const QString id = it.key().trimmed();
+        const QString mode = it.value().toString().trimmed().toLower();
+        if (!id.isEmpty() && (mode == QLatin1String("on") || mode == QLatin1String("off"))) overlay.controllerMode.insert(id, mode);
+    }
     return overlay;
 }
 
@@ -206,6 +212,15 @@ bool saveSteamUserOverlay(const QString& dataDirectory, const SteamUserOverlay& 
         if (!args.isEmpty()) optsObj.insert(id, args);
     }
     root.insert(QStringLiteral("launchOptions"), optsObj);
+
+    QJsonObject modeObj;
+    QStringList modeKeys = overlay.controllerMode.keys();
+    modeKeys.sort();
+    for (const QString& id : modeKeys) {
+        const QString mode = overlay.controllerMode.value(id).trimmed().toLower();
+        if (mode == QLatin1String("on") || mode == QLatin1String("off")) modeObj.insert(id, mode);
+    }
+    if (!modeObj.isEmpty()) root.insert(QStringLiteral("controllerMode"), modeObj);
 
     QSaveFile file(path);
     if (!file.open(QIODevice::WriteOnly)) return false;

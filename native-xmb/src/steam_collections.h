@@ -26,8 +26,10 @@ struct SteamUserOverlay {
     QSet<QString> favorites;
     QHash<QString, QStringList> customCollections;
     QHash<QString, QString> launchOptions;
+    // Per-title Controller Mode override (controller_mode.h): "on" or "off"; an absent id follows the global setting.
+    QHash<QString, QString> controllerMode;
     bool isEmpty() const {
-        return favorites.isEmpty() && customCollections.isEmpty() && launchOptions.isEmpty();
+        return favorites.isEmpty() && customCollections.isEmpty() && launchOptions.isEmpty() && controllerMode.isEmpty();
     }
 };
 

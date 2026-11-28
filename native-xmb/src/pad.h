@@ -111,6 +111,9 @@ QStringList bdRemoteCapture();
 // battery byte is read only when the report is long enough for the layout's own offset, so a short or unknown
 // report is rejected instead of reading past its end. Local verification runs documented synthetic reports here.
 bool parseReport(Kind kind,const QVector<quint8>& report,Info& out);
+// The same parse, also returning the button/stick/trigger State the report carries (Controller mode's mapping tests feed
+// documented synthetic USB and Bluetooth reports through it).
+bool parseReportState(Kind kind,const QVector<quint8>& report,State& state,Info& out);
 // ---- XInput (Xbox-layout) controllers, all four slots (PHASES H10, audit/INPUT.md) ----
 // Slots 0-3 merged into one state: buttons OR'd (wButtons layout, as State), the stick and each trigger taken
 // from whichever slot deflects it most. ly is +down, as the HID reports. A slot that reported nothing is

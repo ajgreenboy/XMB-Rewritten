@@ -39,6 +39,8 @@ QStringList Preferences::sharedKeys() {
             QStringLiteral("cec/tvOnAtStart"),QStringLiteral("cec/standbyOnTurnOff"),
             // Steam background mode (audit/STEAM-HIDDEN.md) belongs to the machine the TV is on.
             QStringLiteral("steam/background"),
+            // Controller mode (audit/CONTROLLER-MODE.md): machine-wide, like the driver it depends on.
+            QStringLiteral("steam/controllerMode"),
             // SteamCMD (audit/STEAMCMD.md): where it is, which account name it was signed in with, and the Steam
             // library installs go to. Machine-wide, like the SteamCMD folder itself. Never a password or a code.
             QStringLiteral("steamcmd/path"),QStringLiteral("steamcmd/account"),QStringLiteral("steamcmd/library")};
@@ -105,7 +107,7 @@ QVariant Preferences::defaultValue(const QString& key) {
     // /setting/system/notification and /setting/system/notificationTrophy (vsh.elf): both classes default to shown.
     if(key=="audio/keyTone" || key=="system/notificationMessages" || key=="system/notificationTrophy" || key=="jellyfin/autoplayNext" || key=="appearance/tvColumn")return true;
     if(key=="power/idleMinutes" || key=="display/screensaverMinutes")return 0;
-    if(key=="desktop/keepMusic" || key=="desktop/controllerMouse" || key=="steam/background")return true;
+    if(key=="desktop/keepMusic" || key=="desktop/controllerMouse" || key=="steam/background" || key=="steam/controllerMode")return true;
     if(key=="desktop/pointerSpeed")return 3;
     if(key=="desktop/hotkey")return QString("Ctrl+Alt+Home");
     if(key=="audio/muted" || key=="media/repeat" || key=="media/shuffle" || key=="display/fullscreen" ||
@@ -137,7 +139,7 @@ bool Preferences::validBare(const QString& key,const QVariant& value) {
     if(key=="display/screensaverMinutes")return integer(0,30) && (value.toInt()==0 || value.toInt()==5 || value.toInt()==10 || value.toInt()==20 || value.toInt()==30);
     if(key=="audio/keyTone" || key=="system/notificationMessages" || key=="system/notificationTrophy" ||
        key=="jellyfin/autoplayNext" || key=="audio/muted" || key=="media/repeat" || key=="media/shuffle" || key=="display/fullscreen" || key=="desktop/keepMusic" || key=="desktop/controllerMouse" ||
-       key=="cec/tvOnAtStart" || key=="cec/standbyOnTurnOff" || key=="steam/background" || key=="hydra/catalogueCache")return value.metaType().id()==QMetaType::Bool;
+       key=="cec/tvOnAtStart" || key=="cec/standbyOnTurnOff" || key=="steam/background" || key=="steam/controllerMode" || key=="hydra/catalogueCache")return value.metaType().id()==QMetaType::Bool;
     if(value.metaType().id()!=QMetaType::QString)return false;
     const auto text=value.toString();
     if(text.contains(QChar(0)))return false;

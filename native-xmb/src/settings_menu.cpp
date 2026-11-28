@@ -9,6 +9,7 @@
 #include "xmbml_view.h"
 #include "rco_objects.h"
 #include "gallery_floor.h"
+#include "controller_mode.h"
 #include <cmath>
 #include <memory>
 #include <iterator>
@@ -673,6 +674,26 @@ PageRows segmentRows(const QString& id,Assets& assets) {
         background.settingsPage=id;background.source=QStringLiteral("native");
         data.nativeOnly<<background.id;
         data.entries.push_back(std::move(background));
+        // Native-only: Controller Mode (audit/CONTROLLER-MODE.md, spec 4.11). While a Steam title runs the XMB presents a virtual
+        // Xbox 360 pad built from the DualSense, so Xbox-only games work and the XMB keeps the PS button. The row's note is
+        // read from the system when the page is built: the driver's state, and what is known about Steam Input.
+        const auto driver=xmb::controller::queryDriver();
+        Entry mode=option(QStringLiteral("controller_mode"),QObject::tr("Controller Mode"),
+            QObject::tr("Gives a running Steam game a virtual Xbox 360 controller that follows your PlayStation controller, so games that only know Xbox pads work. The PS button stays with the XMB. A title can override this from its own menu. XMB_CONTROLLER_MODE=0 turns it off for a run. %1")
+                .arg(xmb::controller::rowDetail(driver,xmb::controller::steamInputStatus(QString(),QString()))),
+            QStringLiteral("steam/controllerMode"),Action::SettingChoices,QString{});
+        mode.settingsPage=id;mode.source=QStringLiteral("native");
+        data.nativeOnly<<mode.id;
+        data.entries.push_back(std::move(mode));
+        if(driver.state==xmb::controller::DriverState::Missing) {
+            Entry install;
+            install.id=QStringLiteral("controller_driver");install.title=QObject::tr("Install controller driver");
+            install.action=Action::ControllerDriver;
+            install.detail=QObject::tr("Installs the virtual gamepad driver (ViGEmBus) that Controller Mode needs. Asks before it runs; Windows then asks for administrator permission.");
+            install.settingsPage=id;install.source=QStringLiteral("native");
+            data.nativeOnly<<install.id;
+            data.entries.push_back(std::move(install));
+        }
     }
     if(id==QStringLiteral("device")) {
         // Native-only (D10): this build's own Bluetooth list/pair; the console's accessory page binds its pad to
@@ -1525,7 +1546,7 @@ void dumpSettingsPage(const PageRows& data,Assets& assets,
             entry.action==Action::Unavailable?QStringLiteral("placeholder"):
             (!display.isEmpty() || entry.action==Action::ResetPreferences ||
              (entry.action==Action::SettingsPage && settingsSubpage(entry.value)) ||
-             entry.action==Action::SystemUpdate || entry.action==Action::BluetoothApp)?QStringLiteral("real"):QStringLiteral("placeholder");
+             entry.action==Action::SystemUpdate || entry.action==Action::BluetoothApp || entry.action==Action::ControllerDriver)?QStringLiteral("real"):QStringLiteral("placeholder");
         rows.push_back(QJsonObject{{"id",entry.id},{"title",entry.title},{"detail",entry.detail},
             {"action",int(entry.action)},{"setting",entry.setting},{"value",entry.value.left(80)},
             {"displayValue",display},{"valueSource",valueSource},{"valueStatus",valueStatus},
@@ -1928,6 +1949,7 @@ const char* crossName(Action action) {    switch(action) {
     case Action::ResetPreferences:return "confirmReset";
     case Action::SystemUpdate:return "checkUpdate";
     case Action::BluetoothApp:return "bluetooth";
+    case Action::ControllerDriver:return "installControllerDriver";
     case Action::Unavailable:return "none";
     default:return "other";
     }
@@ -1968,7 +1990,7 @@ QString rowCoverage(const Entry& entry,const QString& value) {
     if(!nested.isEmpty())return nested.value("coverage").toString();
     if(entry.action==Action::Unavailable)return QStringLiteral("placeholder");
     if(entry.action==Action::SettingsPage && settingsSubpage(entry.value))return QStringLiteral("real");
-    if(entry.action==Action::SystemUpdate || entry.action==Action::BluetoothApp)return QStringLiteral("real");
+    if(entry.action==Action::SystemUpdate || entry.action==Action::BluetoothApp || entry.action==Action::ControllerDriver)return QStringLiteral("real");
     if(entry.settingsPage==QLatin1String("system") && entry.id==QLatin1String("information"))return QStringLiteral("real");
     if(!value.isEmpty())return QStringLiteral("real");
     if(entry.action==Action::ResetPreferences)return QStringLiteral("real");

@@ -151,6 +151,7 @@ qt_add_executable(re-ps3-native
     src/firmware_extract.cpp src/firmware_extract.h src/firmware_crypto.cpp src/firmware_crypto.h ${XMB_RUST_CRYPTO_SOURCES}
     src/wifi_client.cpp src/wifi_client.h src/wifi_shell.cpp
     src/bluetooth_client.cpp src/bluetooth_client.h src/bluetooth_shell.cpp
+    src/controller_mode.cpp src/controller_mode.h src/controller_mode_shell.cpp
     src/wol_client.cpp src/wol_client.h src/homeassistant_client.cpp src/homeassistant_client.h src/home_shell.cpp
     src/psn_pages.h src/psn_shell.cpp src/notification_toast.h src/friends_ui.h
     src/photo_viewport.cpp src/photo_viewport.h
@@ -686,6 +687,19 @@ if(XMB_STEAM_HIDE_BUILD_TESTS)
         add_dependencies(xmb-steam-hide-tests xmb-steam-hide-standin)
     endif()
 endif()
+option(XMB_CONTROLLER_MODE_BUILD_TESTS "Build the Controller mode tests (DualSense to Xbox 360 mapping, state machine, lifecycle ordering, fake backend)" OFF)
+if(XMB_CONTROLLER_MODE_BUILD_TESTS AND WIN32)
+    qt_add_executable(xmb-controller-mode-tests tests/controller_mode_tests.cpp src/controller_mode.cpp src/controller_mode.h
+        src/pad.cpp src/pad.h src/bd_remote.h src/steam_collections.cpp src/steam_collections.h
+        src/steam_library.cpp src/steam_library.h src/steam_vdf.cpp src/steam_vdf.h src/steam_appinfo.cpp src/steam_appinfo.h
+        src/steam_keyless.cpp src/steam_keyless.h src/steam_activity.cpp src/steam_activity.h src/steam_family.cpp src/steam_family.h
+        src/steam_accounts.cpp src/steam_accounts.h src/steam_account_state.cpp src/steam_account_state.h src/steam_refresh.h src/steam_switch.h)
+    target_include_directories(xmb-controller-mode-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(xmb-controller-mode-tests PRIVATE Qt6::Core xinput9_1_0 hid setupapi ole32 shell32 advapi32 wintrust crypt32)
+    if(MSVC)
+        target_compile_options(xmb-controller-mode-tests PRIVATE /W4 /permissive- /utf-8)
+    endif()
+endif()
 option(XMB_STEAMCMD_BUILD_TESTS "Build the SteamCMD client tests (prompt matching, progress, command lines, credential audit) and the fake steamcmd they drive" OFF)
 if(XMB_STEAMCMD_BUILD_TESTS)
     qt_add_executable(xmb-steamcmd-tests tests/steamcmd_tests.cpp src/steamcmd.cpp src/steamcmd.h src/steam_vdf.cpp src/steam_vdf.h)
@@ -776,6 +790,21 @@ else()
 endif()
 qt_add_executable(xmb-reference-frames src/reference_frames.cpp)
 target_link_libraries(xmb-reference-frames PRIVATE Qt6::Gui Qt6::Multimedia)
+# ViGEmClient (MIT, vendored in third_party/ViGEmClient, see its README): the real virtual-pad backend of Controller mode.
+# Windows only; a Linux build never compiles it and falls back to the "unavailable" backend. Warnings are silenced on this
+# vendored target only, so /W4 stays clean for the XMB's own code.
+if(WIN32)
+    add_library(ViGEmClient STATIC third_party/ViGEmClient/src/ViGEmClient.cpp)
+    target_include_directories(ViGEmClient PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/third_party/ViGEmClient/include)
+    target_include_directories(ViGEmClient PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/third_party/ViGEmClient/src)
+    target_link_libraries(ViGEmClient PUBLIC setupapi)
+    if(MSVC)
+        target_compile_options(ViGEmClient PRIVATE /W0 /utf-8)
+    endif()
+    target_compile_definitions(ViGEmClient PRIVATE _CRT_SECURE_NO_WARNINGS)
+    target_link_libraries(re-ps3-native PRIVATE ViGEmClient wintrust crypt32)
+    target_compile_definitions(re-ps3-native PRIVATE XMB_HAVE_VIGEM)
+endif()
 if(WIN32)
     target_link_libraries(re-ps3-native PRIVATE xinput9_1_0 hid setupapi ole32 iphlpapi ws2_32 shell32 advapi32)
 else()

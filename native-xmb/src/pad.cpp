@@ -951,6 +951,10 @@ bool parseReport(Kind kind,const QVector<quint8>& report,Info& out) {
     const std::vector<quint8> bytes(report.cbegin(),report.cend());
     return parse(kind,bytes,state,out);
 }
+bool parseReportState(Kind kind,const QVector<quint8>& report,State& state,Info& out) {
+    const std::vector<quint8> bytes(report.cbegin(),report.cend());
+    return parse(kind,bytes,state,out);
+}
 quint32 oskPadActions(quint16 buttons, float l2, float r2) {
     // The pad's OSK functions (BEHAVIOUR-GAPS-SPEC section 3), mapped from the same button bits padAction
     // already names: L1/R1 move the text caret, SELECT is Input Mode, and the two analog triggers become the

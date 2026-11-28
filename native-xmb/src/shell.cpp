@@ -919,7 +919,10 @@ bool Shell::launchSteamApp(const QString& appId,const QString& title) {
         launchArguments=qEnvironmentVariable("XMB_STEAM_FAKE_ARGS").split(' ',Qt::SkipEmptyParts);
         launchDirectory=dir;
     }
-    if(!QFileInfo(exe).isFile() || !QProcess::startDetached(exe,launchArguments,launchDirectory)) {
+    // Controller mode: the virtual pad is created BEFORE the game starts (games enumerate pads at start-up); a failed create
+    // only changes the row's status, the launch goes ahead either way, and a launch that fails removes the pad again.
+    const bool started=controllerLaunch(appId,[&]{return QFileInfo(exe).isFile() && QProcess::startDetached(exe,launchArguments,launchDirectory);});
+    if(!started) {
         showMessage(title,"Steam could not be started. Refresh the game library and check the Steam installation.",MessageKind::Page);
         return false;
     }
@@ -1069,6 +1072,7 @@ void Shell::pollSteamGame() {
         // The launch wait expired without a confirmed run. The message names what was observed:
         // Steam's status could not be read, or Steam was readable but never reported the title running.
         steamWatch_.stop();const QString title=gameTitle_;steamGameId_.clear();gameTitle_.clear();
+        controllerEnd("launch wait expired");
         clearInGame();
         if(launchCover_)launchCover_->titleEnded(QStringLiteral("Steam launch wait expired"));
         if(t.status==SteamAppStatus::Unavailable) {
@@ -1085,6 +1089,7 @@ void Shell::pollSteamGame() {
         steamWatch_.stop();
         const QString title=gameTitle_;
         steamGameId_.clear();gameTitle_.clear();steamTrack_={};
+        controllerEnd("Steam reported the title stopped");
         qInfo().noquote()<<"returned from"<<title<<"(Steam reported it stopped)";
         if(launchCover_)launchCover_->titleEnded(QStringLiteral("Steam reported it stopped"));
         clearInGame();
@@ -2937,7 +2942,7 @@ Shell::Shell(QString dataDirectory,Assets& assets,QObject* parent):QObject(paren
         refreshJellyfinSignInPage();emit changed();
     });
 }
-Shell::~Shell(){stopReleaseJobs();host::holdDisplayAwake(false);jellyfinRequest_=0;finishJellyfinPlayback();jellyfin_.signOut();disconnect(&discordFriends_,nullptr,this,nullptr);disconnect(steamArtwork_.get(),nullptr,this,nullptr);}
+Shell::~Shell(){controllerEnd("shutdown");stopReleaseJobs();host::holdDisplayAwake(false);jellyfinRequest_=0;finishJellyfinPlayback();jellyfin_.signOut();disconnect(&discordFriends_,nullptr,this,nullptr);disconnect(steamArtwork_.get(),nullptr,this,nullptr);}
 // --- Notifications --------------------------------------------------------------------------------
 // One pop-up on screen at a time; the rest wait in order. The lifetime starts when an entry reaches the
 // front, so a burst of events each gets its own 4 s instead of the last one starving the others.
@@ -3588,6 +3593,7 @@ void Shell::activate() {
     case Action::PsnSignIn:case Action::PsnPage:case Action::PsnLeaf:activatePsn(entry);break;
     case Action::PhoneRemote:activatePhoneRemote(entry);break;
     case Action::SystemUpdate:activateSystemUpdate(entry);break;
+    case Action::ControllerDriver:activateControllerDriver(entry);break;
     case Action::WifiApp:activateWifi(entry);break;
     case Action::BluetoothApp:case Action::BluetoothPair:activateBluetooth(entry);break;
     case Action::Setup:activateSetup(entry);break;
@@ -4261,6 +4267,12 @@ void Shell::buildOptions() {
             const QString currentArgs=steamOverlay_.launchOptions.value(overlayKey).trimmed();
             addOption({"",QStringLiteral("Launch Options...")},OptionCommand::SteamLaunchOptions,"steam-game",true,
                       currentArgs.isEmpty()?tr("Set custom command-line arguments for this title."):tr("Current: %1").arg(currentArgs));
+            if(steamRow) {
+                const auto mode=controllerOverride(overlayKey);
+                addOption({"",tr("Controller Mode: %1").arg(mode==controller::Override::On?tr("On"):mode==controller::Override::Off?tr("Off"):tr("Default"))},
+                          OptionCommand::SteamControllerMode,"steam-game",true,
+                          tr("Whether this title gets a virtual Xbox 360 pad built from your controller. Default follows Game Settings."));
+            }
         }
         if(steamRow) {
             const auto link=[&](const QString& title,int kind,const QString& note){
@@ -4874,6 +4886,23 @@ void Shell::optionsActivate() {
         if(!key.isEmpty()) {
             interactionAudio_.play(InteractionAudio::Cue::Confirm);
             emit requestJellyfinFieldEdit(QStringLiteral("steam:new-collection:")+key,tr("New Collection Name"),{},false);
+        }
+        emit changed();
+        break;
+    }
+    case OptionCommand::SteamControllerMode: {
+        bool numeric=false;entry.value.toULongLong(&numeric);
+        const QString key=(numeric && (entry.action==Action::LaunchSteam || entry.action==Action::InstallSteam))?entry.value:entry.id;
+        resetOptions();
+        if(!key.isEmpty()) {
+            // Default -> On -> Off -> Default.
+            const auto current=controllerOverride(key);
+            const auto next=current==controller::Override::Default?controller::Override::On:current==controller::Override::On?controller::Override::Off:controller::Override::Default;
+            if(next==controller::Override::Default)steamOverlay_.controllerMode.remove(key);
+            else steamOverlay_.controllerMode.insert(key,controller::overrideName(next));
+            saveSteamUserOverlay(dataDirectory_,steamOverlay_);
+            notify(tr("Controller Mode"),next==controller::Override::On?tr("On for this title"):next==controller::Override::Off?tr("Off for this title"):tr("Default for this title"),QStringLiteral("tex_notification_info"),false);
+            interactionAudio_.play(InteractionAudio::Cue::Confirm);
         }
         emit changed();
         break;

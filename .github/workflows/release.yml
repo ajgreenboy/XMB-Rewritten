@@ -96,6 +96,16 @@ jobs:
         run: |
           .\native-xmb\write-build-info.ps1 -OutputDirectory C:\release\out -ProjectRoot "$env:GITHUB_WORKSPACE" -RefreshExecutableHash
 
+      # Controller mode's driver (ViGEmBus) is bundled but never committed: fetched from the URL pinned in
+      # native-xmb/packaging/vigem-driver.json and verified (size, SHA-256 AND Authenticode signer). A mismatch fails the
+      # release here, before anything is packaged. build-package.ps1 then reuses this verified copy as its cache.
+      - name: Fetch and verify the controller driver installer
+        shell: pwsh
+        run: |
+          .\native-xmb\packaging\fetch-vigem-driver.ps1 -Destination "$env:RUNNER_TEMP\vigem-cache"
+          if (-not $?) { throw 'ViGEmBus installer verification failed.' }
+          "XMB_VIGEM_CACHE=$env:RUNNER_TEMP\vigem-cache" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
       - name: Package the app
         shell: pwsh
         run: |
