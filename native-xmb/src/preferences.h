@@ -71,6 +71,9 @@ public:
     bool setValues(const QVariantMap& values);
     QString path() const { return path_; }
     QString error() const { return error_; }
+    // File name (not path) the damaged preferences file was moved to when it was truncated or otherwise not JSON
+    // and was replaced with defaults at construction. Empty when nothing was healed or the file was merely blank.
+    QString healedBackup() const { return healedBackup_; }
 
     // The local profile whose values value()/setValue() resolve against; empty before the first
     // setProfile() call, which is the shared/legacy state.
@@ -96,7 +99,7 @@ signals:
     void failed(const QString& message);
     void profileChanged(const QString& id);
 private:
-    QString path_,error_;
+    QString path_,error_,healedBackup_;
     QJsonObject values_;
     QString profile_;
     bool writable_=true;
@@ -106,6 +109,7 @@ private:
     static bool validBare(const QString& key,const QVariant& value);
     static bool valid(const QString& key,const QVariant& value);
     bool fail(const QString& message);
+    bool healDamaged(bool blank);
     bool write(const QJsonObject& values,const QString& profile);
 };
 }

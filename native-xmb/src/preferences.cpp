@@ -1,11 +1,13 @@
 #include "preferences.h"
 #include "jellyfin_player.h"
+#include <QDateTime>
 #include <QDebug>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
 #include <QRegularExpression>
 #include <QSaveFile>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonParseError>
 #include <QSettings>
@@ -261,6 +263,24 @@ QStringList Preferences::profileIds() const {
     ids.sort();
     return ids;
 }
+bool Preferences::healDamaged(bool blank) {
+    // Never deleted: the damaged file is renamed beside the original so nothing is lost.
+    const auto stamp=QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd-HHmmss"));
+    const auto base=QStringLiteral("preferences.json.corrupt-")+stamp;
+    const QDir folder=QFileInfo(path_).absoluteDir();
+    QString name=base;
+    for(int counter=2;QFileInfo::exists(folder.filePath(name));++counter) {
+        if(counter>1000){name.clear();break;}
+        name=base+QLatin1Char('-')+QString::number(counter);
+    }
+    if(name.isEmpty() || !QFile::rename(path_,folder.filePath(name))) {
+        writable_=false;error_="Preferences have an invalid or newer format. The existing file has been preserved.";
+        return false;
+    }
+    qWarning().noquote()<<"preferences: the settings file was"<<(blank?"empty or blank":"damaged")<<"- kept as"<<name<<"and replaced with defaults";
+    if(!blank)healedBackup_=name;
+    return true;
+}
 Preferences::Preferences(const QString& directory,QObject* parent):QObject(parent),path_(QDir(directory).filePath("preferences.json")) {
     QDir().mkpath(directory);
     QFile file(path_);
@@ -268,7 +288,23 @@ Preferences::Preferences(const QString& directory,QObject* parent):QObject(paren
         if(!file.open(QIODevice::ReadOnly) || file.size()>1024*1024) {
             writable_=false;error_="Preferences could not be read. The existing file has been preserved.";return;
         }
-        QJsonParseError parse;const auto document=QJsonDocument::fromJson(file.readAll(),&parse);
+        const auto bytes=file.readAll();
+        QJsonParseError parse;const auto document=QJsonDocument::fromJson(bytes,&parse);
+        // A file that cannot be parsed at all is damage, not a newer format (a newer build writes valid JSON): a
+        // power loss during a write leaves an empty, all-NUL or truncated file. Move it aside and start from
+        // defaults. Valid JSON of any other shape stays untouched below, because a newer build may have written it.
+        if(parse.error!=QJsonParseError::NoError) {
+            bool blank=true;
+            for(const char c:bytes)if(c!=0 && c!=' ' && c!='\t' && c!='\n' && c!='\r'){blank=false;break;}
+            // Qt refuses a bare top-level scalar (42, "text", true, null), which is still valid JSON of a foreign
+            // shape: wrapped in an array it parses as exactly one element, and that file is left alone.
+            if(!blank && QJsonDocument::fromJson("["+bytes+"]").array().size()==1) {
+                writable_=false;error_="Preferences have an invalid or newer format. The existing file has been preserved.";return;
+            }
+            file.close();
+            if(!healDamaged(blank))return;
+            goto fresh;
+        }
         const auto root=document.object();
         const int version=root.value("version").toInt(-1);
         if(parse.error!=QJsonParseError::NoError || !document.isObject() || (version!=1 && version!=2) ||
@@ -307,6 +343,7 @@ Preferences::Preferences(const QString& directory,QObject* parent):QObject(paren
             <<"("<<values_.size()<<"values)";
         return;
     }
+    fresh:
     // Migrate the first native foundation's INI preferences without touching
     // window geometry or deleting the legacy file.
     QSettings legacy(QDir(directory).filePath("settings.ini"),QSettings::IniFormat);

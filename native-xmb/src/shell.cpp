@@ -2859,6 +2859,9 @@ Shell::Shell(QString dataDirectory,Assets& assets,QObject* parent):QObject(paren
     activity_.start();idle_.start(1000);applyPreferences();
     xmb::bootprof::mark("Shell applyPreferences");
     if(!preferences_.error().isEmpty())showMessage(preferences_.error(),MessageKind::Page);
+    // A damaged (truncated) settings file was moved aside and replaced with defaults: one ordinary notice, no page.
+    if(!preferences_.healedBackup().isEmpty())
+        notify(QObject::tr("Settings"),QObject::tr("Your settings file was damaged and has been replaced with defaults. The damaged file was kept as %1.").arg(preferences_.healedBackup()),"tex_notification_caution");
     if(!profiles_.error().isEmpty())showMessage(profiles_.error(),MessageKind::Page);
     connect(video_.get(),&QVideoSink::videoFrameChanged,this,[this](const QVideoFrame& frame){emit mediaFrame(frame.toImage());});
     // The text of an embedded subtitle stream, when one is the active choice (appendEmbeddedSubtitles).
