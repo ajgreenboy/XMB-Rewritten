@@ -204,7 +204,7 @@ different state than the recipe expects) or an input/runtime error.
 One discovery capture of the Game column root reads the `XMB_DUMP_ENTRIES` catalogue dump to find the root row
 indices. A multi-stage recipe then opens its parent page and reads that page's `<dump>.folder.json` to resolve the
 child row, so the scripted navigation follows the rebuilt column instead of fixed offsets. Every recipe copies its
-data directory from `out/native-reference/store/ui3-data` (preferences, profiles, settings, `family-shared.json`,
+data directory from `out/native-reference/store/ui3-data` (preferences, profiles, settings,
 cached Steam headers, artwork overrides), pins all clocks, and sets `XMB_STEAM_ARTWORK=0` so background artwork
 fetches cannot change a frame mid-capture. References and their state sidecars live under
 `out/native-reference/layers/` (gitignored local reference data, never committed).
@@ -212,9 +212,9 @@ fetches cannot change a frame mid-capture. References and their state sidecars l
 | State | Navigation and assertions | Regions |
 |---|---|---|
 | `steam-game-root` | Game column root, no input. Asserts depth 0 and the exact 11-row column: `steam-store`, `steam-folder-all-games` (detail = owned titles, 282), then `vita`, `data`, `memory`, `ps2`, `psp`, `ps3`, `store`, `content:refresh`, `content:import`. | whole frame; item column 340,380,1080,600 |
-| `steam-all-games` | Select `steam-folder-all-games` (root index 1) and press ENTER. Asserts depth 1, `entryId=steam-folder-all-titles`, 14 rows, folder mode `all`, and the ordered row list: All Titles (owned titles, 282), the 11 non-empty collection folders in name order (Apps 6, Canyon Dogshit 1, Favorites 1, Fighting 16, Hidden 41, HTPC 3, Idle/CLicker/Shit 2, Lego 21, Multiplayer 99, Singleplayer 91, Valve 19), Not Installed (owned - installed + familyShared, 275), Family Shared (3). | whole frame; rows 430,420,700,560 |
+| `steam-all-games` | Select `steam-folder-all-games` (root index 1) and press ENTER. Asserts depth 1, `entryId=steam-folder-all-titles`, 13 rows (14 before the Family Shared folder was dropped, D2), folder mode `all`, and the ordered row list: All Titles (owned titles, 282), the 11 non-empty collection folders in name order (Apps 6, Canyon Dogshit 1, Favorites 1, Fighting 16, Hidden 41, HTPC 3, Idle/CLicker/Shit 2, Lego 21, Multiplayer 99, Singleplayer 91, Valve 19), Not Installed (owned - installed, 272). | whole frame; rows 430,420,700,560 |
 | `steam-store-sections` | Select `steam-store` (root index 0) and press ENTER. Asserts depth 1, `entryId=store-section:top_sellers`, title Top Sellers, 3 rows, and no `<dump>.store.json` (the sections page must make no store request). | whole frame; sections 440,400,640,320 |
-| `steam-not-installed` | All Games (root index 1), then the `Not Installed` row (index 12, resolved from the All Games folder dump) and press ENTER. Asserts depth 2, folder mode `library`, row count = owned - installed + 3 family-shared apps (275), every row `steam:*` with a "Not installed" detail, and the sidecar count equal to the folder count. | whole frame; rows 430,420,640,560 |
+| `steam-not-installed` | All Games (root index 1), then the `Not Installed` row (index 12, resolved from the All Games folder dump) and press ENTER. Asserts depth 2, folder mode `library`, row count = owned - installed (272; 275 before Family Shared was dropped, D2), every row `steam:*` with a "Not installed" detail, and the sidecar count equal to the folder count. | whole frame; rows 430,420,640,560 |
 
 ### Determinism and measured numbers
 
@@ -230,10 +230,9 @@ state is reported as failed; that keeps a single external flake from reading as 
 | `steam-game-root` | game, depth 0, 11 rows | inf / 1.0000 | inf / 1.0000 |
 | `steam-all-games` | game, depth 1, 14 folder rows | inf / 1.0000 | inf / 1.0000 |
 | `steam-store-sections` | game, depth 1, Top Sellers, 3 rows | inf / 1.0000 | inf / 1.0000 |
-| `steam-not-installed` | game, depth 2, folder 275 rows | inf / 1.0000 | inf / 1.0000 |
+| `steam-not-installed` | game, depth 2, folder 275 rows (272 after D2) | inf / 1.0000 | inf / 1.0000 |
 
-Limits: the owned list and the collection names/counts are host data (Steam Web API key plus `family-shared.json`
-seed), so a changed account, library or collection set makes the dump assertions fail loudly (exit 2) instead of
+Limits: the owned list and the collection names/counts are host data (Steam Web API key), so a changed account, library or collection set makes the dump assertions fail loudly (exit 2) instead of
 scoring a different state; update recipe and reference deliberately then. The store *section content* pages (Top
 Sellers list and friends) are not covered because they need a live store request; only the network-free sections
 page is. State captures use the feature build named in the thresholds file (`C:/dev/out/native-folders` at the time
@@ -337,7 +336,7 @@ settles, never what it shows, so no reference moved:
   rebuilt the column).
 - `steam-not-installed` now targets the All Games page's twelfth row by `rowIndex` instead of resolving
   the `Not Installed` title from a probe dump. The recipe still asserts the resulting page (folder mode
-  `library`, title `Not Installed`, `owned - installed + familyShared` rows, every row `steam:` with a
+  `library`, title `Not Installed`, `owned - installed` rows, every row `steam:` with a
   "Not installed" detail), so a different row fails loudly with exit 2 - the index is pinned, the state
   is still verified.
 
@@ -385,8 +384,7 @@ What the states do not pin, stated so a pass is not read as more than it is:
   `... (muted 0)` and fails loudly if the endpoint is muted at capture time rather than scoring a
   different HUD silently. The capture sets the real Windows endpoint for about a second and puts it back
   with `VOLRESTORE`; a killed capture can leave it at 25%.
-- The four Steam states still depend on this machine's Steam account (owned list, collections,
-  `family-shared.json` seed), and `xmb-notification`/`xmb-volume-hud`/`steam-download-page` still depend
+- The four Steam states still depend on this machine's Steam account (owned list, collections), and `xmb-notification`/`xmb-volume-hud`/`steam-download-page` still depend
   on the real dev_flash, so those assertions fail loudly (exit 2) instead of scoring a different state.
 - The notification's remaining lifetime is asserted as "greater than zero", not as an exact number: the
   plaque is the same once its 200 ms slide has settled, but the counter keeps running.

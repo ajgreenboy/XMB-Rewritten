@@ -823,25 +823,13 @@ function catalogueFromDump(dump: any): Catalogue {
   return { categories, rows };
 }
 
-function familySharedCount(recipe: StateRecipe) {
-  const file = resolveRepo(join(recipe.dataSeed, 'family-shared.json'));
-  try {
-    const apps = JSON.parse(readFileSync(file, 'utf8')).apps;
-    return Array.isArray(apps) ? apps.length : 0;
-  } catch {
-    return 0;
-  }
-}
-
 function expectedDetailFormula(recipe: StateRecipe, formula: string, dump: any) {
   const owned = Number(dump.owned);
   const installed = Number(dump.installedSteam);
-  const family = familySharedCount(recipe);
   if (formula === 'ownedGames') return Number.isFinite(owned) ? String(owned) : undefined;
   if (formula === 'ownedGamesLabel') return Number.isFinite(owned) ? `${owned} owned` : undefined;   // the Steam hub row's detail
   if (formula === 'notInstalled')
-    return Number.isFinite(owned) && Number.isFinite(installed) ? String(owned - installed + family) : undefined;
-  if (formula === 'familyShared') return String(family);
+    return Number.isFinite(owned) && Number.isFinite(installed) ? String(owned - installed) : undefined;
   return undefined;
 }
 
@@ -944,8 +932,7 @@ function checkStateExpect(recipe: StateRecipe, sidecar: any, dump: any, folder: 
   }
   const installed = Number(dump.installedSteam);
   const owned = Number(dump.owned);
-  const family = familySharedCount(recipe);
-  const expectedFolderCount = Number.isFinite(owned) && Number.isFinite(installed) ? owned - installed + family : NaN;
+  const expectedFolderCount = Number.isFinite(owned) && Number.isFinite(installed) ? owned - installed : NaN;
   if (expect.folderMode !== undefined) {
     if (!folder) problems.push('expected the folder-open dump <dump>.folder.json but no folder opened');
     else {
@@ -953,9 +940,9 @@ function checkStateExpect(recipe: StateRecipe, sidecar: any, dump: any, folder: 
         problems.push(`folder dump mode: expected ${JSON.stringify(expect.folderMode)}, got ${JSON.stringify(folder.folder)}`);
       if (expect.folderTitle !== undefined && folder.title !== expect.folderTitle)
         problems.push(`folder dump title: expected ${JSON.stringify(expect.folderTitle)}, got ${JSON.stringify(folder.title)}`);
-      if (expect.folderCountFormula === 'owned-installed+familyShared') {
+      if (expect.folderCountFormula === 'owned-installed') {
         if (folder.count !== expectedFolderCount)
-          problems.push(`folder rows: expected ${expectedFolderCount} (owned - installed + familyShared), got ${folder.count}`);
+          problems.push(`folder rows: expected ${expectedFolderCount} (owned - installed), got ${folder.count}`);
         if (Array.isArray(folder.rows) && folder.rows.length !== folder.count)
           problems.push(`folder rows array has ${folder.rows.length} entries but count says ${folder.count}`);
       }

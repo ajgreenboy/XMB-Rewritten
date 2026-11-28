@@ -5,7 +5,7 @@
 //
 // Everything is synthetic and scratch: a generated Steam root with two accounts (fake SteamID64s 7656119800000000x),
 // per-account localconfig.vdf play records, static collections, librarycache files, a binary appinfo.vdf (v29)
-// built here, two manifests for "installed" games of the PC, a family-shared file pinned to account A, and a scratch
+// built here, two manifests for "installed" games of the PC, a stale family-shared file (the feature was dropped; it must be ignored), and a scratch
 // registry key under HKCU\Software\XmbTest\. The script stands in for the Steam client by writing
 // ActiveProcess\ActiveUser (and AutoLoginUser) into that scratch key only; no Steam process is started, stopped or
 // read, and the real Steam key is never written. The app dumps its catalogue (XMB_DUMP_ENTRIES) after every library
@@ -13,7 +13,7 @@
 //
 // Proves: with no key the owned list is the signed-in account's keyless library and only that; a registry
 // ActiveUser change made OUTSIDE the XMB (a Steam-client switch) swaps the owned list, the collections, play-record
-// ordering, family titles and persona with no stale row; switching back restores the first account; and a fresh
+// ordering and persona with no stale row; switching back restores the first account; and a fresh
 // start with a signed-out client selects the account named by AutoLoginUser (the "restart" case).
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -100,6 +100,7 @@ put(join(acct(ACCT_A), "librarycache", "3001.json"), "[[\"achievements\",{\"vers
 put(join(acct(ACCT_B), "localconfig.vdf"), localconfig([[1001, 1750000000, 5], [7001, 1780000000, 300], [7002, 1760000000, 60]]));
 put(join(acct(ACCT_B), "cloudstorage", "cloud-storage-namespace-1.json"), JSON.stringify([collection("Fixture Bee Group", [8001])]));
 mkdirSync(data, { recursive: true });
+// Family Shared was dropped (decision D2): a leftover file from an older build must not add a title or a folder.
 put(join(data, "family-shared.json"), JSON.stringify({ account: ID_A, apps: [{ id: 9001, title: "Fixture Shared A" }] }));
 
 // ---- registry (scratch key only) ----
@@ -140,7 +141,7 @@ function start(timeoutMs = 120000) {
 const steamIds = (d: Dump, category: string) => (d.categories.find((c: any) => c.id === category)?.entries ?? []).filter((e: any) => /^steam:\d+$/.test(e.id)).map((e: any) => e.id.slice(6));
 const sorted = (xs: string[]) => [...xs].sort();
 const same = (a: string[], b: string[]) => JSON.stringify(sorted(a)) === JSON.stringify(sorted(b));
-const notInstalled = (d: Dump) => d.allTitles.filter((r: any) => /Not installed/.test(r.detail) && !/Family shared/.test(r.detail)).map((r: any) => r.id.replace("steam:", ""));
+const notInstalled = (d: Dump) => d.allTitles.filter((r: any) => /Not installed/.test(r.detail)).map((r: any) => r.id.replace("steam:", ""));
 
 // ===== run 1: account A active, then a switch made "inside the Steam client" to B, then back =====
 setActive(ACCT_A);
@@ -154,9 +155,8 @@ if (a1) {
   expect(a1.steamPersona === "Persona Aye", `A: persona (${a1.steamPersona})`);
   expect(same(a1.collectionNames, ["Fixture Favourites"]), `A: collections [${a1.collectionNames}]`);
   expect(same(a1.activityIds, ["1001", "1002", "1003", "1004", "4001", "6001"]), `A: play records are A's [${sorted(a1.activityIds)}]`);
-  expect(same(a1.familyIds, ["9001"]), "A: the family-shared file pinned to A is shown");
   expect(same(notInstalled(a1), ["1001", "1002", "2001", "3001"]), `A: Not installed rows [${sorted(notInstalled(a1))}]`);
-  expect(a1.allTitles.some((r: any) => r.id === "steam:9001"), "A: the family-shared title is listed");
+  expect(!a1.allTitles.some((r: any) => r.id === "steam:9001") && !a1.ownedIds.includes("9001"), "A: a leftover family-shared file adds no title (Family Shared was dropped)");
   expect(steamIds(a1, "game").join() === "4001,7001", `A: installed rows ordered by A's play records (${steamIds(a1, "game")})`);
   const row2001 = a1.allTitles.find((r: any) => r.id === "steam:2001");
   expect(String(row2001?.detail).startsWith("Fixture Favourites"), `A: collection label on a collected row (${row2001?.detail})`);
@@ -174,7 +174,7 @@ if (b1) {
   expect(b1.steamPersona === "Persona Bee", `B: persona (${b1.steamPersona})`);
   expect(same(b1.collectionNames, ["Fixture Bee Group"]), `B: collections swapped [${b1.collectionNames}]`);
   expect(same(b1.activityIds, ["1001", "7001", "7002"]), `B: play records swapped [${sorted(b1.activityIds)}]`);
-  expect(b1.familyIds.length === 0 && !b1.allTitles.some((r: any) => r.id === "steam:9001"), "B: A's family-shared titles are gone (also from the All Titles rows)");
+  expect(!b1.allTitles.some((r: any) => r.id === "steam:9001"), "B: no family-shared title either");
   expect(same(notInstalled(b1), ["1001", "7002", "8001"]), `B: Not installed rows [${sorted(notInstalled(b1))}]`);
   expect(steamIds(b1, "game").join() === "7001,4001", `B: installed rows re-ordered by B's play records (${steamIds(b1, "game")})`);
   const row8001 = b1.allTitles.find((r: any) => r.id === "steam:8001");
@@ -185,7 +185,7 @@ console.log("stand-in: the Steam client switches back to account A");
 setActive(ACCT_A);
 const a2 = await waitFor((d) => d.steamId === ID_A && stamp(d) !== beforeBack, 30000);
 expect(!!a2, "switching back is followed too");
-if (a2 && a1) expect(same(a2.ownedIds, a1.ownedIds) && same(a2.collectionNames, a1.collectionNames) && same(a2.activityIds, a1.activityIds) && same(a2.familyIds, a1.familyIds), "back on A: everything matches the first load");
+if (a2 && a1) expect(same(a2.ownedIds, a1.ownedIds) && same(a2.collectionNames, a1.collectionNames) && same(a2.activityIds, a1.activityIds), "back on A: everything matches the first load");
 app.stop();
 await sleep(1500);
 

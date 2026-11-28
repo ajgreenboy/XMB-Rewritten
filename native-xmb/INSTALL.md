@@ -224,7 +224,6 @@ the library report, want a Web API key (section 8).
 | `--steam-friends-report` | json-file | Friends and presence, or an explicit connection error. |
 | `--steam-downloads-report` | json-file | Steam's download and update queue with byte counts and states. |
 | `--steam-accounts-report` | json-file | Remembered local accounts, the active one, and the switch plan the app would follow. |
-| `--steam-family-report` | json-file | Steam Families membership plus the local `family-shared.json` list. |
 | `--steam-artwork-report` | json-file | Per-game artwork overrides found under `<data>\artwork`. |
 
 ### 4.6 Firmware and theme readers
@@ -259,7 +258,7 @@ Needs it: the window, `--inventory`, `--motion-report`, `--export-image`, `--rco
 
 Does not need it: `--help`, `--version`, `--pad-report`, `--pad-check`, `--p3t-dump`, `--import-apps`,
 `--firmware-check`, `--firmware-extract`, `--firmware-install` and every report in section 4.5. `--data-dir` is only needed by the ones that write under the data
-directory (`--import-apps`, and the artwork/family reports that read it).
+directory (`--import-apps`, and the artwork report that reads it).
 
 ## 5. `--script` tokens
 
@@ -323,7 +322,6 @@ the shell sees.
 | `<data>\platform-map.json` | The XMB Manager's platform -> emulator map (seeded defaults when absent). Ignored by the XMB. |
 | `<data>\collections.json` | The XMB Manager's collection membership. Not read by the XMB yet. |
 | `<exe folder>\manager.ini` | The XMB Manager's data-directory setting (`[manager] dataDirectory=<path>`), next to `xmb-manager.exe`; it is the one manager file outside the data directory. |
-| `<data>\family-shared.json` | Hand-written list of Steam Family titles to add to the library (`{"apps":[{"id":620,"title":"Portal 2"}]}`). |
 | `<data>\artwork\` | Per-game artwork overrides: `<appid>.png` (wide row), `<appid>_icon.png`, `<appid>_bg.png`; `.jpg`, `.jpeg` and `.webp` also work. |
 | `<data>\cache\steam\` | Cached Steam header images (`<appid>.image`). Safe to delete; it is refetched. |
 | `<data>\jellyfin\images\` | Jellyfin poster and backdrop cache, keyed by the server's own image tag. Capped at 400 files; the oldest are trimmed. Safe to delete; it is refetched. |
@@ -425,9 +423,8 @@ Installed titles and collections are read locally; the owned list needs Valve's 
   not invent a library.
 - **Collections** come from
   `userdata\<accountid>\config\cloudstorage\cloud-storage-namespace-1.json`, no key needed.
-- **Family-shared titles** are not returned by the owned-games endpoint; Valve's family endpoint
-  needs an OAuth access token, and a Web API key is rejected with 401. Add shared titles by hand to
-  `<data>\family-shared.json` (`{"apps":[{"id":620,"title":"Portal 2"}]}`).
+- **Family-shared titles** are not shown (the Family Shared folder and the hand-written `family-shared.json` were removed;
+  a leftover file is ignored). Valve's family endpoint needs an OAuth access token.
 - **Artwork overrides**: drop `<appid>.png` (or `.jpg`, `.jpeg`, `.webp`), `<appid>_icon.png` and
   `<appid>_bg.png` into `<data>\artwork\`. An override wins over the cached Steam header and the
   manifest icon.

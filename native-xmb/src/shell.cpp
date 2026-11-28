@@ -37,7 +37,6 @@
 #include "imported_art_match.h"
 #include "steam_collections.h"
 #include "steam_overrides.h"
-#include "steam_family.h"
 #include "steam_downloads.h"
 #include "steamcmd.h"
 #include "steam_quit.h"
@@ -1192,13 +1191,12 @@ void Shell::retryArtwork() {
     importedArt_->resetBackoff();
     refreshContent();
 }
-// Distinct titles the Steam library knows about: installed, owned and family-shared.
+// Distinct titles the Steam library knows about: installed and owned.
 // The Game column and the All Games folder show this as their detail count.
 int Shell::steamTitleCount() const {
     QSet<QString> ids;
     for(const auto& game:steamInstalled_.games)ids.insert(game.appId);
     for(const auto& game:ownedGames_)ids.insert(game.appId);
-    for(const auto& game:familyGames_)ids.insert(game.appId);
     return ids.size();
 }
 // A Steam title's transparent logo for PS3-style tiles (logo_tiles.h): the Steam client's own cached logo first, then
@@ -1260,7 +1258,7 @@ QVector<Entry> Shell::steamFolderEntries(const QString& mode) const {
     // Folder rows only: no artwork decode and no app-id artwork request, because the value
     // is a folder mode string rather than an app id.
     // A folder wears an icon of what it holds: Steam's own icon for All Titles, a 2x2 mosaic of its first four
-    // titles' cached headers for a collection, a download / family glyph for Not Installed / Family Shared.
+    // titles' cached headers for a collection, a download glyph for Not Installed.
     const auto mosaic=[&](const QStringList& appIds)->QImage {
         QVector<QImage> tiles;
         for(const auto& appId:appIds) {
@@ -1293,19 +1291,17 @@ QVector<Entry> Shell::steamFolderEntries(const QString& mode) const {
     };
     // Title lookups shared by every folder mode. An installed title wins over its owned
     // entry because the local manifest title is the one the console shows.
-    QHash<QString,QString> installedTitles,ownedTitles,familyTitles;
+    QHash<QString,QString> installedTitles,ownedTitles;
     QSet<QString> customGameIds;
     for(const auto& game:steamInstalled_.games)installedTitles.insert(game.appId,game.title);
     for(const auto& game:ownedGames_)ownedTitles.insert(game.appId,game.title);
-    for(const auto& game:familyGames_)familyTitles.insert(game.appId,game.title);
     for(const auto& app:contentApps_)if(app.kind=="game")customGameIds.insert(QStringLiteral("custom:")+app.id);
     const auto isKnown=[&](const QString& appId) {
-        return installedTitles.contains(appId) || ownedTitles.contains(appId) || familyTitles.contains(appId) || customGameIds.contains(appId);
+        return installedTitles.contains(appId) || ownedTitles.contains(appId) || customGameIds.contains(appId);
     };
     const auto titleFor=[&](const QString& appId)->QString {
         if(installedTitles.contains(appId))return installedTitles.value(appId);
         if(ownedTitles.contains(appId))return ownedTitles.value(appId);
-        if(familyTitles.contains(appId))return familyTitles.value(appId);
         if(appId.startsWith(QLatin1String("custom:"))) {
             const QString id=appId.mid(7);
             for(const auto& app:contentApps_)if(app.id==id)return app.title;
@@ -1318,19 +1314,16 @@ QVector<Entry> Shell::steamFolderEntries(const QString& mode) const {
             add(game.appId,game.title,label.isEmpty()?QObject::tr("Installed"):label,Action::LaunchSteam);
         }
     } else if(mode=="library") {
-        // Everything that is not installed: owned titles plus family-shared ones.
+        // Everything that is not installed.
         for(const auto& game:ownedGames_) {
             if(game.installed)continue;
             const QString label=collectionLabel(game.appId);
             add(game.appId,game.title,label.isEmpty()?QObject::tr("Not installed"):label+" - Not installed",Action::InstallSteam);
         }
-        for(const auto& game:familyGames_)add(game.appId,game.title,QObject::tr("Family shared - Not installed"),Action::InstallSteam);
-    } else if(mode=="family") {
-        for(const auto& game:familyGames_)add(game.appId,game.title,QObject::tr("Family shared"),Action::InstallSteam);
     } else if(mode=="all") {
         // The All Games folder page: an All Titles folder, then one folder per Steam
         // collection that has at least one known title (collections are already in
-        // collection-name order), then the Not Installed and Family Shared folders.
+        // collection-name order), then the Not Installed folder.
         addFolder("steam-folder-all-titles",QObject::tr("All Titles"),QString::number(steamTitleCount()),"all-titles",
                   serviceIcons::steam(steamRoot_));
         for(const auto& collection:collections_) {
@@ -1344,15 +1337,11 @@ QVector<Entry> Shell::steamFolderEntries(const QString& mode) const {
         }
         const int ownedNotInstalled=int(std::count_if(ownedGames_.cbegin(),ownedGames_.cend(),
             [](const OwnedGame& game){return !game.installed;}));
-        const int notInstalled=ownedNotInstalled+int(familyGames_.size());
-        if(notInstalled>0)
-            addFolder("steam-folder-library",QObject::tr("Not Installed"),QString::number(notInstalled),"library",glyphs::download());
-        if(!familyGames_.isEmpty())
-            addFolder("steam-folder-family",QObject::tr("Family Shared"),QString::number(familyGames_.size()),"family",glyphs::family());
+        if(ownedNotInstalled>0)
+            addFolder("steam-folder-library",QObject::tr("Not Installed"),QString::number(ownedNotInstalled),"library",glyphs::download());
     } else if(mode=="all-titles") {
         // Every title the library knows: installed rows launch, the rest install. An app
-        // can be installed and owned at once, and a family title can also be owned, so a
-        // seen set keeps each app id once.
+        // can be installed and owned at once, so a seen set keeps each app id once.
         QSet<QString> listed;
         for(const auto& game:steamInstalled_.games) {
             listed.insert(game.appId);
@@ -1364,11 +1353,6 @@ QVector<Entry> Shell::steamFolderEntries(const QString& mode) const {
             listed.insert(game.appId);
             const QString label=collectionLabel(game.appId);
             add(game.appId,game.title,label.isEmpty()?QObject::tr("Not installed"):label+" - Not installed",Action::InstallSteam);
-        }
-        for(const auto& game:familyGames_) {
-            if(listed.contains(game.appId))continue;
-            listed.insert(game.appId);
-            add(game.appId,game.title,QObject::tr("Family shared - Not installed"),Action::InstallSteam);
         }
     } else if(mode.startsWith("collection:")) {
         // A collection page keeps the collection's own app order; titles can belong to
@@ -1393,8 +1377,6 @@ QVector<Entry> Shell::steamFolderEntries(const QString& mode) const {
             } else if(ownedTitles.contains(appId)) {
                 const QString label=collectionLabel(appId);
                 add(appId,titleFor(appId),label.isEmpty()?QObject::tr("Not installed"):label+" - Not installed",Action::InstallSteam);
-            } else {
-                add(appId,titleFor(appId),QObject::tr("Family shared - Not installed"),Action::InstallSteam);
             }
         }
     }
@@ -1405,7 +1387,6 @@ void Shell::openSteamFolder(const QString& mode) {
     if(mode=="all")title=QObject::tr("All Games");
     else if(mode=="all-titles")title=QObject::tr("All Titles");
     else if(mode=="installed")title=QObject::tr("Installed Games");
-    else if(mode=="family")title=QObject::tr("Family Shared");
     else if(mode.startsWith("collection:")) {
         const QString collectionId=mode.mid(QStringLiteral("collection:").size());
         for(const auto& collection:collections_)if(collection.id==collectionId){title=collection.name;break;}
@@ -1767,7 +1748,7 @@ void Shell::applySteamOverlayAndRebuild() {
             if(e.id.startsWith(QLatin1String("steam:"))) {
                 const QString label=collectionLabel(e.value);
                 if(e.action==Action::LaunchSteam)e.detail=label.isEmpty()?QObject::tr("Installed"):label;
-                else if(e.action==Action::InstallSteam && !e.detail.contains(QStringLiteral("Family shared")))
+                else if(e.action==Action::InstallSteam)
                     e.detail=label.isEmpty()?QObject::tr("Not installed"):label+QStringLiteral(" - Not installed");
             } else if(e.id.startsWith(QLatin1String("custom:")) && e.action==Action::LaunchApp) {
                 e.detail=collectionLabel(e.id);
@@ -1875,7 +1856,7 @@ void Shell::refreshContent() {
                 // Installed titles lead the column as ICON0 tiles that launch directly, the way a real PS3
                 // lists its installed games at the top of Game (user direction 2026-11-02; the RPCS3 corpus has
                 // only one installed title, Corrupted Data, so it cannot show the order). Then Steam Store and
-                // one All Games folder carrying the whole library (collections, Not Installed, Family Shared).
+                // one All Games folder carrying the whole library (collections, Not Installed).
                 for(const auto& game:result.steam.games) {
                     auto e=item("steam:"+game.appId,game.title,"game_tex_default_ps3","explore_plugin_full",
                         Action::LaunchSteam,game.appId);
@@ -2044,7 +2025,6 @@ void Shell::refreshContent() {
                 {"allTitles",[this]{QJsonArray rows;for(const auto& row:steamFolderEntries(QStringLiteral("all-titles")))rows.push_back(QJsonObject{{"id",row.id},{"title",row.title},{"detail",row.detail}});return rows;}()},
                 {"collectionNames",[this]{QJsonArray names;for(const auto& c:collections_)names.push_back(c.name);return names;}()},
                 {"activityIds",[this]{QStringList ids=steamActivity_.keys();ids.sort();return QJsonArray::fromStringList(ids);}()},
-                {"familyIds",[this]{QJsonArray ids;for(const auto& game:familyGames_)ids.push_back(game.appId);return ids;}()},
                 {"importedApps",contentApps_.size()}}).toJson();
             if(file.open(QIODevice::WriteOnly))file.write(bytes);
         }
@@ -6071,8 +6051,6 @@ void Shell::showEntryInformation(const Entry& entry) {
         for(const auto& g:steamInstalled_.games)if(g.appId==appId){installed=&g;break;}
         const OwnedGame* owned=nullptr;
         for(const auto& g:ownedGames_)if(g.appId==appId){owned=&g;break;}
-        const FamilyGame* family=nullptr;
-        for(const auto& g:familyGames_)if(g.appId==appId){family=&g;break;}
         const SteamActivity act=steamActivity_.value(appId);
         const int totalMinutes=std::max(act.playtimeMinutes,owned?owned->playtimeMinutes:0);
         QString playtimeStr=QObject::tr("Not played yet");
@@ -6089,7 +6067,7 @@ void Shell::showEntryInformation(const Entry& entry) {
         }
         QStringList rows;
         rows<<row("msg_format","Format",installed?QObject::tr("Steam Game (Installed)")
-            :(family && !owned?QObject::tr("Steam Game (Family Shared)"):QObject::tr("Steam Game (Not Installed)")));
+            :QObject::tr("Steam Game (Not Installed)"));
         rows<<row("msg_size","Size",(installed && installed->sizeOnDisk>0)?downloadSize(installed->sizeOnDisk)
             :(installed?unknown:QObject::tr("Not installed")));
         rows<<QObject::tr("Play Time: %1").arg(playtimeStr);
@@ -6249,8 +6227,6 @@ void Shell::groupPageBy(OptionCommand command) {
             QString bucket;
             if(row.action==Action::LaunchSteam || row.action==Action::LaunchApp || row.action==Action::Launch)
                 bucket=QObject::tr("Installed");
-            else if(row.detail.contains(QStringLiteral("Family shared"),Qt::CaseInsensitive))
-                bucket=QObject::tr("Family Shared");
             else bucket=QObject::tr("Not Installed");
             groups[bucket].push_back(row);
         }
@@ -6292,8 +6268,6 @@ void Shell::openGroupFolder(const Entry& entry) {
             QString bucket;
             if(row.action==Action::LaunchSteam || row.action==Action::LaunchApp || row.action==Action::Launch)
                 bucket=QObject::tr("Installed");
-            else if(row.detail.contains(QStringLiteral("Family shared"),Qt::CaseInsensitive))
-                bucket=QObject::tr("Family Shared");
             else bucket=QObject::tr("Not Installed");
             if(bucket==entry.value)page.entries.push_back(row);
         } else if(groupLetter(row.title)==entry.value) {

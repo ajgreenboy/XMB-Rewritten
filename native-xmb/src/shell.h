@@ -31,7 +31,6 @@
 #include "steam_refresh.h"
 #include "steam_collections.h"
 #include "controller_mode.h"
-#include "steam_family.h"
 #include "steam_account_state.h"
 #include "steam_store.h"
 #include "steam_downloads.h"
@@ -1325,8 +1324,6 @@ private:
     QString steamStoreSearchTerm_;
     QHash<QString,SteamDownload> watchedSteamDownloads_;
     bool watchedSteamDownloadsSeeded_=false;
-    SteamFamily family_;              // the Steam Families group this account belongs to
-    QVector<FamilyGame> familyGames_; // optional family-shared titles from <data>/family-shared.json
     SteamInstallation steamInstalled_; // last local Steam scan, for the library folders
     SteamStore steamStore_;          // public storefront browser (browse + install handoff)
     QHash<int,QString> mediaTags_;   // per queue index, track tags read from the player

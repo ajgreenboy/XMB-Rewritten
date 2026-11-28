@@ -8,7 +8,6 @@
 #include "steam_accounts.h"
 #include "steam_activity.h"
 #include "steam_collections.h"
-#include "steam_family.h"
 #include "steam_keyless.h"
 #include "steam_library.h"
 
@@ -22,9 +21,6 @@ struct SteamAccountSnapshot {
     QString steamId;                         // SteamID64 the data below belongs to (empty: no account found)
     QString persona;                         // that account's persona name from loginusers.vdf; empty when unknown
     QHash<QString, SteamActivity> activity;  // play records (userdata/<id>/config/localconfig.vdf)
-    SteamFamily family;                      // Steam Families group of the account
-    QVector<FamilyGame> familyGames;         // <data>/family-shared[-<accountid>].json, scoped to this account
-    QString familyError;
     SteamCollectionList collections;         // the account's static collections (local, keyless)
     SteamKeylessLibrary keyless;             // the keyless library (steam_keyless.h)
     QVector<SteamAccount> accounts;          // the accounts the client remembers (active marks follow the registry)

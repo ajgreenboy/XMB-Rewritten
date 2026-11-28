@@ -252,8 +252,6 @@ unit by `Shell::applySteamAccountSnapshot`; an account change first runs `Shell:
 | In-flight owned request, `ownedInFlight_` | `SteamOwned` | `cancel()`; a response for another account is dropped (`ownedResponseIsStale`) |
 | Collections `collections_` and the row labels | `userdata/<id>/config/cloudstorage` | cleared, re-read keyless from the snapshot (they never needed a key) |
 | Play records `steamActivity_` and the installed-row order | `userdata/<id>/config/localconfig.vdf` | cleared, re-read; the column is re-sorted by the new account |
-| Steam Families `family_` | localconfig.vdf `FamilyGroup` | cleared, re-read |
-| Family-shared titles `familyGames_` | `<data>/family-shared-<accountid>.json`, else `<data>/family-shared.json` unless it carries an `"account"` naming another account | cleared, re-read scoped to the account |
 | Artwork overrides | `userdata/<id>/config/grid` (looked up by `artworkFor` with the scan's account) | the rescan re-resolves them for the new id |
 | Keyless library cache | per account id, validated by size and mtime of every input file | other accounts' entries are separate; stale entries cannot be served |
 | Remembered-account list and the open Steam Account page | loginusers.vdf, registry | `steamAccounts_` replaced; an open page re-marks its rows (`refreshSteamAccountsPage`) |
@@ -302,7 +300,7 @@ library off together with the play records.
   incl. the HTPC case and the old AllowAutoLogin bug, registry-first order against a scratch registry key, hand-built
   v27/v28/v29 appinfo files and damaged variants, the keyless library of two synthetic accounts (no cross-account row,
   noise, tools, demos, installed fallback, cache hit and invalidation, the 5000 cap), the per-account snapshot and
-  family-shared scoping, and the refresh decisions.
+  the refresh decisions (the family-shared scoping was removed with Family Shared, decision D2).
 - `work/steam-accounts-e2e.ts`: real app, synthetic root with two accounts, no key (the child gets a scratch `APPDATA` and
   `XMB_API_KEY_DIR`): A's keyless list only; a registry-only ActiveUser change (the stand-in for a switch inside Steam)
   swaps owned list, collections, play-record ordering, family titles and persona with no stale row; switching back

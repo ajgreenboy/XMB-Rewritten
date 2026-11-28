@@ -13,7 +13,7 @@
   },
   "defaults": {
     "dataSeed": "out/native-reference/store/ui3-data",
-    "seedPaths": ["preferences.json", "profiles.json", "settings.ini", "family-shared.json", "artwork", "cache/steam"],
+    "seedPaths": ["preferences.json", "profiles.json", "settings.ini", "artwork", "cache/steam"],
     "waits": 10,
     "settleWaits": 3
   },
@@ -427,7 +427,7 @@
       "class": "text-heavy",
       "pageModel": "native",
       "xmbml": null,
-      "xmbmlNote": "No firmware equivalent: this is the native Steam library folder (collections, Not Installed, Family Shared). It is in the catalogue because it is a reachable XMB page with a saved regression reference.",
+      "xmbmlNote": "No firmware equivalent: this is the native Steam library folder (collections, Not Installed). It is in the catalogue because it is a reachable XMB page with a saved regression reference.",
       "native": { "reachable": "yes", "how": "Game column, All Games row (steam-folder-all-games), ENTER" },
       "noFirmwareReference": true,
       "route": { "column": "game", "stages": [{ "catalogueId": "steam-folder-all-games" }] },

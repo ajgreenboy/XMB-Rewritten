@@ -17,8 +17,8 @@ instead of adding a second menu catalog.
 | Steam header artwork cache | `src/steam_artwork.*` | Done |
 | Browse the public storefront | `src/steam_store.*` | Done |
 | Per-game artwork overrides (ICON0/PIC1) | `src/steam_overrides.*` | Done |
-| Steam **Not Installed** folder (owned not installed + family-shared) | `src/shell.cpp` (`Action::SteamFolder`) | Done |
-| Steam Families membership + shared list | `src/steam_family.*` | Done (OAuth token still open) |
+| Steam **Not Installed** folder (owned, not installed) | `src/shell.cpp` (`Action::SteamFolder`) | Done |
+| Steam Families membership + shared list | `src/steam_family.*` (deleted) | Dropped (decision D2) |
 
 ## Owned games: what the Game column shows
 
@@ -59,42 +59,28 @@ The Game column shows the locally installed Steam titles inline and keeps the lo
 | Row | Contents | Action on OK |
 |---|---|---|
 | Installed titles, inline (10 here) | one row per locally installed title, with its collection labels | launch (`steam://rungameid/<id>`) |
-| **Not Installed** folder | every owned title that is not installed (272 here) plus family-shared titles from `<data>/family-shared.json` (3 in the seeded run), 275 rows together | install (`steam://install/<id>`) |
+| **Not Installed** folder | every owned title that is not installed (272 here) (272 rows in the reference run) | install (`steam://install/<id>`) |
 
 There is no separate **Installed Games** or **Family Shared** folder row. The **Not Installed**
-row's detail is the combined count (275). `Action::SteamFolder` pushes an ordinary XMB page
+row's detail is the owned-not-installed count (272 in the reference run). `Action::SteamFolder` pushes an ordinary XMB page
 (`Shell::Page`), so navigation, easing and Back are the same as every other page. Rows are
 built on demand; at most 64 cached thumbnails are decoded when the folder opens and the
 rest fall back to the firmware icon before the online header fetch fills them in.
 
 Verified with `XMB_DUMP_ENTRIES` (writes the catalogue, and `<dump>.folder.json` when a folder opens):
 
-- column: the 10 installed titles inline with `action=LaunchSteam`, then `Not Installed` (detail `275`),
+- column: the 10 installed titles inline with `action=LaunchSteam`, then `Not Installed` (detail `272`),
   then PS3 utilities;
 - installed rows: collection labels (`Multiplayer`, `Singleplayer`), cached artwork;
-- Not Installed page: 275 rows, `action=InstallSteam`, labels like `Hidden - Not installed` and
-  `Family shared - Not installed`;
+- Not Installed page: 272 rows, `action=InstallSteam`, labels like `Hidden - Not installed`;
 - no `Installed Games` or `Family Shared` folder row is emitted.
 
-## Steam Families
+## Steam Families (dropped)
 
-Family-shared titles are licensed to another member, so `IPlayerService/GetOwnedGames` never returns them. Valve's
-`IFamilyGroupsService/GetSharedLibraryApps` and `GetFamilyGroupForUser` require an OAuth access token: called with a
-Web API key they answer **401 Unauthorized** (probed; recorded here rather than retried).
-
-What works without that token:
-
-- membership, read locally from `FamilyGroup` in `userdata/<accountid>/config/localconfig.vdf` - group id, name and
-  the member account ids (verified: group `9416`, 6 members);
-- an optional shared-titles list at `<data>/family-shared.json`, which adds those titles to the **Not Installed**
-  folder and is needed because no local file maps family app ids to names:
-
-```json
-{ "apps": [ { "id": 620, "title": "Portal 2" }, { "id": 400, "title": "Portal" } ] }
-```
-
-`--steam-family-report` prints membership plus the shared count. A real OAuth flow (device code or client login) is
-the remaining step for automatic family libraries; the HTTP layer and folder are already in place for it.
+Owner decision D2 (2026-11-27): the Family Shared folder, the `family-shared*.json` reader, the local family-group
+membership read (`src/steam_family.*`) and `--steam-family-report` were removed. Valve's
+`IFamilyGroupsService` needs an OAuth access token (a Web API key answers 401, probed), and no local file lists the
+borrowed titles. Revisit only if a real data source is found.
 
 ## Per-game artwork overrides
 
@@ -149,7 +135,6 @@ re-ps3-native.exe --steam-report            <json>   # installed titles
 re-ps3-native.exe --steam-collections-report <json>  # collections + member app ids
 re-ps3-native.exe --owned-games-report      <json>   # purchased titles (needs the key)
 re-ps3-native.exe --steam-library-report    <json>   # purchased titles grouped by collection
-re-ps3-native.exe --steam-family-report     <json>   # family group, members, shared list
 re-ps3-native.exe --steam-artwork-report    <json>   # per-game artwork overrides on disk
 re-ps3-native.exe --steam-store-report      <json> [--steam-store-query <term>]
 ```

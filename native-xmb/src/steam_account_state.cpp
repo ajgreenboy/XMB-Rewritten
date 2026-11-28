@@ -11,8 +11,6 @@ SteamAccountSnapshot loadSteamAccountSnapshot(const SteamInstallation& steam, co
     if (snapshot.steamId.isEmpty()) return snapshot;   // no account: every account-specific list stays empty
 
     snapshot.activity = scanSteamActivity(steam.root, snapshot.steamId);
-    snapshot.family = scanSteamFamilyIn(steam.root, snapshot.steamId);
-    snapshot.familyGames = scanFamilySharedGames(dataDirectory, &snapshot.familyError, snapshot.steamId);
     QString collectionsError;
     snapshot.collections = scanSteamCollectionsIn(steam.root, snapshot.steamId, &collectionsError);
     QHash<QString, QString> installedTitles;

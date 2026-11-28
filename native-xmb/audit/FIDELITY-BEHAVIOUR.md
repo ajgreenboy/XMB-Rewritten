@@ -373,7 +373,7 @@ The cue map is `interaction_audio.h:31` / `interaction_audio.cpp:343-354`; a scr
 | U5 | Download Management offers pause/resume/cancel and priority | read-only rows that open an information page; the note says Steam has no per-title control `shell.cpp:743-804`; report: 0 rows, `error:""` | differ | P2 |
 | U6 | Each friend row shows the friend's avatar | every row is built with `tex_Avatar_Default` `shell.cpp:987` although the cache/CDN path exists (`steam_friends.cpp:351-660`) | differ | P2 |
 | U7 | Friend rows show name and presence | presence strings from Steam `shell.cpp:988`; source is native-only but the row behaviour matches | match | P3 |
-| U8 | No console analogue for Steam families | family-shared titles join the library and the Not Installed folder `shell.cpp:504-557` | differ | P3 |
+| U8 | No console analogue for Steam families | dropped (decision D2): no Family Shared folder or family titles | n/a | closed |
 | U9 | No console analogue | in-XMB Jellyfin sign-in page (server/user/password rows, masked password) `shell.cpp:1677-1693` | match | P2 |
 | U10 | - | DPAPI remembered sign-in with an explicit toggle `shell.cpp:1683-1691` | match | P3 |
 | U11 | - | resume point applied on LoadedMedia and playback reporting (`shell.cpp:1231-1247`, `jellyfin_client`) | match | P3 |

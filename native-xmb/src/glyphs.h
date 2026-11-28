@@ -17,7 +17,6 @@ const QImage& signOut();
 const QImage& search();
 const QImage& more();
 const QImage& download();   // an arrow into a tray
-const QImage& family();     // two figures
 const QImage& powerOn();    // the power symbol
 const QImage& house();      // a house outline
 const QImage& bulb();       // a light bulb

@@ -173,8 +173,8 @@ PS3 titles share one presentation. F5 or **Refresh Game Library** rescans.
 
 Below the installed titles sit a **Steam Store** row and one **All Games** folder. The All Games page lists an
 **All Titles** folder, one folder per Steam collection (icon: a 2x2 mosaic of its first titles' headers), then
-**Not Installed** (every owned title that is not on disk; its detail shows the combined count) and **Family Shared**
-(only when `<native-data>/family-shared.json` has titles). Opening a title in **Not Installed** hands
+and **Not Installed** (every owned title that is not on disk). There is no Family Shared folder: the
+owner dropped it until a real local data source for borrowed titles exists. Opening a title in **Not Installed** hands
 `steam://install/<id>` to Steam, which performs the download. See "Steam play activity and actions" below.
 
 The **Steam Store** row opens a browse page of live top sellers with prices (public,
@@ -201,17 +201,10 @@ Without a key the column keeps the installed titles and the XMB states that a ke
 library. The key is never written to preferences, reports, manifests or logs.
 
 
-**Steam Families.** Valve's owned-games endpoint returns only your own purchases; family-shared titles are
-licensed to another member, and the family endpoint (`IFamilyGroupsService`) needs an OAuth access token - a Web
-API key is rejected with 401 (verified). Family *membership* is read locally from Steam (`FamilyGroup` in
-`userdata/<accountid>/config/localconfig.vdf`, e.g. group and 6 members here). To include shared titles now, write
-`<native-data>/family-shared.json` (they appear in the **Family Shared** folder):
-
-```json
-{ "apps": [ { "id": 620, "title": "Portal 2" } ] }
-```
-
-`--steam-family-report` prints the membership and the shared count.
+**Family-shared titles** are not shown. Valve's owned-games endpoint returns only your own purchases and the family
+endpoint needs an OAuth access token (a Web API key is rejected with 401). The XMB used to read a hand-written
+`family-shared.json`; that folder, file and the `--steam-family-report` option were removed (decision D2, see
+[the Steam workflow spec](audit/STEAM-WORKFLOW-SPEC-2026-11-27.md)). A leftover file is ignored.
 
 The Friends column lists Discord friends (see below), not Steam friends; Steam friends were replaced on 2026-11-10 (corrected 2026-11-27). The optional signed-in-client helper (build it with `-SteamworksHeaders <sdk/public/steam>`) and `--steam-friends-report` remain for diagnostics only, see [client connection](audit/STEAM-CLIENT-FRIENDS.md). The Web API key serves the owned-games provider.
 
@@ -250,7 +243,7 @@ takes a Steam password is the SteamCMD sign-in below). What it writes is exactly
 the `AutoLoginUser` / `RememberPassword` values under `HKCUSoftwareValveSteam`; a failure puts both back. An account
 without a saved sign-in is not changed: Steam restarts and the page says to sign in as it once inside Steam. When Steam
 comes back signed in (as the account you chose or another), the Game column is refreshed for that account: installed titles,
-last-played order, play records, family sharing, per-user artwork and the owned list (with an API key); the previous
+last-played order, play records, per-user artwork and the owned list (with an API key); the previous
 account's owned list and collections are dropped first. Details,
 flow and test seams: [audit/STEAM-ACCOUNT-SWITCH.md](audit/STEAM-ACCOUNT-SWITCH.md).
 

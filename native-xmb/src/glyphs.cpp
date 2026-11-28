@@ -160,15 +160,6 @@ const QImage& download() {
     return image;
 }
 
-const QImage& family() {
-    static const QImage image=line([](QPainter& p){
-        p.drawEllipse(QPointF(96,84),24,24);p.drawEllipse(QPointF(168,96),20,20);
-        QPainterPath a;a.moveTo(52,200);a.cubicTo(52,136,140,136,140,200);p.drawPath(a);
-        QPainterPath b;b.moveTo(132,200);b.cubicTo(132,148,204,148,204,200);p.drawPath(b);
-    });
-    return image;
-}
-
 const QImage& powerOn() {
     static const QImage image=line([](QPainter& p){
         p.drawArc(QRectF(56,64,144,144),60*16,-300*16);

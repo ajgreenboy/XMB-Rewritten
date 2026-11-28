@@ -550,17 +550,14 @@ void snapshotTests() {
     const QString data = scratchRoot + QStringLiteral("/snapshot-data");
     qputenv("XMB_STEAM_REGISTRY_KEY", "HKEY_CURRENT_USER\\Software\\XmbTest\\SteamAccountTests-dead");
     SteamInstallation steam = makeRoot(root, data);
-    writeFile(data + QStringLiteral("/family-shared.json"), "{\"account\":\"76561198000000001\",\"apps\":[{\"id\":9001,\"title\":\"Fixture Shared A\"}]}");
     clearSteamKeylessCache();
 
     const auto a = loadSteamAccountSnapshot(steam, data);
     checkText(a.steamId, IdA, "snapshot A: account");
     checkText(a.persona, QStringLiteral("Persona Aye"), "snapshot A: persona");
     check(a.activity.contains("1001") && a.activity.value("1001").playtimeMinutes == 120 && !a.activity.contains("7001"), "snapshot A: play records are A's");
-    checkText(a.family.groupId, QStringLiteral("fixture-group-a"), "snapshot A: family group");
     check(a.collections.size() == 2 && a.collections.first().name == "Fixture Dynamic" && a.collections.first().appIds.isEmpty() &&
           a.collections.last().name == "Fixture Favourites" && a.collections.last().appIds.size() == 2, "snapshot A: collections (the dynamic one has no member list)");
-    check(a.familyGames.size() == 1 && a.familyGames.first().appId == "9001", "snapshot A: the family-shared file pinned to A is A's");
     check(a.accounts.size() == 2, "snapshot A: both remembered accounts");
     check(!a.keyless.games.isEmpty() && !ids(a.keyless.games).contains("7001"), "snapshot A: keyless list is A's");
 
@@ -571,24 +568,14 @@ void snapshotTests() {
     checkText(b.steamId, IdB, "snapshot B: account");
     checkText(b.persona, QStringLiteral("Persona Bee"), "snapshot B: persona");
     check(b.activity.contains("7001") && !b.activity.contains("1002") && b.activity.value("1001").playtimeMinutes == 5, "snapshot B: play records are B's");
-    checkText(b.family.groupId, QStringLiteral("fixture-group-b"), "snapshot B: family group");
     check(b.collections.size() == 1 && b.collections.first().name == "Fixture Bee Group", "snapshot B: collections are B's");
-    check(b.familyGames.isEmpty(), "snapshot B: A's family-shared file is not shown to B");
     check(ids(b.keyless.games).contains("7002") && !ids(b.keyless.games).contains("2001"), "snapshot B: keyless list is B's");
-
-    // A per-account family file reaches its own account only; an unpinned shared file is still honoured.
-    writeFile(data + QStringLiteral("/family-shared-%1.json").arg(AcctB), "{\"apps\":[{\"id\":9002,\"title\":\"Fixture Shared B\"}]}");
-    check(scanFamilySharedGames(data, nullptr, IdB).size() == 1 && scanFamilySharedGames(data, nullptr, IdB).first().appId == "9002", "family-shared-<id>.json for B");
-    check(scanFamilySharedGames(data, nullptr, IdA).first().appId == "9001", "A still reads the shared file");
-    writeFile(data + QStringLiteral("/family-shared.json"), "{\"apps\":[{\"id\":9003,\"title\":\"Fixture Unpinned\"}]}");
-    check(scanFamilySharedGames(data, nullptr, IdA).size() == 1 && scanFamilySharedGames(data, nullptr).size() == 1, "an unpinned shared file keeps working for everyone");
 
     // No account at all: every account-specific list is empty (nothing leaks from a previous snapshot).
     SteamInstallation none = steam;
     none.steamId.clear();
     const auto empty = loadSteamAccountSnapshot(none, data);
-    check(empty.steamId.isEmpty() && empty.activity.isEmpty() && empty.collections.isEmpty() && empty.keyless.games.isEmpty() &&
-          empty.familyGames.isEmpty() && !empty.family.valid, "no account: nothing account-specific is loaded");
+    check(empty.steamId.isEmpty() && empty.activity.isEmpty() && empty.collections.isEmpty() && empty.keyless.games.isEmpty(), "no account: nothing account-specific is loaded");
     qunsetenv("XMB_STEAM_REGISTRY_KEY");
 }
 

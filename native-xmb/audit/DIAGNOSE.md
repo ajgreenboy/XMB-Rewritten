@@ -44,7 +44,7 @@ layout.
 | `state\preferences.json` | Redacted excerpt of `preferences.json`: `version`, clock and appearance keys, display/fullscreen, audio volume/mute, media repeat/shuffle, and the **count** of `media/resume` records. | The resume map itself is omitted: its paths are private. |
 | `state\profiles.json` | Profile count and active-profile presence; profile names replaced with `<user>`. | IDs are not needed for a diagnosis; omit them. |
 | `state\registry.json` | Imported-app count, app kinds and categories, and URLs reduced to scheme plus `<host>`; no titles, arguments or executable paths. | Jellyfin base URLs are private-network addresses. |
-| `state\inventory.json` | Counts and sizes only: artwork overrides, cached Steam headers, `family-shared.json` entries, `apps.json` entries, presence of legacy `settings.ini`. | No image files, no artwork names (an app id is a purchase record). |
+| `state\inventory.json` | Counts and sizes only: artwork overrides, cached Steam headers, `apps.json` entries, presence of legacy `settings.ini`. | No image files, no artwork names (an app id is a purchase record). |
 | `state\environment.json` | Allowlisted variables only: `XMB_*` boolean flags, `QTDIR`, OS architecture. | Never the whole environment. |
 | `README.txt` | What is in the bundle, what was redacted, the size cap and how to attach it. | Plain text, written last. |
 

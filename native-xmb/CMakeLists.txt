@@ -166,7 +166,7 @@ qt_add_executable(re-ps3-native
     src/profiles.cpp src/profiles.h
     src/steam_library.cpp src/steam_library.h src/steam_vdf.cpp src/steam_vdf.h src/steam_quit.cpp src/steam_quit.h src/installer_panel.cpp src/installer_panel.h src/steam_hidden.cpp src/steam_hidden.h src/steamcmd.cpp src/steamcmd.h src/steamcmd_shell.cpp
     src/steam_downloads.cpp src/steam_downloads.h src/steam_accounts.cpp src/steam_accounts.h src/steam_switch.cpp src/steam_switch.h src/steam_friends.cpp src/steam_friends.h
-    src/steam_artwork.cpp src/steam_artwork.h src/steam_store.cpp src/steam_store.h src/steam_owned.cpp src/steam_owned.h src/steam_collections.cpp src/steam_collections.h src/steam_overrides.cpp src/steam_overrides.h src/steam_family.cpp src/steam_family.h
+    src/steam_artwork.cpp src/steam_artwork.h src/steam_store.cpp src/steam_store.h src/steam_owned.cpp src/steam_owned.h src/steam_collections.cpp src/steam_collections.h src/steam_overrides.cpp src/steam_overrides.h
     src/steam_appinfo.cpp src/steam_appinfo.h src/steam_keyless.cpp src/steam_keyless.h src/steam_account_state.cpp src/steam_account_state.h src/steam_account_shell.cpp
     src/content_registry.cpp src/content_registry.h src/web_launch.cpp src/web_launch.h src/app_editor.cpp src/app_editor.h
     src/rawg_client.cpp src/rawg_client.h src/rawg_artwork.cpp src/rawg_artwork.h
@@ -448,7 +448,7 @@ if(XMB_STEAM_ACCOUNT_BUILD_TESTS)
         src/steam_library.cpp src/steam_library.h src/steam_vdf.cpp src/steam_vdf.h
         src/steam_appinfo.cpp src/steam_appinfo.h src/steam_keyless.cpp src/steam_keyless.h
         src/steam_collections.cpp src/steam_collections.h src/steam_activity.cpp src/steam_activity.h
-        src/steam_family.cpp src/steam_family.h src/steam_accounts.cpp src/steam_accounts.h
+        src/steam_accounts.cpp src/steam_accounts.h
         src/steam_account_state.cpp src/steam_account_state.h src/steam_refresh.h src/steam_switch.h)
     target_include_directories(xmb-steam-account-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
     target_link_libraries(xmb-steam-account-tests PRIVATE Qt6::Core)

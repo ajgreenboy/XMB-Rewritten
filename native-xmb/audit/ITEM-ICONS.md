@@ -371,7 +371,7 @@ Three findings that decide the texture question:
    theme selected the column draws the RCO glyph, which is what the captures show.
 
 Chosen, and landed in `src/view.cpp` only (shell.cpp untouched): local-library folders keep
-`item_tex_plain_folder`; the Steam folder rows (All Games, its collections, Not Installed, Family Shared) take
+`item_tex_plain_folder`; the Steam folder rows (All Games, its collections, Not Installed) take
 `item_tex_ps3game_folder` from `explore_category_game.rco` / `explore_plugin_full.rco`, matching the firmware's
 Game-column folder-of-games row - the stored RPCS3 root frame's Game Data Utility row is that folder-plus-gamepad
 glyph, not a bare storage folder. The remap is one expression in `drawColumns` and should move into `shell.cpp`
