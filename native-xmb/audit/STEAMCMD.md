@@ -7,7 +7,7 @@ behaviour the sources describe. The owner tests the real thing. The last section
 The XMB installs, updates and validates Steam games with Valve's command-line client, SteamCMD, instead of handing each
 one to the full Steam window (`steam://install/<id>`). The XMB collects the Steam account name, the password and the
 Steam Guard code on its own on-screen keyboard (masked where secret, paste supported, like the Jellyfin sign-in) and
-gives them to SteamCMD. Games are still **launched** through the Steam client (`steam://rungameid`), because most need
+gives them to SteamCMD. Games are still **launched** through the Steam client (on Windows `steam.exe -applaunch <id>`, started hidden first when no client runs; the `steam://rungameid` hand-off is the Linux path only; corrected 2026-11-27), because most need
 its Steamworks. Hiding the client is out of scope. Uninstall stays a Steam-client hand-off (see "Not done").
 
 ## Where it lives

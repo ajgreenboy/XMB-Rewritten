@@ -72,7 +72,9 @@ through the foreground lock; nothing is injected into the game.
   continuously, so an unrelated app can still jump in front (the final Run A log shows an EAAntiCheat
   splash doing exactly that). A further PS hold re-raises the still-open menu; a tap closes it.
 - **Steam titles.** A Steam handoff counts as running, so the menu offers Quit Game; the shell now asks
-  Steam to stop the app through `steamStopApp()` and lets the registry watcher report the return. That
+  Steam to stop the app through `steamStopApp()` and lets the registry watcher report the return
+  *(superseded 2026-11-14: Quit Game for a Steam title closes the game's own processes in three stages, `steam.exe
+  +app_stop` is only the fallback when none is found; see [STEAM-QUIT.md](STEAM-QUIT.md))*. That
   branch was not exercised here (no Steam title was launched); the tracked/imported QProcess path is the
   one verified end to end.
 - **A modal dialog in the XMB** keeps the old rule: PS events are ignored while a modal owns input.
@@ -245,7 +247,7 @@ and `C:\dev\out\native-pshook\verify\` (scripts, logs, frames, isolated data dir
 
 ## What is needed from the shell owner
 
-1. **Steam Quit Game - added during this session, still unverified here.** The earlier shell code killed
+1. **Steam Quit Game - added during this session, still unverified here.** *(Superseded 2026-11-14: see [STEAM-QUIT.md](STEAM-QUIT.md); the `+app_stop` route described here is now only the fallback.)* The earlier shell code killed
    only `game_`, so a Steam handoff's Quit Game closed the menu and claimed success while Steam kept the
    game running. The shell owner then added the `steamGameId_` branch in `psMenuActivate()` (it calls
    `steamStopApp()` and leaves the registry watcher to report the return), and the final build here

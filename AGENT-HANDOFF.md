@@ -14,7 +14,7 @@ from-scratch native renderer and services, not an emulator.
 
 ## 2. Start here, in this order
 
-1. [HANDOFF-2026-11-25.md](native-xmb/HANDOFF-2026-11-25.md) - current state (`v0.3.36`), what landed
+1. [HANDOFF-2026-11-25.md](native-xmb/HANDOFF-2026-11-25.md) - current state (written at `v0.3.36`; the tree at `b5cdec7` is `v0.3.42`, see `native-xmb/CMakeLists.txt`), what landed
    11-17 to 11-26 (including the merged Linux port, Rust Phases 1-3 untrusted-edge workspace, Ubuntu/Rust
    CI jobs, animated RAF theme playback, and the TV column setting), open work, branch and worktree status.
    This is the newest handoff and takes precedence over everything else. See [HANDOFF-2026-11-17.md](native-xmb/HANDOFF-2026-11-17.md) for

@@ -213,8 +213,7 @@ API key is rejected with 401 (verified). Family *membership* is read locally fro
 
 `--steam-family-report` prints the membership and the shared count.
 
-The Friends column prefers the signed-in Steam client through an optional native helper; this works without a Web API key or a profile-privacy change. Build it with `-SteamworksHeaders <sdk/public/steam>`; see [client connection](audit/STEAM-CLIENT-FRIENDS.md). The key is an optional friends fallback and still serves the owned-games provider. **Open Steam Friends** also opens Steam's own friends
-window.
+The Friends column lists Discord friends (see below), not Steam friends; Steam friends were replaced on 2026-11-10 (corrected 2026-11-27). The optional signed-in-client helper (build it with `-SteamworksHeaders <sdk/public/steam>`) and `--steam-friends-report` remain for diagnostics only, see [client connection](audit/STEAM-CLIENT-FRIENDS.md). The Web API key serves the owned-games provider.
 
 Artwork overrides go in `<native-data>/artwork/`: `<appid>.png` for the wide row,
 `<appid>_icon.png` for the square icon and `<appid>_bg.png` for the background (`.jpg/.jpeg/.webp` also work). An

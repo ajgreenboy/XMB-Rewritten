@@ -14,10 +14,11 @@ const yml = readFileSync(join(root, ".github", "workflows", "tests.yml"), "utf8"
 const problems: string[] = [];
 
 // Deliberately NOT in CI: needs a real interactive desktop (it opens fullscreen windows). Run by hand, see
-// native-xmb/audit/INGAME-OVERLAY-DESIGN.md. The Steam Linux discovery tests are likewise out: they
-// exercise the $HOME-based ~/.steam/steam and ~/.local/share/Steam paths that only the Linux port hosts,
-// which the windows-latest CI runner never builds. The credential-store tests need libsecret (Secret
-// Service) and the system-power tests assert the Linux logind/systemctl mapping, so both are Linux-only.
+// native-xmb/audit/INGAME-OVERLAY-DESIGN.md. The Steam Linux discovery tests are out of the Windows job only: they
+// exercise the $HOME-based ~/.steam/steam and ~/.local/share/Steam paths that only the Linux port hosts, so the
+// ubuntu-24.04 job in tests.yml builds and runs xmb-steam-linux-tests (and xmb-system-power-tests) itself
+// (corrected 2026-11-27; this comment used to say they were not in CI). The credential-store tests need libsecret
+// (Secret Service) and the system-power tests assert the Linux logind/systemctl mapping, so both are Linux-only.
 // Add a name here only with a reason.
 const manualOptions = new Set(["XMB_OVERLAY_BUILD_TESTS", "XMB_STEAM_LINUX_BUILD_TESTS",
     "XMB_CREDENTIAL_STORE_BUILD_TESTS", "XMB_SYSTEM_POWER_BUILD_TESTS"]);

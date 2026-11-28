@@ -1,5 +1,9 @@
 # Logged-in Steam Friends — 2026-10-26
 
+> Superseded 2026-11-10 (corrected 2026-11-27): the Friends column no longer shows Steam friends. Commit `31b702d` replaced
+> them with Discord friends. The helper (`xmb-steam-client`, built only with `XMB_STEAMWORKS_HEADERS`), `steam_friends.*` and
+> `--steam-friends-report` still exist, but the shell does not call them. Everything below describes the 2026-10-26 state.
+
 The Friends column now prefers the user's running, signed-in Steam client. On this machine it returns **46 real friends**, including persona states and one in-game friend, while the Web API friends endpoint returns HTTP 401. No profile privacy change is required for this working local-client path.
 
 ## Evidence and corrected diagnosis

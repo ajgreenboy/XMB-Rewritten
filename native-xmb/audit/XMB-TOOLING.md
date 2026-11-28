@@ -176,7 +176,7 @@ Verification so far, on the local install:
 ## Rules these programs keep
 
 - No fabricated success: a failed search, import, install handoff or launch reports its own error.
-- Steam data stays read-only; nothing is written into the Steam directory.
+- Steam data stays read-only for these programs; nothing is written into the Steam directory. (Corrected 2026-11-27: the account switch is the one exception, it edits `config/loginusers.vdf` and the auto-login registry values after a two-step confirmation, see [STEAM-ACCOUNT-SWITCH.md](STEAM-ACCOUNT-SWITCH.md).)
 - Requests carry no cookies, session tokens or credentials except the key the user supplies
   in the environment; caches live under the native data directory.
 - Steam owns purchase, download, DRM and launch. The XMB only hands off.

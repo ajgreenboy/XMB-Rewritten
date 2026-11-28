@@ -6,8 +6,18 @@
 > Open in Steam Library, Store Page, and for installed titles Screenshots, Verify Game Files and Delete, all `steam://`
 > hand-offs (`steam://nav/games/details/<id>`, `store/<id>`, `open/screenshots/<id>`, `validate/<id>`, `uninstall/<id>`) that
 > Steam itself carries out and confirms. Commits aff3cb6 and 4e64c31. The text below is the 2026-10-25 handoff.
+>
+> Corrected 2026-11-27 against the code at `v0.3.42` (`shell.cpp` `Action::SteamHub`, `rebuildFriends`):
+> - **Game column shape.** After the installed titles there is one folded **Steam** row (`steam-hub`), not a separate Store row
+>   and All Games folder. Opening it lists Steam Store, All Games, Installed Games, Search Steam Store and Download
+>   Management. Its detail line reads "N owned" (Valve's list), "N from this PC's Steam data" (no key, see below) or
+>   "Store and library". An installed title's detail line carries only its collection labels (owner direction 2026-11-23);
+>   Steam's recorded play time and last-played date still order the column and show in the title's Triangle panel.
+> - **Friends.** The Friends column no longer lists Steam friends: commit `31b702d` (2026-11-10) replaced them with Discord
+>   friends. `steam_friends.*`, `--steam-friends-report` and the optional `xmb-steam-client` helper are still in the tree, but
+>   nothing in the shell uses them, and there is no **Open Steam Friends** row. The "Steam friends" section below is history.
 
-The Game column now discovers installed Steam titles directly. The Friends column is backed by a separate Steam service. Imported executables and service apps share a versioned native registry. Steam remains the owner of installation, DRM and game launch; Steam data is read-only except for the account switch, which selects an already-remembered account for Steam's own auto-sign-in ([STEAM-ACCOUNT-SWITCH.md](STEAM-ACCOUNT-SWITCH.md)).
+The Game column now discovers installed Steam titles directly. The Friends column no longer carries Steam friends (corrected 2026-11-27, see the note above). Imported executables and service apps share a versioned native registry. Steam remains the owner of installation, DRM and game launch; Steam data is read-only except for the account switch, which selects an already-remembered account for Steam's own auto-sign-in ([STEAM-ACCOUNT-SWITCH.md](STEAM-ACCOUNT-SWITCH.md)).
 
 ## Installed-PKG presentation
 
@@ -29,8 +39,12 @@ F5 at the root, or **Refresh Game Library**, rescans asynchronously and preserve
 
 The Game column is the account's owned library, not just its installed titles. The owned
 list comes from Valve's `IPlayerService/GetOwnedGames` (`src/steam_owned.*`), which
-requires `STEAM_WEB_API_KEY` in the launch environment; without it the column keeps the
-installed titles and reports that a key is needed. Installed titles keep launching
+needs a Steam Web API key: `STEAM_WEB_API_KEY` in the environment, or the single-line key file `steam_api_key` in the
+application data folder (the in-XMB API Keys page writes it; `src/api_keys.h`). *(Corrected 2026-11-27: without a key the
+column is no longer limited to the installed titles. `src/steam_keyless.*` builds a smaller list from the signed-in
+account's own local files - play records, static collections, the library cache and `appcache/appinfo.vdf` - and the
+Steam hub says "N from this PC's Steam data". It lists games the account has played or collected, not every purchase;
+a key restores Valve's complete list, which replaces the local one.)* Installed titles keep launching
 (`steam://rungameid/<id>`); owned-but-uninstalled titles offer an install action
 (`steam://install/<id>`) so Steam performs the download.
 
@@ -46,6 +60,9 @@ Reports: `--steam-collections-report`, `--owned-games-report` (needs the key) an
 the store browser and media apps, is in [XMB-TOOLING.md](XMB-TOOLING.md).
 
 ## Steam friends
+
+> Superseded 2026-11-10 (corrected 2026-11-27): the Friends column shows Discord friends, not Steam friends. This section
+> describes the earlier Steam friends service and the code that remains for `--steam-friends-report` only.
 
 2026-10-26 continuation: the signed-in client helper now supplies 46 verified live friends without changing profile privacy. It is preferred over the Web API path described below; see [STEAM-CLIENT-FRIENDS.md](STEAM-CLIENT-FRIENDS.md) for the build, evidence and limits.
 
@@ -121,7 +138,7 @@ exact `shell.cpp`/`shell.h` hunks are in [SERVICES-BREADTH.md](SERVICES-BREADTH.
   is not proof of a bad command. The registry stays the primary stop confirmation; the log is secondary and
   is reported, never treated as the outcome. Stopping a real running title, the registry-clear timing, and
   unsaved-progress behaviour still need a live title.
-- **Friends avatars (6.2).** `SteamFriendAvatars` (in `steam_friends.*`) turns the SteamIDs the friends list
+- **Friends avatars (6.2).** *(Superseded 2026-11-10: the Friends column is Discord now; this code is reachable only through `--steam-friends-report`.)* `SteamFriendAvatars` (in `steam_friends.*`) turns the SteamIDs the friends list
   already returns into Steam's own public avatar: the public profile XML is read (https,
   `steamcommunity.com` only, 256 KiB, 8 s), the `<avatarMedium>`/`<avatarFull>` URL is accepted only on
   Steam's CDN hosts, the image is fetched bounded (1 MiB, `Content-Type: image/...`), decoded with format and
