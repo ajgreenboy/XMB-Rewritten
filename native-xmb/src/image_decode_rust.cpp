@@ -487,4 +487,81 @@ QImage decodeTga(const QByteArray& tga, QString* error) {
     return image;
 }
 
+bool parseRco(const QByteArray& file, RcoContainer& out, QString* error) {
+    out = {};
+    if (error) error->clear();
+    ImgBufferGuard tablesGuard, tocGuard;
+    const auto* ptr = file.isEmpty() ? nullptr : reinterpret_cast<const uint8_t*>(file.constData());
+    const int rc = img_parse_rco(ptr, static_cast<size_t>(file.size()), &tablesGuard.ptr, &tablesGuard.len, &tocGuard.ptr, &tocGuard.len);
+    if (rc != 0) {
+        if (error) *error = lastMessage();
+        return false;
+    }
+    if (!tablesGuard.ptr || !tocGuard.ptr || tocGuard.len < 12) {
+        if (error) *error = QStringLiteral("corrupt Rust RCO payload");
+        return false;
+    }
+    const uint8_t* p = tocGuard.ptr;
+    const size_t n = tocGuard.len;
+    out.labels = qFromLittleEndian<quint32>(p);
+    out.imageData = qFromLittleEndian<quint32>(p + 4);
+    const quint32 count = qFromLittleEndian<quint32>(p + 8);
+    size_t pos = 12;
+    out.entries.reserve(static_cast<qsizetype>(std::min<quint32>(count, 65536)));
+    for (quint32 i = 0; i < count; ++i) {
+        if (pos + 4 > n) { out = {}; return false; }
+        const quint32 nameLen = qFromLittleEndian<quint32>(p + pos);
+        pos += 4;
+        if (nameLen > n - pos || pos + nameLen + 4 > n) { out = {}; return false; }
+        const QString name = QString::fromUtf8(reinterpret_cast<const char*>(p + pos), static_cast<qsizetype>(nameLen));
+        pos += nameLen;
+        out.entries.insert(name, qFromLittleEndian<quint32>(p + pos));
+        pos += 4;
+    }
+    if (pos != n) { out = {}; if (error) *error = QStringLiteral("corrupt Rust RCO payload length"); return false; }
+    out.file = file;
+    out.tables = QByteArray(reinterpret_cast<const char*>(tablesGuard.ptr), static_cast<qsizetype>(tablesGuard.len));
+    return true;
+}
+
+bool rcoEnglish(const RcoContainer& container, QHash<QString, QString>& out, QString* error) {
+    out.clear();
+    if (error) error->clear();
+    ImgBufferGuard guard;
+    const auto* filePtr = container.file.isEmpty() ? nullptr : reinterpret_cast<const uint8_t*>(container.file.constData());
+    const auto* tablesPtr = container.tables.isEmpty() ? nullptr : reinterpret_cast<const uint8_t*>(container.tables.constData());
+    const int rc = img_rco_english(filePtr, static_cast<size_t>(container.file.size()), tablesPtr,
+                                   static_cast<size_t>(container.tables.size()), container.labels, &guard.ptr, &guard.len);
+    if (rc != 0) {
+        if (error) *error = lastMessage();
+        return false;
+    }
+    if (!guard.ptr || guard.len < 4) {
+        if (error) *error = QStringLiteral("corrupt Rust RCO text payload");
+        return false;
+    }
+    const uint8_t* p = guard.ptr;
+    const size_t n = guard.len;
+    const quint32 count = qFromLittleEndian<quint32>(p);
+    size_t pos = 4;
+    out.reserve(static_cast<qsizetype>(std::min<quint32>(count, 65536)));
+    for (quint32 i = 0; i < count; ++i) {
+        if (pos + 4 > n) { out.clear(); return false; }
+        const quint32 keyLen = qFromLittleEndian<quint32>(p + pos);
+        pos += 4;
+        if (keyLen > n - pos || pos + keyLen + 4 > n) { out.clear(); return false; }
+        const QString key = QString::fromUtf8(reinterpret_cast<const char*>(p + pos), static_cast<qsizetype>(keyLen));
+        pos += keyLen;
+        const quint32 units = qFromLittleEndian<quint32>(p + pos);
+        pos += 4;
+        if (uint64_t(units) * 2u > n - pos) { out.clear(); return false; }
+        QString value(static_cast<qsizetype>(units), Qt::Uninitialized);
+        for (quint32 u = 0; u < units; ++u) value[u] = QChar(qFromLittleEndian<quint16>(p + pos + size_t(u) * 2));
+        pos += size_t(units) * 2;
+        out.insert(key, value);
+    }
+    if (pos != n) { out.clear(); if (error) *error = QStringLiteral("corrupt Rust RCO text payload length"); return false; }
+    return true;
+}
+
 } // namespace xmb::image_rust

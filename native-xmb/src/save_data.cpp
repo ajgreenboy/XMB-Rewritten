@@ -69,7 +69,10 @@ QVector<Entry> saveDataRows(Assets& assets,const QString& kind) {
         "PS3, PS2, PSP and internal memory card storage are not implemented. "
         "No saved data can be copied, deleted or inspected on this system.");
     QVector<Entry> rows;
-    if(kind==QLatin1String("ps3") && !qEnvironmentVariableIsSet("XMB_DUMP_ENTRIES")) {
+    // XMB_DUMP_ENTRIES runs keep the empty state (no machine-dependent rows in a catalogue dump) unless a render-gate
+    // state seeds its own synthetic dev_hdd0 and says so with XMB_HDD_PAGES=1 (work/hdd-fixture.ts).
+    const bool scanHdd=!qEnvironmentVariableIsSet("XMB_DUMP_ENTRIES") || qEnvironmentVariable("XMB_HDD_PAGES")==QLatin1String("1");
+    if(kind==QLatin1String("ps3") && scanHdd) {
         const QDir homeDir(QDir(assets.hddRoot()).filePath(QStringLiteral("home")));
         if(homeDir.exists()) {
             const auto users=homeDir.entryInfoList(QDir::Dirs|QDir::NoDotAndDotDot,QDir::Name);
@@ -102,6 +105,7 @@ QVector<Entry> saveDataRows(Assets& assets,const QString& kind) {
                     row.texture=QString::fromLatin1(spec.texture);
                     row.action=Action::Information;
                     row.source=QStringLiteral("hdd");
+                    row.localPath=saveInfo.absoluteFilePath();
                     const QString icon0=dir.filePath(QStringLiteral("ICON0.PNG"));
                     if(QFileInfo::exists(icon0)) {
                         QImage img(icon0);
@@ -149,5 +153,26 @@ void Shell::openSaveData(const QString& kind) {
     page.entries=saveDataRows(assets_,kind);
     pages_.push_back(std::move(page));
     emit changed();
+}
+// Copy writes next to the app's own data, never back into dev_hdd0: a backup must survive RPCS3 rewriting the save.
+QString Shell::saveBackupDir() const {
+    return QDir(dataDirectory_).filePath(QStringLiteral("savedata-backup"));
+}
+// The save folder's own parent (home/<user>/savedata) is the only root Delete may touch, so FileOperations' rule
+// "strictly inside a root" admits this one save folder and nothing above it.
+QString Shell::saveDeleteRefusal(const Entry& entry) {
+    if(entry.localPath.isEmpty() || !QFileInfo(entry.localPath).isDir())return tr("This saved data is no longer on disk.");
+    fileOps_.setAllowedRoots({QFileInfo(entry.localPath).absolutePath()});
+    return fileOps_.checkDeletable(entry.localPath);
+}
+void Shell::reloadSaveDataPage() {
+    if(pages_.isEmpty() || pages_.last().entries.isEmpty() || !pages_.last().entries.first().id.startsWith(QLatin1String("savedata:ps3")))return;
+    auto& page=pages_.last();
+    const QString previous=page.entries.value(page.selection).id;
+    page.entries=saveDataRows(assets_,QStringLiteral("ps3"));
+    page.selection=0;
+    for(int i=0;i<page.entries.size();++i)if(page.entries[i].id==previous){page.selection=i;break;}
+    page.selection=std::clamp(page.selection,0,std::max(0,int(page.entries.size())-1));
+    qInfo().noquote()<<QStringLiteral("savedata: page rebuilt with %1 row(s)").arg(page.entries.size());
 }
 }

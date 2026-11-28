@@ -316,36 +316,68 @@ void Shell::addInstalledApps() {
         add(folder,content,true);
     }
 }
-void Shell::openTrophyCollection() {
+// dev_hdd0 trophy and game-data pages (trophy_data.h). The rows come from a filesystem scan that also decodes
+// ICON0/TROP*.PNG, so it runs on a worker: the page is pushed empty with the busy state up (the same page_busy a
+// folder scan raises) and filled when the scan lands. A page the user has already left is matched by identity
+// and the late result is dropped. Nothing here touches Assets on the worker (its RCO text cache is GUI state).
+void Shell::openHddPage(const QString& title,std::function<QVector<Entry>(QString*)> build,
+                        const QString& emptyTitle,const QString& emptyText) {
     if(pages_.size()>=32)return;
-    Page page;
-    page.entries=trophyCollectionRows(assets_,&page.title);
-    if(page.entries.isEmpty()) {
-        showMessage(assets_.text("explore_category_psn","msg_trophies",tr("Trophy Collection")),unavailableReason(QStringLiteral("trophy")),MessageKind::Page);
-        return;
-    }
+    Page page;page.title=title;page.identity=++pageIdentityCounter_;
+    const quint64 identity=page.identity;
     pages_.push_back(std::move(page));
+    loading_=true;status_=assets_.text("explore_plugin_full","msg_wait",QObject::tr("Please wait..."));
+    qInfo().noquote()<<QStringLiteral("busy: page_busy raised (dev_hdd0 scan) page=\"%1\"").arg(title);
+    using Result=QPair<QVector<Entry>,QString>;
+    auto* watcher=new QFutureWatcher<Result>(this);
+    connect(watcher,&QFutureWatcher<Result>::finished,this,[this,watcher,identity,emptyTitle,emptyText]{
+        Result result=watcher->result();watcher->deleteLater();
+        if(pages_.isEmpty() || pages_.last().identity!=identity)return;   // the user left the page first
+        loading_=false;status_.clear();
+        if(result.first.isEmpty()) {
+            pages_.removeLast();
+            showMessage(emptyTitle,emptyText,MessageKind::Page);
+            emit changed();
+            return;
+        }
+        auto& top=pages_.last();
+        if(!result.second.isEmpty())top.title=result.second;
+        top.entries=std::move(result.first);top.selection=0;
+        qInfo().noquote()<<QStringLiteral("hdd: page \"%1\" filled with %2 row(s)").arg(top.title).arg(top.entries.size());
+        emit changed();
+    });
+    watcher->setFuture(QtConcurrent::run([build=std::move(build)]{QString pageTitle;auto rows=build(&pageTitle);return Result(std::move(rows),pageTitle);}));
+    emit changed();
+}
+void Shell::openTrophyCollection() {
+    const QString title=assets_.text("explore_category_psn","msg_trophies",tr("Trophy Collection"));
+    openHddPage(title,[root=assets_.hddRoot()](QString*){return trophyCollectionRowsAt(root);},
+                title,unavailableReason(QStringLiteral("trophy")));
 }
 void Shell::openTrophySet(const QString& setKey) {
-    if(pages_.size()>=32)return;
-    Page page;
-    page.entries=trophySetRows(assets_,setKey,&page.title);
-    if(page.entries.isEmpty()) {
-        showMessage(tr("Trophy Collection"),tr("No trophies were found in this set."),MessageKind::Page);
-        return;
-    }
-    pages_.push_back(std::move(page));
+    const QString hidden=assets_.text("explore_category_psn","msg_trophy_hidden",tr("Hidden Trophy"));
+    openHddPage(tr("Trophy Collection"),[root=assets_.hddRoot(),setKey,hidden](QString* pageTitle){return trophySetRowsAt(root,setKey,hidden,pageTitle);},
+                tr("Trophy Collection"),tr("No trophies were found in this set."));
 }
 void Shell::openGameDataUtility() {
-    if(pages_.size()>=32)return;
-    Page page;
-    page.entries=gameDataRows(assets_,&page.title);
-    if(page.entries.isEmpty()) {
-        showMessage(assets_.text("explore_category_game","msg_gamedata_utility",tr("Game Data Utility")),
-                    assets_.text("explore_category_game","msg_error_no_gamedata",tr("There is no game data.")),MessageKind::Page);
-        return;
-    }
-    pages_.push_back(std::move(page));
+    const QString title=assets_.text("explore_category_game","msg_gamedata_utility",tr("Game Data Utility"));
+    openHddPage(title,[root=assets_.hddRoot()](QString*){return gameDataRowsAt(root);},
+                title,assets_.text("explore_category_game","msg_error_no_gamedata",tr("There is no game data.")));
+}
+// Whether Trophy Collection / Game Data Utility have anything to open, read once on a worker at start and after
+// each content rescan, so pressing Cross on the row costs no disk access. XMB_DUMP_ENTRIES runs never probe, so
+// scripted catalogue dumps keep the rows' unavailable path exactly as before; XMB_HDD_PAGES=1 lets a render-gate
+// state that seeds its own synthetic dev_hdd0 (work/hdd-fixture.ts) open the pages anyway.
+void Shell::probeHddContent() {
+    if(qEnvironmentVariableIsSet("XMB_DUMP_ENTRIES") && qEnvironmentVariable("XMB_HDD_PAGES")!=QLatin1String("1")){hddHasTrophies_=hddHasGameData_=false;return;}
+    const quint64 request=++hddProbeRequest_;
+    auto* watcher=new QFutureWatcher<QPair<bool,bool>>(this);
+    connect(watcher,&QFutureWatcher<QPair<bool,bool>>::finished,this,[this,watcher,request]{
+        const auto found=watcher->result();watcher->deleteLater();
+        if(request!=hddProbeRequest_)return;
+        hddHasTrophies_=found.first;hddHasGameData_=found.second;
+    });
+    watcher->setFuture(QtConcurrent::run([root=assets_.hddRoot()]{return qMakePair(hasTrophySets(root),hasGameDataEntries(root));}));
 }
 void Shell::stopPreviewAudio() {
     previewDebounce_.stop();
@@ -1949,6 +1981,7 @@ void Shell::refreshContent() {
         }
         refreshJellyfinMusicRow();
         contentLoaded_=true;
+        probeHddContent();
         QVector<QPair<QString,QString>> rawgTargets;
         QSet<QString> liveRawgIds;
         for(const auto& game:result.steam.games) {
@@ -2352,6 +2385,7 @@ Shell::Shell(QString dataDirectory,Assets& assets,QObject* parent):QObject(paren
     xmb::bootprof::mark("Shell rebuildUsers");
     addInstalledApps();
     xmb::bootprof::mark("Shell addInstalledApps");
+    probeHddContent();
     for(const auto& category:categories_)if(category.id=="friends")staticFriendEntries_=category.entries;
     discordFriends_.configure(dataDirectory_);
     xmb::bootprof::mark("Shell discord configure");
@@ -2874,9 +2908,11 @@ Shell::Shell(QString dataDirectory,Assets& assets,QObject* parent):QObject(paren
         fileOpsRequest_=0;loading_=false;status_.clear();
         busyProgress_=-1.;busySpinnerPhase_=-1.;   // the busy page returns to the indeterminate wait form
         const bool copying=fileOpsKind_==QLatin1String("copy");
+        qInfo().noquote()<<QStringLiteral("files: finished #%1 kind=%2 ok=%3 %4").arg(request).arg(fileOpsKind_).arg(ok?1:0).arg(message);
         if(ok) {
             if(copying)notify(assets_.text("explore_plugin_full","msg_copied","Copy completed."),message);
             else notify(assets_.text("explore_plugin_full","msg_deleted","Delete completed."),tr("Moved to the Recycle Bin."));
+            reloadSaveDataPage();   // a saved-data page has no directory for refreshDirectory() to rescan
             refreshDirectory();
         } else if(copying && message.startsWith(QLatin1String("Not enough free space")))
             showMessage(assets_.text("explore_plugin_full","msg_copy_incomplete","There is not enough free space. The copy operation was not completed."),MessageKind::Page);
@@ -3156,9 +3192,8 @@ void Shell::activate() {
     // Committing a value is the firmware's module-action path: snd_system_ok when the action completes
     // (explore_plugin.prx FUN_00030954 / FUN_00062e6c). SetSetting is silent here and plays Cue::Accept
     // after its write below (audit/INTERACTION-AUDIO.md section 10).
-    const bool realTrophyOrData=!qEnvironmentVariableIsSet("XMB_DUMP_ENTRIES")
-        && ((entry.id==QLatin1String("trophy") && hasTrophySets(assets_.hddRoot()))
-            || (entry.id==QLatin1String("data") && hasGameDataEntries(assets_.hddRoot())));
+    const bool realTrophyOrData=(entry.id==QLatin1String("trophy") && hddHasTrophies_)
+            || (entry.id==QLatin1String("data") && hddHasGameData_);
     if(entry.action!=Action::SetSetting)
         interactionAudio_.play(realTrophyOrData?InteractionAudio::Cue::Confirm
             :entry.action==Action::Unavailable?InteractionAudio::Cue::Error
@@ -3603,10 +3638,9 @@ void Shell::activate() {
     case Action::JellyfinSignInSubmit:submitJellyfinSignIn();break;
     case Action::JellyfinSignInCancel:cancelJellyfinSignInPage();break;
     case Action::Unavailable:
-        if(!qEnvironmentVariableIsSet("XMB_DUMP_ENTRIES")) {
-            if(entry.id==QLatin1String("trophy") && hasTrophySets(assets_.hddRoot())){openTrophyCollection();break;}
-            if(entry.id==QLatin1String("data") && hasGameDataEntries(assets_.hddRoot())){openGameDataUtility();break;}
-        }
+        // hddHas*_ are only ever true when probeHddContent ran (never in a plain XMB_DUMP_ENTRIES run).
+        if(entry.id==QLatin1String("trophy") && hddHasTrophies_){openTrophyCollection();break;}
+        if(entry.id==QLatin1String("data") && hddHasGameData_){openGameDataUtility();break;}
         // A Continue Watching row whose file has gone says why, instead of the generic line, which would be
         // false: the feature exists, the file does not.
         showMessage(entry.title,(entry.id.startsWith("continue:") || entry.id.startsWith("savedata:") || entry.id==QLatin1String("start_at_signin") || entry.id.startsWith("setup:")
@@ -4102,6 +4136,19 @@ void Shell::buildOptions() {
             addOption({"",tr("Pause All")},OptionCommand::ReleaseDownloadPauseAll,"download-job");
         if(hasPausedReleaseJobs() || hasSteamCmdJobsToToggle(false))
             addOption({"",tr("Resume All")},OptionCommand::ReleaseDownloadResumeAll,"download-job");
+        return;
+    }
+    // ---- A PS3 saved-data row (save_data.cpp): the firmware's Copy / Delete / Information ------------------------
+    // ps3_savedata_plugin's msg_copy / msg_del, here acting on the real save folder in dev_hdd0. Copy is a backup into
+    // the app's data folder (the console copies to USB storage, which a PC has no fixed equivalent of); Delete goes to
+    // the Recycle Bin, never unlinks, and is refused with FileOperations' own reason when the folder is not deletable.
+    if(entry.id.startsWith(QLatin1String("savedata:ps3:dir:")) && !entry.localPath.isEmpty()) {
+        addOption({"msg_copy","Copy"},OptionCommand::SaveDataCopy,"ps3-save",QFileInfo(entry.localPath).isDir(),
+                  tr("Backs this saved data up to the savedata-backup folder in the XMB's data folder."));
+        const QString refusal=saveDeleteRefusal(entry);
+        addOption({"msg_del","Delete"},OptionCommand::SaveDataDelete,"ps3-save",refusal.isEmpty(),
+                  refusal.isEmpty()?tr("Moves this saved data to the Recycle Bin."):refusal);
+        addOption({"msg_info","Information"},OptionCommand::Information,"always-last");
         return;
     }
     // ---- A user row: explore_plugin's own table (FUN_0008cdf4, TRACED) ----------------------------------
@@ -5282,6 +5329,42 @@ void Shell::optionsActivate() {
         resetOptions();
         exitMultiSelect();
         break;
+    case OptionCommand::SaveDataCopy: {
+        if(entry.localPath.isEmpty() || !QFileInfo(entry.localPath).isDir()){interactionAudio_.play(InteractionAudio::Cue::Error);emit changed();break;}
+        const QString dest=saveBackupDir();
+        if(!QDir().mkpath(dest)) {
+            resetOptions();
+            showMessage(assets_.text("explore_plugin_full","msg_copy","Copy"),tr("The backup folder %1 could not be created.").arg(QDir::toNativeSeparators(dest)),MessageKind::Page);
+            emit changed();break;
+        }
+        const QString source=entry.localPath,title=entry.title;
+        resetOptions();
+        fileOps_.setAllowedRoots({QFileInfo(source).absolutePath(),dest});
+        fileOpsRequest_=fileOps_.copy({source},dest);fileOpsKind_=QStringLiteral("copy");
+        loading_=true;status_=assets_.text("explore_plugin_full","msg_copying","Copying...");
+        busyProgress_=-1.;busySpinnerPhase_=0.;busyClock_.start();
+        qInfo().noquote()<<"savedata: copy asked for"<<title<<"to"<<QDir::toNativeSeparators(dest);
+        emit changed();
+        break;
+    }
+    case OptionCommand::SaveDataDelete: {
+        if(!saveDeleteRefusal(entry).isEmpty()){interactionAudio_.play(InteractionAudio::Cue::Error);emit changed();break;}
+        const QString path=entry.localPath,title=entry.title;
+        resetOptions();
+        // ps3_savedata_plugin asks before a delete; its own sentence where the flash has it, the generic one otherwise.
+        showConfirm(assets_.text("ps3_savedata_plugin","msg_del_ask",
+                        assets_.text("explore_plugin_full","msg_del_content_ask",QObject::tr("The content will be deleted.\nAre you sure you want to continue?"))),
+                    tr("%1 is moved to the Recycle Bin.").arg(title),[this,path,title]{
+            fileOps_.setAllowedRoots({QFileInfo(path).absolutePath()});
+            fileOpsRequest_=fileOps_.deleteToRecycleBin({path});fileOpsKind_=QStringLiteral("delete");
+            loading_=true;status_=assets_.text("explore_plugin_full","msg_deleting","Deleting...");
+            busyProgress_=-1.;busySpinnerPhase_=0.;busyClock_.start();
+            qInfo().noquote()<<"savedata: delete asked for"<<title;
+            emit changed();
+        });
+        emit changed();
+        break;
+    }
     case OptionCommand::Delete:
         if(optionIsLocalContent(entry) && deleteRefusal(entry).isEmpty()) {
             const Entry row=entry;

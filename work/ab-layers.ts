@@ -1,4 +1,5 @@
 import { decodePng, psnr, ssim, type Crop, type PngImage } from './ab-compare';
+import { writeSyntheticHdd } from './hdd-fixture';
 import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
@@ -113,6 +114,9 @@ type StateRecipe = {
   // Explicitly seed the harmless pending-installer catalogue row used by
   // Game-root states whose stored native baseline includes it.
   pendingInstallerFixture?: boolean;
+  // A synthetic dev_hdd0 (work/hdd-fixture.ts) written into the capture directory and passed as --dev-hdd0, with
+  // XMB_HDD_PAGES=1 so the Trophy Collection / Game Data Utility pages open despite XMB_DUMP_ENTRIES.
+  hddFixture?: 'synthetic';
   waits: number;
   settleWaits?: number;
   path?: PathStage[];
@@ -340,6 +344,8 @@ function parseThresholds(path: string): Thresholds {
       }
       if (state.appArgs !== undefined && (!Array.isArray(state.appArgs) || state.appArgs.some(a => typeof a !== 'string' || !a.startsWith('--'))))
         fail(`${path}: ${state.name}: appArgs must be an array of --options`);
+      if (state.hddFixture !== undefined && state.hddFixture !== 'synthetic')
+        fail(`${path}: ${state.name}: hddFixture must be "synthetic" when present`);
       if (state.stubLog !== undefined && (typeof state.stubLog !== 'string' || !isAbsolute(state.stubLog)))
         fail(`${path}: ${state.name}: stubLog must be an absolute path`);
       for (const listKey of ['preGrab', 'postGrab'] as const) {
@@ -723,6 +729,7 @@ async function runStateProcess(t: Thresholds, opts: ReturnType<typeof parseArgs>
   if (bgClock) args.push('--background-clock', bgClock);
   if (uiClock) args.push('--ui-clock', uiClock);
   args.push('--focus-time', focusTime, '--script', finalTokens.join(','));
+  if (recipe.hddFixture) args.push('--dev-hdd0', writeSyntheticHdd(captureDir));
   if (recipe.appArgs) args.push(...recipe.appArgs);
   const env = {
     ...process.env,
@@ -741,6 +748,7 @@ async function runStateProcess(t: Thresholds, opts: ReturnType<typeof parseArgs>
     SPOTIFY_CLIENT_ID: '',
   } as Record<string, string | undefined>;
   for (const [key, value] of Object.entries(recipe.env ?? {})) env[key] = value.replaceAll('${repo}', repo);
+  if (recipe.hddFixture) env.XMB_HDD_PAGES = '1';
   if (opts.steamRoot) env.XMB_STEAM_ROOT = opts.steamRoot;
 
   if (!quiet) console.log(`  script   ${finalTokens.join(',')}`);
@@ -1142,7 +1150,7 @@ async function runStates(thresholds: Thresholds, opts: ReturnType<typeof parseAr
   // column), so a recipe is resolved against a dump captured with its own inputs.
   const pathRecipes = recipes.filter(recipe => (recipe.path?.length ?? 0) > 0);
   const catalogues = new Map<string, Catalogue>();
-  const signature = (recipe: StateRecipe) => `${recipe.dataSeed}|${JSON.stringify(recipe.env ?? {})}`;
+  const signature = (recipe: StateRecipe) => `${recipe.dataSeed}|${JSON.stringify(recipe.env ?? {})}|${recipe.hddFixture ?? ''}`;
   const catalogueFor = async (recipe: StateRecipe) => {
     const key = signature(recipe);
     const cached = catalogues.get(key);

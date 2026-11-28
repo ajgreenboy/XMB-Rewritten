@@ -4,6 +4,7 @@
 #include <QImage>
 #include <QString>
 #include "qrc.h"
+#include "rco_parse.h"
 #include <future>
 #include <memory>
 #include <unordered_map>
@@ -89,7 +90,7 @@ public:
     // Every English string of an RCO container, id -> text (local analysis).
     QHash<QString,QString> allText(const QString& container) const { return readEnglish(readContainer(container)); }
 private:
-    struct Container { QByteArray file, tables; quint32 labels=0, imageData=0; QHash<QString,quint32> entries; };
+    using Container = RcoContainer;   // rco_parse.h: parsed by rco::parseContainer (C++) or image_rust::parseRco (Rust)
     QString root_, font_, hddRoot_, modulesRoot_;
     QStringList fonts_;
     QHash<QString,Container> containers_;

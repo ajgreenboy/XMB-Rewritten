@@ -8,6 +8,7 @@ use crate::edge::decode_edge_packed;
 use crate::gim::decode_gim;
 use crate::gtf::decode_gtf;
 use crate::qrc::{encode_parsed_qrc_toc, inflate_qrc_slice, parse_qrc};
+use crate::rco::{encode_rco_english, encode_rco_toc, parse_rco, rco_english};
 use crate::sfo::parse_sfo_packed;
 use crate::subtitles::{encode_cues, parse_pgs, parse_vobsub};
 use crate::tga::decode_tga;
@@ -593,6 +594,96 @@ pub unsafe extern "C" fn img_decode_tga(
                     *out_height = decoded.height;
                     hand_off(decoded.argb_bytes, out_pixels, out_len);
                 }
+                0
+            }
+            Err(e) => {
+                set_error(e);
+                1
+            }
+        }
+    }))
+    .unwrap_or_else(|_| {
+        set_error("internal panic caught at FFI boundary");
+        -2
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn img_parse_rco(
+    rco_ptr: *const u8,
+    rco_len: usize,
+    out_tables_buf: *mut *mut u8,
+    out_tables_len: *mut usize,
+    out_toc_buf: *mut *mut u8,
+    out_toc_len: *mut usize,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        clear_error();
+        if out_tables_buf.is_null() || out_tables_len.is_null() || out_toc_buf.is_null() || out_toc_len.is_null() {
+            set_error("null output pointer");
+            return -1;
+        }
+        unsafe {
+            *out_tables_buf = std::ptr::null_mut();
+            *out_tables_len = 0;
+            *out_toc_buf = std::ptr::null_mut();
+            *out_toc_len = 0;
+        }
+        if rco_len > 0 && rco_ptr.is_null() {
+            set_error("null RCO input pointer");
+            return -1;
+        }
+        let bytes = if rco_len == 0 { &[] } else { unsafe { slice::from_raw_parts(rco_ptr, rco_len) } };
+        match parse_rco(bytes) {
+            Ok(parsed) => {
+                let toc = encode_rco_toc(&parsed);
+                unsafe {
+                    hand_off(parsed.tables, out_tables_buf, out_tables_len);
+                    hand_off(toc, out_toc_buf, out_toc_len);
+                }
+                0
+            }
+            Err(e) => {
+                set_error(e);
+                1
+            }
+        }
+    }))
+    .unwrap_or_else(|_| {
+        set_error("internal panic caught at FFI boundary");
+        -2
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn img_rco_english(
+    file_ptr: *const u8,
+    file_len: usize,
+    tables_ptr: *const u8,
+    tables_len: usize,
+    labels: u32,
+    out_buf: *mut *mut u8,
+    out_len: *mut usize,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        clear_error();
+        if out_buf.is_null() || out_len.is_null() {
+            set_error("null output pointer");
+            return -1;
+        }
+        unsafe {
+            *out_buf = std::ptr::null_mut();
+            *out_len = 0;
+        }
+        if (file_len > 0 && file_ptr.is_null()) || (tables_len > 0 && tables_ptr.is_null()) {
+            set_error("null RCO input pointer");
+            return -1;
+        }
+        let file = if file_len == 0 { &[] } else { unsafe { slice::from_raw_parts(file_ptr, file_len) } };
+        let tables = if tables_len == 0 { &[] } else { unsafe { slice::from_raw_parts(tables_ptr, tables_len) } };
+        match rco_english(file, tables, labels) {
+            Ok(table) => {
+                unsafe { hand_off(encode_rco_english(&table), out_buf, out_len) };
                 0
             }
             Err(e) => {

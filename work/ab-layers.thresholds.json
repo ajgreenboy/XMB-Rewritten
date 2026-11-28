@@ -1262,6 +1262,134 @@
       ]
     },
     {
+      "name": "trophy-collection",
+      "description": "PlayStation Network > Trophy Collection opened on a synthetic dev_hdd0 (work/hdd-fixture.ts, generated per capture, nothing committed): one trophy-set row with its ICON0 tile and the completion line (77% from Gold 90 + Bronze 15 of 135 points, 2/4, P:0 G:1 S:0 B:1). The page is built on a worker behind page_busy, so settle waits cover the scan.",
+      "reference": "out/native-reference/layers/trophy-collection.png",
+      "dataSeed": "out/native-reference/v2/plain",
+      "seedPaths": ["preferences.json", "profiles.json", "settings.ini"],
+      "env": { "XMB_STEAM_ROOT": "C:/dev/out/v2/empty-steam", "XMB_SINGLE_INSTANCE": "0" },
+      "hddFixture": "synthetic",
+      "waits": 10,
+      "settleWaits": 4,
+      "path": [{ "categoryId": "psn", "catalogueId": "trophy" }],
+      "expect": {
+        "category": "psn",
+        "depth": 1,
+        "entryCount": 1,
+        "entryId": "trophy:set:00000001:NPWR90001_00",
+        "entryTitle": "Render Gate Trophies",
+        "pageKind": "page",
+        "log": [{ "pattern": "hdd: page \".*\" filled with 1 row\\(s\\)", "count": 1 }]
+      },
+      "regions": [
+        { "name": "frame", "crop": [0, 0, 1920, 1080] },
+        { "name": "rows", "crop": [340, 380, 1200, 300] }
+      ]
+    },
+    {
+      "name": "trophy-set",
+      "description": "One trophy set opened from Trophy Collection on the synthetic dev_hdd0: four rows in TROPCONF order, focus moved to the hidden Silver trophy, which is still locked and so is drawn as Hidden Trophy with no name, description or icon (the masking rule in trophy_data.cpp).",
+      "reference": "out/native-reference/layers/trophy-set.png",
+      "dataSeed": "out/native-reference/v2/plain",
+      "seedPaths": ["preferences.json", "profiles.json", "settings.ini"],
+      "env": { "XMB_STEAM_ROOT": "C:/dev/out/v2/empty-steam", "XMB_SINGLE_INSTANCE": "0" },
+      "hddFixture": "synthetic",
+      "waits": 10,
+      "settleWaits": 4,
+      "path": [{ "categoryId": "psn", "catalogueId": "trophy" }, { "rowIndex": 0 }],
+      "preGrab": ["DOWN", "DOWN", "wait", "wait"],
+      "expect": {
+        "category": "psn",
+        "depth": 2,
+        "entryCount": 4,
+        "entryId": "trophy:item:NPWR90001_00:2",
+        "pageKind": "page",
+        "log": [{ "pattern": "hdd: page \"Render Gate Trophies\" filled with 4 row\\(s\\)", "count": 1 }]
+      },
+      "regions": [
+        { "name": "frame", "crop": [0, 0, 1920, 1080] },
+        { "name": "rows", "crop": [340, 200, 1200, 760] }
+      ]
+    },
+    {
+      "name": "game-data-utility",
+      "description": "Game > Game Data Utility on the synthetic dev_hdd0: one CATEGORY GD folder with its ICON0 tile, Version 01.02 and the folder size on the second line, and its PIC1.PNG drawn as the full-screen backdrop behind the XMB while the row has focus.",
+      "reference": "out/native-reference/layers/game-data-utility.png",
+      "dataSeed": "out/native-reference/v2/plain",
+      "seedPaths": ["preferences.json", "profiles.json", "settings.ini"],
+      "env": { "XMB_STEAM_ROOT": "C:/dev/out/v2/empty-steam", "XMB_SINGLE_INSTANCE": "0" },
+      "hddFixture": "synthetic",
+      "waits": 10,
+      "settleWaits": 4,
+      "path": [{ "catalogueId": "data" }],
+      "expect": {
+        "category": "game",
+        "depth": 1,
+        "entryCount": 1,
+        "entryId": "gamedata:dir:XMBF00001DATA",
+        "entryTitle": "Render Gate Game Data",
+        "pageKind": "page",
+        "log": [{ "pattern": "hdd: page \".*\" filled with 1 row\\(s\\)", "count": 1 }]
+      },
+      "regions": [
+        { "name": "frame", "crop": [0, 0, 1920, 1080] },
+        { "name": "rows", "crop": [340, 380, 1200, 300] }
+      ]
+    },
+    {
+      "name": "ps3-save-options",
+      "description": "Saved Data Utility (PS3) on the synthetic dev_hdd0 with its one save focused and the Triangle menu open: Copy (a backup into the app's data folder), Delete (Recycle Bin, enabled because the save folder is strictly inside home/00000001/savedata) and Information.",
+      "reference": "out/native-reference/layers/ps3-save-options.png",
+      "dataSeed": "out/native-reference/v2/plain",
+      "seedPaths": ["preferences.json", "profiles.json", "settings.ini"],
+      "env": { "XMB_STEAM_ROOT": "C:/dev/out/v2/empty-steam", "XMB_SINGLE_INSTANCE": "0" },
+      "hddFixture": "synthetic",
+      "waits": 10,
+      "settleWaits": 4,
+      "path": [{ "catalogueId": "ps3" }],
+      "preGrab": ["TRIANGLE", "wait", "wait", "wait"],
+      "expect": {
+        "category": "game",
+        "depth": 1,
+        "entryCount": 1,
+        "entryId": "savedata:ps3:dir:XMBF00001-SAVE0",
+        "entryTitle": "Render Gate Save",
+        "pageKind": "saveData"
+      },
+      "regions": [
+        { "name": "frame", "crop": [0, 0, 1920, 1080] },
+        { "name": "options panel", "crop": [1300, 200, 620, 760] }
+      ]
+    },
+    {
+      "name": "ps3-save-copy",
+      "description": "Functional check of Saved Data Utility (PS3) > Copy on the synthetic dev_hdd0: Triangle, Copy, and the save folder (3 files) is copied into <data>/savedata-backup by FileOperations; the log proves the request, the result and the in-place page rebuild. Delete is deliberately not exercised here (it would put a file in this machine's Recycle Bin on every run). Only the item row is scored: the completion notification's lifetime runs on wall time.",
+      "reference": "out/native-reference/layers/ps3-save-copy.png",
+      "dataSeed": "out/native-reference/v2/plain",
+      "seedPaths": ["preferences.json", "profiles.json", "settings.ini"],
+      "env": { "XMB_STEAM_ROOT": "C:/dev/out/v2/empty-steam", "XMB_SINGLE_INSTANCE": "0" },
+      "hddFixture": "synthetic",
+      "waits": 10,
+      "settleWaits": 4,
+      "path": [{ "catalogueId": "ps3" }],
+      "preGrab": ["TRIANGLE", "wait", "wait", "ENTER", "wait", "wait", "wait", "wait", "wait", "wait"],
+      "expect": {
+        "category": "game",
+        "depth": 1,
+        "entryCount": 1,
+        "entryId": "savedata:ps3:dir:XMBF00001-SAVE0",
+        "pageKind": "saveData",
+        "log": [
+          { "pattern": "savedata: copy asked for \"?Render Gate Save\"? to", "count": 1 },
+          { "pattern": "files: finished #\\d+ kind=copy ok=1 Copy completed: 3 file", "count": 1 },
+          { "pattern": "savedata: page rebuilt with 1 row\\(s\\)", "count": 1 }
+        ]
+      },
+      "regions": [
+        { "name": "item row", "crop": [340, 400, 900, 220] }
+      ]
+    },
+    {
       "name": "first-run-autologon-step",
       "description": "The first-run wizard (--first-run on a scratch data dir) stopped on its Windows Automatic Sign-in step, with the status faked to Off (XMB_AUTOLOGON_FAKE=\"0|gate-user|gate-user\", no registry read): the row, its value Off, the guidance for that state, Continue and Skip This Step. The script only ever presses Cross on rows it names: Set Up This System (welcome), Continue (firmware, index 1; the Download from Sony row is index 3 and is never reached), Skip This Step (library, index 5; the Use the Windows Folders row at index 0 is never pressed), Skip This Step (Controllers), Skip This Step (Start at Sign-in, index 2; its toggle row at index 0 is never pressed). Nothing is fetched, no folder or setting is written outside the scratch data dir and XMB_AUTOSTART_TASK names a task that does not exist. The step order assumes one screen (a second screen adds a Choose the Screen step before the controller step), so XMB_SETUP_SCREENS=1 makes the wizard behave as on one screen; recipe field appArgs passes --first-run (audit/FIRST-RUN.md, audit/AUTOLOGON.md).",
       "reference": "out/native-reference/layers/first-run-autologon-step.png",

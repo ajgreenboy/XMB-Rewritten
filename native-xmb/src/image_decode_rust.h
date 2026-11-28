@@ -3,6 +3,7 @@
 #include "gtf_decode.h"
 #include "image_subtitles.h"
 #include "p3t.h"
+#include "rco_parse.h"
 
 #include <QHash>
 
@@ -33,4 +34,7 @@ QByteArray inflateCxmlFile(const QByteArray& packed);
 bool parseSfo(const QByteArray& rawSfo, QHash<QString, QString>& out, QString* error = nullptr);
 QImage decodeDds(const QByteArray& dds, QString* error = nullptr);
 QImage decodeTga(const QByteArray& tga, QString* error = nullptr);
+// RCO containers (rco.rs): the same results and refusal messages as rco::parseContainer / rco::readEnglish.
+bool parseRco(const QByteArray& file, RcoContainer& out, QString* error = nullptr);
+bool rcoEnglish(const RcoContainer& container, QHash<QString, QString>& out, QString* error = nullptr);
 } // namespace xmb::image_rust

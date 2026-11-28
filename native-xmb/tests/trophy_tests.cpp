@@ -155,6 +155,15 @@ int main() {
     check(itemRows[1].detail.contains(QStringLiteral("Gold")) && itemRows[1].detail.contains(QStringLiteral("Earned")), "gold-unlocked-detail");
     check(itemRows[2].title == QStringLiteral("Hidden Trophy") && itemRows[2].detail.contains(QStringLiteral("Hidden")), "hidden-trophy-masked");
 
+    // Worker-safe forms (no Assets) agree with the Assets wrappers, and a key that tries to leave home/ is refused.
+    check(xmb::trophyCollectionRowsAt(hddRoot).size() == colRows.size(), "collection-rows-at-matches");
+    QString atTitle;
+    const auto atRows = xmb::trophySetRowsAt(hddRoot, QStringLiteral("00000001/NPWR00001_00"), QStringLiteral("Hidden Trophy"), &atTitle);
+    check(atRows.size() == itemRows.size() && atTitle == setTitle, "set-rows-at-matches");
+    check(xmb::trophySetRowsAt(hddRoot, QStringLiteral("00000001/../../game"), QStringLiteral("H")).isEmpty(), "set-key-traversal-refused");
+    check(xmb::trophySetRowsAt(hddRoot, QStringLiteral("..\\x/NPWR00001_00"), QStringLiteral("H")).isEmpty(), "set-key-backslash-refused");
+    check(xmb::trophySetRowsAt(hddRoot, QStringLiteral("00000001"), QStringLiteral("H")).isEmpty(), "set-key-missing-comm-refused");
+
     // 2. Synthetic Game Data Utility folder (CATEGORY=GD) + WAV preview audio.
     const QString gdDir = hddRoot + QStringLiteral("/game/BLUS30001DATA");
     check(writeBytes(gdDir + QStringLiteral("/PARAM.SFO"),
@@ -171,6 +180,7 @@ int main() {
     check(gdRows[0].detail.contains(QStringLiteral("01.02")), "gamedata-version-in-detail");
     check(!gdRows[0].backgroundPath.isEmpty() && gdRows[0].backgroundPath.endsWith(QStringLiteral("PIC1.PNG")), "gamedata-pic1");
     check(!gdRows[0].previewAudioPath.isEmpty() && gdRows[0].previewAudioPath.endsWith(QStringLiteral("SND0.WAV")), "gamedata-snd0");
+    check(xmb::gameDataRowsAt(hddRoot).size() == gdRows.size(), "gamedata-rows-at-matches");
 
     std::printf("trophy-tests: %s (%d failures)\n", gFailures ? "FAIL" : "PASS", gFailures);
     return gFailures ? 1 : 0;

@@ -170,6 +170,33 @@ int img_decode_tga(
 
 void img_free_buffer(uint8_t* ptr, size_t len);
 
+/* Parses a PS3 RCO resource container (\0FRP, big-endian).
+ * On success (0): *out_tables holds the table section (the file, or the 0xA4 header + inflated tables) and *out_toc:
+ *   [u32 labels LE][u32 image_data LE][u32 count LE] then per entry [u32 name_len LE][name utf8][u32 offset LE].
+ * Caller frees both buffers with img_free_buffer.
+ */
+int img_parse_rco(
+    const uint8_t* rco_ptr,
+    size_t rco_len,
+    uint8_t** out_tables_buf,
+    size_t* out_tables_len,
+    uint8_t** out_toc_buf,
+    size_t* out_toc_len
+);
+
+/* The English (language 1) string table of an RCO parsed by img_parse_rco:
+ *   [u32 count LE] then per entry [u32 key_len LE][key utf8][u32 unit_count LE][u16 LE UTF-16 units * unit_count].
+ */
+int img_rco_english(
+    const uint8_t* file_ptr,
+    size_t file_len,
+    const uint8_t* tables_ptr,
+    size_t tables_len,
+    uint32_t labels,
+    uint8_t** out_buf,
+    size_t* out_len
+);
+
 size_t img_last_error(uint8_t* buf, size_t buf_cap);
 
 #ifdef __cplusplus

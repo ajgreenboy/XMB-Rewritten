@@ -192,6 +192,7 @@ struct Entry {
     QString artworkUrl; // a remote picture still to fetch for `artwork` (Spotify covers); empty elsewhere
     QString backgroundPath; // local PIC1.PNG or another full-screen item background
     QString previewAudioPath; // local SND0.WAV/.OGG/.MP3/.AT3 hover preview audio next to a title or save
+    QString localPath;        // the folder a dev_hdd0 row stands for (a PS3 save), for Copy/Delete; empty elsewhere
     // Where a generated row's title and icon came from: "xmbml" (the view's title_rsc/icon_rsc), "rco"
     // (a label the firmware builds in a plugin, resolved through its own RCO strings), "builtin" (the
     // last-resort literal this build shipped) or "fallback" (the whole column kept its built-in rows).
@@ -310,7 +311,10 @@ enum class OptionCommand { Activate, Information,
     GroupByCollection, GroupByStatus,
     SteamToggleFavorite, SteamCollectionMenu, SteamCollectionToggle, SteamCollectionCreate,
     SteamLaunchOptions, SteamStoreSearch, SteamCmdChooseLibrary, SteamCmdChooseLibraryTarget,
-    InGameScreenshot };
+    InGameScreenshot,
+    // A PS3 saved-data row (save_data.cpp): Copy backs the save folder up into <data>/savedata-backup, Delete moves it
+    // to the Recycle Bin after the firmware's own ask. Both go through FileOperations (file_ops.h) and its refusals.
+    SaveDataCopy, SaveDataDelete };
 // A label read from the RCO text table: the key plus the English string it should resolve to. The fallback
 // is used only when the local flash image has no table; whenever the RCO is present, its value is the label.
 struct OptionLabel { const char* key=nullptr; QString fallback; };
@@ -1737,6 +1741,16 @@ private:
     void openTrophyCollection();
     void openTrophySet(const QString& setKey);
     void openGameDataUtility();
+    void openHddPage(const QString& title,std::function<QVector<Entry>(QString*)> build,
+                     const QString& emptyTitle,const QString& emptyText);
+    void probeHddContent();
+    // PS3 saved data (save_data.cpp rows): where Copy writes, why Delete would be refused (empty = allowed), and the
+    // in-place rebuild of an open saved-data page after a copy or delete lands.
+    QString saveBackupDir() const;
+    QString saveDeleteRefusal(const Entry& entry);
+    void reloadSaveDataPage();
+    bool hddHasTrophies_=false,hddHasGameData_=false;
+    quint64 hddProbeRequest_=0;
     // Builds the Network column's rows from the firmware's own category_network.xml (audit/XMBML-NETWORK.md),
     // keeping the built-in rows when the definition cannot be read.
     void resolveNetworkColumn();

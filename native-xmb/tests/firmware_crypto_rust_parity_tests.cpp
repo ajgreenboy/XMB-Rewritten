@@ -10,6 +10,7 @@
 #include "image_decode_rust.h"
 #include "image_subtitles.h"
 #include "qrc.h"
+#include "rco_parse.h"
 #include "steam_vdf.h"
 #include "steam_vdf_rust.h"
 
@@ -21,6 +22,7 @@
 #include <QtEndian>
 #include <bit>
 #include <cstdio>
+#include <functional>
 
 namespace {
 inline char bchar(int v) { return static_cast<char>(static_cast<unsigned char>(v & 0xff)); }
@@ -1400,6 +1402,126 @@ int main(int argc, char** argv) {
             const QByteArray label = QByteArray("tga-parity-") + QByteArray::number(tgai++);
             check(iCpp.isNull() == iRust.isNull() && iCpp == iRust, label.constData());
         }
+    }
+
+    // ---- 10. Phase 9: PS3 RCO resource containers (image index + English strings) ----
+    {
+        // Layout of the uncompressed form (also the inflated table section of the compressed form):
+        //   0xb0 image tree root, entries at 0xd8 and 0x110 (0x38 each); 0x150 text tree root, language block at
+        //   0x178 (info 0x1a0, two text entries at 0x1a8); 0x1c0 labels; 0x200 text section (uncompressed only).
+        const auto makeRco = [](bool compressed, quint16 textFormat, const QByteArray& text,
+                                const std::function<void(QByteArray&)>& tweak) {
+            QByteArray u(0x240, '\0');
+            put32(u, 0, 0x46525000);
+            put32(u, 12, compressed ? 0x10 : 0);
+            put32(u, 0x24, 0xb0);
+            put32(u, 0x18, 0x150);
+            put32(u, 0x40, 0x1c0);
+            put32(u, 0x44, 0x30);
+            put32(u, 0x80, 0x1234);
+            put32(u, 0xb0 + 16, 2);
+            put16(u, 0xd8, 0x0401); put32(u, 0xd8 + 4, 0); put32(u, 0xd8 + 20, 0x38);
+            put16(u, 0x110, 0x0401); put32(u, 0x110 + 4, 9);
+            put32(u, 0x150 + 16, 1);
+            put16(u, 0x1a0, 1); put16(u, 0x1a2, textFormat); put32(u, 0x1a4, 2);
+            put32(u, 0x1a8, 16); put32(u, 0x1ac, quint32(text.size())); put32(u, 0x1b0, 0);
+            put32(u, 0x1b4, 22); put32(u, 0x1b8, quint32(text.size())); put32(u, 0x1bc, 0);
+            u.replace(0x1c0, 28, QByteArray("tex_icon\0tex_bg\0msg_a\0msg_b\0", 28));
+            u.replace(0x200, text.size(), text);
+            put32(u, 0x38, 0x200);
+            put32(u, 0x3c, 0x40);
+            if (tweak) tweak(u);
+            if (!compressed) return u;
+            // Compressed: header, packed/expanded at 0xa4/0xa8, zlib tables from 0xb0, then two text chunks (a
+            // non-English one first so the sibling walk runs), with the text section pointer moved to them.
+            const QByteArray body = u.mid(0xa4, 0x200 - 0xa4);
+            const QByteArray z = qCompress(body).mid(4);
+            QByteArray f = u.left(0xa4) + QByteArray(12, '\0') + z;
+            put32(f, 0xa4, quint32(z.size()));
+            put32(f, 0xa8, quint32(body.size()));
+            const QByteArray other = qCompress(QByteArray("ignored language")).mid(4);
+            const QByteArray eng = qCompress(u.mid(0x200, 0x40)).mid(4);
+            const int textAt = int(f.size());
+            QByteArray chunk0(16, '\0');
+            put16(chunk0, 0, 0); put32(chunk0, 4, quint32(16 + other.size())); put32(chunk0, 8, quint32(other.size()));
+            put32(chunk0, 12, 16);
+            QByteArray chunk1(16, '\0');
+            put16(chunk1, 0, 1); put32(chunk1, 4, 0); put32(chunk1, 8, quint32(eng.size())); put32(chunk1, 12, 0x40);
+            f += chunk0 + other + chunk1 + eng;
+            put32(f, 0x38, quint32(textAt));
+            put32(f, 0x3c, quint32(f.size() - textAt));
+            return f;
+        };
+        const auto utf16be = [](const QString& s) { QByteArray b; for (QChar c : s) { b += bchar(c.unicode() >> 8); b += bchar(c.unicode()); } return b; };
+        const auto utf32be = [](const QList<quint32>& codes) { QByteArray b(codes.size() * 4, '\0'); for (int i = 0; i < codes.size(); ++i) put32(b, i * 4, codes[i]); return b; };
+
+        struct Case { const char* name; QByteArray bytes; };
+        QList<Case> cases{
+            {"rco-utf8", makeRco(false, 0, QByteArray("Hello\0", 6), {})},
+            {"rco-utf16", makeRco(false, 1, utf16be(QStringLiteral("Hi \u2713")) + QByteArray(2, '\0'), {})},
+            {"rco-utf32-astral", makeRco(false, 2, utf32be({0x41, 0x1F600, 0}), {})},
+            {"rco-compressed-utf8", makeRco(true, 0, QByteArray("Packed text", 11), {})},
+            {"rco-root-none", makeRco(false, 0, QByteArray("x", 1), [](QByteArray& u) { put32(u, 0x24, 0xffffffff); put32(u, 0x18, 0xffffffff); })},
+            {"rco-bad-magic", makeRco(false, 0, QByteArray("x", 1), [](QByteArray& u) { put32(u, 0, 0x50524600); })},
+            {"rco-truncated", makeRco(false, 0, QByteArray("x", 1), {}).left(0x30)},
+            {"rco-bad-compression", makeRco(false, 0, QByteArray("x", 1), [](QByteArray& u) { put32(u, 12, 0x20); })},
+            {"rco-bad-entry-tag", makeRco(false, 0, QByteArray("x", 1), [](QByteArray& u) { put16(u, 0x110, 0x0402); })},
+            {"rco-label-out-of-range", makeRco(false, 0, QByteArray("x", 1), [](QByteArray& u) { put32(u, 0x110 + 4, 0x40); })},
+            {"rco-unterminated-label", makeRco(false, 0, QByteArray("x", 1), [](QByteArray& u) { put32(u, 0x44, 4); put32(u, 0x110 + 4, 0); })},
+            {"rco-bad-sibling", makeRco(false, 0, QByteArray("x", 1), [](QByteArray& u) { put32(u, 0xd8 + 20, 0x10); })},
+            {"rco-image-count-limit", makeRco(false, 0, QByteArray("x", 1), [](QByteArray& u) { put32(u, 0xb0 + 16, 70000); })},
+            {"rco-text-format-3", makeRco(false, 3, QByteArray("x", 1), {})},
+            {"rco-utf32-out-of-range", makeRco(false, 2, utf32be({0x41, 0x110000}), {})},
+            {"rco-utf16-bom-and-odd-byte", makeRco(false, 1, QByteArray("\xfe\xff\x00\x41\x00", 5), {})},
+            {"rco-utf32-bom-and-surrogate", makeRco(false, 2, utf32be({0xfeff, 0xd800, 0x42}), {})},
+            {"rco-text-out-of-range", makeRco(false, 0, QByteArray("x", 1), [](QByteArray& u) { put32(u, 0x1ac, 0x100); })},
+            {"rco-language-count", makeRco(false, 0, QByteArray("x", 1), [](QByteArray& u) { put32(u, 0x150 + 16, 65); })},
+        };
+        QByteArray badZlib = makeRco(true, 0, QByteArray("Packed text", 11), {});
+        for (int i = 0xb4; i < 0xbc; ++i) badZlib[i] = bchar(~badZlib[i]);
+        cases.push_back({"rco-compressed-bad-zlib", badZlib});
+
+        const auto compareRco = [&](const QByteArray& bytes, const QByteArray& label, int* englishRows) {
+            QString cppError, rustError;
+            xmb::RcoContainer cpp, rust;
+            bool cppOk = true;
+            try { cpp = xmb::rco::parseContainer(bytes); } catch (const std::exception& ex) { cppOk = false; cppError = QString::fromUtf8(ex.what()); }
+            const bool rustOk = xmb::image_rust::parseRco(bytes, rust, &rustError);
+            bool same = cppOk == rustOk && cppError == rustError;
+            if (same && cppOk)
+                same = cpp.labels == rust.labels && cpp.imageData == rust.imageData && cpp.entries == rust.entries && cpp.tables == rust.tables;
+            if (same && cppOk) {
+                QHash<QString, QString> cppText, rustText;
+                QString cppTextError, rustTextError;
+                bool cppTextOk = true;
+                try { cppText = xmb::rco::readEnglish(cpp); } catch (const std::exception& ex) { cppTextOk = false; cppTextError = QString::fromUtf8(ex.what()); }
+                const bool rustTextOk = xmb::image_rust::rcoEnglish(rust, rustText, &rustTextError);
+                same = cppTextOk == rustTextOk && cppTextError == rustTextError && cppText == rustText;
+                if (englishRows) *englishRows = int(rustText.size());
+                if (!same) std::printf("  %s text: cpp ok=%d \"%s\" rows=%d / rust ok=%d \"%s\" rows=%d\n", label.constData(), int(cppTextOk),
+                                       qPrintable(cppTextError), int(cppText.size()), int(rustTextOk), qPrintable(rustTextError), int(rustText.size()));
+            } else if (!same) {
+                std::printf("  %s: cpp ok=%d \"%s\" / rust ok=%d \"%s\"\n", label.constData(), int(cppOk), qPrintable(cppError), int(rustOk), qPrintable(rustError));
+            }
+            check(same, label.constData());
+        };
+        for (const auto& c : cases) compareRco(c.bytes, QByteArray("rco-parity-") + c.name, nullptr);
+
+        // The real firmware set, when this machine has it (never committed). XMB_PARITY_DEV_FLASH overrides the path.
+        const QString flash = qEnvironmentVariableIsSet("XMB_PARITY_DEV_FLASH") ? qEnvironmentVariable("XMB_PARITY_DEV_FLASH")
+                                                                               : QStringLiteral("C:/dev/rpcs3/bin/dev_flash");
+        const QDir resources(QDir(flash).filePath(QStringLiteral("vsh/resource")));
+        const auto rcos = resources.entryInfoList({QStringLiteral("*.rco")}, QDir::Files, QDir::Name);
+        int compared = 0, strings = 0;
+        for (const auto& info : rcos) {
+            QFile f(info.absoluteFilePath());
+            if (!f.open(QIODevice::ReadOnly) || f.size() > 64 * 1024 * 1024) continue;
+            int rows = 0;
+            compareRco(f.readAll(), QByteArray("rco-parity-firmware-") + info.fileName().toUtf8(), &rows);
+            ++compared; strings += rows;
+        }
+        std::printf("rco-parity: %d firmware RCO file(s) compared (%d English strings)%s\n", compared, strings,
+                    compared ? "" : " - no local dev_flash, synthetic cases only");
     }
 
     std::printf("rust-edge-parity: %s (%d failures)\n", failures ? "FAIL" : "PASS", failures);

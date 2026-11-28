@@ -307,8 +307,12 @@ bool hasTrophySets(const QString& hddRoot) {
 
 QVector<Entry> trophyCollectionRows(Assets& assets, QString* pageTitle) {
     if (pageTitle) *pageTitle = assets.text("explore_category_psn", "msg_trophies", QObject::tr("Trophy Collection"));
+    return trophyCollectionRowsAt(assets.hddRoot());
+}
+
+QVector<Entry> trophyCollectionRowsAt(const QString& hddRoot) {
     QVector<Entry> rows;
-    const auto sets = scanTrophySets(assets.hddRoot());
+    const auto sets = scanTrophySets(hddRoot);
     for (const auto& set : sets) {
         Entry row;
         row.id = QStringLiteral("trophy:set:") + set.userId + QLatin1Char(':') + set.commId;
@@ -339,18 +343,26 @@ QVector<Entry> trophyCollectionRows(Assets& assets, QString* pageTitle) {
 }
 
 QVector<Entry> trophySetRows(Assets& assets, const QString& setKey, QString* pageTitle) {
+    return trophySetRowsAt(assets.hddRoot(), setKey,
+                           assets.text("explore_category_psn", "msg_trophy_hidden", QObject::tr("Hidden Trophy")), pageTitle);
+}
+
+QVector<Entry> trophySetRowsAt(const QString& hddRoot, const QString& setKey, const QString& hiddenTitle, QString* pageTitle) {
     QVector<Entry> rows;
     const QString userId = setKey.section(QLatin1Char('/'), 0, 0);
     const QString commId = setKey.section(QLatin1Char('/'), 1, 1);
     if (userId.isEmpty() || commId.isEmpty()) return rows;
-    const QString dirPath = QDir(QDir(QDir(assets.hddRoot()).filePath(QStringLiteral("home")))
+    // The key comes from a row this module built, but it is still a path fragment: refuse anything that could leave home/.
+    if (userId.contains(QLatin1String("..")) || commId.contains(QLatin1String("..")) || commId.contains(QLatin1Char('/')) ||
+        userId.contains(QLatin1Char('\\')) || commId.contains(QLatin1Char('\\')))
+        return rows;
+    const QString dirPath = QDir(QDir(QDir(hddRoot).filePath(QStringLiteral("home")))
                                      .filePath(userId + QStringLiteral("/trophy")))
                                 .filePath(commId);
     TrophySet set;
     if (!readTrophySetDirectory(userId, commId, dirPath, set)) return rows;
     if (pageTitle) *pageTitle = set.titleName.isEmpty() ? commId : set.titleName;
 
-    const QString hiddenTitle = assets.text("explore_category_psn", "msg_trophy_hidden", QObject::tr("Hidden Trophy"));
     for (const auto& t : set.trophies) {
         Entry row;
         row.id = QStringLiteral("trophy:item:") + commId + QLatin1Char(':') + QString::number(t.id);
@@ -412,8 +424,12 @@ bool hasGameDataEntries(const QString& hddRoot) {
 
 QVector<Entry> gameDataRows(Assets& assets, QString* pageTitle) {
     if (pageTitle) *pageTitle = assets.text("explore_category_game", "msg_gamedata_utility", QObject::tr("Game Data Utility"));
+    return gameDataRowsAt(assets.hddRoot());
+}
+
+QVector<Entry> gameDataRowsAt(const QString& hddRoot) {
     QVector<Entry> rows;
-    const QDir gameDir(QDir(assets.hddRoot()).filePath(QStringLiteral("game")));
+    const QDir gameDir(QDir(hddRoot).filePath(QStringLiteral("game")));
     if (!gameDir.exists()) return rows;
 
     for (const auto& info : gameDir.entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Time)) {

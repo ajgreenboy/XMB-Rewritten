@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
-project(RePS3Native VERSION 0.3.42 LANGUAGES CXX)
+project(RePS3Native VERSION 0.3.43 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
@@ -91,6 +91,7 @@ if(XMB_RUST_FIRMWARE_CRYPTO)
             "${XMB_RUST_WORKSPACE_DIR}/image-decode/src/gtf.rs"
             "${XMB_RUST_WORKSPACE_DIR}/image-decode/src/edge.rs"
             "${XMB_RUST_WORKSPACE_DIR}/image-decode/src/qrc.rs"
+            "${XMB_RUST_WORKSPACE_DIR}/image-decode/src/rco.rs"
             "${XMB_RUST_WORKSPACE_DIR}/image-decode/src/sfo.rs"
             "${XMB_RUST_WORKSPACE_DIR}/image-decode/src/subtitles.rs"
             "${XMB_RUST_WORKSPACE_DIR}/image-decode/src/tga.rs"
@@ -111,7 +112,7 @@ if(XMB_RUST_FIRMWARE_CRYPTO)
         src/image_decode_rust.cpp src/image_decode_rust.h)
 endif()
 qt_add_executable(re-ps3-native
-    src/main.cpp src/assets.cpp src/assets.h src/p3t.cpp src/p3t.h src/qrc.cpp src/qrc.h src/catalog.cpp src/catalog.h
+    src/main.cpp src/assets.cpp src/assets.h src/rco_parse.cpp src/rco_parse.h src/p3t.cpp src/p3t.h src/qrc.cpp src/qrc.h src/catalog.cpp src/catalog.h
     src/gtf_decode.cpp src/gtf_decode.h
     src/edge_decode.cpp src/edge_decode.h
     src/raf_render.cpp src/raf_render.h
@@ -230,7 +231,7 @@ if(XMB_RUST_FIRMWARE_CRYPTO)
         src/firmware_crypto.cpp src/firmware_crypto_rust.cpp
         src/firmware_extract.cpp src/firmware_extract_rust.cpp
         src/steam_vdf.cpp src/steam_vdf_rust.cpp
-        src/gtf_decode.cpp src/edge_decode.cpp src/image_subtitles.cpp src/qrc.cpp src/image_decode_rust.cpp)
+        src/gtf_decode.cpp src/edge_decode.cpp src/image_subtitles.cpp src/qrc.cpp src/rco_parse.cpp src/image_decode_rust.cpp)
     target_include_directories(xmb-firmware-rust-parity-tests PRIVATE src)
     target_compile_definitions(xmb-firmware-rust-parity-tests PRIVATE XMB_FIRMWARE_NO_EMBEDDED_KEYS)
     target_link_libraries(xmb-firmware-rust-parity-tests PRIVATE Qt6::Core Qt6::Gui ${XMB_ZLIB} xmb_firmware_crypto_rust)
@@ -711,7 +712,7 @@ option(XMB_TROPHY_BUILD_TESTS "Build RPCS3 Trophy Collection & Game Data Utility
 if(XMB_TROPHY_BUILD_TESTS)
     qt_add_executable(xmb-trophy-tests tests/trophy_tests.cpp
         src/trophy_data.cpp src/trophy_data.h
-        src/assets.cpp src/assets.h
+        src/assets.cpp src/assets.h src/rco_parse.cpp src/rco_parse.h
         src/qrc.cpp src/qrc.h
         src/p3t.cpp src/p3t.h
         src/vsmx_eval.cpp src/vsmx_eval.h

@@ -1,6 +1,6 @@
 # Rust hardening design: the untrusted edge
 
-Status: **Phases 1–8 implemented** (`native-xmb/rust-edge/` Cargo workspace: `firmware-crypto`, `firmware-extract`, `steam-vdf`, `image-decode` [GTF, DDS, TGA, GIM `.GIM1.00`, VAG `.vag`/`VAGp` ADPCM audio, Sony CXML `QRCC`/`QRCF` and `P3TF`/`RAFO`/`_RAF` containers, `PARAM.SFO` `\0PSF` metadata, Edge, Blu-ray PGS, DVD VobSub], unified into `xmb-rust-edge` staticlib behind `-DXMB_RUST_FIRMWARE_CRYPTO=ON` and `-DXMB_USE_RUST_EDGE=ON`, enabled by default in `native-xmb/build.ps1` and Linux release builds).
+Status: **Phases 1–9 implemented** (`native-xmb/rust-edge/` Cargo workspace: `firmware-crypto`, `firmware-extract`, `steam-vdf`, `image-decode` [GTF, DDS, TGA, GIM `.GIM1.00`, VAG `.vag`/`VAGp` ADPCM audio, Sony CXML `QRCC`/`QRCF` and `P3TF`/`RAFO`/`_RAF` containers, PS3 RCO resource containers, `PARAM.SFO` `\0PSF` metadata, Edge, Blu-ray PGS, DVD VobSub], unified into `xmb-rust-edge` staticlib behind `-DXMB_RUST_FIRMWARE_CRYPTO=ON` and `-DXMB_USE_RUST_EDGE=ON`, enabled by default in `native-xmb/build.ps1` and Linux release builds).
 
 ## 1. What this is and what it is not
 
@@ -192,3 +192,25 @@ Choices settled and verified for Phases 1–3:
    - Verified via C++/Rust byte-for-byte parity checks in `xmb-firmware-rust-parity-tests` and Rust-delegated checks in `xmb-raf-tests`.
 5. **CMake & CI integration:**
    - `-DXMB_RUST_FIRMWARE_CRYPTO=ON` builds `xmb-rust-edge` and `xmb-firmware-rust-parity-tests`; `-DXMB_USE_RUST_EDGE=ON` (now auto-enabled by default in `native-xmb/build.ps1` when Cargo is present) routes live C++ calls (`firmware_crypto`, `firmware_extract`, `steam_vdf`, `gtf_decode`, `edge_decode`, `image_subtitles`, `Assets::decodeGim`, `Assets::decodeDds`, `Assets::decodeTga`, `readSfo`, `P3t::vagToWav`, `QrcArchive`, and `P3t::readContainer`/`P3t::file`) through the Rust `staticlib`. Both Windows and Ubuntu 24.04 Linux CI jobs in `.github/workflows/tests.yml` run `cargo test --workspace` and the C++/Rust parity suites on every push.
+
+## 10. Phase 9 record and the archive row (v0.3.43)
+
+1. **Phase 9 — PS3 RCO resource containers (`image-decode/src/rco.rs`):**
+   - The two RCO parsers that read the user's firmware bytes on every start — the header, the optional zlib table
+     section, the label section bounds and the image entry chain (`Assets::readContainer`), and the English string
+     table with its optional per-language zlib chunks and UTF-8 / UTF-16BE / UTF-32BE text (`Assets::readEnglish`) —
+     moved out of `assets.cpp` into `src/rco_parse.{h,cpp}` (the C++ reference, used when `XMB_USE_RUST_EDGE` is off)
+     and were ported to zero-`unsafe` Rust behind `img_parse_rco` / `img_rco_english`.
+   - Text crosses the ABI as UTF-16 code units, not UTF-8, so the values Qt's decoders pass through unchanged
+     (surrogate code points in UTF-32, a trailing odd byte in UTF-16) survive exactly. Two Qt behaviours were measured
+     by the parity test rather than assumed: `QStringDecoder(Utf32BE)` replaces a code point above U+10FFFF with
+     U+FFFD **without** reporting an error, and a leading byte-order mark is skipped for UTF-16/UTF-32.
+   - Verified by the parity suite on 21 synthetic containers (plain and compressed tables, each refusal message) and
+     on every RCO in the local 4.93 `dev_flash` (122 files, 9,625 English strings) compared field by field: tables,
+     label/image offsets, the image index and the string table. The firmware set is local and never committed; without
+     it the suite runs the synthetic cases only.
+
+2. **The "archive extraction" row of §2/§4 (P2) is closed without a port:** `archive_extract.cpp` no longer parses
+   archives in process. Extraction is delegated to the system `tar` / 7-Zip, and the file left is
+   `findGameExecutable(s)` (a directory walk). `file_ops.cpp` copies and recycles files the user already owns and parses
+   no foreign format. There is no in-process archive parser left to move.
