@@ -105,3 +105,7 @@ and exactly its `steamShortcuts` count of shortcut rows. No frame reference chan
   personal data was read or copied; every fixture is synthetic).
 - The in-game XMB, Quit Game and artwork were exercised only by unit tests and the headless dump run, not on screen with
   a real shortcut.
+
+## Environment switch
+
+- XMB_STEAM_SHORTCUTS=0 leaves the non-Steam shortcuts out of the account snapshot. The render gate sets it for every capture so this PC's own shortcuts never reach a reference image; the e2e scripts that build a synthetic Steam root do not set it.

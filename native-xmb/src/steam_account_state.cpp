@@ -11,7 +11,9 @@ SteamAccountSnapshot loadSteamAccountSnapshot(const SteamInstallation& steam, co
     if (snapshot.steamId.isEmpty()) return snapshot;   // no account: every account-specific list stays empty
 
     snapshot.activity = scanSteamActivity(steam.root, snapshot.steamId);
-    {
+    // XMB_STEAM_SHORTCUTS=0 leaves the non-Steam shortcuts out (the render gate sets it so this PC's own shortcuts never
+    // reach a capture, as it does for API keys); everything else about them is documented in audit/STEAM-SHORTCUTS.md.
+    if (qEnvironmentVariable("XMB_STEAM_SHORTCUTS") != QLatin1String("0")) {
         auto shortcuts = scanSteamShortcuts(steam.root, snapshot.steamId);
         snapshot.shortcuts = std::move(shortcuts.shortcuts);
         snapshot.shortcutsError = shortcuts.error;

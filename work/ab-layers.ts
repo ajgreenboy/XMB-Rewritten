@@ -588,7 +588,7 @@ async function captureFrame(t: Thresholds, opts: ReturnType<typeof parseArgs>) {
     stderr: 'pipe',
     // No real API key may reach a capture: a key in this machine's AppData made the Steam owned list (and so the
     // frame) depend on the live account. An empty scratch key folder and blank key variables keep every run offline.
-    env: { ...process.env, XMB_STEAM_ROOT: steamRoot, XMB_API_KEY_DIR: scratchKeyDir(captureDir),
+    env: { ...process.env, XMB_STEAM_ROOT: steamRoot, XMB_API_KEY_DIR: scratchKeyDir(captureDir), XMB_STEAM_SHORTCUTS: '0',
            STEAM_WEB_API_KEY: '', RAWG_API_KEY: '', SPOTIFY_CLIENT_ID: '' },
   });
   const stderrText = new Response(proc.stderr).text();
@@ -743,6 +743,7 @@ async function runStateProcess(t: Thresholds, opts: ReturnType<typeof parseArgs>
     XMB_LOG: messagePath,
     // No real API key may reach a capture (see the first capture path): scratch key folder, blank key variables.
     XMB_API_KEY_DIR: scratchKeyDir(dirname(dumpPath)),
+    XMB_STEAM_SHORTCUTS: '0',   // this PC's own non-Steam shortcuts must not reach a capture
     STEAM_WEB_API_KEY: '',
     RAWG_API_KEY: '',
     SPOTIFY_CLIENT_ID: '',
