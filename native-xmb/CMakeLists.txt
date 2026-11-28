@@ -707,7 +707,8 @@ if(XMB_CONTROLLER_MODE_BUILD_TESTS AND WIN32)
     qt_add_executable(xmb-controller-mode-tests tests/controller_mode_tests.cpp src/controller_mode.cpp src/controller_mode.h
         src/pad.cpp src/pad.h src/bd_remote.h src/steam_collections.cpp src/steam_collections.h
         src/steam_library.cpp src/steam_library.h src/steam_vdf.cpp src/steam_vdf.h src/steam_appinfo.cpp src/steam_appinfo.h
-        src/steam_keyless.cpp src/steam_keyless.h src/steam_activity.cpp src/steam_activity.h src/steam_family.cpp src/steam_family.h
+        src/steam_keyless.cpp src/steam_keyless.h src/steam_activity.cpp src/steam_activity.h
+        src/steam_shortcuts.cpp src/steam_shortcuts.h
         src/steam_accounts.cpp src/steam_accounts.h src/steam_account_state.cpp src/steam_account_state.h src/steam_refresh.h src/steam_switch.h)
     target_include_directories(xmb-controller-mode-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
     target_link_libraries(xmb-controller-mode-tests PRIVATE Qt6::Core xinput9_1_0 hid setupapi ole32 shell32 advapi32 wintrust crypt32)
